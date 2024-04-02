@@ -67,10 +67,10 @@ pub const Region = enum(u64) {
     ap_southeast_3 = 1 << 25,
     /// Asia Pacific (Melbourne)
     ap_southeast_4 = 1 << 30,
-    /// China (Beijing)
-    cn_north_1 = 1 << 9,
-    /// China (Ningxia)
-    cn_northwest_1 = 1 << 16,
+    // /// China (Beijing)
+    // cn_north_1 = 1 << 9,
+    // /// China (Ningxia)
+    // cn_northwest_1 = 1 << 16,
 
     pub fn code(self: Region) []const u8 {
         return switch (self) {
@@ -105,8 +105,8 @@ pub const Region = enum(u64) {
             .ap_southeast_2 => "ap-southeast-2",
             .ap_southeast_3 => "ap-southeast-3",
             .ap_southeast_4 => "ap-southeast-4",
-            .cn_north_1 => "cn-north-1",
-            .cn_northwest_1 => "cn-northwest-1",
+            // .cn_north_1 => "cn-north-1",
+            // .cn_northwest_1 => "cn-northwest-1",
         };
     }
 
@@ -143,8 +143,8 @@ pub const Region = enum(u64) {
             .ap_southeast_2 => "Sydney (AP Southeast 2)",
             .ap_southeast_3 => "Jakarta (AP Southeast 3)",
             .ap_southeast_4 => "Melbourne (AP Southeast 4)",
-            .cn_north_1 => "Beijing (CN North 1)",
-            .cn_northwest_1 => "Ningxia (CN Northwest 1)",
+            // .cn_north_1 => "Beijing (CN North 1)",
+            // .cn_northwest_1 => "Ningxia (CN Northwest 1)",
         };
     }
 };
