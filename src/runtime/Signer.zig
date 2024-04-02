@@ -57,7 +57,7 @@ test "handle" {
     const auth = try signer.handle(&buffer, request, RequestTime.initEpoch(1373321335), target);
     try testing.expectEqualStrings(
         "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130708/us-east-1/s3/aws4_request," ++
-            "SignedHeaders=host;x-amz-date,Signature=2fc8cfe69048f0656cd02e9655fb2cb93c8917ac1230890b5a2752ef6ba76c90",
+            "SignedHeaders=host;x-amz-date,Signature=3c059efad8b5c07bbe759cb31436857114cb986b161695c03ef115e4878ea945",
         auth,
     );
 }
@@ -86,7 +86,7 @@ test "sign" {
         .region = .us_east_1,
         .service = "s3",
     }, request, "20130708/us-east-1/s3");
-    try testing.expectEqualStrings("2fc8cfe69048f0656cd02e9655fb2cb93c8917ac1230890b5a2752ef6ba76c90", &hash);
+    try testing.expectEqualStrings("3c059efad8b5c07bbe759cb31436857114cb986b161695c03ef115e4878ea945", &hash);
 }
 
 fn authorize(buffer: []u8, id: []const u8, scope: []const u8, headers: []const u8, signature: *const Signature) ![]const u8 {
@@ -123,16 +123,15 @@ test "requestScope" {
 /// The caller owns the returned memory.
 // https://docs.aws.amazon.com/IAM/latest/UserGuide/create-signed-request.html#create-canonical-request
 fn requestCanonical(buffer: []u8, request: RequestContent) ![]u8 {
+    var payload: Signature = undefined;
+    hashPayload(&payload, request.payload);
+
     var stream = std.io.fixedBufferStream(buffer);
     const writer = stream.writer();
     try writer.print(
-        "{s}\n{s}\n{s}{s}\n{s}",
-        .{ @tagName(request.method), request.path, request.query, request.headers, request.headers_signed },
+        "{s}\n{s}\n{s}\n{s}\n{s}\n{s}",
+        .{ @tagName(request.method), request.path, request.query, request.headers, request.headers_signed, payload },
     );
-    try writer.writeByte('\n');
-    var hash: Signature = undefined;
-    hashPayload(&hash, request.payload);
-    try writer.writeAll(&hash);
     return buffer[0..stream.pos];
 }
 
@@ -142,7 +141,7 @@ test "requestCanonical" {
 
     var canonical_buffer: [4 * 1024]u8 = undefined;
     const canonical = try requestCanonical(&canonical_buffer, request);
-    const expected = "GET\n/foo\nbaz=%24qux&foo=%25bar\nhost:s3.amazonaws.com\nx-amz-date:20130708T220855Z" ++
+    const expected = "GET\n/foo\nbaz=%24qux&foo=%25bar\nhost:s3.amazonaws.com\nx-amz-date:20130708T220855Z\n" ++
         "\nhost;x-amz-date\n269dce1a5bb90188b2d9cf542a7c30e410c7d8251e34a97bfea56062df51ae23";
     try testing.expectEqualStrings(expected, canonical);
 }
@@ -155,9 +154,9 @@ fn signatureContent(buffer: *SigContent, timestamp: []const u8, scope: []const u
 }
 
 test "signatureContent" {
+    var content_buff: SigContent = undefined;
     const time = RequestTime.initEpoch(1373321335);
     const hash_buff = "907ae221d7a1aaf07c909ec72d09a3dba409a040b5f3f0914eb28425ce27ef0a";
-    var content_buff: SigContent = undefined;
     const signature = try signatureContent(&content_buff, &time.timestamp, "20130708/us-east-1/s3", hash_buff);
     try testing.expectEqualStrings(
         "AWS4-HMAC-SHA256\n20130708T220855Z\n20130708/us-east-1/s3/aws4_request\n" ++

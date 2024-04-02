@@ -86,7 +86,7 @@ pub const RequestContent = struct {
         std.sort.pdq(KV, kvs[0..len], {}, sort);
         for (0..len) |i| {
             const key, const value = kvs[i];
-            try buffer.writer().print("\n{s}:{s}", .{ key, value });
+            try buffer.writer().print("{s}:{s}\n", .{ key, value });
         }
         const head = try buffer.toOwnedSlice();
         errdefer allocator.free(head);
@@ -121,7 +121,7 @@ test "RequestContent" {
     try testing.expectEqual(.GET, request.method);
     try testing.expectEqualStrings("/foo", request.path);
     try testing.expectEqualStrings("baz=%24qux&foo=%25bar", request.query);
-    try testing.expectEqualStrings("\nhost:s3.amazonaws.com\nx-amz-date:20130708T220855Z", request.headers);
+    try testing.expectEqualStrings("host:s3.amazonaws.com\nx-amz-date:20130708T220855Z\n", request.headers);
     try testing.expectEqualStrings("host;x-amz-date", request.headers_signed);
     try testing.expectEqualDeep("foo-bar-baz", request.payload);
 }
