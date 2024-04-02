@@ -8,11 +8,7 @@ const test_alloc = testing.allocator;
 const types = @import("aws-types");
 const Region = types.Region;
 
-pub const RequestTarget = struct {
-    region: Region,
-    service: []const u8,
-    endpoint: RequestEndpoint,
-};
+pub const RequestTarget = struct { region: Region, service: []const u8 };
 
 pub const RequestContent = struct {
     const MAX_KV: usize = 16;
@@ -136,7 +132,7 @@ pub const RequestTime = struct {
     /// Format: `yyyymmddThhmmssZ`
     timestamp: [16]u8,
 
-    pub fn initNow() !RequestTime {
+    pub fn initNow() RequestTime {
         const secs: u64 = @intCast(std.time.timestamp());
         return initEpoch(secs);
     }
@@ -193,20 +189,25 @@ pub const RequestEndpoint = struct {
             .dual_or_single => ".api.aws",
         };
 
-        var i: usize = 0;
-        var host: []u8 = undefined;
-        if (region) |r| {
+        var len = service.len + domain.len;
+        const region_code: []const u8 = if (region) |r| blk: {
             const code = r.code();
-            i = code.len + 1;
-            host = try allocator.alloc(u8, i + service.len + domain.len);
-            @memcpy(host[0..code.len], code);
-            host[code.len] = '.';
-        } else {
-            host = try allocator.alloc(u8, service.len + domain.len);
+            len += 1 + code.len;
+            break :blk code;
+        } else "";
+
+        const host: []u8 = try allocator.alloc(u8, len);
+        @memcpy(host[0..service.len], service);
+        var i: usize = service.len;
+
+        if (region_code.len > 0) {
+            host[i] = '.';
+            i += 1;
+            @memcpy(host[i..][0..region_code.len], region_code);
+            i += region_code.len;
         }
 
-        @memcpy(host[i..][0..service.len], service);
-        @memcpy(host[i + service.len ..][0..domain.len], domain);
+        @memcpy(host[i..][0..domain.len], domain);
         return .{ .host = host };
     }
 
@@ -236,11 +237,11 @@ test "RequestEndpoint" {
     ep.deinit(test_alloc);
 
     ep = try RequestEndpoint.init(test_alloc, .dual_only, "s3", Region.us_east_1);
-    try testing.expectEqualStrings("us-east-1.s3.amazonaws.com", ep.host);
+    try testing.expectEqualStrings("s3.us-east-1.amazonaws.com", ep.host);
 
     var buffer = ArrayList.init(test_alloc);
     defer buffer.deinit();
     try ep.writeHostname(buffer.writer().any(), .https);
-    try testing.expectEqualStrings("https://us-east-1.s3.amazonaws.com", buffer.items);
+    try testing.expectEqualStrings("https://s3.us-east-1.amazonaws.com", buffer.items);
     ep.deinit(test_alloc);
 }
