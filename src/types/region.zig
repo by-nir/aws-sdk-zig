@@ -1,5 +1,17 @@
 const std = @import("std");
 
+var shared = Region.sdk_default;
+
+pub const SharedRegion = struct {
+    pub fn get() Region {
+        return shared;
+    }
+
+    pub fn set(region: Region) void {
+        shared = region;
+    }
+};
+
 pub const Region = enum(u64) {
     pub const Mask = std.enums.EnumSet(Region);
 
