@@ -39,12 +39,13 @@ test "init" {
     try testing.expectEqualStrings(V4_PREFIX ++ tests.ACCESS_SECRET, &signer.access_secret);
 }
 
+// https://docs.aws.amazon.com/IAM/latest/UserGuide/create-signed-request.html
 pub fn handle(self: Self, buffer: []u8, content: RequestContent, time: RequestTime, target: RequestTarget) ![]const u8 {
     var signature: Signature = undefined;
     var scope_buffer: [64]u8 = undefined;
     const scope = try requestScope(&scope_buffer, &time.date, target);
     try sign(&self.access_secret, &signature, time, target, content, scope);
-    return authorize(buffer, &self.access_id, scope, content.headers_signed, &signature);
+    return authorize(buffer, &self.access_id, scope, content.headers_names, &signature);
 }
 
 test "handle" {
@@ -62,7 +63,6 @@ test "handle" {
     );
 }
 
-// https://docs.aws.amazon.com/IAM/latest/UserGuide/create-signed-request.html
 /// Compute the request signature.
 fn sign(secret: *const AccessSecretFull, out: *Signature, time: RequestTime, target: RequestTarget, content: RequestContent, scope: []const u8) !void {
     var canonical_buffer: [1024]u8 = undefined;
@@ -89,6 +89,7 @@ test "sign" {
     try testing.expectEqualStrings("3c059efad8b5c07bbe759cb31436857114cb986b161695c03ef115e4878ea945", &hash);
 }
 
+/// Create an authorization header for the request.
 fn authorize(buffer: []u8, id: []const u8, scope: []const u8, headers: []const u8, signature: *const Signature) ![]const u8 {
     var stream = std.io.fixedBufferStream(buffer);
     try stream.writer().print(
@@ -130,7 +131,7 @@ fn requestCanonical(buffer: []u8, request: RequestContent) ![]u8 {
     const writer = stream.writer();
     try writer.print(
         "{s}\n{s}\n{s}\n{s}\n{s}\n{s}",
-        .{ @tagName(request.method), request.path, request.query, request.headers, request.headers_signed, payload },
+        .{ @tagName(request.method), request.path, request.query, request.headers, request.headers_names, payload },
     );
     return buffer[0..stream.pos];
 }

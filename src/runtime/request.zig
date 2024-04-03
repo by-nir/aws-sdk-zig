@@ -1,12 +1,10 @@
 const std = @import("std");
 const Uri = std.Uri;
-const AnyWriter = std.io.AnyWriter;
 const ArrayList = std.ArrayList(u8);
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const types = @import("aws-types");
-const Region = types.Region;
+const Region = @import("aws-types").Region;
 
 pub const RequestTarget = struct { region: Region, service: []const u8 };
 
@@ -18,7 +16,7 @@ pub const RequestContent = struct {
     path: []const u8,
     query: []const u8,
     headers: []const u8,
-    headers_signed: []const u8,
+    headers_names: []const u8,
     payload: ?[]const u8,
 
     pub fn init(
@@ -39,7 +37,7 @@ pub const RequestContent = struct {
             .path = path,
             .query = query_str,
             .headers = headers_str,
-            .headers_signed = signed,
+            .headers_names = signed,
             .payload = payload,
         };
     }
@@ -47,7 +45,7 @@ pub const RequestContent = struct {
     pub fn deinit(self: RequestContent, allocator: Allocator) void {
         allocator.free(self.query);
         allocator.free(self.headers);
-        allocator.free(self.headers_signed);
+        allocator.free(self.headers_names);
     }
 
     fn stringifyQuery(buffer: *ArrayList, allocator: Allocator, query_kvs: []const KV) ![]const u8 {
@@ -122,7 +120,7 @@ test "RequestContent" {
     try testing.expectEqualStrings("/foo", request.path);
     try testing.expectEqualStrings("baz=%24qux&foo=%25bar", request.query);
     try testing.expectEqualStrings("host:s3.amazonaws.com\nx-amz-date:20130708T220855Z\n", request.headers);
-    try testing.expectEqualStrings("host;x-amz-date", request.headers_signed);
+    try testing.expectEqualStrings("host;x-amz-date", request.headers_names);
     try testing.expectEqualDeep("foo-bar-baz", request.payload);
 }
 
@@ -173,75 +171,4 @@ test "RequestTime" {
     const time = RequestTime.initEpoch(1373321335);
     try testing.expectEqualStrings("20130708", &time.date);
     try testing.expectEqualStrings("20130708T220855Z", &time.timestamp);
-}
-
-pub const RequestProtocol = enum(u64) {
-    https,
-};
-
-/// [AWS Docs](https://docs.aws.amazon.com/general/latest/gr/rande.html)
-pub const RequestEndpoint = struct {
-    host: []const u8,
-
-    pub fn init(allocator: Allocator, stack: Stack, service: []const u8, region: ?Region) !RequestEndpoint {
-        const domain: []const u8 = switch (stack) {
-            .dual_only => ".amazonaws.com",
-            .dual_or_single => ".api.aws",
-        };
-
-        var len = service.len + domain.len;
-        const region_code: []const u8 = if (region) |r| blk: {
-            const code = r.code();
-            len += 1 + code.len;
-            break :blk code;
-        } else "";
-
-        const host: []u8 = try allocator.alloc(u8, len);
-        @memcpy(host[0..service.len], service);
-        var i: usize = service.len;
-
-        if (region_code.len > 0) {
-            host[i] = '.';
-            i += 1;
-            @memcpy(host[i..][0..region_code.len], region_code);
-            i += region_code.len;
-        }
-
-        @memcpy(host[i..][0..domain.len], domain);
-        return .{ .host = host };
-    }
-
-    pub fn deinit(self: RequestEndpoint, allocator: Allocator) void {
-        allocator.free(self.host);
-    }
-
-    pub fn writeHostname(self: RequestEndpoint, writer: std.io.AnyWriter, protocol: RequestProtocol) !void {
-        try writer.print("{s}://{s}", .{ @tagName(protocol), self.host });
-    }
-
-    /// Some AWS services offer dual stack endpoints, so that you can access them using either IPv4 or IPv6 requests.
-    ///
-    /// [AWS Docs](https://docs.aws.amazon.com/general/latest/gr/rande.html#dual-stack-endpoints)
-    pub const Stack = enum {
-        /// Services that offer only dual stack endpoints.
-        dual_only,
-        /// Services that offer both single and dual stack endpoints.
-        dual_or_single,
-    };
-};
-
-test "RequestEndpoint" {
-    var ep = try RequestEndpoint.init(test_alloc, .dual_or_single, "s3", null);
-    errdefer ep.deinit(test_alloc);
-    try testing.expectEqualStrings("s3.api.aws", ep.host);
-    ep.deinit(test_alloc);
-
-    ep = try RequestEndpoint.init(test_alloc, .dual_only, "s3", Region.us_east_1);
-    try testing.expectEqualStrings("s3.us-east-1.amazonaws.com", ep.host);
-
-    var buffer = ArrayList.init(test_alloc);
-    defer buffer.deinit();
-    try ep.writeHostname(buffer.writer().any(), .https);
-    try testing.expectEqualStrings("https://s3.us-east-1.amazonaws.com", buffer.items);
-    ep.deinit(test_alloc);
 }

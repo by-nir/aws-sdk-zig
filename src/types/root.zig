@@ -1,6 +1,10 @@
-const typ_region = @import("region.zig");
-pub usingnamespace typ_region;
+const region = @import("region.zig");
+pub usingnamespace region;
+
+const transport = @import("transport.zig");
+pub usingnamespace transport;
 
 test {
-    _ = typ_region;
+    _ = region;
+    _ = transport;
 }
