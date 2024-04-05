@@ -17,7 +17,7 @@ const UserOptions = aws.EndpointOptions;
 
 const Self = @This();
 
-pub const Protocol = enum(u64) { https };
+pub const Protocol = enum(u64) { http, https };
 
 /// Some AWS services offer dual stack endpoints, so that you can access them
 /// using either IPv4 or IPv6 requests.
@@ -30,12 +30,14 @@ pub const Stack = enum {
 
 /// Service-level options
 pub const ServiceOptions = struct {
-    /// Protocal scheme.
-    protocol: Protocol,
-    /// Service stack support.
-    stack: Stack,
     /// Service code.
     name: []const u8,
+    /// Service stack support.
+    stack: Stack,
+    /// Protocal scheme.
+    protocol: Protocol,
+    /// Keep a pool of live connections.
+    keep_alive: bool,
     /// Sub-service scope.
     access: ?[]const u8 = null,
 
@@ -47,6 +49,7 @@ pub const ServiceOptions = struct {
 service: []const u8,
 region: Region,
 scheme: Protocol,
+keep_alive: bool,
 host: []const u8,
 
 pub fn init(allocator: Allocator, comptime service: ServiceOptions, user: UserOptions) !Self {
@@ -92,9 +95,10 @@ pub fn init(allocator: Allocator, comptime service: ServiceOptions, user: UserOp
     buffer.appendSliceAssumeCapacity(domain);
 
     return .{
-        .service = service.name,
         .region = region,
+        .service = service.name,
         .scheme = service.protocol,
+        .keep_alive = user.keep_alive orelse service.keep_alive,
         .host = try buffer.toOwnedSlice(allocator),
     };
 }
@@ -103,19 +107,20 @@ pub fn deinit(self: Self, allocator: Allocator) void {
     allocator.free(self.host);
 }
 
-pub fn uri(self: Self) std.Uri {
+pub fn uri(self: Self, path: []const u8) std.Uri {
     return .{
         .scheme = @tagName(self.scheme),
         .host = self.host,
-        .path = "/",
+        .path = path,
     };
 }
 
 test "Endpoint" {
     var endpoint = try Self.init(test_alloc, .{
-        .protocol = .https,
-        .stack = .dual_only,
         .name = "s3",
+        .stack = .dual_only,
+        .protocol = .https,
+        .keep_alive = false,
     }, .{
         .region = .{ .region = .us_west_2 },
         .virtual_host = "my-bucket",
@@ -127,21 +132,24 @@ test "Endpoint" {
     endpoint.deinit(test_alloc);
 
     endpoint = try Self.init(test_alloc, .{
-        .protocol = .https,
-        .stack = .dual_or_single,
         .name = "s3",
+        .stack = .dual_or_single,
+        .protocol = .https,
+        .keep_alive = false,
         .access = "control",
     }, .{
         .region = .global,
         .fips = true,
         .dualstack = true,
+        .keep_alive = true,
     });
+    try testing.expect(endpoint.keep_alive);
     try testing.expectEqual(Region.sdk_default, endpoint.region);
     try testing.expectEqualStrings("s3-control-fips.dualstack.api.aws", endpoint.host);
     try testing.expectEqualDeep(std.Uri{
         .scheme = "https",
         .host = "s3-control-fips.dualstack.api.aws",
-        .path = "/",
-    }, endpoint.uri());
+        .path = "/foo",
+    }, endpoint.uri("/foo"));
     endpoint.deinit(test_alloc);
 }

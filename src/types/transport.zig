@@ -9,6 +9,8 @@ pub const EndpointOptions = struct {
     dualstack: bool = false,
     /// Connect through the FIPS endpoint.
     fips: bool = false,
+    /// Override the service’s default connection preference.
+    keep_alive: ?bool = null,
 
     pub fn modifiers(self: EndpointOptions) []const u8 {
         if (!self.dualstack and !self.fips) return "";

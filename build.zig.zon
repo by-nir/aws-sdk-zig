@@ -4,7 +4,12 @@
 
     //.minimum_zig_version = "0.12.0",
 
-    .dependencies = .{},
+    .dependencies = .{
+        .https12 = .{
+            .url = "https://github.com/melonedo/zig-tls12/archive/486a1bc7fc78573ac30600deb56b95287dcf148e.tar.gz",
+            .hash = "122058423fd86b6c0567fcbbe39bf3549a0cc692d32ba28ef0427d4853a7a0c97b24",
+        },
+    },
 
     .paths = .{
         "build.zig",
