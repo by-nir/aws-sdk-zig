@@ -47,7 +47,14 @@ and [licensed](https://github.com/awslabs/aws-sdk-rust/blob/main/LICENSE) as
 declared by Amazon Web Services, Inc. at the source repository.
 This codebase, including the generated code, are covered by a [standalone license](/LICENSE).
 
-### Acknowledgments
+## References
+
+### AWS SDKs Resources
+
+https://smithy.io/2.0/index.html
+https://docs.aws.amazon.com/sdkref/latest/guide/overview.html
+
+### Other Implementations
 
 - [Smithy Rust](https://github.com/smithy-lang/smithy-rs)
 - [AWS SDK for Rust](https://github.com/awslabs/aws-sdk-rust)

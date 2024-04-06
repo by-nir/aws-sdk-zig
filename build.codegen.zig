@@ -14,10 +14,12 @@ pub fn build(b: *std.Build) void {
         // SDKs
         //
 
+        const sdk_whitelist = [_][]const u8{"cloudcontrol"};
+
         const sdk_options = b.addOptions();
         sdk_options.addOptionPath("models_path", models.path("sdk"));
         sdk_options.addOption([]const u8, "install_path", b.pathFromRoot("sdk"));
-        sdk_options.addOption([]const []const u8, "filter", filter orelse &.{});
+        sdk_options.addOption([]const []const u8, "filter", filter orelse &sdk_whitelist);
 
         const codegen_sdk_steps = b.step("sdk", "Generate SDKs source code");
         const codegen_sdk = b.addExecutable(.{
