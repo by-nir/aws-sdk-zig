@@ -6,6 +6,7 @@ const options = @import("codegen-options");
 const filter: []const []const u8 = options.filter;
 const models_path: []const u8 = options.models_path;
 const install_path: []const u8 = options.install_path;
+const parse = @import("smithy/parse.zig");
 
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -53,9 +54,7 @@ pub fn main() !void {
     );
 }
 
-const ParseStats = struct { shapes: usize, duration_ns: u64 };
-
-fn processModelFile(arena: Allocator, models_dir: fs.Dir, filename: []const u8) ?ParseStats {
+fn processModelFile(arena: Allocator, models_dir: fs.Dir, filename: []const u8) ?parse.Stats {
     const file = models_dir.openFile(filename, .{}) catch |e| {
         std.debug.print("Failed opening model `{s}`: {s}.\n", .{ filename, @errorName(e) });
         return null;
@@ -78,94 +77,46 @@ fn processModelFile(arena: Allocator, models_dir: fs.Dir, filename: []const u8) 
 fn processModel(arena: Allocator, file_reader: std.io.AnyReader) !usize { // raw_model: []const u8
     var reader = std.json.reader(arena, file_reader);
 
-    var parser = Parser{
+    var parser = parse.JsonReader{
         .arena = arena,
         .reader = &reader,
-        // .model = &model,
     };
 
-    try parser.expectObjectBegin();
-    try parser.expectString("smithy");
-    try parser.expectString("2.0");
-    while (true) {
-        // For now we skip non-shapes sections (like metadata)
-        const token = try parser.nextString();
-        if (std.mem.eql(u8, "shapes", token)) break;
-        try parser.expectObjectBegin();
-        try parser.skipObject();
-    }
+    try parser.nextObjectBegin();
+    try parser.nextStringEql("smithy");
+    try parser.nextStringEql("2.0");
 
-    try parser.expectObjectBegin();
     var shape_count: usize = 0;
     while (true) {
-        switch (try parser.nextToken()) {
-            .object_end => break,
-            .string, .allocated_string => |name| {
-                try parser.expectObjectBegin();
-                try parser.nextShape(name);
-                // try parser.skipObject();
-            },
-            else => unreachable,
+        // Some models don't have a "metadata" section
+        const section = try parser.nextString();
+        try parser.nextObjectBegin();
+        if (std.mem.eql(u8, "metadata", section)) {
+            // For now we skip non-shapes sections (like metadata)
+            try parser.skipCurrentScope();
+        } else if (std.mem.eql(u8, "shapes", section)) {
+            while (true) {
+                switch (try parser.next()) {
+                    .object_end => break,
+                    .string, .allocated_string => |name| {
+                        try parser.nextObjectBegin();
+                        try parser.nextStringEql("type");
+                        const shape_type = try parser.nextString();
+                        std.log.debug("{s:<10} {s}", .{ shape_type, name });
+                        try parser.skipCurrentScope();
+                    },
+                    else => unreachable,
+                }
+                shape_count += 1;
+            }
+            break;
+        } else {
+            std.log.warn("Unknown model section: `{s}`", .{section});
+            break;
         }
-        shape_count += 1;
     }
 
-    try parser.expectObjectEnd();
-    try parser.expectDocumentEnd();
+    try parser.nextObjectEnd();
+    try parser.nextDocumentEnd();
     return shape_count;
 }
-
-const Parser = struct {
-    arena: Allocator,
-    reader: *std.json.Reader(std.json.default_buffer_size, std.io.AnyReader),
-
-    pub fn expectObjectBegin(self: *Parser) !void {
-        assert(.object_begin == try self.nextToken());
-    }
-
-    pub fn expectObjectEnd(self: *Parser) !void {
-        assert(.object_end == try self.nextToken());
-    }
-
-    pub fn expectDocumentEnd(self: *Parser) !void {
-        assert(.end_of_document == try self.nextToken());
-    }
-
-    pub fn expectString(self: *Parser, expectd: []const u8) !void {
-        assert(std.mem.eql(u8, expectd, try self.nextString()));
-    }
-
-    pub fn nextShape(self: *Parser, name: []const u8) !void {
-        try self.expectString("type");
-        const shape_type = try self.nextString();
-        std.log.debug("{s:<10} {s}", .{ shape_type, name });
-        try self.skipObject();
-    }
-
-    pub fn skipObject(self: *Parser) !void {
-        var indent: usize = 1;
-        while (true) {
-            switch (try self.nextToken()) {
-                .object_begin, .array_begin => indent += 1,
-                .array_end => indent -= 1,
-                .object_end => {
-                    indent -= 1;
-                    if (indent == 0) break;
-                },
-                else => {},
-            }
-        }
-    }
-
-    pub fn nextString(self: *Parser) ![]const u8 {
-        const token = try self.nextToken();
-        switch (token) {
-            .string, .allocated_string => |s| return s,
-            else => unreachable,
-        }
-    }
-
-    fn nextToken(self: *Parser) !std.json.Token {
-        return try self.reader.nextAlloc(self.arena, .alloc_if_needed);
-    }
-};
