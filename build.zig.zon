@@ -6,15 +6,22 @@
 
     .dependencies = .{
         .https12 = .{
-            .url = "https://github.com/melonedo/zig-tls12/archive/486a1bc7fc78573ac30600deb56b95287dcf148e.tar.gz",
+            .url = "git+https://github.com/melonedo/zig-tls12.git#486a1bc7fc78573ac30600deb56b95287dcf148e",
             .hash = "122058423fd86b6c0567fcbbe39bf3549a0cc692d32ba28ef0427d4853a7a0c97b24",
+        },
+        .@"aws-models" = .{
+            .url = "git+https://github.com/by-nir/aws-models.git#acfff38d7ad9067e3cc8f88f35c5277eaffbfc1c",
+            .hash = "1220a618994217453e1d1fc9b69a4aa1f1fbe6c6fc16b2eafaeadf6273cf8ea54127",
+            .lazy = true,
         },
     },
 
     .paths = .{
         "build.zig",
         "build.zig.zon",
+        "codegen",
         "src",
+        "sdk",
         "LICENSE",
         "README.md",
     },
