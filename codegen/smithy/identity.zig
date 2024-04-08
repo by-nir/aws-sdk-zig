@@ -3,7 +3,7 @@ const testing = std.testing;
 const test_alloc = testing.allocator;
 const prelude = @import("prelude.zig");
 
-/// Hashed shape identifier.
+/// A 32-bit hash of a Shape ID.
 ///
 /// [Smithy Spec](https://smithy.io/2.0/spec/model.html#shape-id)
 /// ```
@@ -15,7 +15,7 @@ const prelude = @import("prelude.zig");
 /// └─────────────────────┬──────────────────────┘
 ///               Absolute shape ID
 /// ```
-pub const ShapeId = enum(u32) {
+pub const SmithyId = enum(u32) {
     blob = hash32("blob"),
     boolean = hash32("boolean"),
     string = hash32("string"),
@@ -39,7 +39,7 @@ pub const ShapeId = enum(u32) {
     _,
 
     /// Type name or absalute shape id.
-    pub fn full(id: []const u8) ShapeId {
+    pub fn full(id: []const u8) SmithyId {
         const hash = hash32(id);
         return switch (hash) {
             hash32(prelude.TYPE_UNIT) => .unit,
@@ -61,7 +61,7 @@ pub const ShapeId = enum(u32) {
     }
 
     /// `smithy.example.foo#ExampleShapeName` + `memberName`
-    pub fn compose(shape: []const u8, member: []const u8) ShapeId {
+    pub fn compose(shape: []const u8, member: []const u8) SmithyId {
         var buffer: [128]u8 = undefined;
         const len = shape.len + member.len + 1;
         std.debug.assert(len <= buffer.len);
@@ -76,23 +76,26 @@ pub const ShapeId = enum(u32) {
     }
 };
 
-test "ShapeId" {
-    try testing.expectEqual(.blob, ShapeId.full("blob"));
-    try testing.expectEqual(.blob, ShapeId.full("smithy.api#Blob"));
-    try testing.expectEqual(.list, ShapeId.full("list"));
+test "SmithyId" {
+    try testing.expectEqual(.blob, SmithyId.full("blob"));
+    try testing.expectEqual(.blob, SmithyId.full("smithy.api#Blob"));
+    try testing.expectEqual(.list, SmithyId.full("list"));
     try testing.expectEqual(
-        @as(ShapeId, @enumFromInt(0x6f8b5d99)),
-        ShapeId.full("smithy.example.foo#ExampleShapeName$memberName"),
+        @as(SmithyId, @enumFromInt(0x6f8b5d99)),
+        SmithyId.full("smithy.example.foo#ExampleShapeName$memberName"),
     );
     try testing.expectEqual(
-        ShapeId.full("smithy.example.foo#ExampleShapeName$memberName"),
-        ShapeId.compose("smithy.example.foo#ExampleShapeName", "memberName"),
+        SmithyId.full("smithy.example.foo#ExampleShapeName$memberName"),
+        SmithyId.compose("smithy.example.foo#ExampleShapeName", "memberName"),
     );
 }
 
 /// [Simple](https://smithy.io/2.0/spec/simple-types.html#simple-types) or
 /// [Aggregate](https://smithy.io/2.0/spec/aggregate-types.html#aggregate-types) shape.
 pub const SmithyType = union(enum) {
+    /// A shape that is not a member of the prelude.
+    shape: SmithyId,
+
     /// The singular unit type in Smithy is similar to Void and None in other languages.
     /// It is used when the input or output of an operation has no meaningful value
     /// or if a union member has no meaningful value. It MUST NOT be referenced
@@ -112,7 +115,7 @@ pub const SmithyType = union(enum) {
     /// UTF-8 encoded string.
     string,
     /// A string with a fixed set of values.
-    @"enum": []const ShapeId,
+    @"enum": []const SmithyId,
     /// 8-bit signed integer ranging from -128 to 127 (inclusive).
     byte,
     /// 16-bit signed integer ranging from -32,768 to 32,767 (inclusive).
@@ -120,7 +123,7 @@ pub const SmithyType = union(enum) {
     /// 32-bit signed integer ranging from -2^31 to (2^31)-1 (inclusive).
     integer,
     /// An integer with a fixed set of values.
-    int_enum: []const ShapeId,
+    int_enum: []const SmithyId,
     /// 64-bit signed integer ranging from -2^63 to (2^63)-1 (inclusive).
     long,
     /// Single precision IEEE-754 floating point number.
@@ -141,32 +144,11 @@ pub const SmithyType = union(enum) {
     //
 
     /// Ordered collection of homogeneous values.
-    list: ShapeId,
+    list: SmithyId,
     /// Map data structure that maps string keys to homogeneous values.
-    map: [2]ShapeId,
+    map: [2]SmithyId,
     /// Fixed set of named heterogeneous members.
-    structure: []const ShapeId,
+    structure: []const SmithyId,
     /// Tagged union data structure that can take on one of several different, but fixed, types.
-    @"union": []const ShapeId,
+    @"union": []const SmithyId,
 };
-
-/// Single Smithy model parsed from a single JSON AST.
-///
-/// [Smithy Spec](https://smithy.io/2.0/spec/json-ast.html)
-pub const Model = struct {
-    shapes: std.AutoHashMapUnmanaged(ShapeId, SmithyType),
-
-    pub fn getShape(self: Model, id: ShapeId) ?SmithyType {
-        return self.shapes.get(id);
-    }
-};
-
-test "Model" {
-    var shapes: std.AutoHashMapUnmanaged(ShapeId, SmithyType) = .{};
-    defer shapes.deinit(test_alloc);
-
-    try shapes.put(test_alloc, ShapeId.full("test.simple#Blob"), .blob);
-    const model = Model{ .shapes = shapes };
-
-    try testing.expectEqual(.blob, model.getShape(ShapeId.full("test.simple#Blob")));
-}
