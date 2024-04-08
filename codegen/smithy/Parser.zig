@@ -16,6 +16,11 @@ const Self = @This();
 
 /// Parsed symbols (shapes and metadata) from a Smithy model.
 pub const Symbols = struct {
+    pub const TraitValue = struct {
+        id: SmithyId,
+        value: ?*const anyopaque,
+    };
+
     shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType),
     traits: std.AutoHashMapUnmanaged(SmithyId, []const TraitValue),
 
@@ -27,15 +32,6 @@ pub const Symbols = struct {
         return self.traits.get(shape_id) orelse null;
     }
 
-    pub fn getTrait(self: Symbols, shape_id: SmithyId, trait_id: SmithyId, comptime T: type) ?*const T {
-        const traits = self.traits.get(shape_id) orelse return null;
-        for (traits) |trait| {
-            if (trait.id != trait_id) continue;
-            return @alignCast(@ptrCast(trait.value));
-        }
-        return null;
-    }
-
     pub fn hasTrait(self: Symbols, shape_id: SmithyId, trait_id: SmithyId) bool {
         const traits = self.traits.get(shape_id) orelse return false;
         for (traits) |trait| {
@@ -44,10 +40,25 @@ pub const Symbols = struct {
         return false;
     }
 
-    pub const TraitValue = struct {
-        id: SmithyId,
-        value: ?*const anyopaque,
-    };
+    pub fn getTrait(self: Symbols, shape_id: SmithyId, trait_id: SmithyId, comptime T: type) ?TraitReturn(T) {
+        const traits = self.traits.get(shape_id) orelse return null;
+        for (traits) |trait| {
+            if (trait.id != trait_id) continue;
+            const ptr: *const T = @alignCast(@ptrCast(trait.value));
+            return switch (@typeInfo(T)) {
+                .Bool, .Int, .Float, .Enum, .Union, .Pointer => ptr.*,
+                else => ptr,
+            };
+        }
+        return null;
+    }
+
+    fn TraitReturn(comptime T: type) type {
+        return switch (@typeInfo(T)) {
+            .Bool, .Int, .Float, .Enum, .Union, .Pointer => T,
+            else => *const T,
+        };
+    }
 };
 
 test "Symbols" {
@@ -76,10 +87,7 @@ test "Symbols" {
     }, symbols.getTraits(shape_id).?);
 
     try testing.expect(symbols.hasTrait(shape_id, trait_void));
-    try testing.expectEqual(
-        @as(u8, 108),
-        symbols.getTrait(shape_id, trait_int, u8).?.*,
-    );
+    try testing.expectEqual(108, symbols.getTrait(shape_id, trait_int, u8));
 }
 
 allocator: Allocator,
@@ -290,7 +298,7 @@ test "parseJson" {
         SmithyId.of("test.simple#Enum$FOO"),
         SmithyId.of("smithy.api#enumValue"),
         TestTraits.EnumValue,
-    ).?.*);
+    ));
 
     try testing.expectEqualDeep(
         SmithyType{ .int_enum = &.{SmithyId.of("test.simple#IntEnum$FOO")} },
@@ -301,7 +309,7 @@ test "parseJson" {
         SmithyId.of("test.simple#IntEnum$FOO"),
         SmithyId.of("smithy.api#enumValue"),
         TestTraits.EnumValue,
-    ).?.*);
+    ));
 
     try testing.expectEqualDeep(
         SmithyType{ .list = SmithyId.of("test.aggregate#List$member") },
@@ -329,7 +337,7 @@ test "parseJson" {
     try testing.expect(symbols.hasTrait(SmithyId.of("test.aggregate#Structure$stringMember"), SmithyId.of("test.trait#Void")));
     try testing.expectEqual(
         108,
-        symbols.getTrait(SmithyId.of("test.aggregate#Structure$stringMember"), SmithyId.of("test.trait#Int"), i64).?.*,
+        symbols.getTrait(SmithyId.of("test.aggregate#Structure$stringMember"), SmithyId.of("test.trait#Int"), i64),
     );
 
     try testing.expectEqualDeep(
@@ -345,7 +353,7 @@ test "parseJson" {
 
 const TestTraits = struct {
     pub fn traitVoid() Trait {
-        return .{ .ctx = undefined, .vtable = &.{ .parse = parseVoid } };
+        return .{ .ctx = undefined, .vtable = &.{ .parse = null } };
     }
 
     pub fn traitInt() Trait {
@@ -356,12 +364,7 @@ const TestTraits = struct {
         return .{ .ctx = undefined, .vtable = &.{ .parse = parseEnum } };
     }
 
-    fn parseVoid(_: *const anyopaque, _: Allocator, reader: *JsonReader) !?*const anyopaque {
-        try reader.skipValueOrScope();
-        return null;
-    }
-
-    fn parseInt(_: *const anyopaque, allocator: Allocator, reader: *JsonReader) !?*const anyopaque {
+    fn parseInt(_: *const anyopaque, allocator: Allocator, reader: *JsonReader) !*const anyopaque {
         const value = try reader.nextNumber();
         const ptr = try allocator.create(i64);
         ptr.* = value;
@@ -369,7 +372,7 @@ const TestTraits = struct {
     }
 
     pub const EnumValue = union(enum) { integer: i32, string: []const u8 };
-    fn parseEnum(_: *const anyopaque, allocator: Allocator, reader: *JsonReader) !?*const anyopaque {
+    fn parseEnum(_: *const anyopaque, allocator: Allocator, reader: *JsonReader) !*const anyopaque {
         const value = try allocator.create(EnumValue);
         value.* = switch (try reader.peek()) {
             .number => .{ .integer = @intCast(try reader.nextNumber()) },

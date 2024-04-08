@@ -15,13 +15,20 @@ pub const Trait = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        parse: *const fn (ctx: *const anyopaque, allocator: Allocator, reader: *JsonReader) anyerror!?*const anyopaque,
+        parse: ?*const fn (ctx: *const anyopaque, allocator: Allocator, reader: *JsonReader) anyerror!*const anyopaque,
     };
 
-    /// Extract the trait’s value from a source JSON AST which can later be used
+    /// Parse the trait’s value from the source JSON AST, which will be used
     /// during the source generation.
     pub fn parse(self: Trait, allocator: Allocator, reader: *JsonReader) !?*const anyopaque {
-        return self.vtable.parse(self.ctx, allocator, reader);
+        if (self.vtable.parse) |parseFn| {
+            // Parse trait’s value
+            return parseFn(self.ctx, allocator, reader);
+        } else {
+            // Tag trait – skip the empty `{}`
+            try reader.skipValueOrScope();
+            return null;
+        }
     }
 };
 
@@ -56,15 +63,12 @@ test "TraitManager" {
         skip: usize,
 
         pub fn trait(self: *const @This()) Trait {
-            return Trait{
-                .ctx = self,
-                .vtable = &.{
-                    .parse = parse,
-                },
-            };
+            return Trait{ .ctx = self, .vtable = &.{
+                .parse = parse,
+            } };
         }
 
-        fn parse(ctx: *const anyopaque, allocator: Allocator, reader: *JsonReader) !?*const anyopaque {
+        fn parse(ctx: *const anyopaque, allocator: Allocator, reader: *JsonReader) !*const anyopaque {
             const self: *const @This() = @alignCast(@ptrCast(ctx));
             for (0..self.skip) |_| try reader.skipValueOrScope();
             const dupe = try allocator.dupe(u8, try reader.nextString());
