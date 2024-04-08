@@ -16,6 +16,42 @@ const prelude = @import("prelude.zig");
 ///               Absolute shape ID
 /// ```
 pub const SmithyId = enum(u32) {
+    /// Type name or absalute shape id.
+    pub fn of(shape_id: []const u8) SmithyId {
+        return switch (hash32(shape_id)) {
+            hash32(prelude.TYPE_UNIT) => .unit,
+            hash32(prelude.TYPE_BLOB) => .blob,
+            hash32(prelude.TYPE_BOOL) => .boolean,
+            hash32(prelude.TYPE_STRING) => .string,
+            hash32(prelude.TYPE_BYTE) => .byte,
+            hash32(prelude.TYPE_SHORT) => .short,
+            hash32(prelude.TYPE_INT) => .integer,
+            hash32(prelude.TYPE_LONG) => .long,
+            hash32(prelude.TYPE_FLOAT) => .float,
+            hash32(prelude.TYPE_DOUBLE) => .double,
+            hash32(prelude.TYPE_BIGINT) => .big_integer,
+            hash32(prelude.TYPE_BIGDEC) => .big_decimal,
+            hash32(prelude.TYPE_TIMESTAMP) => .timestamp,
+            hash32(prelude.TYPE_DOCUMENT) => .document,
+            else => |h| @enumFromInt(h),
+        };
+    }
+
+    /// `smithy.example.foo#ExampleShapeName` + `memberName`
+    pub fn compose(shape: []const u8, member: []const u8) SmithyId {
+        var buffer: [128]u8 = undefined;
+        const len = shape.len + member.len + 1;
+        std.debug.assert(len <= buffer.len);
+        @memcpy(buffer[0..shape.len], shape);
+        buffer[shape.len] = '$';
+        @memcpy(buffer[shape.len + 1 ..][0..member.len], member);
+        return @enumFromInt(hash32(buffer[0..len]));
+    }
+
+    fn hash32(value: []const u8) u32 {
+        return std.hash.CityHash32.hash(value);
+    }
+
     blob = hash32("blob"),
     boolean = hash32("boolean"),
     string = hash32("string"),
@@ -37,55 +73,18 @@ pub const SmithyId = enum(u32) {
     @"union" = hash32("union"),
     unit = hash32("unitType"),
     _,
-
-    /// Type name or absalute shape id.
-    pub fn full(id: []const u8) SmithyId {
-        const hash = hash32(id);
-        return switch (hash) {
-            hash32(prelude.TYPE_UNIT) => .unit,
-            hash32(prelude.TYPE_BLOB) => .blob,
-            hash32(prelude.TYPE_BOOL) => .boolean,
-            hash32(prelude.TYPE_STRING) => .string,
-            hash32(prelude.TYPE_BYTE) => .byte,
-            hash32(prelude.TYPE_SHORT) => .short,
-            hash32(prelude.TYPE_INT) => .integer,
-            hash32(prelude.TYPE_LONG) => .long,
-            hash32(prelude.TYPE_FLOAT) => .float,
-            hash32(prelude.TYPE_DOUBLE) => .double,
-            hash32(prelude.TYPE_BIGINT) => .big_integer,
-            hash32(prelude.TYPE_BIGDEC) => .big_decimal,
-            hash32(prelude.TYPE_TIMESTAMP) => .timestamp,
-            hash32(prelude.TYPE_DOCUMENT) => .document,
-            else => @enumFromInt(hash),
-        };
-    }
-
-    /// `smithy.example.foo#ExampleShapeName` + `memberName`
-    pub fn compose(shape: []const u8, member: []const u8) SmithyId {
-        var buffer: [128]u8 = undefined;
-        const len = shape.len + member.len + 1;
-        std.debug.assert(len <= buffer.len);
-        @memcpy(buffer[0..shape.len], shape);
-        buffer[shape.len] = '$';
-        @memcpy(buffer[shape.len + 1 ..][0..member.len], member);
-        return @enumFromInt(hash32(buffer[0..len]));
-    }
-
-    fn hash32(value: []const u8) u32 {
-        return std.hash.CityHash32.hash(value);
-    }
 };
 
 test "SmithyId" {
-    try testing.expectEqual(.blob, SmithyId.full("blob"));
-    try testing.expectEqual(.blob, SmithyId.full("smithy.api#Blob"));
-    try testing.expectEqual(.list, SmithyId.full("list"));
+    try testing.expectEqual(.blob, SmithyId.of("blob"));
+    try testing.expectEqual(.blob, SmithyId.of("smithy.api#Blob"));
+    try testing.expectEqual(.list, SmithyId.of("list"));
     try testing.expectEqual(
         @as(SmithyId, @enumFromInt(0x6f8b5d99)),
-        SmithyId.full("smithy.example.foo#ExampleShapeName$memberName"),
+        SmithyId.of("smithy.example.foo#ExampleShapeName$memberName"),
     );
     try testing.expectEqual(
-        SmithyId.full("smithy.example.foo#ExampleShapeName$memberName"),
+        SmithyId.of("smithy.example.foo#ExampleShapeName$memberName"),
         SmithyId.compose("smithy.example.foo#ExampleShapeName", "memberName"),
     );
 }
@@ -94,7 +93,7 @@ test "SmithyId" {
 /// [Aggregate](https://smithy.io/2.0/spec/aggregate-types.html#aggregate-types) shape.
 pub const SmithyType = union(enum) {
     /// A shape that is not a member of the prelude.
-    shape: SmithyId,
+    target: SmithyId,
 
     /// The singular unit type in Smithy is similar to Void and None in other languages.
     /// It is used when the input or output of an operation has no meaningful value

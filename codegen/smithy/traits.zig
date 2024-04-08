@@ -16,10 +16,10 @@ pub const Trait = struct {
 
     pub const VTable = struct {
         parse: *const fn (ctx: *const anyopaque, allocator: Allocator, reader: *JsonReader) anyerror!?*const anyopaque,
-        // gen: *const fn (ctx: *const anyopaque, foo: undefined) undefined,
     };
 
-    /// Extract data from a source JSON AST which can later assist the source generation.
+    /// Extract the trait’s value from a source JSON AST which can later be used
+    /// during the source generation.
     pub fn parse(self: Trait, allocator: Allocator, reader: *JsonReader) !?*const anyopaque {
         return self.vtable.parse(self.ctx, allocator, reader);
     }
@@ -35,6 +35,14 @@ pub const TraitManager = struct {
 
     pub fn register(self: *TraitManager, allocator: Allocator, id: SmithyId, trait: Trait) !void {
         try self.traits.put(allocator, id, trait);
+    }
+
+    pub fn registerAll(self: *TraitManager, allocator: Allocator, traits: []const struct { SmithyId, Trait }) !void {
+        try self.traits.ensureUnusedCapacity(allocator, traits.len);
+        for (traits) |t| {
+            const id, const trait = t;
+            try self.traits.putAssumeCapacity(allocator, id, trait);
+        }
     }
 
     pub fn parse(self: TraitManager, trait_id: SmithyId, allocator: Allocator, reader: *JsonReader) !?*const anyopaque {
@@ -72,7 +80,7 @@ test "TraitManager" {
     var manager = TraitManager{};
     defer manager.deinit(test_alloc);
 
-    const test_id = SmithyId.full("test");
+    const test_id = SmithyId.of("test");
     const test_trait = TestTrait{ .skip = 2 };
     try manager.register(test_alloc, test_id, test_trait.trait());
 

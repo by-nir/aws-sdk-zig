@@ -2,7 +2,10 @@
   "smithy": "2.0",
   "shapes": {
     "test.simple#Blob": {
-      "type": "blob"
+      "type": "blob",
+      "traits": {
+        "test.trait#Void": {}
+      }
     },
     "test.simple#Boolean": {
       "type": "boolean"
@@ -65,7 +68,10 @@
     "test.aggregate#List": {
       "type": "list",
       "member": {
-        "target": "smithy.api#String"
+        "target": "smithy.api#String",
+        "traits": {
+          "test.trait#Void": {}
+        }
       }
     },
     "test.aggregate#Map": {
@@ -83,7 +89,8 @@
         "stringMember": {
           "target": "smithy.api#String",
           "traits": {
-            "smithy.api#required": {}
+            "test.trait#Void": {},
+            "test.trait#Int": 108
           }
         },
         "numberMember": {
