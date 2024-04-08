@@ -8,14 +8,19 @@ const assert = std.debug.assert;
 
 const Self = @This();
 
-arena: Allocator,
+allocator: Allocator,
 source: json.Reader(json.default_buffer_size, std.io.AnyReader),
 
-pub fn init(arena: Allocator, source: std.io.AnyReader) Self {
+pub fn init(allocator: Allocator, source: std.io.AnyReader) Self {
     return .{
-        .arena = arena,
-        .source = std.json.reader(arena, source),
+        .allocator = allocator,
+        .source = std.json.reader(allocator, source),
     };
+}
+
+pub fn deinit(self: *Self) void {
+    self.source.deinit();
+    self.* = undefined;
 }
 
 /// Get the next token’s type without consuming it.
@@ -25,7 +30,7 @@ pub fn peek(self: *Self) !json.TokenType {
 
 /// Consume the following token.
 pub fn next(self: *Self) !json.Token {
-    return try self.source.nextAlloc(self.arena, .alloc_if_needed);
+    return try self.source.nextAlloc(self.allocator, .alloc_if_needed);
 }
 
 /// Get the next token, assuming it is an object.
@@ -153,11 +158,9 @@ test "JsonReader" {
         \\}
     ;
 
-    var arena = std.heap.ArenaAllocator.init(test_alloc);
-    defer arena.deinit();
-
     var stream = std.io.fixedBufferStream(input);
-    var reader = init(arena.allocator(), stream.reader().any());
+    var reader = init(test_alloc, stream.reader().any());
+    defer reader.deinit();
 
     try testing.expectEqual(.object_begin, reader.peek());
     try testing.expectEqual(.object_begin, reader.next());
