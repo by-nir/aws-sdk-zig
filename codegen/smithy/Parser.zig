@@ -12,22 +12,22 @@ const JsonReader = @import("JsonReader.zig");
 const Self = @This();
 
 allocator: Allocator,
-reader: JsonReader,
+reader: *JsonReader,
 shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType) = .{},
 
-/// Parse raw JSON into collection of annotated shapes.
+/// Parse raw JSON into collection of Smithy symbols.
 ///
-/// `input_arena` is a beffur used to read JSON input, it should be disposed immediately after parsing.
-/// `output_alloc` is used to allocate the output parse model, it must be retained as long as it is needed.
-pub fn parseJson(input_arena: Allocator, output_alloc: Allocator, json: std.io.AnyReader) !Symbols {
+/// `allocactor` is used to store the parsed symbols and must be retained as long
+/// as they are needed.
+/// `json_reader` may be disposed immediately after calling this.
+pub fn parseJson(allocator: Allocator, json_reader: *JsonReader) !Symbols {
     var parser = Self{
-        .allocator = output_alloc,
-        .reader = JsonReader.init(input_arena, json),
+        .allocator = allocator,
+        .reader = json_reader,
     };
 
     try parser.reader.nextObjectBegin();
     try parser.validateSmithy();
-
     while (try parser.reader.peek() == .string) {
         const section = try parser.reader.nextString();
         if (mem.eql(u8, "shapes", section)) {
@@ -39,11 +39,10 @@ pub fn parseJson(input_arena: Allocator, output_alloc: Allocator, json: std.io.A
             try parser.reader.skipValueOrScope();
         }
     }
-
     try parser.reader.nextObjectEnd();
     try parser.reader.nextDocumentEnd();
 
-    return Symbols{
+    return .{
         .shapes = parser.shapes.move(),
     };
 }
@@ -143,21 +142,17 @@ fn putShape(self: *Self, id: SmithyId, typ: SmithyId, members: ?[]const SmithyId
     });
 }
 
-test "parseJson" {
-    var input_arena = std.heap.ArenaAllocator.init(test_alloc);
-    var output_arena = std.heap.ArenaAllocator.init(test_alloc);
-    defer {
-        input_arena.deinit();
-        output_arena.deinit();
-    }
 
+test "parseJson" {
     const src: []const u8 = @embedFile("test.shapes.json");
     var stream = std.io.fixedBufferStream(src);
-    const symbols = try parseJson(
-        input_arena.allocator(),
-        output_arena.allocator(),
-        stream.reader().any(),
-    );
+    var reader = JsonReader.init(test_alloc, stream.reader().any());
+
+    var output_arena = std.heap.ArenaAllocator.init(test_alloc);
+    defer output_arena.deinit();
+
+    const symbols = try parseJson(output_arena.allocator(), &reader);
+    reader.deinit(); // By desposing the reader we make sure the required data is copied.
 
     try testing.expectEqual(.blob, symbols.getShape(SmithyId.full("test.simple#Blob")));
     try testing.expectEqual(.boolean, symbols.getShape(SmithyId.full("test.simple#Boolean")));
