@@ -4,91 +4,16 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const identity = @import("identity.zig");
+const JsonReader = @import("utils/JsonReader.zig");
+const identity = @import("semantic/identity.zig");
+const Symbols = identity.Symbols;
 const SmithyId = identity.SmithyId;
 const SmithyType = identity.SmithyType;
-const JsonReader = @import("JsonReader.zig");
-const trts = @import("traits.zig");
-const Trait = trts.Trait;
-const TraitManager = trts.TraitManager;
+const trt = @import("semantic/trait.zig");
+const Trait = trt.Trait;
+const TraitManager = trt.TraitManager;
 
 const Self = @This();
-
-/// Parsed symbols (shapes and metadata) from a Smithy model.
-pub const Symbols = struct {
-    pub const TraitValue = struct {
-        id: SmithyId,
-        value: ?*const anyopaque,
-    };
-
-    shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType),
-    traits: std.AutoHashMapUnmanaged(SmithyId, []const TraitValue),
-
-    pub fn getShape(self: Symbols, id: SmithyId) ?SmithyType {
-        return self.shapes.get(id);
-    }
-
-    pub fn getTraits(self: Symbols, shape_id: SmithyId) ?[]const TraitValue {
-        return self.traits.get(shape_id) orelse null;
-    }
-
-    pub fn hasTrait(self: Symbols, shape_id: SmithyId, trait_id: SmithyId) bool {
-        const traits = self.traits.get(shape_id) orelse return false;
-        for (traits) |trait| {
-            if (trait.id == trait_id) return true;
-        }
-        return false;
-    }
-
-    pub fn getTrait(self: Symbols, shape_id: SmithyId, trait_id: SmithyId, comptime T: type) ?TraitReturn(T) {
-        const traits = self.traits.get(shape_id) orelse return null;
-        for (traits) |trait| {
-            if (trait.id != trait_id) continue;
-            const ptr: *const T = @alignCast(@ptrCast(trait.value));
-            return switch (@typeInfo(T)) {
-                .Bool, .Int, .Float, .Enum, .Union, .Pointer => ptr.*,
-                else => ptr,
-            };
-        }
-        return null;
-    }
-
-    fn TraitReturn(comptime T: type) type {
-        return switch (@typeInfo(T)) {
-            .Bool, .Int, .Float, .Enum, .Union, .Pointer => T,
-            else => *const T,
-        };
-    }
-};
-
-test "Symbols" {
-    const int: u8 = 108;
-    const shape_id = SmithyId.of("test.simple#Blob");
-    const trait_void = SmithyId.of("test.trait#Void");
-    const trait_int = SmithyId.of("test.trait#Int");
-
-    var shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType) = .{};
-    defer shapes.deinit(test_alloc);
-    try shapes.put(test_alloc, shape_id, .blob);
-
-    var traits: std.AutoHashMapUnmanaged(SmithyId, []const Symbols.TraitValue) = .{};
-    defer traits.deinit(test_alloc);
-    try traits.put(test_alloc, shape_id, &.{
-        .{ .id = trait_void, .value = null },
-        .{ .id = trait_int, .value = &int },
-    });
-
-    const symbols = Symbols{ .shapes = shapes, .traits = traits };
-
-    try testing.expectEqual(.blob, symbols.getShape(shape_id));
-    try testing.expectEqualDeep(&.{
-        Symbols.TraitValue{ .id = trait_void, .value = null },
-        Symbols.TraitValue{ .id = trait_int, .value = &int },
-    }, symbols.getTraits(shape_id).?);
-
-    try testing.expect(symbols.hasTrait(shape_id, trait_void));
-    try testing.expectEqual(108, symbols.getTrait(shape_id, trait_int, u8));
-}
 
 allocator: Allocator,
 reader: *JsonReader,
@@ -263,7 +188,7 @@ test "parseJson" {
     try manager.register(test_alloc, SmithyId.of("test.trait#Int"), TestTraits.traitInt());
     try manager.register(test_alloc, SmithyId.of("smithy.api#enumValue"), TestTraits.traitEnum());
 
-    const src: []const u8 = @embedFile("test.shapes.json");
+    const src: []const u8 = @embedFile("tests/shapes.json");
     var stream = std.io.fixedBufferStream(src);
     var reader = JsonReader.init(test_alloc, stream.reader().any());
 

@@ -6,11 +6,20 @@ const options = @import("options");
 const filter: []const []const u8 = options.filter;
 const models_path: []const u8 = options.models_path;
 const install_path: []const u8 = options.install_path;
-const Parser = @import("smithy/Parser.zig");
+const smithy = @import("smithy");
+const JsonReader = smithy.JsonReader;
+const TraitManager = smithy.TraitManager;
 
 pub const Stats = struct { shapes: usize, duration_ns: u64 };
 
 pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var manager = TraitManager{};
+    defer {
+        manager.deinit(gpa.allocator());
+        _ = gpa.deinit();
+    }
+
     var input_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     var output_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer _ = output_arena.deinit();
@@ -31,7 +40,18 @@ pub fn main() !void {
         for (filter) |model_path| {
             defer _ = input_arena.reset(.retain_capacity);
             const filename = try std.fmt.allocPrint(input_alloc, "{s}.json", .{model_path});
-            if (processModelFile(output_arena.allocator(), input_alloc, models_dir, filename)) |stats| {
+            const file = try openFile(models_dir, filename);
+            defer file.close();
+
+            var reader = JsonReader.init(input_arena.allocator(), file.reader().any());
+            defer reader.deinit();
+
+            if (processModelFile(
+                output_arena.allocator(),
+                manager,
+                filename,
+                &reader,
+            )) |stats| {
                 models_len += 1;
                 shapes_len += stats.shapes;
                 duration += stats.duration_ns;
@@ -44,8 +64,21 @@ pub fn main() !void {
             if (entry.kind != .file) continue;
             if (!std.mem.endsWith(u8, entry.name, ".json")) continue;
             if (std.mem.startsWith(u8, entry.name, "sdk-")) continue;
-            defer _ = input_arena.reset(.retain_capacity);
-            if (processModelFile(output_arena.allocator(), input_alloc, models_dir, entry.name)) |stats| {
+            const file = try openFile(models_dir, entry.name);
+            defer file.close();
+
+            var reader = JsonReader.init(input_arena.allocator(), file.reader().any());
+            defer {
+                _ = input_arena.reset(.retain_capacity);
+                reader.deinit();
+            }
+
+            if (processModelFile(
+                output_arena.allocator(),
+                manager,
+                entry.name,
+                &reader,
+            )) |stats| {
                 models_len += 1;
                 shapes_len += stats.shapes;
                 duration += stats.duration_ns;
@@ -65,19 +98,20 @@ pub fn main() !void {
     ++ "\n", .{ secs, suffix, models_len, shapes_len });
 }
 
-fn processModelFile(input_arena: Allocator, output_arena: Allocator, models_dir: fs.Dir, filename: []const u8) ?Stats {
-    const file = models_dir.openFile(filename, .{}) catch |e| {
-        std.debug.print("Failed opening model `{s}`: {s}.\n", .{ filename, @errorName(e) });
-        return null;
+fn openFile(models_dir: fs.Dir, filename: []const u8) !fs.File {
+    return models_dir.openFile(filename, .{}) catch |e| {
+        std.log.warn("Failed opening model `{s}`: {s}.", .{ filename, @errorName(e) });
+        return e;
     };
-    defer file.close();
+}
 
-    std.log.info("Start processing model {s}\n", .{filename});
+fn processModelFile(arena: Allocator, manager: TraitManager, name: []const u8, reader: *JsonReader) ?Stats {
+    std.log.info("Start processing model {s}", .{name});
     const start = std.time.Instant.now() catch unreachable;
-    const model = Parser.parseJsonModel(input_arena, output_arena, file.reader().any()) catch |e| {
-        std.debug.print(
+    const model = smithy.parseJson(arena, reader, manager) catch |e| {
+        std.log.err(
             "Failed processing model `{s}`: {s}.{any}\n",
-            .{ filename, @errorName(e), @errorReturnTrace() },
+            .{ name, @errorName(e), @errorReturnTrace() },
         );
         return null;
     };

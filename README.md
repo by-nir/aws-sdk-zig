@@ -1,14 +1,15 @@
 # AWS SDK for Zig
-![Zig v0.12 (master)](https://img.shields.io/badge/Zig-v0.12_(master)-black?logo=zig&logoColor=F7A41D)
+![Zig v0.12 (dev)](https://img.shields.io/badge/Zig-v0.12_(dev)_-black?logo=zig&logoColor=F7A41D "Zig v0.12 – master branch")
 [![MIT License](https://img.shields.io/github/license/by-nir/aws-sdk-zig)](/LICENSE)
 
-The _AWS SDK for Zig_ provides an interface for _Amazon Web Services (AWS)_.
-It builds upon Zig’s strong capabilities to provide a performant and fully
-functioning SDKs, while minimizing dependencies and providing platform portability.
+**The _AWS SDK for Zig_ provides an interface for _Amazon Web Services (AWS)_.**
+
+Building upon Zig’s strong foundation, this project provides a **performant** and
+fully functioning SDKs, while **minimizing dependencies** and increased **platform portability**.
 
 > [!TIP]
 > Use the [AWS Lambda Runtime for Zig](https://github.com/by-nir/aws-lambda-zig)
-> to deploy _Lambda_ functions written in Zig.
+> to deploy Lambda functions written in Zig.
 
 ## Getting Started
 
@@ -19,17 +20,26 @@ functioning SDKs, while minimizing dependencies and providing platform portabili
 
 Parts of this codebase are auto-generated, **do not modify them directly!**
 
-Generate the source code run `zig build sdk --build-file build.codegen.zig`.
-Optionally specify one or more `-Dfilter=sdk_codename` to generate specific services.
-
-Run unit tests for codegen run `zig build test --build-file build.codegen.zig`
-
-| 📁 | Public | CodeGen | Description |
+| 📁 | 👁️[^1] | 🏭[^2] | Description |
 |:-|:-:|:-:|:-|
-| [src/runtime](src/runtime) | | | Shared client for interacting with _AWS_ services. |
-| [src/types](src/types) | ✅ | | Common types shared by all modules. |
-| [codegen](codegen) | ✅ | | Automation workflows for code generation. |
-| [sdk](sdk) | ✅ | ✅ | AWS SDKs for Zig. |
+| [src/types](src/types) | 👁️ | | Common types shared by all modules |
+| [src/runtime](src/runtime) | | | Shared client for interacting with _AWS_ services |
+| [codegen/aws](codegen) | | | SDKs source generation pipeline |
+| [codegen/smithy](codegen/smithy) | | | [Smithy 2.0](https://smithy.io/2.0) client generator |
+| [sdk](sdk) | 👁️ | 🏭 | AWS SDKs for Zig |
+
+[^1]: Module exposed publicly
+[^2]: Source auto-generated _(do not modify manyally)_
+
+### CLI Commands
+
+The source generation commands are available through the following CLI commands:
+```zig build --build-file build.codegen.zig <command>```
+
+- `aws` Generate the AWS SDKs source code.
+    - Optionally specify one or more `-Dfilter=sdk_codename` to select specific services.
+- `test:aws` Run unit tests for the AWS SDKs generation.
+- `test:smithy` Run unit tests for the Smithy libraty.
 
 ## License
 
@@ -51,8 +61,8 @@ This codebase, including the generated code, are covered by a [standalone licens
 
 ### AWS SDKs Resources
 
-https://smithy.io/2.0/index.html
-https://docs.aws.amazon.com/sdkref/latest/guide/overview.html
+- [Smithy Spec](https://smithy.io/2.0/index.html)
+- [AWS SDKs and Tools Reference Guide](https://docs.aws.amazon.com/sdkref/latest/guide/overview.html)
 
 ### Other Implementations
 

@@ -3,7 +3,7 @@ const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = std.testing.allocator;
 const SmithyId = @import("identity.zig").SmithyId;
-const JsonReader = @import("JsonReader.zig");
+const JsonReader = @import("../utils/JsonReader.zig");
 
 /// Traits are model components that can be attached to shapes to describe additional
 /// information about the shape; shapes provide the structure and layout of an API,

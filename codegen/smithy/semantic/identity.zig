@@ -1,7 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const prelude = @import("prelude.zig");
+const prelude = @import("../prelude.zig");
 
 /// A 32-bit hash of a Shape ID.
 ///
@@ -151,3 +151,79 @@ pub const SmithyType = union(enum) {
     /// Tagged union data structure that can take on one of several different, but fixed, types.
     @"union": []const SmithyId,
 };
+
+/// Parsed symbols (shapes and metadata) from a Smithy model.
+pub const Symbols = struct {
+    pub const TraitValue = struct {
+        id: SmithyId,
+        value: ?*const anyopaque,
+    };
+
+    shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType),
+    traits: std.AutoHashMapUnmanaged(SmithyId, []const TraitValue),
+
+    pub fn getShape(self: Symbols, id: SmithyId) ?SmithyType {
+        return self.shapes.get(id);
+    }
+
+    pub fn getTraits(self: Symbols, shape_id: SmithyId) ?[]const TraitValue {
+        return self.traits.get(shape_id) orelse null;
+    }
+
+    pub fn hasTrait(self: Symbols, shape_id: SmithyId, trait_id: SmithyId) bool {
+        const traits = self.traits.get(shape_id) orelse return false;
+        for (traits) |trait| {
+            if (trait.id == trait_id) return true;
+        }
+        return false;
+    }
+
+    pub fn getTrait(self: Symbols, shape_id: SmithyId, trait_id: SmithyId, comptime T: type) ?TraitReturn(T) {
+        const traits = self.traits.get(shape_id) orelse return null;
+        for (traits) |trait| {
+            if (trait.id != trait_id) continue;
+            const ptr: *const T = @alignCast(@ptrCast(trait.value));
+            return switch (@typeInfo(T)) {
+                .Bool, .Int, .Float, .Enum, .Union, .Pointer => ptr.*,
+                else => ptr,
+            };
+        }
+        return null;
+    }
+
+    fn TraitReturn(comptime T: type) type {
+        return switch (@typeInfo(T)) {
+            .Bool, .Int, .Float, .Enum, .Union, .Pointer => T,
+            else => *const T,
+        };
+    }
+};
+
+test "Symbols" {
+    const int: u8 = 108;
+    const shape_id = SmithyId.of("test.simple#Blob");
+    const trait_void = SmithyId.of("test.trait#Void");
+    const trait_int = SmithyId.of("test.trait#Int");
+
+    var shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType) = .{};
+    defer shapes.deinit(test_alloc);
+    try shapes.put(test_alloc, shape_id, .blob);
+
+    var traits: std.AutoHashMapUnmanaged(SmithyId, []const Symbols.TraitValue) = .{};
+    defer traits.deinit(test_alloc);
+    try traits.put(test_alloc, shape_id, &.{
+        .{ .id = trait_void, .value = null },
+        .{ .id = trait_int, .value = &int },
+    });
+
+    const symbols = Symbols{ .shapes = shapes, .traits = traits };
+
+    try testing.expectEqual(.blob, symbols.getShape(shape_id));
+    try testing.expectEqualDeep(&.{
+        Symbols.TraitValue{ .id = trait_void, .value = null },
+        Symbols.TraitValue{ .id = trait_int, .value = &int },
+    }, symbols.getTraits(shape_id).?);
+
+    try testing.expect(symbols.hasTrait(shape_id, trait_void));
+    try testing.expectEqual(108, symbols.getTrait(shape_id, trait_int, u8));
+}
