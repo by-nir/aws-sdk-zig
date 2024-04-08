@@ -1,0 +1,106 @@
+{
+  "smithy": "2.0",
+  "shapes": {
+    "test.simple#Blob": {
+      "type": "blob"
+    },
+    "test.simple#Boolean": {
+      "type": "boolean"
+    },
+    "test.simple#Document": {
+      "type": "document"
+    },
+    "test.simple#String": {
+      "type": "string"
+    },
+    "test.simple#Byte": {
+      "type": "byte"
+    },
+    "test.simple#Short": {
+      "type": "short"
+    },
+    "test.simple#Integer": {
+      "type": "integer"
+    },
+    "test.simple#Long": {
+      "type": "long"
+    },
+    "test.simple#Float": {
+      "type": "float"
+    },
+    "test.simple#Double": {
+      "type": "double"
+    },
+    "test.simple#BigInteger": {
+      "type": "bigInteger"
+    },
+    "test.simple#BigDecimal": {
+      "type": "bigDecimal"
+    },
+    "test.simple#Timestamp": {
+      "type": "timestamp"
+    },
+    "test.simple#Enum": {
+      "type": "enum",
+      "members": {
+        "FOO": {
+          "target": "smithy.api#Unit",
+          "traits": {
+            "smithy.api#enumValue": "foo"
+          }
+        }
+      }
+    },
+    "test.simple#IntEnum": {
+      "type": "intEnum",
+      "members": {
+        "FOO": {
+          "target": "smithy.api#Unit",
+          "traits": {
+            "smithy.api#enumValue": 1
+          }
+        }
+      }
+    },
+    "test.aggregate#List": {
+      "type": "list",
+      "member": {
+        "target": "smithy.api#String"
+      }
+    },
+    "test.aggregate#Map": {
+      "type": "map",
+      "key": {
+        "target": "smithy.api#String"
+      },
+      "value": {
+        "target": "smithy.api#Integer"
+      }
+    },
+    "test.aggregate#Structure": {
+      "type": "structure",
+      "members": {
+        "stringMember": {
+          "target": "smithy.api#String",
+          "traits": {
+            "smithy.api#required": {}
+          }
+        },
+        "numberMember": {
+          "target": "smithy.api#Integer"
+        }
+      }
+    },
+    "test.aggregate#Union": {
+      "type": "union",
+      "members": {
+        "a": {
+          "target": "smithy.api#String"
+        },
+        "b": {
+          "target": "smithy.api#Integer"
+        }
+      }
+    }
+  }
+}

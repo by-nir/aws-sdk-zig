@@ -1,8 +1,106 @@
 const std = @import("std");
+const testing = std.testing;
+const test_alloc = testing.allocator;
+const prelude = @import("prelude.zig");
+
+/// Hashed shape identifier.
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/model.html#shape-id)
+/// ```
+/// smithy.example.foo#ExampleShapeName$memberName
+/// └────────┬───────┘ └───────┬──────┘ └────┬───┘
+///      Namespace           Shape        Member
+///                    └────────────┬────────────┘
+///                         Relative shape ID
+/// └─────────────────────┬──────────────────────┘
+///               Absolute shape ID
+/// ```
+pub const ShapeId = enum(u32) {
+    blob = hash32("blob"),
+    boolean = hash32("boolean"),
+    string = hash32("string"),
+    @"enum" = hash32("enum"),
+    byte = hash32("byte"),
+    short = hash32("short"),
+    integer = hash32("integer"),
+    int_enum = hash32("intEnum"),
+    long = hash32("long"),
+    float = hash32("float"),
+    double = hash32("double"),
+    big_integer = hash32("bigInteger"),
+    big_decimal = hash32("bigDecimal"),
+    timestamp = hash32("timestamp"),
+    document = hash32("document"),
+    list = hash32("list"),
+    map = hash32("map"),
+    structure = hash32("structure"),
+    @"union" = hash32("union"),
+    unit = hash32("unitType"),
+    _,
+
+    /// Type name or absalute shape id.
+    pub fn full(id: []const u8) ShapeId {
+        const hash = hash32(id);
+        return switch (hash) {
+            hash32(prelude.TYPE_UNIT) => .unit,
+            hash32(prelude.TYPE_BLOB) => .blob,
+            hash32(prelude.TYPE_BOOL) => .boolean,
+            hash32(prelude.TYPE_STRING) => .string,
+            hash32(prelude.TYPE_BYTE) => .byte,
+            hash32(prelude.TYPE_SHORT) => .short,
+            hash32(prelude.TYPE_INT) => .integer,
+            hash32(prelude.TYPE_LONG) => .long,
+            hash32(prelude.TYPE_FLOAT) => .float,
+            hash32(prelude.TYPE_DOUBLE) => .double,
+            hash32(prelude.TYPE_BIGINT) => .big_integer,
+            hash32(prelude.TYPE_BIGDEC) => .big_decimal,
+            hash32(prelude.TYPE_TIMESTAMP) => .timestamp,
+            hash32(prelude.TYPE_DOCUMENT) => .document,
+            else => @enumFromInt(hash),
+        };
+    }
+
+    /// `smithy.example.foo#ExampleShapeName` + `memberName`
+    pub fn compose(shape: []const u8, member: []const u8) ShapeId {
+        var buffer: [128]u8 = undefined;
+        const len = shape.len + member.len + 1;
+        std.debug.assert(len <= buffer.len);
+        @memcpy(buffer[0..shape.len], shape);
+        buffer[shape.len] = '$';
+        @memcpy(buffer[shape.len + 1 ..][0..member.len], member);
+        return @enumFromInt(hash32(buffer[0..len]));
+    }
+
+    fn hash32(value: []const u8) u32 {
+        return std.hash.CityHash32.hash(value);
+    }
+};
+
+test "ShapeId" {
+    try testing.expectEqual(.blob, ShapeId.full("blob"));
+    try testing.expectEqual(.blob, ShapeId.full("smithy.api#Blob"));
+    try testing.expectEqual(.list, ShapeId.full("list"));
+    try testing.expectEqual(
+        @as(ShapeId, @enumFromInt(0x6f8b5d99)),
+        ShapeId.full("smithy.example.foo#ExampleShapeName$memberName"),
+    );
+    try testing.expectEqual(
+        ShapeId.full("smithy.example.foo#ExampleShapeName$memberName"),
+        ShapeId.compose("smithy.example.foo#ExampleShapeName", "memberName"),
+    );
+}
 
 /// [Simple](https://smithy.io/2.0/spec/simple-types.html#simple-types) or
 /// [Aggregate](https://smithy.io/2.0/spec/aggregate-types.html#aggregate-types) shape.
 pub const SmithyType = union(enum) {
+    /// The singular unit type in Smithy is similar to Void and None in other languages.
+    /// It is used when the input or output of an operation has no meaningful value
+    /// or if a union member has no meaningful value. It MUST NOT be referenced
+    /// in any other context.
+    ///
+    /// [Smithy Spec](https://smithy.io/2.0/spec/model.html#unit-type)
+    unit,
+
     //
     // Simple types are types that do not contain nested types or shape references.
     //
@@ -14,8 +112,7 @@ pub const SmithyType = union(enum) {
     /// UTF-8 encoded string.
     string,
     /// A string with a fixed set of values.
-    /// [Smithy Spec](https://smithy.io/2.0/spec/simple-types.html#enum)
-    @"enum": SmithyEnum,
+    @"enum": []const ShapeId,
     /// 8-bit signed integer ranging from -128 to 127 (inclusive).
     byte,
     /// 16-bit signed integer ranging from -32,768 to 32,767 (inclusive).
@@ -23,8 +120,7 @@ pub const SmithyType = union(enum) {
     /// 32-bit signed integer ranging from -2^31 to (2^31)-1 (inclusive).
     integer,
     /// An integer with a fixed set of values.
-    /// [Smithy Spec](https://smithy.io/2.0/spec/simple-types.html#intenum)
-    int_enum,
+    int_enum: []const ShapeId,
     /// 64-bit signed integer ranging from -2^63 to (2^63)-1 (inclusive).
     long,
     /// Single precision IEEE-754 floating point number.
@@ -36,10 +132,8 @@ pub const SmithyType = union(enum) {
     /// Arbitrary precision signed decimal number.
     big_decimal,
     /// An instant in time with no UTC offset or timezone.
-    /// [Smithy Spec](https://smithy.io/2.0/spec/simple-types.html#timestamp)
-    timestamp: TimeStampFormat,
+    timestamp,
     /// Open content that functions as a kind of "any" type.
-    /// [Smithy Spec](https://smithy.io/2.0/spec/simple-types.html#document)
     document,
 
     //
@@ -47,115 +141,32 @@ pub const SmithyType = union(enum) {
     //
 
     /// Ordered collection of homogeneous values.
-    /// [Smithy Spec](https://smithy.io/2.0/spec/aggregate-types.html#list)
-    list: *const SmithyList,
+    list: ShapeId,
     /// Map data structure that maps string keys to homogeneous values.
-    /// [Smithy Spec](https://smithy.io/2.0/spec/aggregate-types.html#map)
-    map: *const SmithyMap,
+    map: [2]ShapeId,
     /// Fixed set of named heterogeneous members.
-    /// [Smithy Spec](https://smithy.io/2.0/spec/aggregate-types.html#structure)
-    structure: *const SmithyStructure,
+    structure: []const ShapeId,
     /// Tagged union data structure that can take on one of several different, but fixed, types.
-    /// [Smithy Spec](https://smithy.io/2.0/spec/aggregate-types.html#union)
-    @"union": *const SmithyUnion,
+    @"union": []const ShapeId,
 };
 
-/// A string with a fixed set of values.
-/// Enums are non-exhaustive, clients must allow sending and receiving unknown values.
-/// [Smithy Spec](https://smithy.io/2.0/spec/simple-types.html#enum)
-pub const SmithyEnum = struct {
-    count: u8,
-    members: [*]Member,
+/// Single Smithy model parsed from a single JSON AST.
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/json-ast.html)
+pub const Model = struct {
+    shapes: std.AutoHashMapUnmanaged(ShapeId, SmithyType),
 
-    pub const Member = packed struct {
-        name: [:0]const u8,
-        value: [:0]const u8,
-    };
+    pub fn getShape(self: Model, id: ShapeId) ?SmithyType {
+        return self.shapes.get(id);
+    }
 };
 
-/// An integer with a fixed set of values.
-/// int_enums are non-exhaustive, clients must allow sending and receiving unknown values.
-/// [Smithy Spec](https://smithy.io/2.0/spec/simple-types.html#intenum)
-pub const SmithyIntEnum = struct {
-    count: u8,
-    members: [*]Member,
+test "Model" {
+    var shapes: std.AutoHashMapUnmanaged(ShapeId, SmithyType) = .{};
+    defer shapes.deinit(test_alloc);
 
-    pub const Member = packed struct {
-        value: i32,
-        name: [:0]const u8,
-    };
-};
+    try shapes.put(test_alloc, ShapeId.full("test.simple#Blob"), .blob);
+    const model = Model{ .shapes = shapes };
 
-/// Defines an optional custom timestamp serialization format.
-/// [Smithy Spec](https://smithy.io/2.0/spec/protocol-traits.html#timestamp-formats)
-pub const TimeStampFormat = enum {
-    /// By default, the serialization format of a timestamp is implicitly determined
-    /// by the protocol of a service.
-    default,
-    /// Date time as defined by the date-time production in RFC 3339 (section 5.6),
-    /// with optional millisecond precision but no UTC offset.
-    /// ```
-    /// 1985-04-12T23:20:50.520Z
-    /// ```
-    date_time,
-    /// An HTTP date as defined by the IMF-fixdate production in RFC 7231 (section 7.1.1.1).
-    /// ```
-    /// Tue, 29 Apr 2014 18:30:38 GMT
-    /// ```
-    http_date,
-    /// Also known as Unix time, the number of seconds that have elapsed since
-    /// _00:00:00 Coordinated Universal Time (UTC), Thursday, 1 January 1970_,
-    /// with optional millisecond precision.
-    /// ```
-    /// 1515531081.123
-    /// ```
-    epoch_seconds,
-};
-
-/// Ordered collection of homogeneous values.
-/// [Smithy Spec](https://smithy.io/2.0/spec/aggregate-types.html#list)
-pub const SmithyList = struct {
-    member: SmithyType,
-    /// Lists are considered `dense` by default.
-    spread: AggregateOptional = .dense,
-};
-
-/// Map data structure that maps string keys to homogeneous values.
-/// [Smithy Spec](https://smithy.io/2.0/spec/aggregate-types.html#map)
-pub const SmithyMap = struct {
-    key: SmithyType,
-    value: SmithyType,
-    /// Maps are considered `dense` by default.
-    /// The sparse trait has no effect on keys; map keys are never allowed to be null.
-    spread: AggregateOptional = .dense,
-};
-
-/// [Smithy Spec](https://smithy.io/2.0/spec/type-refinement-traits.html#sparse-trait)
-pub const AggregateOptional = enum {
-    /// Null values are not allowed in the aggregate.
-    dense,
-    /// Indicates that an aggregate MAY contain null values.
-    sparse,
-};
-
-/// Fixed set of named heterogeneous members.
-/// [Smithy Spec](https://smithy.io/2.0/spec/aggregate-types.html#structure)
-pub const SmithyStructure = struct {
-    count: u8,
-    members: [*]SmithyMember,
-};
-
-/// Tagged union data structure that can take on one of several different, but fixed, types.
-/// [Smithy Spec](https://smithy.io/2.0/spec/aggregate-types.html#union)
-pub const SmithyUnion = struct {
-    count: u8,
-    members: ?[*]SmithyMember,
-};
-
-/// The actual list of traits MUST follow this member!
-/// [Smithy Spec](https://smithy.io/2.0/spec/idl.html#structure-shapes)
-pub const SmithyMember = packed struct {
-    target: SmithyType,
-    name: [:0]const u8,
-    traits_count: u8,
-};
+    try testing.expectEqual(.blob, model.getShape(ShapeId.full("test.simple#Blob")));
+}

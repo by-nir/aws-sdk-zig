@@ -27,7 +27,7 @@ pub fn build(b: *std.Build) void {
             .target = b.host,
             .root_source_file = .{ .path = "codegen/sdk.zig" },
         });
-        codegen_sdk.root_module.addOptions("codegen-options", sdk_options);
+        codegen_sdk.root_module.addOptions("options", sdk_options);
         codegen_sdk_steps.dependOn(&b.addRunArtifact(codegen_sdk).step);
     }
 
