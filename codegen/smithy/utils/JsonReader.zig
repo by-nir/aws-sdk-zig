@@ -4,7 +4,6 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const assert = std.debug.assert;
 
 const Self = @This();
 
@@ -36,37 +35,37 @@ pub fn next(self: *Self) !json.Token {
 /// Get the next token, assuming it is an object.
 pub fn nextObjectBegin(self: *Self) !void {
     const token = try self.next();
-    assert(.object_begin == token);
+    if (token != .object_begin) return error.UnexpectedSyntax;
 }
 
 /// Get the next token, assuming it is the end of an object.
 pub fn nextObjectEnd(self: *Self) !void {
     const token = try self.next();
-    assert(.object_end == token);
+    if (token != .object_end) return error.UnexpectedSyntax;
 }
 
 /// Get the next token, assuming it is an array.
 pub fn nextArrayBegin(self: *Self) !void {
     const token = try self.next();
-    assert(.array_begin == token);
+    if (token != .array_begin) return error.UnexpectedSyntax;
 }
 
 /// Get the next token, assuming it is the end of an array.
 pub fn nextArrayEnd(self: *Self) !void {
     const token = try self.next();
-    assert(.array_end == token);
+    if (token != .array_end) return error.UnexpectedSyntax;
 }
 
 /// Get the next token, assuming it is the end of the document.
 pub fn nextDocumentEnd(self: *Self) !void {
     const token = try self.next();
-    assert(.end_of_document == token);
+    if (token != .end_of_document) return error.UnexpectedSyntax;
 }
 
 /// Get the next token, assuming it is a null value.
 pub fn nextNull(self: *Self) !void {
     const token = try self.next();
-    assert(.null == token);
+    if (token != .null) return error.UnexpectedSyntax;
 }
 
 /// Get the next token, assuming it is a boolean value.
@@ -84,7 +83,7 @@ pub fn nextNumber(self: *Self) !i64 {
     const token = try self.next();
     switch (token) {
         .number, .allocated_number => |bytes| {
-            assert(json.isNumberFormattedLikeAnInteger(bytes));
+            std.debug.assert(json.isNumberFormattedLikeAnInteger(bytes));
             return std.fmt.parseInt(i64, bytes, 10);
         },
         .partial_number => unreachable, // Not used by `json.Reader`
@@ -97,7 +96,7 @@ pub fn nextFloat(self: *Self) !f64 {
     const token = try self.next();
     switch (token) {
         .number, .allocated_number => |bytes| {
-            assert(!json.isNumberFormattedLikeAnInteger(bytes));
+            std.debug.assert(!json.isNumberFormattedLikeAnInteger(bytes));
             return std.fmt.parseFloat(f64, bytes);
         },
         .partial_number => unreachable, // Not used by `json.Reader`
@@ -121,14 +120,14 @@ pub fn nextString(self: *Self) ![]const u8 {
 /// Get the next token, assuming it is a string matching the expected value.
 pub fn nextStringEql(self: *Self, expectd: []const u8) !void {
     const actual = try self.nextString();
-    assert(mem.eql(u8, expectd, actual));
+    if (!mem.eql(u8, expectd, actual)) return error.UnexpectedValue;
 }
 
 /// Assumes we already consumed the initial `*_begin`.
 pub fn skipCurrentScope(self: *Self) !void {
     const current = self.source.stackHeight();
-    assert(current > 0);
-    try self.source.skipUntilStackHeight(current - 1);
+    std.debug.assert(current > 0);
+    try self.source.skipUntilStackHeight(current -| 1);
 }
 
 /// Skips the following value, array, or object.
