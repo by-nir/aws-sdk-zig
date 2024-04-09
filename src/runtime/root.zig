@@ -1,13 +1,13 @@
-pub const Endpoint = @import("Endpoint.zig");
-pub const Request = @import("Request.zig");
+const transmit = @import("transmit.zig");
+
+pub const Request = transmit.Request;
 pub const Client = @import("Client.zig");
+pub const Endpoint = @import("Endpoint.zig");
 
 test {
     _ = @import("format.zig");
-    _ = @import("data.zig");
     _ = @import("Signer.zig");
-    _ = @import("Response.zig");
-    _ = Request;
+    _ = transmit;
     _ = Endpoint;
     _ = Client;
 }

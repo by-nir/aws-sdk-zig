@@ -1,11 +1,11 @@
 //! Make HTTP requests to AWS services.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const testing = std.testing;
+const test_alloc = testing.allocator;
 const Signer = @import("Signer.zig");
-const Request = @import("Request.zig");
-const Response = @import("Response.zig");
 const Endpoint = @import("Endpoint.zig");
-const data = @import("data.zig");
+const transmit = @import("transmit.zig");
 
 // TODO: Use `std.http.Client` once AWS TLS 1.3 support is complete or Zig adds TLS 1.2 support
 // https://aws.amazon.com/blogs/security/faster-aws-cloud-connections-with-tls-1-3
@@ -30,8 +30,8 @@ pub fn deinit(self: *Self) void {
 /// The caller owns the returned response memory.
 ///
 /// Optionally provide an **arena allocator** instead of calling `deinit` on the response.
-fn send(self: *Self, allocator: Allocator, endpoint: Endpoint, request: *Request, signer: Signer) !Response {
-    const time = data.TimeStr.initNow();
+fn send(self: *Self, allocator: Allocator, endpoint: Endpoint, request: *transmit.Request, signer: Signer) !transmit.Response {
+    const time = transmit.TimeStr.initNow();
     const sign_event = Signer.Event{
         .service = endpoint.service,
         .region = endpoint.region.code(),
@@ -73,7 +73,7 @@ fn send(self: *Self, allocator: Allocator, endpoint: Endpoint, request: *Request
         .{"connection"}, .{"accept-encoding"}, .{"content-type"},
     });
     var extra_len: usize = 0;
-    var extra_headers: [Request.MAX_HEADERS]std.http.Header = undefined;
+    var extra_headers: [transmit.MAX_HEADERS]std.http.Header = undefined;
     var it = request.headers.iterator();
     while (it.next()) |kv| {
         if (managed_headers.has(kv.key_ptr.*)) continue;
@@ -102,7 +102,7 @@ fn send(self: *Self, allocator: Allocator, endpoint: Endpoint, request: *Request
     else
         &.{};
     errdefer allocator.free(headers_dupe);
-    return Response{
+    return .{
         .allocator = allocator,
         .status = result.status,
         .headers = headers_dupe,
