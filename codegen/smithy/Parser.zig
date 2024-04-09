@@ -1,23 +1,25 @@
 //! Smithy parser for [JSON AST](https://smithy.io/2.0/spec/json-ast.html) representation.
 const std = @import("std");
-const mem = std.mem;
-const Allocator = mem.Allocator;
+const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const JsonReader = @import("utils/JsonReader.zig");
+const smntc = @import("semantic/trait.zig");
 const identity = @import("semantic/identity.zig");
 const Symbols = identity.Symbols;
 const SmithyId = identity.SmithyId;
 const SmithyType = identity.SmithyType;
-const trt = @import("semantic/trait.zig");
-const Trait = trt.Trait;
-const TraitManager = trt.TraitManager;
 
 const Self = @This();
+const ParseScope = struct {
+    id: ?[]const u8 = null,
+    hash: SmithyId = @enumFromInt(0),
+    target: ?*anyopaque = null,
+};
 
 allocator: Allocator,
 reader: *JsonReader,
-manager: TraitManager,
+manager: smntc.TraitManager,
 shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType) = .{},
 traits: std.AutoHashMapUnmanaged(SmithyId, []const Symbols.TraitValue) = .{},
 
@@ -26,124 +28,68 @@ traits: std.AutoHashMapUnmanaged(SmithyId, []const Symbols.TraitValue) = .{},
 /// `allocactor` is used to store the parsed symbols and must be retained as long
 /// as they are needed.
 /// `json_reader` may be disposed immediately after calling this.
-pub fn parseJson(allocator: Allocator, json_reader: *JsonReader, traits: TraitManager) !Symbols {
+pub fn parseJson(allocator: Allocator, json_reader: *JsonReader, traits: smntc.TraitManager) !Symbols {
     var parser = Self{
         .allocator = allocator,
         .reader = json_reader,
         .manager = traits,
     };
-
-    try parser.reader.nextObjectBegin();
-    try parser.validateSmithy();
-    while (try parser.reader.peek() == .string) {
-        const section = try parser.reader.nextString();
-        if (mem.eql(u8, "shapes", section)) {
-            try parser.reader.nextObjectBegin();
-            try parser.parseShapes();
-            try parser.reader.nextObjectEnd();
-        } else {
-            std.log.warn("Unknown model section: `{s}`.", .{section});
-            try parser.reader.skipValueOrScope();
-        }
-    }
-    try parser.reader.nextObjectEnd();
+    try parser.parseProps(true, parseProp, .{});
     try parser.reader.nextDocumentEnd();
-
     return .{
         .shapes = parser.shapes.move(),
         .traits = parser.traits.move(),
     };
 }
 
-fn validateSmithy(self: *Self) !void {
-    try self.reader.nextStringEql("smithy");
-    try self.reader.nextStringEql("2.0");
+const parsePropFn = fn (self: *Self, prop_id: []const u8, scope: ParseScope) anyerror!void;
+fn parseProps(self: *Self, scope_in: bool, parseFn: parsePropFn, scope: ParseScope) !void {
+    if (scope_in) try self.reader.nextObjectBegin();
+    while (try self.reader.peek() == .string) {
+        const prop_id = try self.reader.nextString();
+        try parseFn(self, prop_id, scope);
+    }
+    if (scope_in) try self.reader.nextObjectEnd();
 }
 
-fn parseShapes(self: *Self) !void {
-    while (try self.reader.peek() == .string) {
-        const shape_id = try self.reader.nextString();
-        const shape_hash = SmithyId.of(shape_id);
-        try self.reader.nextObjectBegin();
-        try self.reader.nextStringEql("type");
-        const shape_type = SmithyId.of(try self.reader.nextString());
-
-        var members: std.ArrayListUnmanaged(SmithyId) = .{};
-        while (try self.reader.peek() == .string) {
-            const section = try self.reader.nextString();
-            try self.reader.nextObjectBegin();
-            if (mem.eql(u8, "members", section)) {
-                while (try self.reader.peek() == .string) {
-                    try self.parseMember(shape_id, &members);
-                }
-            } else if (mem.eql(u8, "traits", section)) {
-                try self.parseTraits(shape_hash);
-            } else {
-                // We assume other sections are direct members (list memeber, map k/v, etc.)
-                const member_hash = SmithyId.compose(shape_id, section);
-                try members.append(self.allocator, member_hash);
-                while (try self.reader.peek() == .string) {
-                    try self.parseMemberProperty(member_hash);
-                }
-            }
-            try self.reader.nextObjectEnd();
-        }
-        try self.reader.nextObjectEnd();
-        try self.putShape(shape_hash, shape_type, try members.toOwnedSlice(self.allocator));
+fn parseProp(self: *Self, prop_id: []const u8, scope: ParseScope) !void {
+    switch (identity.SmithyProperty.of(prop_id)) {
+        .smithy => try self.reader.nextStringEql("2.0"),
+        .metadata => {
+            std.log.warn("Parsing model’s metadata is not implemented.", .{});
+            try self.reader.skipValueOrScope();
+        },
+        .target => try self.putShape(scope.hash, SmithyId.of(try self.reader.nextString()), null),
+        .shapes => try self.parseProps(true, parseShape, .{}),
+        .members => try self.parseProps(true, parseMember, scope),
+        .member, .key, .value => try self.parseMember(prop_id, scope),
+        .traits => try self.parseTraits(scope.hash),
+        else => {
+            if (scope.id) |parent|
+                std.log.warn("Unexpected property: `{s}#{s}`.", .{ parent, prop_id })
+            else
+                std.log.warn("Unexpected property: `{s}`.", .{prop_id});
+            try self.reader.skipValueOrScope();
+        },
     }
 }
 
-fn parseMember(self: *Self, shape_id: []const u8, shape_members: *std.ArrayListUnmanaged(SmithyId)) !void {
-    const member_id = try self.reader.nextString();
-    const member_hash = SmithyId.compose(shape_id, member_id);
-    try shape_members.append(self.allocator, member_hash);
+fn parseMember(self: *Self, prop_id: []const u8, scope: ParseScope) !void {
+    const members: *std.ArrayListUnmanaged(SmithyId) = @alignCast(@ptrCast(scope.target.?));
+    const member_hash = SmithyId.compose(scope.id.?, prop_id);
+    try members.append(self.allocator, member_hash);
+    try self.parseProps(true, parseProp, .{ .id = prop_id, .hash = member_hash });
+}
+
+fn parseShape(self: *Self, shape_id: []const u8, _: ParseScope) !void {
+    const shape_hash = SmithyId.of(shape_id);
+    var members: std.ArrayListUnmanaged(SmithyId) = .{};
     try self.reader.nextObjectBegin();
-    while (try self.reader.peek() == .string) {
-        try self.parseMemberProperty(member_hash);
-    }
+    try self.reader.nextStringEql("type");
+    const shape_type = SmithyId.of(try self.reader.nextString());
+    try self.parseProps(false, parseProp, .{ .id = shape_id, .hash = shape_hash, .target = &members });
     try self.reader.nextObjectEnd();
-}
-
-fn parseMemberProperty(self: *Self, member_hash: SmithyId) !void {
-    const property = try self.reader.nextString();
-    if (mem.eql(u8, "target", property)) {
-        const target = SmithyId.of(try self.reader.nextString());
-        try self.putShape(member_hash, target, null);
-    } else if (mem.eql(u8, "traits", property)) {
-        try self.reader.nextObjectBegin();
-        try self.parseTraits(member_hash);
-        try self.reader.nextObjectEnd();
-    } else {
-        std.log.warn("Unknown member property: {s}.", .{property});
-        try self.reader.skipValueOrScope();
-    }
-}
-
-fn parseTraits(self: *Self, node_id: SmithyId) !void {
-    var traits: std.ArrayListUnmanaged(Symbols.TraitValue) = .{};
-    while (try self.reader.peek() == .string) {
-        if (self.parseTrait()) |trait| {
-            try traits.append(self.allocator, trait);
-        } else |e| switch (e) {
-            error.UnknownTrait => {
-            },
-            else => return e,
-        }
-    }
-    if (traits.items.len == 0) return;
-    try self.attachTraits(node_id, try traits.toOwnedSlice(self.allocator));
-}
-
-fn parseTrait(self: *Self) !Symbols.TraitValue {
-    const trait_id = try self.reader.nextString();
-    const trait_hash = SmithyId.of(trait_id);
-    if (self.manager.parse(trait_hash, self.allocator, self.reader)) |value| {
-        return .{ .id = trait_hash, .value = value };
-    } else |e| {
-        try self.reader.skipValueOrScope();
-        if (e == error.UnknownTrait) std.log.warn("Unknown trait: {s}.", .{trait_id});
-        return e;
-    }
+    try self.putShape(shape_hash, shape_type, try members.toOwnedSlice(self.allocator));
 }
 
 fn putShape(self: *Self, id: SmithyId, typ: SmithyId, members: ?[]const SmithyId) !void {
@@ -155,34 +101,44 @@ fn putShape(self: *Self, id: SmithyId, typ: SmithyId, members: ?[]const SmithyId
             => |t| std.enums.nameCast(SmithyType, t),
         // zig fmt: on
         .unit => if (is_member) SmithyType.unit else return error.InvalidShapeTarget,
-        .@"enum" => .{
-            .@"enum" = members orelse return error.InvalidMemberTarget,
-        },
-        .int_enum => .{
-            .int_enum = members orelse return error.InvalidMemberTarget,
-        },
-        .list => .{
-            .list = (members orelse return error.InvalidMemberTarget)[0],
-        },
-        .map => .{
-            .map = (members orelse return error.InvalidMemberTarget)[0..2].*,
-        },
-        .structure => .{
-            .structure = members orelse return error.InvalidMemberTarget,
-        },
-        .@"union" => .{
-            .@"union" = members orelse return error.InvalidMemberTarget,
-        },
+        .@"enum" => .{ .@"enum" = members.? },
+        .int_enum => .{ .int_enum = members.? },
+        .list => .{ .list = members.?[0] },
+        .map => .{ .map = members.?[0..2].* },
+        .structure => .{ .structure = members.? },
+        .@"union" => .{ .@"union" = members.? },
         _ => if (is_member) .{ .target = typ } else return error.UnknownType,
     });
 }
 
-fn attachTraits(self: *Self, id: SmithyId, traits: []const Symbols.TraitValue) !void {
-    try self.traits.put(self.allocator, id, traits);
+fn parseTraits(self: *Self, parent_hash: SmithyId) !void {
+    var traits: std.ArrayListUnmanaged(Symbols.TraitValue) = .{};
+    try self.reader.nextObjectBegin();
+    while (try self.reader.peek() == .string) {
+        const trait_id = try self.reader.nextString();
+        const trait_hash = SmithyId.of(trait_id);
+        if (self.manager.parse(trait_hash, self.allocator, self.reader)) |value| {
+            try traits.append(
+                self.allocator,
+                .{ .id = trait_hash, .value = value },
+            );
+        } else |e| switch (e) {
+            error.UnknownTrait => {
+                std.log.warn("Unknown trait: {s}.", .{trait_id});
+                try self.reader.skipValueOrScope();
+                continue;
+            },
+            else => return e,
+        }
+    }
+    try self.reader.nextObjectEnd();
+    if (traits.items.len == 0) return;
+    const slice = try traits.toOwnedSlice(self.allocator);
+    try self.traits.put(self.allocator, parent_hash, slice);
 }
 
 test "parseJson" {
-    var manager = TraitManager{};
+    var manager = smntc.TraitManager{};
     defer manager.deinit(test_alloc);
     try manager.register(test_alloc, SmithyId.of("test.trait#Void"), TestTraits.traitVoid());
     try manager.register(test_alloc, SmithyId.of("test.trait#Int"), TestTraits.traitInt());
@@ -277,15 +233,15 @@ test "parseJson" {
 }
 
 const TestTraits = struct {
-    pub fn traitVoid() Trait {
+    pub fn traitVoid() smntc.Trait {
         return .{ .ctx = undefined, .vtable = &.{ .parse = null } };
     }
 
-    pub fn traitInt() Trait {
+    pub fn traitInt() smntc.Trait {
         return .{ .ctx = undefined, .vtable = &.{ .parse = parseInt } };
     }
 
-    pub fn traitEnum() Trait {
+    pub fn traitEnum() smntc.Trait {
         return .{ .ctx = undefined, .vtable = &.{ .parse = parseEnum } };
     }
 
