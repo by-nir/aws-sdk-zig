@@ -16,6 +16,33 @@ const prelude = @import("../prelude.zig");
 ///               Absolute shape ID
 /// ```
 pub const SmithyId = enum(u32) {
+    pub const NULL: SmithyId = @enumFromInt(0);
+
+    unit = hash32("unitType"),
+    blob = hash32("blob"),
+    boolean = hash32("boolean"),
+    string = hash32("string"),
+    @"enum" = hash32("enum"),
+    byte = hash32("byte"),
+    short = hash32("short"),
+    integer = hash32("integer"),
+    int_enum = hash32("intEnum"),
+    long = hash32("long"),
+    float = hash32("float"),
+    double = hash32("double"),
+    big_integer = hash32("bigInteger"),
+    big_decimal = hash32("bigDecimal"),
+    timestamp = hash32("timestamp"),
+    document = hash32("document"),
+    list = hash32("list"),
+    map = hash32("map"),
+    structure = hash32("structure"),
+    @"union" = hash32("union"),
+    operation = hash32("operation"),
+    resource = hash32("resource"),
+    service = hash32("service"),
+    _,
+
     /// Type name or absalute shape id.
     pub fn of(shape_id: []const u8) SmithyId {
         return switch (hash32(shape_id)) {
@@ -51,28 +78,6 @@ pub const SmithyId = enum(u32) {
     fn hash32(value: []const u8) u32 {
         return std.hash.CityHash32.hash(value);
     }
-
-    blob = hash32("blob"),
-    boolean = hash32("boolean"),
-    string = hash32("string"),
-    @"enum" = hash32("enum"),
-    byte = hash32("byte"),
-    short = hash32("short"),
-    integer = hash32("integer"),
-    int_enum = hash32("intEnum"),
-    long = hash32("long"),
-    float = hash32("float"),
-    double = hash32("double"),
-    big_integer = hash32("bigInteger"),
-    big_decimal = hash32("bigDecimal"),
-    timestamp = hash32("timestamp"),
-    document = hash32("document"),
-    list = hash32("list"),
-    map = hash32("map"),
-    structure = hash32("structure"),
-    @"union" = hash32("union"),
-    unit = hash32("unitType"),
-    _,
 };
 
 test "SmithyId" {
@@ -89,10 +94,9 @@ test "SmithyId" {
     );
 }
 
-/// [Simple](https://smithy.io/2.0/spec/simple-types.html#simple-types) or
-/// [Aggregate](https://smithy.io/2.0/spec/aggregate-types.html#aggregate-types) shape.
+/// A Smithy shape’s type.
 pub const SmithyType = union(enum) {
-    /// A shape that is not a member of the prelude.
+    /// A reference to a shape that is not a member of the prelude.
     target: SmithyId,
 
     /// The singular unit type in Smithy is similar to Void and None in other languages.
@@ -105,6 +109,7 @@ pub const SmithyType = union(enum) {
 
     //
     // Simple types are types that do not contain nested types or shape references.
+    // https://smithy.io/2.0/spec/simple-types.html#simple-types
     //
 
     /// Uninterpreted binary data.
@@ -140,6 +145,7 @@ pub const SmithyType = union(enum) {
 
     //
     // Aggregate types contain configurable member references to others shapes.
+    // https://smithy.io/2.0/spec/aggregate-types.html#aggregate-types
     //
 
     /// Ordered collection of homogeneous values.
@@ -150,15 +156,23 @@ pub const SmithyType = union(enum) {
     structure: []const SmithyId,
     /// Tagged union data structure that can take on one of several different, but fixed, types.
     @"union": []const SmithyId,
+
+    //
+    // Service types have specific semantics and define services, resources, and operations.
+    // https://smithy.io/2.0/spec/service-types.html#service-types
+    //
+
+    /// The operation type represents the input, output, and possible errors of an API operation.
+    operation: *const Symbols.Operation,
+    /// Smithy defines a resource as an entity with an identity that has a set of operations.
+    resource: *const Symbols.Resource,
+    /// A service is the entry point of an API that aggregates resources and operations together.
+    service: *const Symbols.Service,
 };
 
 /// Parsed symbols (shapes and metadata) from a Smithy model.
 pub const Symbols = struct {
-    pub const TraitValue = struct {
-        id: SmithyId,
-        value: ?*const anyopaque,
-    };
-
+    service: SmithyId,
     shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType),
     traits: std.AutoHashMapUnmanaged(SmithyId, []const TraitValue),
 
@@ -197,6 +211,46 @@ pub const Symbols = struct {
             else => *const T,
         };
     }
+
+    pub const TraitValue = struct { id: SmithyId, value: ?*const anyopaque };
+    pub const RefMapValue = struct { name: []const u8, shape: SmithyId };
+
+    /// A service is the entry point of an API that aggregates resources and operations together.
+    ///
+    /// [Smithy Spec](https://smithy.io/2.0/spec/service-types.html#service)
+    pub const Service = struct {
+        version: []const u8 = &.{},
+        operations: []const SmithyId = &.{},
+        resources: []const SmithyId = &.{},
+        errors: []const SmithyId = &.{},
+        rename: []const RefMapValue = &.{},
+    };
+
+    /// The operation type represents the input, output, and possible errors of an API operation.
+    ///
+    /// [Smithy Spec](https://smithy.io/2.0/spec/service-types.html#resource)
+    pub const Resource = struct {
+        identifiers: []const RefMapValue = &.{},
+        properties: []const RefMapValue = &.{},
+        create: SmithyId = SmithyId.NULL,
+        put: SmithyId = SmithyId.NULL,
+        read: SmithyId = SmithyId.NULL,
+        update: SmithyId = SmithyId.NULL,
+        delete: SmithyId = SmithyId.NULL,
+        list: SmithyId = SmithyId.NULL,
+        operations: []const SmithyId = &.{},
+        collection_ops: []const SmithyId = &.{},
+        resources: []const SmithyId = &.{},
+    };
+
+    /// Smithy defines a resource as an entity with an identity that has a set of operations.
+    ///
+    /// [Smithy Spec](https://smithy.io/2.0/spec/service-types.html#operation)
+    pub const Operation = struct {
+        input: ?SmithyId = null,
+        output: ?SmithyId = null,
+        errors: []const SmithyId = &.{},
+    };
 };
 
 test "Symbols" {
@@ -216,7 +270,11 @@ test "Symbols" {
         .{ .id = trait_int, .value = &int },
     });
 
-    const symbols = Symbols{ .shapes = shapes, .traits = traits };
+    const symbols = Symbols{
+        .service = SmithyId.NULL,
+        .shapes = shapes,
+        .traits = traits,
+    };
 
     try testing.expectEqual(.blob, symbols.getShape(shape_id));
     try testing.expectEqualDeep(&.{
@@ -231,7 +289,7 @@ test "Symbols" {
 /// All known Smithy properties.
 pub const SmithyProperty = enum(u64) {
     // If adding more properties, make sure their first 8 characters are unique.
-    collection_operations = parse("collectionOperations"),
+    collection_ops = parse("collectionOperations"),
     create = parse("create"),
     delete = parse("delete"),
     errors = parse("errors"),
@@ -273,7 +331,7 @@ pub const SmithyProperty = enum(u64) {
 };
 
 test "SmithyProperty" {
-    try testing.expectEqual(.collection_operations, SmithyProperty.of("collectionOperations"));
+    try testing.expectEqual(.collection_ops, SmithyProperty.of("collectionOperations"));
     try testing.expectEqual(.create, SmithyProperty.of("create"));
     try testing.expectEqual(.delete, SmithyProperty.of("delete"));
     try testing.expectEqual(.errors, SmithyProperty.of("errors"));
@@ -300,5 +358,8 @@ test "SmithyProperty" {
     try testing.expectEqual(.update, SmithyProperty.of("update"));
     try testing.expectEqual(.value, SmithyProperty.of("value"));
     try testing.expectEqual(.version, SmithyProperty.of("version"));
-    try testing.expectEqual(SmithyProperty.parse("U4K4OW4"), @intFromEnum(SmithyProperty.of("U4K4OW4")));
+    try testing.expectEqual(
+        SmithyProperty.parse("U4K4OW4"),
+        @intFromEnum(SmithyProperty.of("U4K4OW4")),
+    );
 }

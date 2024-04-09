@@ -11,15 +11,25 @@ const SmithyId = identity.SmithyId;
 const SmithyType = identity.SmithyType;
 
 const Self = @This();
-const ParseScope = struct {
+const Context = struct {
     id: ?[]const u8 = null,
-    hash: SmithyId = @enumFromInt(0),
-    target: ?*anyopaque = null,
+    hash: SmithyId = SmithyId.NULL,
+    target: Target = .none,
+
+    pub const Target = union(enum) {
+        none,
+        list: *std.ArrayListUnmanaged(SmithyId),
+        map: *std.ArrayListUnmanaged(Symbols.RefMapValue),
+        operation: *Symbols.Operation,
+        resource: *Symbols.Resource,
+        service: *Symbols.Service,
+    };
 };
 
 allocator: Allocator,
 reader: *JsonReader,
 manager: smntc.TraitManager,
+service: SmithyId = SmithyId.NULL,
 shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType) = .{},
 traits: std.AutoHashMapUnmanaged(SmithyId, []const Symbols.TraitValue) = .{},
 
@@ -34,39 +44,110 @@ pub fn parseJson(allocator: Allocator, json_reader: *JsonReader, traits: smntc.T
         .reader = json_reader,
         .manager = traits,
     };
-    try parser.parseProps(true, parseProp, .{});
+    try parser.parseScopeProps(.object, parseProp, .{});
     try parser.reader.nextDocumentEnd();
     return .{
+        .service = parser.service,
         .shapes = parser.shapes.move(),
         .traits = parser.traits.move(),
     };
 }
 
-const parsePropFn = fn (self: *Self, prop_id: []const u8, scope: ParseScope) anyerror!void;
-fn parseProps(self: *Self, scope_in: bool, parseFn: parsePropFn, scope: ParseScope) !void {
-    if (scope_in) try self.reader.nextObjectBegin();
-    while (try self.reader.peek() == .string) {
-        const prop_id = try self.reader.nextString();
-        try parseFn(self, prop_id, scope);
-    }
-    if (scope_in) try self.reader.nextObjectEnd();
+fn validateVersion(self: *Self) !void {
+    const version = try self.reader.nextString();
+    const valid = std.mem.eql(u8, "2.0", version) or std.mem.eql(u8, "2", version);
+    if (!valid) return error.InvalidVersion;
 }
 
-fn parseProp(self: *Self, prop_id: []const u8, scope: ParseScope) !void {
+const Scope = enum { current, object, array };
+const parseArrayPropFn = fn (self: *Self, ctx: Context) anyerror!void;
+const parseObjectPropFn = fn (self: *Self, prop_id: []const u8, ctx: Context) anyerror!void;
+fn parseScopeProps(
+    self: *Self,
+    comptime scope: Scope,
+    parseFn: if (scope == .array) parseArrayPropFn else parseObjectPropFn,
+    ctx: Context,
+) !void {
+    switch (scope) {
+        .current => while (try self.reader.peek() != .object_end) {
+            const prop_id = try self.reader.nextString();
+            try parseFn(self, prop_id, ctx);
+        },
+        .object => {
+            try self.reader.nextObjectBegin();
+            while (try self.reader.peek() != .object_end) {
+                const prop_id = try self.reader.nextString();
+                try parseFn(self, prop_id, ctx);
+            }
+            try self.reader.nextObjectEnd();
+        },
+        .array => {
+            try self.reader.nextArrayBegin();
+            while (try self.reader.peek() != .array_end) {
+                try parseFn(self, ctx);
+            }
+            try self.reader.nextArrayEnd();
+        },
+    }
+}
+
+fn parseProp(self: *Self, prop_id: []const u8, ctx: Context) !void {
     switch (identity.SmithyProperty.of(prop_id)) {
-        .smithy => try self.reader.nextStringEql("2.0"),
+        .smithy => try self.validateVersion(),
         .metadata => {
             std.log.warn("Parsing model’s metadata is not implemented.", .{});
             try self.reader.skipValueOrScope();
         },
-        .target => try self.putShape(scope.hash, SmithyId.of(try self.reader.nextString()), null),
-        .shapes => try self.parseProps(true, parseShape, .{}),
-        .members => try self.parseProps(true, parseMember, scope),
-        .member, .key, .value => try self.parseMember(prop_id, scope),
-        .traits => try self.parseTraits(scope.hash),
+        .target => try self.putShape(ctx.hash, SmithyId.of(try self.reader.nextString()), .none),
+        .shapes => try self.parseScopeProps(.object, parseShape, .{}),
+        .members => try self.parseScopeProps(.object, parseMember, ctx),
+        .traits => try self.parseTraits(ctx.hash),
+        .member, .key, .value => try self.parseMember(prop_id, ctx),
+        .version => switch (ctx.target) {
+            .service => |t| t.version = try self.allocator.dupe(u8, try self.reader.nextString()),
+            else => return error.InvalidShapeProperty,
+        },
+        inline .input, .output => |prop| switch (ctx.target) {
+            .operation => |t| try self.parseShapeRefField(t, @tagName(prop)),
+            else => return error.InvalidShapeProperty,
+        },
+        inline .create, .put, .read, .update, .delete, .list => |prop| switch (ctx.target) {
+            .resource => |t| try self.parseShapeRefField(t, @tagName(prop)),
+            else => return error.InvalidShapeProperty,
+        },
+        inline .operations, .resources => |prop| switch (ctx.target) {
+            inline .service, .resource => |t| {
+                try self.parseShapeRefList(t, @tagName(prop), false, parseShapeRefItem);
+            },
+            else => return error.InvalidShapeProperty,
+        },
+        inline .identifiers, .properties => |prop| switch (ctx.target) {
+            .resource => |t| {
+                try self.parseShapeRefList(t, @tagName(prop), true, parseShapeRefMapFrom);
+            },
+            else => return error.InvalidShapeProperty,
+        },
+        .errors => switch (ctx.target) {
+            inline .service, .operation => |t| {
+                try self.parseShapeRefList(t, "errors", false, parseShapeRefItem);
+            },
+            else => return error.InvalidShapeProperty,
+        },
+        .collection_ops => switch (ctx.target) {
+            .resource => |t| {
+                try self.parseShapeRefList(t, "collection_ops", false, parseShapeRefItem);
+            },
+            else => return error.InvalidShapeProperty,
+        },
+        .rename => switch (ctx.target) {
+            .service => |t| {
+                try self.parseShapeRefList(t, "rename", true, parseShapeRefMapTo);
+            },
+            else => return error.InvalidShapeProperty,
+        },
         else => {
-            if (scope.id) |parent|
-                std.log.warn("Unexpected property: `{s}#{s}`.", .{ parent, prop_id })
+            if (ctx.id) |parent|
+                std.log.warn("Unexpected property: `{s}${s}`.", .{ parent, prop_id })
             else
                 std.log.warn("Unexpected property: `{s}`.", .{prop_id});
             try self.reader.skipValueOrScope();
@@ -74,45 +155,155 @@ fn parseProp(self: *Self, prop_id: []const u8, scope: ParseScope) !void {
     }
 }
 
-fn parseMember(self: *Self, prop_id: []const u8, scope: ParseScope) !void {
-    const members: *std.ArrayListUnmanaged(SmithyId) = @alignCast(@ptrCast(scope.target.?));
-    const member_hash = SmithyId.compose(scope.id.?, prop_id);
-    try members.append(self.allocator, member_hash);
-    try self.parseProps(true, parseProp, .{ .id = prop_id, .hash = member_hash });
+fn parseMember(self: *Self, prop_id: []const u8, ctx: Context) !void {
+    const member_hash = SmithyId.compose(ctx.id.?, prop_id);
+    try ctx.target.list.append(self.allocator, member_hash);
+    const scp = Context{ .id = ctx.id, .hash = member_hash };
+    try self.parseScopeProps(.object, parseProp, scp);
 }
 
-fn parseShape(self: *Self, shape_id: []const u8, _: ParseScope) !void {
+fn parseShape(self: *Self, shape_id: []const u8, _: Context) !void {
     const shape_hash = SmithyId.of(shape_id);
-    var members: std.ArrayListUnmanaged(SmithyId) = .{};
     try self.reader.nextObjectBegin();
     try self.reader.nextStringEql("type");
-    const shape_type = SmithyId.of(try self.reader.nextString());
-    try self.parseProps(false, parseProp, .{ .id = shape_id, .hash = shape_hash, .target = &members });
+    const typ = SmithyId.of(try self.reader.nextString());
+    const target: Context.Target = switch (typ) {
+        .service => .{ .service = blk: {
+            const ptr = try self.allocator.create(Symbols.Service);
+            ptr.* = std.mem.zeroInit(Symbols.Service, .{});
+            break :blk ptr;
+        } },
+        .resource => .{ .resource = blk: {
+            const ptr = try self.allocator.create(Symbols.Resource);
+            ptr.* = std.mem.zeroInit(Symbols.Resource, .{});
+            break :blk ptr;
+        } },
+        .operation => .{ .operation = blk: {
+            const ptr = try self.allocator.create(Symbols.Operation);
+            ptr.* = std.mem.zeroInit(Symbols.Operation, .{});
+            break :blk ptr;
+        } },
+        else => blk: {
+            var members: std.ArrayListUnmanaged(SmithyId) = .{};
+            break :blk .{ .list = &members };
+        },
+    };
+    errdefer switch (target) {
+        inline .service, .resource, .operation => |p| self.allocator.destroy(p),
+        .list => |p| p.deinit(self.allocator),
+        else => {},
+    };
+    try self.parseScopeProps(.current, parseProp, Context{
+        .id = shape_id,
+        .hash = shape_hash,
+        .target = target,
+    });
+    try self.putShape(shape_hash, typ, target);
     try self.reader.nextObjectEnd();
-    try self.putShape(shape_hash, shape_type, try members.toOwnedSlice(self.allocator));
 }
 
-fn putShape(self: *Self, id: SmithyId, typ: SmithyId, members: ?[]const SmithyId) !void {
-    const is_member = members == null;
+fn putShape(self: *Self, id: SmithyId, typ: SmithyId, target: Context.Target) !void {
     try self.shapes.put(self.allocator, id, switch (typ) {
+        .unit => switch (target) {
+            .none => SmithyType.unit,
+            else => return error.InvalidShapeTarget,
+        },
         // zig fmt: off
         inline .blob, .boolean, .string, .byte, .short, .integer, .long,
         .float, .double, .big_integer, .big_decimal, .timestamp, .document,
             => |t| std.enums.nameCast(SmithyType, t),
         // zig fmt: on
-        .unit => if (is_member) SmithyType.unit else return error.InvalidShapeTarget,
-        .@"enum" => .{ .@"enum" = members.? },
-        .int_enum => .{ .int_enum = members.? },
-        .list => .{ .list = members.?[0] },
-        .map => .{ .map = members.?[0..2].* },
-        .structure => .{ .structure = members.? },
-        .@"union" => .{ .@"union" = members.? },
-        _ => if (is_member) .{ .target = typ } else return error.UnknownType,
+        inline .@"enum", .int_enum, .structure, .@"union" => |t| switch (target) {
+            .list => |l| @unionInit(
+                SmithyType,
+                @tagName(t),
+                try l.toOwnedSlice(self.allocator),
+            ),
+            else => return error.InvalidMemberTarget,
+        },
+        .list => switch (target) {
+            .list => |l| .{ .list = l.items[0] },
+            else => return error.InvalidMemberTarget,
+        },
+        .map => switch (target) {
+            .list => |l| .{ .map = l.items[0..2].* },
+            else => return error.InvalidMemberTarget,
+        },
+        .operation => switch (target) {
+            .operation => |val| .{ .operation = val },
+            else => return error.InvalidMemberTarget,
+        },
+        .resource => switch (target) {
+            .resource => |val| .{ .resource = val },
+            else => return error.InvalidMemberTarget,
+        },
+        .service => switch (target) {
+            .service => |val| blk: {
+                self.service = id;
+                break :blk .{ .service = val };
+            },
+            else => return error.InvalidMemberTarget,
+        },
+        _ => switch (target) {
+            .none => .{ .target = typ },
+            else => return error.UnknownType,
+        },
     });
+}
+
+fn parseShapeRefList(
+    self: *Self,
+    target: anytype,
+    comptime field: []const u8,
+    comptime map: bool,
+    parsFn: if (map) parseObjectPropFn else parseArrayPropFn,
+) !void {
+    var list = std.ArrayListUnmanaged(if (map) Symbols.RefMapValue else SmithyId){};
+    errdefer list.deinit(self.allocator);
+    if (map)
+        try self.parseScopeProps(.object, parsFn, .{ .target = .{ .map = &list } })
+    else
+        try self.parseScopeProps(.array, parsFn, .{ .target = .{ .list = &list } });
+    @field(target, field) = try list.toOwnedSlice(self.allocator);
+}
+
+fn parseShapeRefItem(self: *Self, ctx: Context) !void {
+    try ctx.target.list.append(self.allocator, try self.parseShapeRef());
+}
+
+/// `"forecastId": { "target": "smithy.api#String" }`
+fn parseShapeRefMapFrom(self: *Self, prop: []const u8, ctx: Context) !void {
+    const shape = try self.parseShapeRef();
+    const name = try self.allocator.dupe(u8, prop);
+    try ctx.target.map.append(self.allocator, .{ .name = name, .shape = shape });
+}
+
+/// `"foo.example#Widget": "FooWidget"`
+fn parseShapeRefMapTo(self: *Self, prop: []const u8, ctx: Context) !void {
+    const shape = SmithyId.of(prop);
+    const name = try self.allocator.dupe(u8, try self.reader.nextString());
+    try ctx.target.map.append(self.allocator, .{ .name = name, .shape = shape });
+}
+
+fn parseShapeRefField(self: *Self, target: anytype, comptime field: []const u8) !void {
+    @field(target, field) = try self.parseShapeRef();
+}
+
+/// An AST shape reference is an object with only a `target` property that maps
+/// to an absolute shape ID.
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/json-ast.html#ast-shape-reference)
+fn parseShapeRef(self: *Self) !SmithyId {
+    try self.reader.nextObjectBegin();
+    try self.reader.nextStringEql("target");
+    const shape_ref = SmithyId.of(try self.reader.nextString());
+    try self.reader.nextObjectEnd();
+    return shape_ref;
 }
 
 fn parseTraits(self: *Self, parent_hash: SmithyId) !void {
     var traits: std.ArrayListUnmanaged(Symbols.TraitValue) = .{};
+    errdefer traits.deinit(self.allocator);
     try self.reader.nextObjectBegin();
     while (try self.reader.peek() == .string) {
         const trait_id = try self.reader.nextString();
@@ -230,6 +421,50 @@ test "parseJson" {
     );
     try testing.expectEqual(.string, symbols.getShape(SmithyId.of("test.aggregate#Union$a")));
     try testing.expectEqual(.integer, symbols.getShape(SmithyId.of("test.aggregate#Union$b")));
+
+    try testing.expectEqualDeep(SmithyType{
+        .operation = &.{
+            .input = SmithyId.of("test.operation#Input"),
+            .output = SmithyId.of("test.operation#Output"),
+            .errors = &.{
+                SmithyId.of("test.error#BadRequestError"),
+                SmithyId.of("test.error#NotFoundError"),
+            },
+        },
+    }, symbols.getShape(SmithyId.of("test.serve#Operation")));
+
+    try testing.expectEqualDeep(SmithyType{
+        .resource = &.{
+            .identifiers = &.{
+                .{ .name = "forecastId", .shape = SmithyId.of("smithy.api#String") },
+            },
+            .create = SmithyId.of("test.resource#Create"),
+            .read = SmithyId.of("test.resource#Get"),
+            .update = SmithyId.of("test.resource#Update"),
+            .delete = SmithyId.of("test.resource#Delete"),
+            .list = SmithyId.of("test.resource#List"),
+            .operations = &.{SmithyId.of("test.resource#InstanceOperation")},
+            .collection_ops = &.{SmithyId.of("test.resource#CollectionOperation")},
+            .resources = &.{SmithyId.of("test.resource#OtherResource")},
+        },
+    }, symbols.getShape(SmithyId.of("test.serve#Resource")));
+
+    try testing.expectEqualDeep(SmithyType{
+        .service = &.{
+            .version = "2017-02-11",
+            .operations = &.{SmithyId.of("test.serve#Operation")},
+            .resources = &.{SmithyId.of("test.serve#Resource")},
+            .errors = &.{SmithyId.of("test.serve#Error")},
+            .rename = &.{
+                .{ .name = "NewFoo", .shape = SmithyId.of("foo.example#Foo") },
+                .{ .name = "NewBar", .shape = SmithyId.of("bar.example#Bar") },
+            },
+        },
+    }, symbols.getShape(SmithyId.of("test.serve#Service")));
+    try testing.expectEqual(
+        108,
+        symbols.getTrait(SmithyId.of("test.serve#Service"), SmithyId.of("test.trait#Int"), i64),
+    );
 }
 
 const TestTraits = struct {

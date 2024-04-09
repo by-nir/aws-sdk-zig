@@ -108,6 +108,87 @@
           "target": "smithy.api#Integer"
         }
       }
+    },
+    "test.serve#Operation": {
+      "type": "operation",
+      "input": {
+        "target": "test.operation#Input"
+      },
+      "output": {
+        "target": "test.operation#Output"
+      },
+      "errors": [
+        {
+          "target": "test.error#BadRequestError"
+        },
+        {
+          "target": "test.error#NotFoundError"
+        }
+      ]
+    },
+    "test.serve#Resource": {
+      "type": "resource",
+      "identifiers": {
+        "forecastId": {
+          "target": "smithy.api#String"
+        }
+      },
+      "create": {
+        "target": "test.resource#Create"
+      },
+      "read": {
+        "target": "test.resource#Get"
+      },
+      "update": {
+        "target": "test.resource#Update"
+      },
+      "delete": {
+        "target": "test.resource#Delete"
+      },
+      "list": {
+        "target": "test.resource#List"
+      },
+      "operations": [
+        {
+          "target": "test.resource#InstanceOperation"
+        }
+      ],
+      "collectionOperations": [
+        {
+          "target": "test.resource#CollectionOperation"
+        }
+      ],
+      "resources": [
+        {
+          "target": "test.resource#OtherResource"
+        }
+      ]
+    },
+    "test.serve#Service": {
+      "type": "service",
+      "version": "2017-02-11",
+      "operations": [
+        {
+          "target": "test.serve#Operation"
+        }
+      ],
+      "resources": [
+        {
+          "target": "test.serve#Resource"
+        }
+      ],
+      "errors": [
+        {
+          "target": "test.serve#Error"
+        }
+      ],
+      "traits": {
+        "test.trait#Int": 108
+      },
+      "rename": {
+        "foo.example#Foo": "NewFoo",
+        "bar.example#Bar": "NewBar"
+      }
     }
   }
 }

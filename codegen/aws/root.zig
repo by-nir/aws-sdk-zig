@@ -1,7 +1,6 @@
 const std = @import("std");
 const fs = std.fs;
 const Allocator = std.mem.Allocator;
-const assert = std.debug.assert;
 const options = @import("options");
 const filter: []const []const u8 = options.filter;
 const models_path: []const u8 = options.models_path;
@@ -87,15 +86,14 @@ pub fn main() !void {
     }
 
     const secs = @as(f64, @floatFromInt(duration)) / std.time.ns_per_s;
-    const suffix = if (models_len == 1) " " else "s";
     std.log.info("\n\n" ++
-        \\╭─ SDK CodeGen ───── {d:.2} sec ─╮
+        \\╭─ SDK CodeGen ──────── {d:.2}s ─╮
         \\│                              │
-        \\│  Service{s} {d:17}  │
+        \\│  Services {d:17}  │
         \\│  Shapes {d:19}  │
         \\│                              │
         \\╰──────────────────────────────╯
-    ++ "\n", .{ secs, suffix, models_len, shapes_len });
+    ++ "\n", .{ secs, models_len, shapes_len });
 }
 
 fn openFile(models_dir: fs.Dir, filename: []const u8) !fs.File {
