@@ -8,7 +8,12 @@
       }
     },
     "test.simple#Boolean": {
-      "type": "boolean"
+      "type": "boolean",
+      "mixins": [
+        {
+          "target": "test.mixin#Mixin"
+        }
+      ]
     },
     "test.simple#Document": {
       "type": "document"
@@ -94,7 +99,10 @@
           }
         },
         "numberMember": {
-          "target": "smithy.api#Integer"
+          "target": "smithy.api#Integer",
+          "traits": {
+            "test.trait#Void": {}
+          }
         }
       }
     },
@@ -188,6 +196,12 @@
       "rename": {
         "foo.example#Foo": "NewFoo",
         "bar.example#Bar": "NewBar"
+      }
+    },
+    "test.aggregate#Structure$numberMember": {
+      "type": "apply",
+      "traits": {
+        "test.trait#Int": 108
       }
     }
   }

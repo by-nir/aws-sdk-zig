@@ -41,6 +41,7 @@ pub const SmithyId = enum(u32) {
     operation = hash32("operation"),
     resource = hash32("resource"),
     service = hash32("service"),
+    apply = hash32("apply"),
     _,
 
     /// Type name or absalute shape id.
@@ -175,9 +176,14 @@ pub const Symbols = struct {
     service: SmithyId,
     shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType),
     traits: std.AutoHashMapUnmanaged(SmithyId, []const TraitValue),
+    mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId),
 
     pub fn getShape(self: Symbols, id: SmithyId) ?SmithyType {
         return self.shapes.get(id);
+    }
+
+    pub fn getMixins(self: Symbols, shape_id: SmithyId) ?[]const SmithyId {
+        return self.mixins.get(shape_id) orelse null;
     }
 
     pub fn getTraits(self: Symbols, shape_id: SmithyId) ?[]const TraitValue {
@@ -270,25 +276,38 @@ test "Symbols" {
         .{ .id = trait_int, .value = &int },
     });
 
+    var mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId) = .{};
+    defer mixins.deinit(test_alloc);
+    try mixins.put(test_alloc, shape_id, &.{
+        SmithyId.of("test.mixin#Foo"),
+        SmithyId.of("test.mixin#Bar"),
+    });
+
     const symbols = Symbols{
         .service = SmithyId.NULL,
         .shapes = shapes,
         .traits = traits,
+        .mixins = mixins,
     };
 
     try testing.expectEqual(.blob, symbols.getShape(shape_id));
+
+    try testing.expectEqualDeep(
+        &.{ SmithyId.of("test.mixin#Foo"), SmithyId.of("test.mixin#Bar") },
+        symbols.getMixins(shape_id),
+    );
+
     try testing.expectEqualDeep(&.{
         Symbols.TraitValue{ .id = trait_void, .value = null },
         Symbols.TraitValue{ .id = trait_int, .value = &int },
-    }, symbols.getTraits(shape_id).?);
-
+    }, symbols.getTraits(shape_id));
     try testing.expect(symbols.hasTrait(shape_id, trait_void));
     try testing.expectEqual(108, symbols.getTrait(shape_id, trait_int, u8));
 }
 
 /// All known Smithy properties.
+// NOTICE: If adding more properties, make sure their first 8 characters are unique.
 pub const SmithyProperty = enum(u64) {
-    // If adding more properties, make sure their first 8 characters are unique.
     collection_ops = parse("collectionOperations"),
     create = parse("create"),
     delete = parse("delete"),

@@ -32,6 +32,7 @@ manager: smntc.TraitManager,
 service: SmithyId = SmithyId.NULL,
 shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType) = .{},
 traits: std.AutoHashMapUnmanaged(SmithyId, []const Symbols.TraitValue) = .{},
+mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId) = .{},
 
 /// Parse raw JSON into collection of Smithy symbols.
 ///
@@ -44,12 +45,20 @@ pub fn parseJson(allocator: Allocator, json_reader: *JsonReader, traits: smntc.T
         .reader = json_reader,
         .manager = traits,
     };
+    errdefer {
+        parser.shapes.deinit(allocator);
+        parser.traits.deinit(allocator);
+        parser.mixins.deinit(allocator);
+    }
+
     try parser.parseScopeProps(.object, parseProp, .{});
     try parser.reader.nextDocumentEnd();
+
     return .{
         .service = parser.service,
         .shapes = parser.shapes.move(),
         .traits = parser.traits.move(),
+        .mixins = parser.mixins.move(),
     };
 }
 
@@ -94,6 +103,10 @@ fn parseScopeProps(
 fn parseProp(self: *Self, prop_id: []const u8, ctx: Context) !void {
     switch (identity.SmithyProperty.of(prop_id)) {
         .smithy => try self.validateVersion(),
+        .version => switch (ctx.target) {
+            .service => |t| t.version = try self.allocator.dupe(u8, try self.reader.nextString()),
+            else => return error.InvalidShapeProperty,
+        },
         .metadata => {
             std.log.warn("Parsing model’s metadata is not implemented.", .{});
             try self.reader.skipValueOrScope();
@@ -101,12 +114,9 @@ fn parseProp(self: *Self, prop_id: []const u8, ctx: Context) !void {
         .target => try self.putShape(ctx.hash, SmithyId.of(try self.reader.nextString()), .none),
         .shapes => try self.parseScopeProps(.object, parseShape, .{}),
         .members => try self.parseScopeProps(.object, parseMember, ctx),
-        .traits => try self.parseTraits(ctx.hash),
         .member, .key, .value => try self.parseMember(prop_id, ctx),
-        .version => switch (ctx.target) {
-            .service => |t| t.version = try self.allocator.dupe(u8, try self.reader.nextString()),
-            else => return error.InvalidShapeProperty,
-        },
+        .traits => try self.parseTraits(ctx.hash),
+        .mixins => try self.parseMixins(ctx.hash),
         inline .input, .output => |prop| switch (ctx.target) {
             .operation => |t| try self.parseShapeRefField(t, @tagName(prop)),
             else => return error.InvalidShapeProperty,
@@ -155,19 +165,21 @@ fn parseProp(self: *Self, prop_id: []const u8, ctx: Context) !void {
     }
 }
 
-fn parseMember(self: *Self, prop_id: []const u8, ctx: Context) !void {
-    const member_hash = SmithyId.compose(ctx.id.?, prop_id);
-    try ctx.target.list.append(self.allocator, member_hash);
-    const scp = Context{ .id = ctx.id, .hash = member_hash };
-    try self.parseScopeProps(.object, parseProp, scp);
-}
-
 fn parseShape(self: *Self, shape_id: []const u8, _: Context) !void {
     const shape_hash = SmithyId.of(shape_id);
     try self.reader.nextObjectBegin();
     try self.reader.nextStringEql("type");
     const typ = SmithyId.of(try self.reader.nextString());
     const target: Context.Target = switch (typ) {
+        .apply => {
+            try self.parseScopeProps(.current, parseProp, Context{
+                .id = shape_id,
+                .hash = shape_hash,
+            });
+            // Not a standalone shape, skip the creation/override of a shape symbol.
+            try self.reader.nextObjectEnd();
+            return;
+        },
         .service => .{ .service = blk: {
             const ptr = try self.allocator.create(Symbols.Service);
             ptr.* = std.mem.zeroInit(Symbols.Service, .{});
@@ -244,11 +256,19 @@ fn putShape(self: *Self, id: SmithyId, typ: SmithyId, target: Context.Target) !v
             },
             else => return error.InvalidMemberTarget,
         },
+        .apply => unreachable,
         _ => switch (target) {
             .none => .{ .target = typ },
             else => return error.UnknownType,
         },
     });
+}
+
+fn parseMember(self: *Self, prop_id: []const u8, ctx: Context) !void {
+    const member_hash = SmithyId.compose(ctx.id.?, prop_id);
+    try ctx.target.list.append(self.allocator, member_hash);
+    const scp = Context{ .id = ctx.id, .hash = member_hash };
+    try self.parseScopeProps(.object, parseProp, scp);
 }
 
 fn parseShapeRefList(
@@ -324,8 +344,25 @@ fn parseTraits(self: *Self, parent_hash: SmithyId) !void {
     }
     try self.reader.nextObjectEnd();
     if (traits.items.len == 0) return;
+
+    // ‘Apply’ types add external traits, in this case we merge the lists.
+    if (self.traits.getPtr(parent_hash)) |items| {
+        try traits.appendSlice(self.allocator, items.*);
+        self.allocator.free(items.*);
+    }
+
     const slice = try traits.toOwnedSlice(self.allocator);
     try self.traits.put(self.allocator, parent_hash, slice);
+}
+
+fn parseMixins(self: *Self, parent_hash: SmithyId) !void {
+    var mixins = std.ArrayListUnmanaged(SmithyId){};
+
+    try self.parseScopeProps(.array, parseShapeRefItem, .{
+        .target = .{ .list = &mixins },
+    });
+    const slice = try mixins.toOwnedSlice(self.allocator);
+    try self.mixins.put(self.allocator, parent_hash, slice);
 }
 
 test "parseJson" {
@@ -338,6 +375,7 @@ test "parseJson" {
     const src: []const u8 = @embedFile("tests/shapes.json");
     var stream = std.io.fixedBufferStream(src);
     var reader = JsonReader.init(test_alloc, stream.reader().any());
+    errdefer reader.deinit();
 
     var output_arena = std.heap.ArenaAllocator.init(test_alloc);
     defer output_arena.deinit();
@@ -346,9 +384,17 @@ test "parseJson" {
     reader.deinit(); // We despose the reader to make sure the required data is copied.
 
     try testing.expectEqual(.blob, symbols.getShape(SmithyId.of("test.simple#Blob")));
-    try testing.expect(symbols.hasTrait(SmithyId.of("test.simple#Blob"), SmithyId.of("test.trait#Void")));
+    try testing.expect(symbols.hasTrait(
+        SmithyId.of("test.simple#Blob"),
+        SmithyId.of("test.trait#Void"),
+    ));
 
     try testing.expectEqual(.boolean, symbols.getShape(SmithyId.of("test.simple#Boolean")));
+    try testing.expectEqualDeep(
+        &.{SmithyId.of("test.mixin#Mixin")},
+        symbols.getMixins(SmithyId.of("test.simple#Boolean")),
+    );
+
     try testing.expectEqual(.document, symbols.getShape(SmithyId.of("test.simple#Document")));
     try testing.expectEqual(.string, symbols.getShape(SmithyId.of("test.simple#String")));
     try testing.expectEqual(.byte, symbols.getShape(SmithyId.of("test.simple#Byte")));
@@ -404,12 +450,19 @@ test "parseJson" {
         } },
         symbols.getShape(SmithyId.of("test.aggregate#Structure")),
     );
-    try testing.expectEqual(.integer, symbols.getShape(SmithyId.of("test.aggregate#Structure$numberMember")));
     try testing.expectEqual(.string, symbols.getShape(SmithyId.of("test.aggregate#Structure$stringMember")));
     try testing.expect(symbols.hasTrait(SmithyId.of("test.aggregate#Structure$stringMember"), SmithyId.of("test.trait#Void")));
     try testing.expectEqual(
         108,
         symbols.getTrait(SmithyId.of("test.aggregate#Structure$stringMember"), SmithyId.of("test.trait#Int"), i64),
+    );
+
+    try testing.expectEqual(.integer, symbols.getShape(SmithyId.of("test.aggregate#Structure$numberMember")));
+    // The traits merged with external `apply` traits.
+    try testing.expect(symbols.hasTrait(SmithyId.of("test.aggregate#Structure$numberMember"), SmithyId.of("test.trait#Void")));
+    try testing.expectEqual(
+        108,
+        symbols.getTrait(SmithyId.of("test.aggregate#Structure$numberMember"), SmithyId.of("test.trait#Int"), i64),
     );
 
     try testing.expectEqualDeep(
