@@ -1,11 +1,16 @@
 const std = @import("std");
-const json = std.json;
 const mem = std.mem;
 const Allocator = mem.Allocator;
+const json = std.json;
+const isIntegerFormat = json.isNumberFormattedLikeAnInteger;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 
 const Self = @This();
+pub const Number = union(enum) {
+    integer: i64,
+    float: f64,
+};
 
 allocator: Allocator,
 source: json.Reader(json.default_buffer_size, std.io.AnyReader),
@@ -69,39 +74,51 @@ pub fn nextNull(self: *Self) !void {
 }
 
 /// Get the next token, assuming it is a boolean value.
-pub fn nextBool(self: *Self) !bool {
+pub fn nextBoolean(self: *Self) !bool {
     const token = try self.next();
     return switch (token) {
         .true => true,
         .false => false,
-        else => unreachable,
+        else => error.UnexpectedSyntax,
+    };
+}
+
+pub fn nextNumber(self: *Self) !Number {
+    const token = try self.next();
+    return switch (token) {
+        .number, .allocated_number => |bytes| if (isIntegerFormat(bytes))
+            .{ .integer = try std.fmt.parseInt(i64, bytes, 10) }
+        else
+            .{ .float = try std.fmt.parseFloat(f64, bytes) },
+        .partial_number => unreachable, // Not used by `json.Reader`
+        else => error.UnexpectedSyntax,
     };
 }
 
 /// Get the next token, assuming it is an integer value.
-pub fn nextNumber(self: *Self) !i64 {
+pub fn nextInteger(self: *Self) !i64 {
     const token = try self.next();
-    switch (token) {
-        .number, .allocated_number => |bytes| {
-            std.debug.assert(json.isNumberFormattedLikeAnInteger(bytes));
-            return std.fmt.parseInt(i64, bytes, 10);
-        },
+    return switch (token) {
+        .number, .allocated_number => |bytes| if (isIntegerFormat(bytes))
+            std.fmt.parseInt(i64, bytes, 10)
+        else
+            error.UnexpectedSyntax,
         .partial_number => unreachable, // Not used by `json.Reader`
-        else => unreachable,
-    }
+        else => error.UnexpectedSyntax,
+    };
 }
 
 /// Get the next token, assuming it is a float value.
 pub fn nextFloat(self: *Self) !f64 {
     const token = try self.next();
-    switch (token) {
-        .number, .allocated_number => |bytes| {
-            std.debug.assert(!json.isNumberFormattedLikeAnInteger(bytes));
-            return std.fmt.parseFloat(f64, bytes);
-        },
+    return switch (token) {
+        .number, .allocated_number => |bytes| if (!isIntegerFormat(bytes))
+            std.fmt.parseFloat(f64, bytes)
+        else
+            error.UnexpectedSyntax,
         .partial_number => unreachable, // Not used by `json.Reader`
-        else => unreachable,
-    }
+        else => error.UnexpectedSyntax,
+    };
 }
 
 /// Get the next token, assuming it is a string value.
@@ -110,10 +127,9 @@ pub fn nextString(self: *Self) ![]const u8 {
     return switch (token) {
         .string, .allocated_string => |s| s,
         .partial_string, .partial_string_escaped_1, .partial_string_escaped_2, .partial_string_escaped_3, .partial_string_escaped_4 => {
-            // Not used by `json.Reader`
-            unreachable;
+            unreachable; // Not used by `json.Reader`
         },
-        else => unreachable,
+        else => error.UnexpectedSyntax,
     };
 }
 
@@ -126,7 +142,7 @@ pub fn nextStringEql(self: *Self, expectd: []const u8) !void {
 /// Assumes we already consumed the initial `*_begin`.
 pub fn skipCurrentScope(self: *Self) !void {
     const current = self.source.stackHeight();
-    std.debug.assert(current > 0);
+    if (current == 0) return error.UnexpectedSyntax;
     try self.source.skipUntilStackHeight(current -| 1);
 }
 
@@ -145,9 +161,11 @@ test "JsonReader" {
     const input: []const u8 =
         \\{
         \\  "key": "val",
-        \\  "num_pos": 108,
-        \\  "num_neg": -108,
-        \\  "num_flt": 1.08,
+        \\  "int_pos": 108,
+        \\  "int_neg": -108,
+        \\  "flt": 1.08,
+        \\  "num_a": 108,
+        \\  "num_b": 1.08,
         \\  "arr": [null, true, false],
         \\  "obj": { "foo": "bar" },
         \\  "obj_nest": { "foo": { "bar": { "baz": "qux" } } },
@@ -167,19 +185,26 @@ test "JsonReader" {
     try testing.expectEqualDeep(json.Token{ .string = "key" }, reader.next());
     try testing.expectEqualStrings("val", try reader.nextString());
 
-    try reader.nextStringEql("num_pos");
-    try testing.expectEqual(108, reader.nextNumber());
-    try reader.nextStringEql("num_neg");
-    try testing.expectEqual(-108, reader.nextNumber());
+    try reader.nextStringEql("int_pos");
+    try testing.expectEqual(108, reader.nextInteger());
+    try reader.nextStringEql("int_neg");
+    try testing.expectEqual(-108, reader.nextInteger());
+    try reader.nextStringEql("flt");
+    try testing.expect(
+        std.math.approxEqAbs(f64, 1.08, try reader.nextFloat(), std.math.floatEps(f64)),
+    );
 
-    try reader.nextStringEql("num_flt");
-    try testing.expect(std.math.approxEqAbs(f64, 1.08, try reader.nextFloat(), std.math.floatEps(f64)));
+    try reader.nextStringEql("num_a");
+    try testing.expectEqualDeep(Number{ .integer = 108 }, reader.nextNumber());
+
+    try reader.nextStringEql("num_b");
+    try testing.expectEqualDeep(Number{ .float = 1.08 }, reader.nextNumber());
 
     try reader.nextStringEql("arr");
     try reader.nextArrayBegin();
     try reader.nextNull();
-    try testing.expectEqual(true, reader.nextBool());
-    try testing.expectEqual(false, reader.nextBool());
+    try testing.expectEqual(true, reader.nextBoolean());
+    try testing.expectEqual(false, reader.nextBoolean());
     try reader.nextArrayEnd();
 
     try reader.nextStringEql("obj");

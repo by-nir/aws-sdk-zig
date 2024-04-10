@@ -1,5 +1,16 @@
 {
   "smithy": "2.0",
+  "metadata": {
+    "nul": null,
+    "bol": true,
+    "int": 108,
+    "flt": 1.08,
+    "str": "foo",
+    "lst": [108, 109],
+    "map": {
+      "key": 108
+    }
+  },
   "shapes": {
     "test.simple#Blob": {
       "type": "blob",
