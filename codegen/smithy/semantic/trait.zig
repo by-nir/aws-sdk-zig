@@ -88,11 +88,9 @@ test "TraitManager" {
     const test_trait = TestTrait{ .skip = 2 };
     try manager.register(test_alloc, test_id, test_trait.trait());
 
-    const test_json =
+    var reader = try JsonReader.initFixed(test_alloc,
         \\["foo", "bar", "baz", "qux"]
-    ;
-    var stream = std.io.fixedBufferStream(test_json);
-    var reader = JsonReader.init(test_alloc, stream.reader().any());
+    );
     defer reader.deinit();
 
     _ = try reader.next();

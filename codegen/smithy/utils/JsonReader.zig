@@ -7,34 +7,64 @@ const testing = std.testing;
 const test_alloc = testing.allocator;
 
 const Self = @This();
-pub const Number = union(enum) {
-    integer: i64,
-    float: f64,
+const Source = union(enum) {
+    file: std.fs.File.Reader,
+    fixed: struct {
+        stream: std.io.FixedBufferStream([]const u8),
+        reader: std.io.FixedBufferStream([]const u8).Reader,
+    },
+
+    fn deinit(self: *Source, allocator: Allocator) void {
+        allocator.destroy(self);
+    }
 };
 
-allocator: Allocator,
-source: json.Reader(json.default_buffer_size, std.io.AnyReader),
+pub const Scope = enum { current, object, array };
+pub const Number = union(enum) { integer: i64, float: f64 };
 
-pub fn init(allocator: Allocator, source: std.io.AnyReader) Self {
+allocator: Allocator,
+source: *Source,
+scanner: json.Reader(json.default_buffer_size, std.io.AnyReader),
+
+pub fn initFixed(allocator: Allocator, slice: []const u8) !Self {
+    const source = try allocator.create(Source);
+    source.* = .{ .fixed = .{
+        .stream = std.io.fixedBufferStream(slice),
+        .reader = undefined,
+    } };
+    const stream_reader = &source.fixed.reader;
+    stream_reader.* = source.fixed.stream.reader();
     return .{
         .allocator = allocator,
-        .source = std.json.reader(allocator, source),
+        .source = source,
+        .scanner = std.json.reader(allocator, stream_reader.any()),
+    };
+}
+
+pub fn initFile(allocator: Allocator, file: std.fs.File) !Self {
+    const source = try allocator.create(Source);
+    source.* = .{ .file = file.reader() };
+    return .{
+        .allocator = allocator,
+        .source = source,
+        .scanner = std.json.reader(allocator, source.file.any()),
     };
 }
 
 pub fn deinit(self: *Self) void {
-    self.source.deinit();
+    self.scanner.deinit();
+    self.source.deinit(self.allocator);
     self.* = undefined;
 }
 
 /// Get the next token’s type without consuming it.
 pub fn peek(self: *Self) !json.TokenType {
-    return try self.source.peekNextTokenType();
+    return try self.scanner.peekNextTokenType();
 }
 
 /// Consume the following token.
 pub fn next(self: *Self) !json.Token {
-    return try self.source.nextAlloc(self.allocator, .alloc_if_needed);
+    return try self.scanner.nextAlloc(self.allocator, .alloc_if_needed);
 }
 
 /// Get the next token, assuming it is an object.
@@ -141,24 +171,95 @@ pub fn nextStringEql(self: *Self, expectd: []const u8) !void {
 
 /// Assumes we already consumed the initial `*_begin`.
 pub fn skipCurrentScope(self: *Self) !void {
-    const current = self.source.stackHeight();
+    const current = self.scanner.stackHeight();
     if (current == 0) return error.UnexpectedSyntax;
-    try self.source.skipUntilStackHeight(current -| 1);
+    try self.scanner.skipUntilStackHeight(current -| 1);
 }
 
 /// Skips the following value, array, or object.
 pub fn skipValueOrScope(self: *Self) !void {
     switch (try self.next()) {
         .object_begin, .array_begin => {
-            const target = self.source.stackHeight() - 1;
-            try self.source.skipUntilStackHeight(target);
+            const target = self.scanner.stackHeight() - 1;
+            try self.scanner.skipUntilStackHeight(target);
         },
         else => {},
     }
 }
 
+pub fn NextScopeFn(Context: type, scope: Scope, Payload: type) type {
+    return if (Payload == void) switch (scope) {
+        .array => fn (ctx: Context) anyerror!void,
+        .object, .current => fn (ctx: Context, key: []const u8) anyerror!void,
+    } else switch (scope) {
+        .array => fn (ctx: Context, payload: Payload) anyerror!void,
+        .object, .current => fn (ctx: Context, key: []const u8, payload: Payload) anyerror!void,
+    };
+}
+
+pub fn nextScope(
+    self: *Self,
+    Context: type,
+    comptime scope: Scope,
+    comptime Payload: type,
+    comptime itemFn: NextScopeFn(Context, scope, Payload),
+    ctx: Context,
+    payload: Payload,
+) !void {
+    const is_void = comptime Payload == void;
+    switch (scope) {
+        inline .object, .current => |s| {
+            const is_obj = s == .object;
+            if (is_obj) try self.nextObjectBegin();
+            while (try self.peek() == .string) {
+                const key = try self.nextString();
+                try if (is_void) itemFn(ctx, key) else itemFn(ctx, key, payload);
+            }
+            if (is_obj) try self.nextObjectEnd();
+        },
+        .array => {
+            try self.nextArrayBegin();
+            while (try self.peek() != .array_end) {
+                try if (is_void) itemFn(ctx) else itemFn(ctx, payload);
+            }
+            try self.nextArrayEnd();
+        },
+    }
+}
+
+test "nextScope" {
+    const TestFns = struct {
+        pub var first: bool = true;
+
+        pub fn nextObject(self: *Self, key: []const u8) !void {
+            try testing.expectEqualStrings(if (first) "a" else "b", key);
+            try testing.expectEqual(@as(i64, if (first) 108 else 109), self.nextInteger());
+            first = false;
+        }
+
+        pub fn nextArray(self: *Self) !void {
+            try testing.expectEqual(@as(i64, if (first) 108 else 109), self.nextInteger());
+            first = false;
+        }
+    };
+
+    var reader = try initFixed(test_alloc,
+        \\{ "a": 108, "b": 109 }
+    );
+    errdefer reader.deinit();
+
+    TestFns.first = true;
+    try reader.nextScope(*Self, .object, void, TestFns.nextObject, &reader, {});
+    reader.deinit();
+
+    TestFns.first = true;
+    reader = try initFixed(test_alloc, "[ 108, 109 ]");
+    try reader.nextScope(*Self, .array, void, TestFns.nextArray, &reader, {});
+    reader.deinit();
+}
+
 test "JsonReader" {
-    const input: []const u8 =
+    var reader = try initFixed(test_alloc,
         \\{
         \\  "key": "val",
         \\  "int_pos": 108,
@@ -173,10 +274,7 @@ test "JsonReader" {
         \\  "skip_any_a": {},
         \\  "skip_any_b": []
         \\}
-    ;
-
-    var stream = std.io.fixedBufferStream(input);
-    var reader = init(test_alloc, stream.reader().any());
+    );
     defer reader.deinit();
 
     try testing.expectEqual(.object_begin, reader.peek());

@@ -42,7 +42,7 @@ pub fn main() !void {
             const file = try openFile(models_dir, filename);
             defer file.close();
 
-            var reader = JsonReader.init(input_arena.allocator(), file.reader().any());
+            var reader = try JsonReader.initFile(input_arena.allocator(), file);
             defer reader.deinit();
 
             if (processModelFile(

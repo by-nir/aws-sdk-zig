@@ -13,9 +13,6 @@ const SmithyMeta = identity.SmithyMeta;
 
 const Self = @This();
 
-const Scope = enum { current, object, array };
-const parseArrayPropFn = fn (self: *Self, ctx: Context) anyerror!void;
-const parseObjectPropFn = fn (self: *Self, prop_id: []const u8, ctx: Context) anyerror!void;
 const Context = struct {
     id: ?[]const u8 = null,
     hash: SmithyId = SmithyId.NULL,
@@ -75,31 +72,11 @@ pub fn parseJson(arena: Allocator, json_reader: *JsonReader, traits: smntc.Trait
 
 fn parseScope(
     self: *Self,
-    comptime scope: Scope,
-    parseFn: if (scope == .array) parseArrayPropFn else parseObjectPropFn,
+    comptime scope: JsonReader.Scope,
+    comptime parseFn: JsonReader.NextScopeFn(*Self, scope, Context),
     ctx: Context,
 ) !void {
-    switch (scope) {
-        .current => while (try self.reader.peek() != .object_end) {
-            const prop_id = try self.reader.nextString();
-            try parseFn(self, prop_id, ctx);
-        },
-        .object => {
-            try self.reader.nextObjectBegin();
-            while (try self.reader.peek() != .object_end) {
-                const prop_id = try self.reader.nextString();
-                try parseFn(self, prop_id, ctx);
-            }
-            try self.reader.nextObjectEnd();
-        },
-        .array => {
-            try self.reader.nextArrayBegin();
-            while (try self.reader.peek() != .array_end) {
-                try parseFn(self, ctx);
-            }
-            try self.reader.nextArrayEnd();
-        },
-    }
+    try self.reader.nextScope(*Self, scope, Context, parseFn, self, ctx);
 }
 
 fn parseProp(self: *Self, prop_id: []const u8, ctx: Context) !void {
@@ -176,7 +153,7 @@ fn parseShapeRefList(
     target: anytype,
     comptime field: []const u8,
     comptime map: bool,
-    parsFn: if (map) parseObjectPropFn else parseArrayPropFn,
+    parsFn: JsonReader.NextScopeFn(*Self, if (map) .object else .array, Context),
 ) !void {
     var list = std.ArrayListUnmanaged(if (map) Symbols.RefMapValue else SmithyId){};
     errdefer list.deinit(self.arena);
@@ -428,9 +405,7 @@ test "parseJson" {
     var input_arena = std.heap.ArenaAllocator.init(test_alloc);
     errdefer input_arena.deinit();
 
-    const src: []const u8 = @embedFile("tests/shapes.json");
-    var stream = std.io.fixedBufferStream(src);
-    var reader = JsonReader.init(input_arena.allocator(), stream.reader().any());
+    var reader = try JsonReader.initFixed(input_arena.allocator(), @embedFile("tests/shapes.json"));
     errdefer reader.deinit();
 
     var output_arena = std.heap.ArenaAllocator.init(test_alloc);
