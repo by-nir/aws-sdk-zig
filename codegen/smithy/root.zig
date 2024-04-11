@@ -1,15 +1,16 @@
 pub const JsonReader = @import("utils/JsonReader.zig");
 
-const trait = @import("semantic/trait.zig");
-pub const TraitManager = trait.TraitManager;
+const symbols_traits = @import("symbols/traits.zig");
+pub const TraitsManager = symbols_traits.TraitsManager;
 
 const Parser = @import("Parser.zig");
 pub const parseJson = Parser.parseJson;
 
 test {
     _ = JsonReader;
-    _ = @import("semantic/identity.zig");
-    _ = trait;
+    _ = @import("symbols/identity.zig");
+    _ = symbols_traits;
+    _ = @import("symbols/shapes.zig");
     _ = @import("prelude.zig");
     _ = Parser;
 }

@@ -2,15 +2,15 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = std.testing.allocator;
-const SmithyId = @import("identity.zig").SmithyId;
 const JsonReader = @import("../utils/JsonReader.zig");
+const SmithyId = @import("identity.zig").SmithyId;
 
 /// Traits are model components that can be attached to shapes to describe additional
 /// information about the shape; shapes provide the structure and layout of an API,
 /// while traits provide refinement and style.
 ///
 /// [Smithy Spec](https://smithy.io/2.0/spec/model.html#traits)
-pub const Trait = struct {
+pub const SmithyTrait = struct {
     ctx: *const anyopaque,
     vtable: *const VTable,
 
@@ -20,7 +20,7 @@ pub const Trait = struct {
 
     /// Parse the trait’s value from the source JSON AST, which will be used
     /// during the source generation.
-    pub fn parse(self: Trait, allocator: Allocator, reader: *JsonReader) !?*const anyopaque {
+    pub fn parse(self: SmithyTrait, allocator: Allocator, reader: *JsonReader) !?*const anyopaque {
         if (self.vtable.parse) |parseFn| {
             // Parse trait’s value
             return parseFn(self.ctx, allocator, reader);
@@ -32,19 +32,19 @@ pub const Trait = struct {
     }
 };
 
-pub const TraitManager = struct {
-    traits: std.AutoHashMapUnmanaged(SmithyId, Trait) = .{},
+pub const TraitsManager = struct {
+    traits: std.AutoHashMapUnmanaged(SmithyId, SmithyTrait) = .{},
 
-    pub fn deinit(self: *TraitManager, allocator: Allocator) void {
+    pub fn deinit(self: *TraitsManager, allocator: Allocator) void {
         self.traits.deinit(allocator);
         self.* = undefined;
     }
 
-    pub fn register(self: *TraitManager, allocator: Allocator, id: SmithyId, trait: Trait) !void {
+    pub fn register(self: *TraitsManager, allocator: Allocator, id: SmithyId, trait: SmithyTrait) !void {
         try self.traits.put(allocator, id, trait);
     }
 
-    pub fn registerAll(self: *TraitManager, allocator: Allocator, traits: []const struct { SmithyId, Trait }) !void {
+    pub fn registerAll(self: *TraitsManager, allocator: Allocator, traits: []const struct { SmithyId, SmithyTrait }) !void {
         try self.traits.ensureUnusedCapacity(allocator, traits.len);
         for (traits) |t| {
             const id, const trait = t;
@@ -52,7 +52,7 @@ pub const TraitManager = struct {
         }
     }
 
-    pub fn parse(self: TraitManager, trait_id: SmithyId, allocator: Allocator, reader: *JsonReader) !?*const anyopaque {
+    pub fn parse(self: TraitsManager, trait_id: SmithyId, allocator: Allocator, reader: *JsonReader) !?*const anyopaque {
         const trait = self.traits.get(trait_id) orelse return error.UnknownTrait;
         return trait.parse(allocator, reader);
     }
@@ -62,8 +62,8 @@ test "TraitManager" {
     const TestTrait = struct {
         skip: usize,
 
-        pub fn trait(self: *const @This()) Trait {
-            return Trait{ .ctx = self, .vtable = &.{
+        pub fn trait(self: *const @This()) SmithyTrait {
+            return SmithyTrait{ .ctx = self, .vtable = &.{
                 .parse = parse,
             } };
         }
@@ -81,7 +81,7 @@ test "TraitManager" {
         }
     };
 
-    var manager = TraitManager{};
+    var manager = TraitsManager{};
     defer manager.deinit(test_alloc);
 
     const test_id = SmithyId.of("test");

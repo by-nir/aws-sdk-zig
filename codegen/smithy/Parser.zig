@@ -4,12 +4,13 @@ const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const JsonReader = @import("utils/JsonReader.zig");
-const smntc = @import("semantic/trait.zig");
-const identity = @import("semantic/identity.zig");
-const Symbols = identity.Symbols;
-const SmithyId = identity.SmithyId;
-const SmithyType = identity.SmithyType;
-const SmithyMeta = identity.SmithyMeta;
+const syb_id = @import("symbols/identity.zig");
+const SmithyId = syb_id.SmithyId;
+const SmithyType = syb_id.SmithyType;
+const syb_shape = @import("symbols/shapes.zig");
+const SmithyMeta = syb_shape.SmithyMeta;
+const SmithyModel = syb_shape.SmithyModel;
+const syb_trait = @import("symbols/traits.zig");
 
 const Self = @This();
 
@@ -20,11 +21,11 @@ const Context = struct {
 
     pub const Target = union(enum) {
         none,
-        service: *Symbols.Service,
-        resource: *Symbols.Resource,
-        operation: *Symbols.Operation,
+        service: *syb_shape.SmithyService,
+        resource: *syb_shape.SmithyResource,
+        operation: *syb_shape.SmithyOperation,
         id_list: *std.ArrayListUnmanaged(SmithyId),
-        ref_map: *std.ArrayListUnmanaged(Symbols.RefMapValue),
+        ref_map: *std.ArrayListUnmanaged(syb_id.SmithyRefMapValue),
         meta,
         meta_list: *std.ArrayListUnmanaged(SmithyMeta),
         meta_map: *std.ArrayListUnmanaged(SmithyMeta.Pair),
@@ -33,11 +34,11 @@ const Context = struct {
 
 arena: Allocator,
 reader: *JsonReader,
-manager: smntc.TraitManager,
+manager: syb_trait.TraitsManager,
 service: SmithyId = SmithyId.NULL,
 meta: std.AutoHashMapUnmanaged(SmithyId, SmithyMeta) = .{},
-shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType) = .{},
-traits: std.AutoHashMapUnmanaged(SmithyId, []const Symbols.TraitValue) = .{},
+shapes: std.AutoHashMapUnmanaged(SmithyId, syb_id.SmithyType) = .{},
+traits: std.AutoHashMapUnmanaged(SmithyId, []const syb_id.SmithyTaggedValue) = .{},
 mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId) = .{},
 
 /// Parse raw JSON into collection of Smithy symbols.
@@ -45,7 +46,7 @@ mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId) = .{},
 /// `arena` is used to store the parsed symbols and must be retained as long as
 /// they are needed.
 /// `json_reader` may be disposed immediately after calling this.
-pub fn parseJson(arena: Allocator, json_reader: *JsonReader, traits: smntc.TraitManager) !Symbols {
+pub fn parseJson(arena: Allocator, json_reader: *JsonReader, traits: syb_trait.TraitsManager) !SmithyModel {
     var parser = Self{
         .arena = arena,
         .reader = json_reader,
@@ -80,7 +81,7 @@ fn parseScope(
 }
 
 fn parseProp(self: *Self, prop_id: []const u8, ctx: Context) !void {
-    switch (identity.SmithyProperty.of(prop_id)) {
+    switch (syb_id.SmithyProperty.of(prop_id)) {
         .smithy => try self.validateSmithyVersion(),
         .mixins => try self.parseMixins(ctx.hash),
         .traits => try self.parseTraits(ctx.hash),
@@ -155,7 +156,7 @@ fn parseShapeRefList(
     comptime map: bool,
     parsFn: JsonReader.NextScopeFn(*Self, if (map) .object else .array, Context),
 ) !void {
-    var list = std.ArrayListUnmanaged(if (map) Symbols.RefMapValue else SmithyId){};
+    var list = std.ArrayListUnmanaged(if (map) syb_id.SmithyRefMapValue else SmithyId){};
     errdefer list.deinit(self.arena);
     if (map)
         try self.parseScope(.object, parsFn, .{ .target = .{ .ref_map = &list } })
@@ -209,7 +210,7 @@ fn parseMixins(self: *Self, parent_hash: SmithyId) !void {
 }
 
 fn parseTraits(self: *Self, parent_hash: SmithyId) !void {
-    var traits: std.ArrayListUnmanaged(Symbols.TraitValue) = .{};
+    var traits: std.ArrayListUnmanaged(syb_id.SmithyTaggedValue) = .{};
     errdefer traits.deinit(self.arena);
     try self.reader.nextObjectBegin();
     while (try self.reader.peek() == .string) {
@@ -258,18 +259,18 @@ fn parseShape(self: *Self, shape_id: []const u8, _: Context) !void {
             return;
         },
         .service => .{ .service = blk: {
-            const ptr = try self.arena.create(Symbols.Service);
-            ptr.* = std.mem.zeroInit(Symbols.Service, .{});
+            const ptr = try self.arena.create(syb_shape.SmithyService);
+            ptr.* = std.mem.zeroInit(syb_shape.SmithyService, .{});
             break :blk ptr;
         } },
         .resource => .{ .resource = blk: {
-            const ptr = try self.arena.create(Symbols.Resource);
-            ptr.* = std.mem.zeroInit(Symbols.Resource, .{});
+            const ptr = try self.arena.create(syb_shape.SmithyResource);
+            ptr.* = std.mem.zeroInit(syb_shape.SmithyResource, .{});
             break :blk ptr;
         } },
         .operation => .{ .operation = blk: {
-            const ptr = try self.arena.create(Symbols.Operation);
-            ptr.* = std.mem.zeroInit(Symbols.Operation, .{});
+            const ptr = try self.arena.create(syb_shape.SmithyOperation);
+            ptr.* = std.mem.zeroInit(syb_shape.SmithyOperation, .{});
             break :blk ptr;
         } },
         else => blk: {
@@ -396,7 +397,7 @@ fn validateSmithyVersion(self: *Self) !void {
 }
 
 test "parseJson" {
-    var manager = smntc.TraitManager{};
+    var manager = syb_trait.TraitsManager{};
     defer manager.deinit(test_alloc);
     try manager.register(test_alloc, SmithyId.of("test.trait#Void"), TestTraits.traitVoid());
     try manager.register(test_alloc, SmithyId.of("test.trait#Int"), TestTraits.traitInt());
@@ -411,7 +412,7 @@ test "parseJson" {
     var output_arena = std.heap.ArenaAllocator.init(test_alloc);
     defer output_arena.deinit();
 
-    const symbols = try parseJson(output_arena.allocator(), &reader, manager);
+    const model = try parseJson(output_arena.allocator(), &reader, manager);
     // We dispose the reader to make sure the required data is copied:
     reader.deinit();
     input_arena.deinit();
@@ -420,52 +421,52 @@ test "parseJson" {
     // Metadata
     //
 
-    try testing.expectEqual(.null, symbols.getMeta(SmithyId.of("nul")));
-    try testing.expectEqualDeep(SmithyMeta{ .boolean = true }, symbols.getMeta(SmithyId.of("bol")));
-    try testing.expectEqualDeep(SmithyMeta{ .integer = 108 }, symbols.getMeta(SmithyId.of("int")));
-    try testing.expectEqualDeep(SmithyMeta{ .float = 1.08 }, symbols.getMeta(SmithyId.of("flt")));
-    try testing.expectEqualDeep(SmithyMeta{ .string = "foo" }, symbols.getMeta(SmithyId.of("str")));
+    try testing.expectEqual(.null, model.getMeta(SmithyId.of("nul")));
+    try testing.expectEqualDeep(SmithyMeta{ .boolean = true }, model.getMeta(SmithyId.of("bol")));
+    try testing.expectEqualDeep(SmithyMeta{ .integer = 108 }, model.getMeta(SmithyId.of("int")));
+    try testing.expectEqualDeep(SmithyMeta{ .float = 1.08 }, model.getMeta(SmithyId.of("flt")));
+    try testing.expectEqualDeep(SmithyMeta{ .string = "foo" }, model.getMeta(SmithyId.of("str")));
     try testing.expectEqualDeep(SmithyMeta{
         .list = &.{ .{ .integer = 108 }, .{ .integer = 109 } },
-    }, symbols.getMeta(SmithyId.of("lst")));
+    }, model.getMeta(SmithyId.of("lst")));
     try testing.expectEqualDeep(SmithyMeta{
         .map = &.{.{ .key = SmithyId.of("key"), .value = .{ .integer = 108 } }},
-    }, symbols.getMeta(SmithyId.of("map")));
+    }, model.getMeta(SmithyId.of("map")));
 
     //
     // Shapes
     //
 
-    try testing.expectEqual(.blob, symbols.getShape(SmithyId.of("test.simple#Blob")));
-    try testing.expect(symbols.hasTrait(
+    try testing.expectEqual(.blob, model.getShape(SmithyId.of("test.simple#Blob")));
+    try testing.expect(model.hasTrait(
         SmithyId.of("test.simple#Blob"),
         SmithyId.of("test.trait#Void"),
     ));
 
-    try testing.expectEqual(.boolean, symbols.getShape(SmithyId.of("test.simple#Boolean")));
+    try testing.expectEqual(.boolean, model.getShape(SmithyId.of("test.simple#Boolean")));
     try testing.expectEqualDeep(
         &.{SmithyId.of("test.mixin#Mixin")},
-        symbols.getMixins(SmithyId.of("test.simple#Boolean")),
+        model.getMixins(SmithyId.of("test.simple#Boolean")),
     );
 
-    try testing.expectEqual(.document, symbols.getShape(SmithyId.of("test.simple#Document")));
-    try testing.expectEqual(.string, symbols.getShape(SmithyId.of("test.simple#String")));
-    try testing.expectEqual(.byte, symbols.getShape(SmithyId.of("test.simple#Byte")));
-    try testing.expectEqual(.short, symbols.getShape(SmithyId.of("test.simple#Short")));
-    try testing.expectEqual(.integer, symbols.getShape(SmithyId.of("test.simple#Integer")));
-    try testing.expectEqual(.long, symbols.getShape(SmithyId.of("test.simple#Long")));
-    try testing.expectEqual(.float, symbols.getShape(SmithyId.of("test.simple#Float")));
-    try testing.expectEqual(.double, symbols.getShape(SmithyId.of("test.simple#Double")));
-    try testing.expectEqual(.big_integer, symbols.getShape(SmithyId.of("test.simple#BigInteger")));
-    try testing.expectEqual(.big_decimal, symbols.getShape(SmithyId.of("test.simple#BigDecimal")));
-    try testing.expectEqual(.timestamp, symbols.getShape(SmithyId.of("test.simple#Timestamp")));
+    try testing.expectEqual(.document, model.getShape(SmithyId.of("test.simple#Document")));
+    try testing.expectEqual(.string, model.getShape(SmithyId.of("test.simple#String")));
+    try testing.expectEqual(.byte, model.getShape(SmithyId.of("test.simple#Byte")));
+    try testing.expectEqual(.short, model.getShape(SmithyId.of("test.simple#Short")));
+    try testing.expectEqual(.integer, model.getShape(SmithyId.of("test.simple#Integer")));
+    try testing.expectEqual(.long, model.getShape(SmithyId.of("test.simple#Long")));
+    try testing.expectEqual(.float, model.getShape(SmithyId.of("test.simple#Float")));
+    try testing.expectEqual(.double, model.getShape(SmithyId.of("test.simple#Double")));
+    try testing.expectEqual(.big_integer, model.getShape(SmithyId.of("test.simple#BigInteger")));
+    try testing.expectEqual(.big_decimal, model.getShape(SmithyId.of("test.simple#BigDecimal")));
+    try testing.expectEqual(.timestamp, model.getShape(SmithyId.of("test.simple#Timestamp")));
 
     try testing.expectEqualDeep(
         SmithyType{ .@"enum" = &.{SmithyId.of("test.simple#Enum$FOO")} },
-        symbols.getShape(SmithyId.of("test.simple#Enum")),
+        model.getShape(SmithyId.of("test.simple#Enum")),
     );
-    try testing.expectEqual(.unit, symbols.getShape(SmithyId.of("test.simple#Enum$FOO")));
-    try testing.expectEqualDeep(TestTraits.EnumValue{ .string = "foo" }, symbols.getTrait(
+    try testing.expectEqual(.unit, model.getShape(SmithyId.of("test.simple#Enum$FOO")));
+    try testing.expectEqualDeep(TestTraits.EnumValue{ .string = "foo" }, model.getTrait(
         SmithyId.of("test.simple#Enum$FOO"),
         SmithyId.of("smithy.api#enumValue"),
         TestTraits.EnumValue,
@@ -473,10 +474,10 @@ test "parseJson" {
 
     try testing.expectEqualDeep(
         SmithyType{ .int_enum = &.{SmithyId.of("test.simple#IntEnum$FOO")} },
-        symbols.getShape(SmithyId.of("test.simple#IntEnum")),
+        model.getShape(SmithyId.of("test.simple#IntEnum")),
     );
-    try testing.expectEqual(.unit, symbols.getShape(SmithyId.of("test.simple#IntEnum$FOO")));
-    try testing.expectEqual(TestTraits.EnumValue{ .integer = 1 }, symbols.getTrait(
+    try testing.expectEqual(.unit, model.getShape(SmithyId.of("test.simple#IntEnum$FOO")));
+    try testing.expectEqual(TestTraits.EnumValue{ .integer = 1 }, model.getTrait(
         SmithyId.of("test.simple#IntEnum$FOO"),
         SmithyId.of("smithy.api#enumValue"),
         TestTraits.EnumValue,
@@ -484,38 +485,38 @@ test "parseJson" {
 
     try testing.expectEqualDeep(
         SmithyType{ .list = SmithyId.of("test.aggregate#List$member") },
-        symbols.getShape(SmithyId.of("test.aggregate#List")),
+        model.getShape(SmithyId.of("test.aggregate#List")),
     );
-    try testing.expectEqual(.string, symbols.getShape(SmithyId.of("test.aggregate#List$member")));
-    try testing.expect(symbols.hasTrait(SmithyId.of("test.aggregate#List$member"), SmithyId.of("test.trait#Void")));
+    try testing.expectEqual(.string, model.getShape(SmithyId.of("test.aggregate#List$member")));
+    try testing.expect(model.hasTrait(SmithyId.of("test.aggregate#List$member"), SmithyId.of("test.trait#Void")));
 
     try testing.expectEqualDeep(
         SmithyType{ .map = .{ SmithyId.of("test.aggregate#Map$key"), SmithyId.of("test.aggregate#Map$value") } },
-        symbols.getShape(SmithyId.of("test.aggregate#Map")),
+        model.getShape(SmithyId.of("test.aggregate#Map")),
     );
-    try testing.expectEqual(.string, symbols.getShape(SmithyId.of("test.aggregate#Map$key")));
-    try testing.expectEqual(.integer, symbols.getShape(SmithyId.of("test.aggregate#Map$value")));
+    try testing.expectEqual(.string, model.getShape(SmithyId.of("test.aggregate#Map$key")));
+    try testing.expectEqual(.integer, model.getShape(SmithyId.of("test.aggregate#Map$value")));
 
     try testing.expectEqualDeep(
         SmithyType{ .structure = &.{
             SmithyId.of("test.aggregate#Structure$stringMember"),
             SmithyId.of("test.aggregate#Structure$numberMember"),
         } },
-        symbols.getShape(SmithyId.of("test.aggregate#Structure")),
+        model.getShape(SmithyId.of("test.aggregate#Structure")),
     );
-    try testing.expectEqual(.string, symbols.getShape(SmithyId.of("test.aggregate#Structure$stringMember")));
-    try testing.expect(symbols.hasTrait(SmithyId.of("test.aggregate#Structure$stringMember"), SmithyId.of("test.trait#Void")));
+    try testing.expectEqual(.string, model.getShape(SmithyId.of("test.aggregate#Structure$stringMember")));
+    try testing.expect(model.hasTrait(SmithyId.of("test.aggregate#Structure$stringMember"), SmithyId.of("test.trait#Void")));
     try testing.expectEqual(
         108,
-        symbols.getTrait(SmithyId.of("test.aggregate#Structure$stringMember"), SmithyId.of("test.trait#Int"), i64),
+        model.getTrait(SmithyId.of("test.aggregate#Structure$stringMember"), SmithyId.of("test.trait#Int"), i64),
     );
 
-    try testing.expectEqual(.integer, symbols.getShape(SmithyId.of("test.aggregate#Structure$numberMember")));
+    try testing.expectEqual(.integer, model.getShape(SmithyId.of("test.aggregate#Structure$numberMember")));
     // The traits merged with external `apply` traits.
-    try testing.expect(symbols.hasTrait(SmithyId.of("test.aggregate#Structure$numberMember"), SmithyId.of("test.trait#Void")));
+    try testing.expect(model.hasTrait(SmithyId.of("test.aggregate#Structure$numberMember"), SmithyId.of("test.trait#Void")));
     try testing.expectEqual(
         108,
-        symbols.getTrait(SmithyId.of("test.aggregate#Structure$numberMember"), SmithyId.of("test.trait#Int"), i64),
+        model.getTrait(SmithyId.of("test.aggregate#Structure$numberMember"), SmithyId.of("test.trait#Int"), i64),
     );
 
     try testing.expectEqualDeep(
@@ -523,10 +524,10 @@ test "parseJson" {
             SmithyId.of("test.aggregate#Union$a"),
             SmithyId.of("test.aggregate#Union$b"),
         } },
-        symbols.getShape(SmithyId.of("test.aggregate#Union")),
+        model.getShape(SmithyId.of("test.aggregate#Union")),
     );
-    try testing.expectEqual(.string, symbols.getShape(SmithyId.of("test.aggregate#Union$a")));
-    try testing.expectEqual(.integer, symbols.getShape(SmithyId.of("test.aggregate#Union$b")));
+    try testing.expectEqual(.string, model.getShape(SmithyId.of("test.aggregate#Union$a")));
+    try testing.expectEqual(.integer, model.getShape(SmithyId.of("test.aggregate#Union$b")));
 
     try testing.expectEqualDeep(SmithyType{
         .operation = &.{
@@ -537,7 +538,7 @@ test "parseJson" {
                 SmithyId.of("test.error#NotFoundError"),
             },
         },
-    }, symbols.getShape(SmithyId.of("test.serve#Operation")));
+    }, model.getShape(SmithyId.of("test.serve#Operation")));
 
     try testing.expectEqualDeep(SmithyType{
         .resource = &.{
@@ -553,7 +554,7 @@ test "parseJson" {
             .collection_ops = &.{SmithyId.of("test.resource#CollectionOperation")},
             .resources = &.{SmithyId.of("test.resource#OtherResource")},
         },
-    }, symbols.getShape(SmithyId.of("test.serve#Resource")));
+    }, model.getShape(SmithyId.of("test.serve#Resource")));
 
     try testing.expectEqualDeep(SmithyType{
         .service = &.{
@@ -566,24 +567,24 @@ test "parseJson" {
                 .{ .name = "NewBar", .shape = SmithyId.of("bar.example#Bar") },
             },
         },
-    }, symbols.getShape(SmithyId.of("test.serve#Service")));
+    }, model.getShape(SmithyId.of("test.serve#Service")));
     try testing.expectEqual(
         108,
-        symbols.getTrait(SmithyId.of("test.serve#Service"), SmithyId.of("test.trait#Int"), i64),
+        model.getTrait(SmithyId.of("test.serve#Service"), SmithyId.of("test.trait#Int"), i64),
     );
-    try testing.expectEqual(SmithyId.of("test.serve#Service"), symbols.service);
+    try testing.expectEqual(SmithyId.of("test.serve#Service"), model.service);
 }
 
 const TestTraits = struct {
-    pub fn traitVoid() smntc.Trait {
+    pub fn traitVoid() syb_trait.SmithyTrait {
         return .{ .ctx = undefined, .vtable = &.{ .parse = null } };
     }
 
-    pub fn traitInt() smntc.Trait {
+    pub fn traitInt() syb_trait.SmithyTrait {
         return .{ .ctx = undefined, .vtable = &.{ .parse = parseInt } };
     }
 
-    pub fn traitEnum() smntc.Trait {
+    pub fn traitEnum() syb_trait.SmithyTrait {
         return .{ .ctx = undefined, .vtable = &.{ .parse = parseEnum } };
     }
 
