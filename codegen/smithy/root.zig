@@ -13,4 +13,5 @@ test {
     _ = @import("symbols/shapes.zig");
     _ = @import("prelude.zig");
     _ = Parser;
+    _ = @import("generate/Script.zig");
 }
