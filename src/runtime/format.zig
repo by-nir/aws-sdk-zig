@@ -1,4 +1,5 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
@@ -66,7 +67,7 @@ pub fn hexString(buffer: []u8, case: std.fmt.Case, payload: []const u8) ![]const
         .lower => try stream.writer().print("{}", .{std.fmt.fmtSliceHexLower(payload)}),
         .upper => try stream.writer().print("{}", .{std.fmt.fmtSliceHexUpper(payload)}),
     }
-    return buffer[0..stream.pos];
+    return stream.getWritten();
 }
 
 test "hexString" {
@@ -84,4 +85,41 @@ test "hexString" {
         "269DCE1A5BB90188B2D9CF542A7C30E410C7D8251E34A97BFEA56062DF51AE23",
         try hexString(&buffer, .upper, payload),
     );
+}
+
+// The following is from from an old version of Zig’s `std.Uri`.
+// https://github.com/jacobly0/zig/blob/4e2570baafb587c679ee0fc5e113ddeb36522a5d/lib/std/Uri.zig
+
+/// Applies URI encoding and replaces all reserved characters with their respective %XX code.
+pub fn escapeUri(allocator: Allocator, input: []const u8) Allocator.Error![]u8 {
+    var outsize: usize = 0;
+    for (input) |c| {
+        outsize += if (isUnreserved(c)) @as(usize, 1) else 3;
+    }
+    var output = try allocator.alloc(u8, outsize);
+    var outptr: usize = 0;
+
+    for (input) |c| {
+        if (isUnreserved(c)) {
+            output[outptr] = c;
+            outptr += 1;
+        } else {
+            var buf: [2]u8 = undefined;
+            _ = std.fmt.bufPrint(&buf, "{X:0>2}", .{c}) catch unreachable;
+
+            output[outptr + 0] = '%';
+            output[outptr + 1] = buf[0];
+            output[outptr + 2] = buf[1];
+            outptr += 3;
+        }
+    }
+    return output;
+}
+
+/// unreserved  = ALPHA / DIGIT / "-" / "." / "_" / "~"
+fn isUnreserved(c: u8) bool {
+    return switch (c) {
+        'A'...'Z', 'a'...'z', '0'...'9', '-', '.', '_', '~' => true,
+        else => false,
+    };
 }

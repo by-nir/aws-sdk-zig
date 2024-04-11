@@ -96,7 +96,7 @@ fn authorize(buffer: []u8, id: []const u8, scope: []const u8, headers: []const u
         V4_ALGO ++ " Credential={s}/{s}/" ++ V4_SUFFIX ++ ",SignedHeaders={s},Signature={s}",
         .{ id, scope, headers, signature },
     );
-    return buffer[0..stream.pos];
+    return stream.getWritten();
 }
 
 test "authorize" {
@@ -110,7 +110,7 @@ test "authorize" {
 fn requestScope(out: []u8, event: Event) ![]const u8 {
     var stream = std.io.fixedBufferStream(out);
     try stream.writer().print("{s}/{s}/{s}", .{ event.date, event.region, event.service });
-    return out[0..stream.pos];
+    return stream.getWritten();
 }
 
 test "requestScope" {
@@ -128,7 +128,7 @@ fn requestCanonical(buffer: []u8, content: Content) ![]u8 {
         "{s}\n{s}\n{s}\n{s}\n{s}\n{s}",
         .{ @tagName(content.method), content.path, content.query, content.headers, content.headers_names, content.payload_hash },
     );
-    return buffer[0..stream.pos];
+    return stream.getWritten();
 }
 
 test "requestCanonical" {
@@ -143,7 +143,7 @@ test "requestCanonical" {
 fn signatureContent(buffer: *SignatureBuffer, timestamp: []const u8, scope: []const u8, hash: *const format.HashStr) ![]const u8 {
     var stream = std.io.fixedBufferStream(buffer);
     try stream.writer().print(V4_ALGO ++ "\n{s}\n{s}/" ++ V4_SUFFIX ++ "\n{s}", .{ timestamp, scope, hash });
-    return buffer[0..stream.pos];
+    return stream.getWritten();
 }
 
 test "signatureContent" {

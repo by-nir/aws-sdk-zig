@@ -68,8 +68,8 @@ pub const Request = struct {
         var kvs: HeadersKVBuffer = undefined;
         var it = self.query.iterator();
         while (it.next()) |kv| : (count += 1) {
-            const key_fmt = try Uri.escapeString(temp_alloc, kv.key_ptr.*);
-            const value_fmt = try Uri.escapeString(temp_alloc, kv.value_ptr.*);
+            const key_fmt = try format.escapeUri(temp_alloc, kv.key_ptr.*);
+            const value_fmt = try format.escapeUri(temp_alloc, kv.value_ptr.*);
             str_len += key_fmt.len + value_fmt.len;
             kvs[count] = .{ .key = key_fmt, .value = value_fmt };
         }
@@ -131,7 +131,7 @@ pub const Request = struct {
             names[count] = name_fmt;
             count += 1;
         }
-        std.sort.pdq([]const u8, names[0..count], {}, sortValue);
+        std.sort.pdq([]const u8, names[0..count], {}, sortString);
 
         str_len += count -| 1; // `;`
         var stream = std.io.fixedBufferStream(try allocator.alloc(u8, str_len));
@@ -147,7 +147,7 @@ pub const Request = struct {
         return std.ascii.lessThanIgnoreCase(lhs.key, rhs.key);
     }
 
-    fn sortValue(_: void, l: []const u8, r: []const u8) bool {
+    fn sortString(_: void, l: []const u8, r: []const u8) bool {
         return std.ascii.lessThanIgnoreCase(l, r);
     }
 };

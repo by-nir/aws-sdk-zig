@@ -7,6 +7,7 @@
 //! ```
 
 const std = @import("std");
+const Uri = std.Uri;
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
@@ -107,11 +108,11 @@ pub fn deinit(self: Self, allocator: Allocator) void {
     allocator.free(self.host);
 }
 
-pub fn uri(self: Self, path: []const u8) std.Uri {
+pub fn uri(self: Self, path: []const u8) Uri {
     return .{
         .scheme = @tagName(self.scheme),
-        .host = self.host,
-        .path = path,
+        .host = Uri.Component{ .percent_encoded = self.host },
+        .path = Uri.Component{ .percent_encoded = path },
     };
 }
 
@@ -146,10 +147,10 @@ test "Endpoint" {
     try testing.expect(endpoint.keep_alive);
     try testing.expectEqual(Region.sdk_default, endpoint.region);
     try testing.expectEqualStrings("s3-control-fips.dualstack.api.aws", endpoint.host);
-    try testing.expectEqualDeep(std.Uri{
+    try testing.expectEqualDeep(Uri{
         .scheme = "https",
-        .host = "s3-control-fips.dualstack.api.aws",
-        .path = "/foo",
+        .host = Uri.Component{ .percent_encoded = "s3-control-fips.dualstack.api.aws" },
+        .path = Uri.Component{ .percent_encoded = "/foo" },
     }, endpoint.uri("/foo"));
     endpoint.deinit(test_alloc);
 }
