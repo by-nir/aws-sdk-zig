@@ -2,6 +2,7 @@ const std = @import("std");
 const fmt = std.fmt;
 const builtin = std.builtin;
 const ZigType = builtin.Type;
+const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
@@ -22,21 +23,183 @@ pub fn init(name: Identifier, options: ScriptOptions) Self {
     };
 }
 
+pub const Function = struct {
+    doc: ?Comment = null,
+    is_public: bool = false,
+    specifier: ?Specifier = null,
+    signature: Signature,
+    body: Block,
+
+    pub fn format(self: Function, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
+        assert(self.body.label == null);
+        if (self.doc) |d| {
+            assert(d.level == .doc);
+            try writer.print("{}\n", .{d});
+        }
+        if (self.specifier) |spec| {
+            switch (spec) {
+                .@"export" => try writer.writeAll("export "),
+                .@"extern" => |s| if (s) |c| {
+                    try writer.print("extern \"{c}\" ", .{c});
+                } else {
+                    try writer.writeAll("extern ");
+                },
+                .@"inline" => try writer.writeAll("inline "),
+                .@"noinline" => try writer.writeAll("noinline "),
+            }
+        }
+        if (self.is_public) try writer.writeAll("pub ");
+        try writer.print("{} {}", .{ self.signature, self.body });
+    }
+
+    pub const Signature = struct {
+        identifier: Identifier,
+        parameters: []const Parameter,
+        return_type: ?Type,
+        alignment: ?Expression = null,
+        call_conv: ?builtin.CallingConvention = null,
+
+        pub fn format(self: Signature, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
+            try writer.print("fn {}(", .{self.identifier});
+            for (self.parameters, 0..) |p, i| {
+                if (i > 0) try writer.writeAll(", ");
+                const identifier = p.identifier orelse Identifier{ .name = "_" };
+                if (p.type) |t| {
+                    try writer.print("{}: {}", .{ identifier, t });
+                } else {
+                    try writer.print("{}: anytype", .{identifier});
+                }
+            }
+            try writer.writeAll(") ");
+            if (self.alignment) |a| try writer.print("align({s}) ", .{a});
+            if (self.call_conv) |c| switch (c) {
+                .Unspecified => {},
+                inline else => |g| try writer.print("callconv({s}) ", .{@tagName(g)}),
+            };
+            try writer.print("{}", .{self.return_type orelse Type{ .primary = .void }});
+        }
+    };
+
+    pub const Parameter = struct {
+        identifier: ?Identifier,
+        type: ?Type,
+    };
+
+    pub const Specifier = union(enum) {
+        @"export",
+        @"extern": ?u8,
+        @"inline",
+        @"noinline",
+    };
+};
+
+test "function" {
+    try testing.expectFmt("fn foo() void", "{}", .{
+        Function.Signature{
+            .identifier = Identifier{ .name = "foo" },
+            .parameters = &.{},
+            .return_type = null,
+        },
+    });
+    try testing.expectFmt("fn foo(bar: bool, _: anytype) void", "{}", .{
+        Function.Signature{
+            .identifier = Identifier{ .name = "foo" },
+            .parameters = &.{
+                .{
+                    .identifier = Identifier{ .name = "bar" },
+                    .type = Type{ .primary = .bool },
+                },
+                .{ .identifier = null, .type = null },
+            },
+            .return_type = null,
+        },
+    });
+    try testing.expectFmt("fn foo() align(4) callconv(C) void", "{}", .{
+        Function.Signature{
+            .identifier = Identifier{ .name = "foo" },
+            .parameters = &.{},
+            .alignment = "4",
+            .call_conv = .C,
+            .return_type = null,
+        },
+    });
+
+    try testing.expectFmt(
+        \\pub fn foo() u8 {
+        \\    return 108;
+        \\}
+    , "{}", .{
+        Function{
+            .is_public = true,
+            .signature = Function.Signature{
+                .identifier = Identifier{ .name = "foo" },
+                .parameters = &.{},
+                .return_type = Type{ .primary = .{ .uint = 8 } },
+            },
+            .body = Block{ .stetements = &.{"return 108;"} },
+        },
+    });
+    try testing.expectFmt(
+        \\/// The quick brown fox...
+        \\fn foo() void {}
+    , "{}", .{
+        Function{
+            .doc = Comment{
+                .level = .doc,
+                .content = &.{.{ .paragraph = "The quick brown fox..." }},
+            },
+            .signature = Function.Signature{
+                .identifier = Identifier{ .name = "foo" },
+                .parameters = &.{},
+                .return_type = null,
+            },
+            .body = Block{ .stetements = &.{} },
+        },
+    });
+
+    const simple_signature = Function.Signature{
+        .identifier = Identifier{ .name = "foo" },
+        .parameters = &.{},
+        .return_type = null,
+    };
+    try testing.expectFmt("export fn foo() void {}", "{}", .{
+        Function{
+            .specifier = .@"export",
+            .signature = simple_signature,
+            .body = Block{ .stetements = &.{} },
+        },
+    });
+    try testing.expectFmt("extern \"C\" fn foo() void {}", "{}", .{
+        Function{
+            .specifier = .{ .@"extern" = 'C' },
+            .signature = simple_signature,
+            .body = Block{ .stetements = &.{} },
+        },
+    });
+    try testing.expectFmt("inline fn foo() void {}", "{}", .{
+        Function{
+            .specifier = .@"inline",
+            .signature = simple_signature,
+            .body = Block{ .stetements = &.{} },
+        },
+    });
+    try testing.expectFmt("noinline fn foo() void {}", "{}", .{
+        Function{
+            .specifier = .@"noinline",
+            .signature = simple_signature,
+            .body = Block{ .stetements = &.{} },
+        },
+    });
+}
+
 pub const Block = struct {
     label: ?Identifier = null,
     stetements: []const Expression,
 
     pub fn format(self: Block, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
-        switch (self.stetements.len) {
-            0 => {
-                std.debug.assert(self.label == null);
+        if (self.stetements.len == 0) {
                 try writer.writeAll("{}");
-            },
-            1 => {
-                std.debug.assert(self.label == null);
-                try writer.writeAll(self.stetements[0]);
-            },
-            else => {
+        } else {
                 if (self.label) |l| try writer.print("{}: ", .{l});
                 try writer.writeByte('{');
                 for (self.stetements) |s| {
@@ -44,7 +207,6 @@ pub const Block = struct {
                     try writer.print("\n    {s}", .{s});
                 }
                 try writer.writeAll("\n}");
-            },
         }
     }
 };
@@ -52,10 +214,6 @@ pub const Block = struct {
 test "Block" {
     try testing.expectFmt("{}", "{}", .{
         Block{ .stetements = &.{} },
-    });
-
-    try testing.expectFmt("_ = foo();", "{}", .{
-        Block{ .stetements = &.{"_ = foo();"} },
     });
 
     try testing.expectFmt(
@@ -140,7 +298,7 @@ pub const Type = struct {
 
     pub const Prefix = union(enum) {
         optional,
-        @"error": Expression,
+        @"error": ?Expression,
         array: struct {
             len: ?Expression,
             sentinal: ?Expression = null,
@@ -155,7 +313,13 @@ pub const Type = struct {
         pub fn format(self: Prefix, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
             switch (self) {
                 .optional => try writer.writeByte('?'),
-                .@"error" => |t| try writer.print("{s}!", .{t}),
+                .@"error" => |t| {
+                    if (t) |s| {
+                        try writer.print("{s}!", .{s});
+                    } else {
+                        try writer.writeByte('!');
+                    }
+                },
                 .array => |t| {
                     const expr = t.len orelse "_";
                     if (t.sentinal) |s| {
@@ -168,7 +332,7 @@ pub const Type = struct {
                     if (t.size == .C) {
                         unreachable;
                     } else if (t.size == .One) {
-                        std.debug.assert(t.sentinal == null);
+                        assert(t.sentinal == null);
                         try writer.writeByte('*');
                     } else {
                         try writer.writeByte('[');
@@ -255,6 +419,7 @@ test "Type" {
 
     try testing.expectFmt("?", "{}", .{Type.Prefix{ .optional = {} }});
     try testing.expectFmt("anyerror!", "{}", .{Type.Prefix{ .@"error" = "anyerror" }});
+    try testing.expectFmt("!", "{}", .{Type.Prefix{ .@"error" = null }});
     try testing.expectFmt("[8]", "{}", .{
         Type.Prefix{ .array = .{ .len = "8" } },
     });
