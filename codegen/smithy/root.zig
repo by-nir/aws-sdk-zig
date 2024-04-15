@@ -8,10 +8,11 @@ pub const parseJson = Parser.parseJson;
 
 test {
     _ = JsonReader;
+    _ = @import("utils/StackWriter.zig");
     _ = @import("symbols/identity.zig");
     _ = symbols_traits;
     _ = @import("symbols/shapes.zig");
     _ = @import("prelude.zig");
     _ = Parser;
-    _ = @import("generate/Script.zig");
+    _ = @import("generate/Zig.zig");
 }
