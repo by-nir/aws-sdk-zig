@@ -9,6 +9,7 @@ const testing = std.testing;
 const test_alloc = testing.allocator;
 const StackWriter = @import("../utils/StackWriter.zig");
 const List = StackWriter.List;
+const Markdown = @import("Markdown.zig");
 
 // In general, a better approach would be to incorporate more of the Zig’s AST
 // capabilities directly; but it seems to have expectaions and assumptions for
@@ -18,6 +19,7 @@ const List = StackWriter.List;
 const INDENT = "    ";
 
 const Self = @This();
+pub const CommentLevel = enum { normal, doc, doc_top };
 const Content = enum(u8) {
     none = 0,
     fields = 2,
@@ -39,24 +41,80 @@ pub fn init(allocator: Allocator, writer: *const StackWriter) !Self {
 }
 
 pub fn deinit(self: *Self) void {
+    for (self.imports.values()) |id| {
+        self.allocator.free(id.name);
+    }
     self.imports.deinit(self.allocator);
     self.* = undefined;
 }
 
-pub fn import(self: *Self, rel_path: []const u8) !Identifier {
-    const entry = try self.imports.getOrPut(rel_path);
-    if (entry.found_existing) {
-        return entry.value;
-    } else {
-        const rep = std.mem.replaceScalar(u8, rel_path, '.', '_');
-        const id = try fmt.allocPrint(self.allocator, "_imp_{s}", .{rep});
+/// Assumes that this script is not the root. This REPLACES the call to `deinit()`.
+pub fn end(self: *Self) !void {
+    _ = try self.container.writer.pop();
+    self.deinit();
+}
 
-        if (self.content == .none) self.content = .fields;
-        try self.container.writer.lineFmt("const {s} = @import(\"{s}\");", .{ id, rel_path });
+pub fn comment(self: *Self, level: CommentLevel) !Markdown {
+    if (level == .doc_top) {
+        if (self.content != .none) return error.TopDocAfterStatements;
+        self.content = .fields;
+    }
+    return self.container.comment(level);
+}
+
+test "comment" {
+    var list = std.ArrayList(u8).init(test_alloc);
+    const writer = StackWriter.init(test_alloc, list.writer().any(), .{});
+    defer list.deinit();
+
+    var b = try init(test_alloc, &writer);
+    var c = try b.comment(.doc_top);
+    try c.paragraph("foo");
+    try c.end();
+
+    try testing.expectEqualStrings("//! foo", list.items);
+    try testing.expectError(error.TopDocAfterStatements, b.comment(.doc_top));
+}
+
+pub fn import(self: *Self, rel_path: []const u8) !Identifier {
+    const entry = try self.imports.getOrPut(self.allocator, rel_path);
+    if (entry.found_existing) {
+        return entry.value_ptr.*;
+    } else {
+        const path = try std.mem.replaceOwned(u8, self.allocator, rel_path, "../", "xx_");
+        defer self.allocator.free(path);
+        std.mem.replaceScalar(u8, path, '.', '_');
+        std.mem.replaceScalar(u8, path, '/', '_');
+        const id = try fmt.allocPrint(self.allocator, "_imp_{s}", .{path});
+
+        if (self.content == .none) {
+            self.content = .fields;
+            try self.container.writer.prefixedFmt("const {s} = @import(\"{s}\");", .{ id, rel_path });
+        } else {
+            try self.container.writer.lineFmt("const {s} = @import(\"{s}\");", .{ id, rel_path });
+        }
 
         entry.value_ptr.* = Identifier{ .name = id };
         return Identifier{ .name = id };
     }
+}
+
+test "import" {
+    var list = std.ArrayList(u8).init(test_alloc);
+    const writer = StackWriter.init(test_alloc, list.writer().any(), .{});
+    defer list.deinit();
+
+    var b = try init(test_alloc, &writer);
+    defer b.deinit();
+
+    try testing.expectEqualDeep(Identifier{ .name = "_imp_std" }, try b.import("std"));
+    try testing.expectEqualDeep(Identifier{ .name = "_imp_xx_foo_bar_zig" }, try b.import("../foo/bar.zig"));
+    _ = try b.import("std");
+
+    try testing.expectEqualStrings(
+        \\const _imp_std = @import("std");
+        \\const _imp_xx_foo_bar_zig = @import("../foo/bar.zig");
+    , list.items);
 }
 
 pub fn field(self: *Self, f: Field) !void {
@@ -157,6 +215,31 @@ pub const Container = struct {
         try block.end();
 
         try testing.expectEqualStrings("\ncomptime {\n    foo();\n}", list.items);
+    }
+
+    /// Call `end()` to complete the comment.
+    pub fn comment(self: Container, level: CommentLevel) !Markdown {
+        if (level != .doc_top) try self.writer.lineBreak();
+        const prefix = switch (level) {
+            .normal => "// ",
+            .doc => "/// ",
+            .doc_top => "//! ",
+        };
+        const scope = try self.writer.appendPrefix(prefix);
+        return Markdown.init(scope);
+    }
+
+    test "comment" {
+        var list = std.ArrayList(u8).init(test_alloc);
+        const writer = StackWriter.init(test_alloc, list.writer().any(), .{});
+        defer list.deinit();
+
+        const cont = Container{ .writer = &writer };
+        var c = try cont.comment(.doc);
+        try c.paragraph("foo");
+        try c.end();
+
+        try testing.expectEqualStrings("\n/// foo", list.items);
     }
 
     pub fn field(self: Container, f: Field) !void {
@@ -746,8 +829,8 @@ pub const ForStatement = struct {
                     const depth = std.options.fmt_max_depth - 1;
                     try fmt.formatType(t, "", .{}, writer, depth);
                 },
-                .range => |t| if (t.@"1") |end| {
-                    try writer.print("{}..{}", .{ t.@"0", end });
+                .range => |t| if (t.@"1") |s| {
+                    try writer.print("{}..{}", .{ t.@"0", s });
                 } else {
                     try writer.print("{}..", .{t.@"0"});
                 },
