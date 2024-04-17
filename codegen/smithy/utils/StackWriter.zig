@@ -28,6 +28,64 @@ pub fn init(allocator: Allocator, output: std.io.AnyWriter, options: Options) Se
     };
 }
 
+/// Returns a new writer context with the replacement prefix.
+/// Call `popPrefix()` to restore the previous context.
+pub fn replacePrefix(self: *const Self, prefix: []const u8) !*const Self {
+    const new_prefix = try self.allocator.alloc(u8, prefix.len);
+    @memcpy(new_prefix, prefix);
+    return self.push(new_prefix);
+}
+
+/// Returns a new writer context with the extended prefix.
+/// Call `popPrefix()` to restore the previous context.
+pub fn appendPrefix(self: *const Self, append: []const u8) !*const Self {
+    const alloc = self.allocator;
+    const old_prefix = self.options.prefix;
+    if (append.len == 0) {
+        return self.push(old_prefix);
+    } else {
+        var new_prefix = try alloc.alloc(u8, old_prefix.len + append.len);
+        @memcpy(new_prefix[0..old_prefix.len], old_prefix);
+        @memcpy(new_prefix[old_prefix.len..][0..append.len], append);
+        return self.push(new_prefix);
+    }
+}
+
+fn push(self: *const Self, prefix: []const u8) !*const Self {
+    const alloc = self.allocator;
+    var context = try alloc.create(Self);
+    context.* = .{
+        .allocator = alloc,
+        .output = self.output,
+        .options = self.options,
+        .parent = self,
+        .deferred = try alloc.create(std.ArrayListUnmanaged([]const u8)),
+    };
+    context.options.prefix = prefix;
+    context.deferred.* = .{};
+    return context;
+}
+
+/// Restores the previous prefix context and writes the deferred lines to it.
+pub fn pop(self: *const Self) !*const Self {
+    const alloc = self.allocator;
+    const parent = self.parent orelse unreachable;
+    defer {
+        if (!std.mem.eql(u8, parent.options.prefix, self.options.prefix)) {
+            alloc.free(self.options.prefix);
+        }
+
+        self.deferred.deinit(alloc);
+        alloc.destroy(self.deferred);
+        alloc.destroy(self);
+    }
+    for (self.deferred.items) |bytes| {
+        try self.output.writeAll(bytes);
+        alloc.free(bytes);
+    }
+    return parent;
+}
+
 pub fn writeByte(self: Self, byte: u8) !void {
     try self.output.writeByte(byte);
 }
@@ -39,6 +97,19 @@ test "writeByte" {
     const writer = init(test_alloc, buffer.writer().any(), .{});
     try writer.writeByte('f');
     try testing.expectEqualStrings("f", buffer.items);
+}
+
+pub fn writeNByte(self: Self, byte: u8, n: usize) !void {
+    try self.output.writeByteNTimes(byte, n);
+}
+
+test "writeNByte" {
+    var buffer = std.ArrayList(u8).init(test_alloc);
+    defer buffer.deinit();
+
+    const writer = init(test_alloc, buffer.writer().any(), .{});
+    try writer.writeNByte('x', 3);
+    try testing.expectEqualStrings("xxx", buffer.items);
 }
 
 pub fn writeAll(self: Self, bytes: []const u8) !void {
@@ -144,46 +215,6 @@ test "lineBreak" {
     });
     try writer.lineBreak();
     try testing.expectEqualStrings("\n  ", buffer.items);
-}
-
-/// Returns a new writer context with the extended prefix.
-/// Call `popPrefix()` to restore the previous context.
-pub fn appendPrefix(self: *const Self, append: []const u8) !*const Self {
-    assert(append.len > 0);
-    const alloc = self.allocator;
-    const old_prefix = self.options.prefix;
-    var new_prefix = try alloc.alloc(u8, old_prefix.len + append.len);
-    @memcpy(new_prefix[0..old_prefix.len], old_prefix);
-    @memcpy(new_prefix[old_prefix.len..][0..append.len], append);
-
-    var context = try alloc.create(Self);
-    context.* = .{
-        .allocator = alloc,
-        .output = self.output,
-        .options = self.options,
-        .parent = self,
-        .deferred = try alloc.create(std.ArrayListUnmanaged([]const u8)),
-    };
-    context.options.prefix = new_prefix;
-    context.deferred.* = .{};
-    return context;
-}
-
-/// Restores the previous prefix context and writes the deferred lines to it.
-pub fn pop(self: *const Self) !*const Self {
-    const alloc = self.allocator;
-    const parent = self.parent orelse unreachable;
-    defer {
-        self.deferred.deinit(alloc);
-        alloc.free(self.options.prefix);
-        alloc.destroy(self.deferred);
-        alloc.destroy(self);
-    }
-    for (self.deferred.items) |bytes| {
-        try self.output.writeAll(bytes);
-        alloc.free(bytes);
-    }
-    return parent;
 }
 
 /// Write to the **parent** context when the current context is popped.

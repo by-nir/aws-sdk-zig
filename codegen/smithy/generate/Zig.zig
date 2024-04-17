@@ -34,10 +34,7 @@ pub fn init(allocator: Allocator, writer: *const StackWriter) !Self {
     return .{
         .allocator = allocator,
         // We don't use the `init()` method to avoid writing a struct declaration.
-        .container = .{
-            .allocator = allocator,
-            .writer = writer,
-        },
+        .container = .{ .writer = writer },
     };
 }
 

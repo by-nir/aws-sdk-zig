@@ -14,5 +14,6 @@ test {
     _ = @import("symbols/shapes.zig");
     _ = @import("prelude.zig");
     _ = Parser;
+    _ = @import("generate/Markdown.zig");
     _ = @import("generate/Zig.zig");
 }
