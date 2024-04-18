@@ -16,255 +16,494 @@ const Markdown = @import("Markdown.zig");
 // an actual source. For now will stick with the current approach, but it’s
 // worth looking into in the futrure.
 
+const Container = @This();
+pub const CommentLevel = enum { normal, doc, doc_top };
 const INDENT = "    ";
 
-const Self = @This();
-pub const CommentLevel = enum { normal, doc, doc_top };
-const Content = enum(u8) {
-    none = 0,
-    fields = 2,
-    declarations = 3,
-};
-
-container: Container,
-allocator: Allocator,
+writer: *StackWriter,
+parent: ?*const Container,
+section: Section = .none,
+previous: Statements = .comptime_block,
 imports: std.StringArrayHashMapUnmanaged(Identifier) = .{},
-content: Content = .none,
 
-/// `Root <- skip container_doc_comment? ContainerMembers eof`
-pub fn init(allocator: Allocator, writer: *const StackWriter) !Self {
+const Section = enum { none, fields, funcs };
+const Statements = enum { comment, doc, test_block, comptime_block, field, variable, function, using };
+
+/// Call `end()` to complete the declaration and deinit.
+pub fn init(writer: *StackWriter, parent: ?*const Container) !Container {
     return .{
-        .allocator = allocator,
-        // We don't use the `init()` method to avoid writing a struct declaration.
-        .container = .{ .writer = writer },
+        .parent = parent,
+        .writer = if (parent != null) blk: {
+            try writer.writeAll("{\n");
+            const scope = try writer.appendPrefix(INDENT);
+            try scope.deferLineAll(.parent, "}");
+            break :blk scope;
+        } else writer,
     };
 }
 
-pub fn deinit(self: *Self) void {
+/// Complete the declaration and deinit.
+pub fn end(self: *Container) !void {
+    const allocator = self.writer.allocator;
     for (self.imports.values()) |id| {
-        self.allocator.free(id.name);
+        allocator.free(id.name);
     }
-    self.imports.deinit(self.allocator);
+    self.imports.deinit(allocator);
+
+    try self.writer.deinit();
     self.* = undefined;
 }
 
-/// Assumes that this script is not the root. This REPLACES the call to `deinit()`.
-pub fn end(self: *Self) !void {
-    _ = try self.container.writer.pop();
-    self.deinit();
+// Root <- skip container_doc_comment? ContainerMembers eof
+// ContainerMembers <- ContainerDeclaration* (ContainerField COMMA)* (ContainerField / ContainerDeclaration*)
+// ContainerField <- doc_comment? KEYWORD_comptime? !KEYWORD_fn (IDENTIFIER COLON)? TypeExpr ByteAlign? (EQUAL Expr)?
+// ContainerDeclaration <- TestDecl / ComptimeDecl / doc_comment? KEYWORD_pub? Decl
+// Decl
+//     <- (KEYWORD_export / KEYWORD_extern STRINGLITERALSINGLE? / KEYWORD_inline / KEYWORD_noinline)? FnProto (SEMICOLON / Block)
+//      / (KEYWORD_export / KEYWORD_extern STRINGLITERALSINGLE?)? KEYWORD_threadlocal? GlobalVarDecl
+//      / KEYWORD_usingnamespace Expr SEMICOLON
+// GlobalVarDecl <- VarDeclProto (EQUAL Expr)? SEMICOLON
+// TestDecl <- KEYWORD_test (STRINGLITERALSINGLE / IDENTIFIER)? Block
+// ComptimeDecl <- KEYWORD_comptime Block
+
+fn importFromHierarchy(self: *const Container, rel_path: []const u8) ?Identifier {
+    if (self.imports.get(rel_path)) |id| return id;
+    if (self.parent) |p| return p.importFromHierarchy(rel_path);
+    return null;
 }
 
-pub fn comment(self: *Self, level: CommentLevel) !Markdown {
-    if (level == .doc_top) {
-        if (self.content != .none) return error.TopDocAfterStatements;
-        self.content = .fields;
+pub fn import(self: *Container, rel_path: []const u8) !Identifier {
+    if (self.importFromHierarchy(rel_path)) |id| return id;
+
+    const allocator = self.writer.allocator;
+    const id_name = try allocator.alloc(u8, "_imp_".len + rel_path.len);
+    @memcpy(id_name[0..5], "_imp_");
+    errdefer allocator.free(id_name);
+    const output = id_name["_imp_".len..][0..rel_path.len];
+    _ = std.mem.replace(u8, rel_path, "../", "xx_", output);
+    std.mem.replaceScalar(u8, output, '.', '_');
+    std.mem.replaceScalar(u8, output, '/', '_');
+
+    const id = Identifier{ .name = id_name };
+    if (self.parent == null and self.imports.count() == 0) {
+        try self.writer.deferLineAll(.self, "");
     }
-    return self.container.comment(level);
-}
-
-test "comment" {
-    var list = std.ArrayList(u8).init(test_alloc);
-    const writer = StackWriter.init(test_alloc, list.writer().any(), .{});
-    defer list.deinit();
-
-    var b = try init(test_alloc, &writer);
-    var c = try b.comment(.doc_top);
-    try c.paragraph("foo");
-    try c.end();
-
-    try testing.expectEqualStrings("//! foo", list.items);
-    try testing.expectError(error.TopDocAfterStatements, b.comment(.doc_top));
-}
-
-pub fn import(self: *Self, rel_path: []const u8) !Identifier {
-    const entry = try self.imports.getOrPut(self.allocator, rel_path);
-    if (entry.found_existing) {
-        return entry.value_ptr.*;
-    } else {
-        const path = try std.mem.replaceOwned(u8, self.allocator, rel_path, "../", "xx_");
-        defer self.allocator.free(path);
-        std.mem.replaceScalar(u8, path, '.', '_');
-        std.mem.replaceScalar(u8, path, '/', '_');
-        const id = try fmt.allocPrint(self.allocator, "_imp_{s}", .{path});
-
-        if (self.content == .none) {
-            self.content = .fields;
-            try self.container.writer.prefixedFmt("const {s} = @import(\"{s}\");", .{ id, rel_path });
-        } else {
-            try self.container.writer.lineFmt("const {s} = @import(\"{s}\");", .{ id, rel_path });
-        }
-
-        entry.value_ptr.* = Identifier{ .name = id };
-        return Identifier{ .name = id };
-    }
+    try self.writer.deferLineFmt(.self, "{}", .{Variable{
+        .decl = .{
+            .assign = Expr{ .temp_import = rel_path },
+        },
+        .proto = .{
+            .identifier = id,
+            .type = null,
+        },
+    }});
+    try self.imports.put(allocator, rel_path, id);
+    return id;
 }
 
 test "import" {
-    var list = std.ArrayList(u8).init(test_alloc);
-    const writer = StackWriter.init(test_alloc, list.writer().any(), .{});
-    defer list.deinit();
+    var buffer = std.ArrayList(u8).init(test_alloc);
+    defer buffer.deinit();
 
-    var b = try init(test_alloc, &writer);
-    defer b.deinit();
+    var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+    var scope = try init(&writer, null);
 
-    try testing.expectEqualDeep(Identifier{ .name = "_imp_std" }, try b.import("std"));
-    try testing.expectEqualDeep(Identifier{ .name = "_imp_xx_foo_bar_zig" }, try b.import("../foo/bar.zig"));
-    _ = try b.import("std");
+    try testing.expectEqualDeep(Identifier{ .name = "_imp_std" }, scope.import("std"));
+    try testing.expectEqualDeep(Identifier{ .name = "_imp_xx_foo_bar_zig" }, scope.import("../foo/bar.zig"));
+    try testing.expectEqualDeep(Identifier{ .name = "_imp_std" }, scope.import("std"));
 
+    var child = try init(&writer, &scope);
+    try testing.expectEqualDeep(Identifier{ .name = "_imp_xx_baz_zig" }, child.import("../baz.zig"));
+    try testing.expectEqualDeep(Identifier{ .name = "_imp_std" }, child.import("std"));
+    try child.end();
+
+    try scope.end();
     try testing.expectEqualStrings(
+        \\{
+        \\
+        \\    const _imp_xx_baz_zig = @import("../baz.zig");
+        \\}
+        \\
         \\const _imp_std = @import("std");
         \\const _imp_xx_foo_bar_zig = @import("../foo/bar.zig");
-    , list.items);
+    , buffer.items);
 }
 
-pub fn field(self: *Self, f: Field) !void {
-    if (self.content == .declarations) return error.FieldAfterFunction;
-    self.content = .fields;
-    try self.container.field(f);
-}
-
-pub fn variable(self: *Self, decl: Variable.Declaration, proto: Variable.Prototype) !void {
-    if (self.content == .none) self.content = .fields;
-    try self.container.variable(decl, proto);
-}
-
-pub fn function(self: *Self, decl: Function.Declaration, proto: Function.Prototype) !Block {
-    self.content = .declarations;
-    return self.container.function(decl, proto);
-}
-
-pub fn using(self: *Self, decl: Using) !void {
-    if (self.content == .none) self.content = .fields;
-    try self.container.using(decl);
-}
-
-/// Call `end()` to complete the declaration.
-pub fn testBlock(self: *Self, name: ?Identifier) !Block {
-    if (self.content == .none) self.content = .fields;
-    return self.container.testBlock(name);
-}
-
-/// Call `end()` to complete the declaration.
-pub fn comptimeBlock(self: *Self) !Block {
-    if (self.content == .none) self.content = .fields;
-    return self.container.comptimeBlock();
-}
-
-/// ```
-/// ContainerMembers <- ContainerDeclaration* (ContainerField COMMA)* (ContainerField / ContainerDeclaration*)
-/// ContainerField <- doc_comment? KEYWORD_comptime? !KEYWORD_fn (IDENTIFIER COLON)? TypeExpr ByteAlign? (EQUAL Expr)?
-/// ContainerDeclaration <- TestDecl / ComptimeDecl / doc_comment? KEYWORD_pub? Decl
-/// Decl
-///     <- (KEYWORD_export / KEYWORD_extern STRINGLITERALSINGLE? / KEYWORD_inline / KEYWORD_noinline)? FnProto (SEMICOLON / Block)
-///      / (KEYWORD_export / KEYWORD_extern STRINGLITERALSINGLE?)? KEYWORD_threadlocal? GlobalVarDecl
-///      / KEYWORD_usingnamespace Expr SEMICOLON
-/// GlobalVarDecl <- VarDeclProto (EQUAL Expr)? SEMICOLON
-/// TestDecl <- KEYWORD_test (STRINGLITERALSINGLE / IDENTIFIER)? Block
-/// ComptimeDecl <- KEYWORD_comptime Block
-/// ```
-pub const Container = struct {
-    writer: *const StackWriter,
-
-    /// Call `end()` to complete the declaration.
-    fn init(writer: *const StackWriter) Container {
-        try writer.writeAll("{");
-        const scope = try writer.appendPrefix(INDENT);
-        try scope.deferLineAll("}");
-        return .{ .writer = scope };
+pub fn field(self: *Container, f: Field) !void {
+    if (self.section == .none) {
+        self.section = .fields;
+    } else if (self.section == .funcs) {
+        return error.FieldAfterFunction;
+    } else switch (self.previous) {
+        .doc, .comment, .field => try self.writer.lineBreak(1),
+        else => try self.writer.lineBreak(2),
     }
+    self.previous = .field;
+    try self.writer.prefixedFmt("{},", .{f});
+}
 
-    // `TestDecl <- KEYWORD_test (STRINGLITERALSINGLE / IDENTIFIER)? Block`
-    /// Call `end()` to complete the declaration.
-    pub fn testBlock(self: Container, name: ?Identifier) !Block {
-        if (name) |s| {
-            try self.writer.lineFmt("test \"{}\"", .{s});
-        } else {
-            try self.writer.lineAll("test");
+test "field" {
+    var buffer = std.ArrayList(u8).init(test_alloc);
+    defer buffer.deinit();
+
+    var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+    var scope = try init(&writer, null);
+
+    const fld = Field{
+        .identifier = Identifier{ .name = "foo" },
+        .type = TypeExpr{ .temp = "u8" },
+    };
+
+    try scope.field(fld);
+    try testing.expectEqual(.fields, scope.section);
+
+    try scope.field(fld);
+    scope.previous = .doc;
+    try scope.field(fld);
+    scope.previous = .comment;
+    try scope.field(fld);
+
+    scope.previous = .comptime_block;
+    try scope.field(fld);
+
+    scope.section = .funcs;
+    try testing.expectError(error.FieldAfterFunction, scope.field(fld));
+
+    try scope.end();
+    try testing.expectEqualStrings(
+        "foo: u8,\nfoo: u8,\nfoo: u8,\nfoo: u8,\n\nfoo: u8,",
+        buffer.items,
+    );
+}
+
+pub fn variable(self: *Container, decl: Variable.Declaration, proto: Variable.Prototype) !void {
+    if (self.section == .none) {
+        self.section = .fields;
+    } else switch (self.previous) {
+        .doc, .comment, .variable, .using => try self.writer.lineBreak(1),
+        else => try self.writer.lineBreak(2),
+    }
+    self.previous = .variable;
+    try self.writer.prefixedFmt("{}", .{Variable{
+        .decl = decl,
+        .proto = proto,
+    }});
+}
+
+test "variable" {
+    var buffer = std.ArrayList(u8).init(test_alloc);
+    defer buffer.deinit();
+
+    var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+    var scope = try init(&writer, null);
+
+    const proto = Variable.Prototype{
+        .identifier = Identifier{ .name = "foo" },
+        .type = TypeExpr{ .temp = "bool" },
+    };
+
+    try scope.variable(.{}, proto);
+    try testing.expectEqual(.fields, scope.section);
+
+    try scope.variable(.{}, proto);
+    scope.previous = .doc;
+    try scope.variable(.{}, proto);
+    scope.previous = .comment;
+    try scope.variable(.{}, proto);
+    scope.previous = .using;
+    try scope.variable(.{}, proto);
+
+    scope.previous = .comptime_block;
+    try scope.variable(.{}, proto);
+
+    try scope.end();
+    try testing.expectEqualStrings(
+        \\const foo: bool;
+        \\const foo: bool;
+        \\const foo: bool;
+        \\const foo: bool;
+        \\const foo: bool;
+        \\
+        \\const foo: bool;
+    , buffer.items);
+}
+
+pub fn using(self: *Container, decl: Using) !void {
+    if (self.section == .none) {
+        self.section = .fields;
+    } else switch (self.previous) {
+        .doc, .comment, .variable, .using => try self.writer.lineBreak(1),
+        else => try self.writer.lineBreak(2),
+    }
+    self.previous = .using;
+    try self.writer.prefixedFmt("{}", .{decl});
+}
+
+test "using" {
+    var buffer = std.ArrayList(u8).init(test_alloc);
+    defer buffer.deinit();
+
+    var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+    var scope = try init(&writer, null);
+
+    try scope.using(Using{ .expr = Expr{ .temp = "foo" } });
+    try testing.expectEqual(.fields, scope.section);
+
+    try scope.using(Using{ .expr = Expr{ .temp = "bar" } });
+    scope.previous = .doc;
+    try scope.using(Using{ .expr = Expr{ .temp = "baz" } });
+    scope.previous = .comment;
+    try scope.using(Using{ .expr = Expr{ .temp = "qux" } });
+    scope.previous = .variable;
+    try scope.using(Using{ .expr = Expr{ .temp = "quux" } });
+
+    scope.section = .funcs;
+    scope.previous = .comptime_block;
+    try scope.using(Using{ .expr = Expr{ .temp = "quuz" } });
+
+    try scope.end();
+    try testing.expectEqualStrings(
+        \\usingnamespace foo;
+        \\usingnamespace bar;
+        \\usingnamespace baz;
+        \\usingnamespace qux;
+        \\usingnamespace quux;
+        \\
+        \\usingnamespace quuz;
+    , buffer.items);
+}
+
+pub fn function(self: *Container, decl: Function.Declaration, proto: Function.Prototype) !Block {
+    if (self.section != .none) {
+        switch (self.previous) {
+            .doc, .comment => try self.writer.lineBreak(1),
+            else => try self.writer.lineBreak(2),
         }
-        return Block.init(self.writer, .{}, .{});
     }
+    try self.writer.prefixedFmt("{}{}", .{ decl, proto });
+    self.section = .funcs;
+    return Block.init(self.writer, .{}, .{});
+}
 
-    test "testBlock" {
-        var list = std.ArrayList(u8).init(test_alloc);
-        const writer = StackWriter.init(test_alloc, list.writer().any(), .{});
-        defer list.deinit();
+test "function" {
+    var buffer = std.ArrayList(u8).init(test_alloc);
+    defer buffer.deinit();
 
-        const cont = Container{ .writer = &writer };
-        const block = try cont.testBlock(Identifier{ .name = "foo" });
-        try block.statement(Statement{ .temp = "bar()" });
-        try block.end();
+    var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+    var scope = try init(&writer, null);
 
-        try testing.expectEqualStrings("\ntest \"foo\" {\n    bar();\n}", list.items);
+    scope.previous = .doc;
+    const func = try scope.function(.{
+        .is_public = true,
+    }, .{
+        .identifier = Identifier{ .name = "foo" },
+        .parameters = &.{},
+        .return_type = null,
+    });
+    try testing.expectEqual(.funcs, scope.section);
+    try func.statement(Statement{ .temp = "bar()" });
+    try func.end();
+
+    try scope.end();
+    try testing.expectEqualStrings("pub fn foo() void {\n    bar();\n}", buffer.items);
+}
+
+// `TestDecl <- KEYWORD_test (STRINGLITERALSINGLE / IDENTIFIER)? Block`
+/// Call `end()` to complete the declaration.
+pub fn testBlock(self: *Container, name: ?Identifier) !Block {
+    if (self.section == .none) {
+        self.section = .fields;
+    } else switch (self.previous) {
+        .doc => return error.InvalidBlockAfterDoc,
+        .comment => try self.writer.lineBreak(1),
+        else => try self.writer.lineBreak(2),
     }
-
-    // `ComptimeDecl <- KEYWORD_comptime Block`
-    /// Call `end()` to complete the declaration.
-    pub fn comptimeBlock(self: Container) !Block {
-        try self.writer.lineAll("comptime");
-        return Block.init(self.writer, .{}, .{});
+    self.previous = .test_block;
+    if (name) |s| {
+        try self.writer.prefixedFmt("test \"{}\"", .{s});
+    } else {
+        try self.writer.prefixedAll("test");
     }
+    return Block.init(self.writer, .{}, .{});
+}
 
-    test "comptimeBlock" {
-        var list = std.ArrayList(u8).init(test_alloc);
-        const writer = StackWriter.init(test_alloc, list.writer().any(), .{});
-        defer list.deinit();
+test "testBlock" {
+    var buffer = std.ArrayList(u8).init(test_alloc);
+    defer buffer.deinit();
 
-        const cont = Container{ .writer = &writer };
-        const block = try cont.comptimeBlock();
-        try block.statement(Statement{ .temp = "foo()" });
-        try block.end();
+    var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+    var scope = try init(&writer, null);
 
-        try testing.expectEqualStrings("\ncomptime {\n    foo();\n}", list.items);
+    var block = try scope.testBlock(Identifier{ .name = "foo" });
+    try testing.expectEqual(.fields, scope.section);
+    try block.statement(Statement{ .temp = "bar()" });
+    try block.end();
+
+    block = try scope.testBlock(Identifier{ .name = "foo" });
+    try block.statement(Statement{ .temp = "bar()" });
+    try block.end();
+
+    scope.previous = .comment;
+    block = try scope.testBlock(Identifier{ .name = "foo" });
+    try block.statement(Statement{ .temp = "bar()" });
+    try block.end();
+
+    scope.previous = .doc;
+    try testing.expectError(
+        error.InvalidBlockAfterDoc,
+        scope.testBlock(Identifier{ .name = "foo" }),
+    );
+
+    try scope.end();
+    try testing.expectEqualStrings(
+        \\test "foo" {
+        \\    bar();
+        \\}
+        \\
+        \\test "foo" {
+        \\    bar();
+        \\}
+        \\test "foo" {
+        \\    bar();
+        \\}
+    , buffer.items);
+}
+
+// `ComptimeDecl <- KEYWORD_comptime Block`
+/// Call `end()` to complete the declaration.
+pub fn comptimeBlock(self: *Container) !Block {
+    if (self.section == .none) {
+        self.section = .fields;
+    } else switch (self.previous) {
+        .doc => return error.InvalidBlockAfterDoc,
+        .comment, .variable => try self.writer.lineBreak(1),
+        else => try self.writer.lineBreak(2),
     }
+    self.previous = .comptime_block;
+    try self.writer.prefixedAll("comptime");
+    return Block.init(self.writer, .{}, .{});
+}
 
-    /// Call `end()` to complete the comment.
-    pub fn comment(self: Container, level: CommentLevel) !Markdown {
-        if (level != .doc_top) try self.writer.lineBreak();
-        const prefix = switch (level) {
-            .normal => "// ",
-            .doc => "/// ",
-            .doc_top => "//! ",
+test "comptimeBlock" {
+    var buffer = std.ArrayList(u8).init(test_alloc);
+    defer buffer.deinit();
+
+    var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+    var scope = try init(&writer, null);
+
+    var block = try scope.comptimeBlock();
+    try testing.expectEqual(.fields, scope.section);
+    try block.statement(Statement{ .temp = "foo()" });
+    try block.end();
+
+    block = try scope.comptimeBlock();
+    try block.statement(Statement{ .temp = "foo()" });
+    try block.end();
+
+    scope.previous = .comment;
+    block = try scope.comptimeBlock();
+    try block.statement(Statement{ .temp = "foo()" });
+    try block.end();
+
+    scope.previous = .doc;
+    try testing.expectError(error.InvalidBlockAfterDoc, scope.comptimeBlock());
+
+    try scope.end();
+    try testing.expectEqualStrings(
+        \\comptime {
+        \\    foo();
+        \\}
+        \\
+        \\comptime {
+        \\    foo();
+        \\}
+        \\comptime {
+        \\    foo();
+        \\}
+    , buffer.items);
+}
+
+/// Call `end()` to complete the comment.
+pub fn comment(self: *Container, level: CommentLevel) !Markdown {
+    if (self.section != .none) {
+        if (level == .doc_top) return error.TopDocAfterStatements;
+        const br: u8 = switch (self.previous) {
+            .doc, .comment => 1,
+            else => 2,
         };
-        const scope = try self.writer.appendPrefix(prefix);
-        return Markdown.init(scope);
+        try self.writer.lineBreak(br);
+    } else {
+        self.section = .fields;
     }
 
-    test "comment" {
-        var list = std.ArrayList(u8).init(test_alloc);
-        const writer = StackWriter.init(test_alloc, list.writer().any(), .{});
-        defer list.deinit();
+    const scope = try self.writer.appendPrefix(switch (level) {
+        .normal => blk: {
+            self.previous = .comment;
+            break :blk "// ";
+        },
+        .doc => blk: {
+            self.previous = .doc;
+            break :blk "/// ";
+        },
+        .doc_top => "//! ",
+    });
+    return Markdown.init(scope);
+}
 
-        const cont = Container{ .writer = &writer };
-        var c = try cont.comment(.doc);
-        try c.paragraph("foo");
-        try c.end();
+test "comment" {
+    var buffer = std.ArrayList(u8).init(test_alloc);
+    defer buffer.deinit();
 
-        try testing.expectEqualStrings("\n/// foo", list.items);
-    }
+    var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+    var scope = try init(&writer, null);
 
-    pub fn field(self: Container, f: Field) !void {
-        try self.writer.lineFmt("{},", .{f});
-    }
+    var c = try scope.comment(.doc_top);
+    try testing.expectEqual(.fields, scope.section);
+    try c.paragraph("foo");
+    try c.end();
 
-    pub fn variable(self: Container, decl: Variable.Declaration, proto: Variable.Prototype) !void {
-        try self.writer.lineFmt("{}", .{Variable{
-            .decl = decl,
-            .proto = proto,
-        }});
-    }
+    c = try scope.comment(.normal);
+    try c.paragraph("bar");
+    try c.end();
 
-    pub fn function(self: Container, decl: Function.Declaration, proto: Function.Prototype) !Block {
-        return Function.declare(self.writer, decl, proto);
-    }
+    c = try scope.comment(.doc);
+    try c.paragraph("baz");
+    try c.end();
 
-    pub fn using(self: Container, decl: Using) !void {
-        try self.writer.lineFmt("{}", .{decl});
-    }
+    c = try scope.comment(.normal);
+    try c.paragraph("qux");
+    try c.end();
 
-    pub fn end(self: Function) !void {
-        try self.writer.pop();
-    }
-};
+    try testing.expectError(error.TopDocAfterStatements, scope.comment(.doc_top));
+
+    try scope.end();
+    try testing.expectEqualStrings(
+        \\//! foo
+        \\
+        \\// bar
+        \\/// baz
+        \\// qux
+    , buffer.items);
+}
+
+test {
+    _ = LazyIdentifier;
+    _ = Identifier;
+    _ = AssignExpr;
+    _ = ByteAlign;
+    _ = Extern;
+    _ = Block;
+
+    _ = Field;
+    _ = Using;
+    _ = Variable;
+    _ = Function;
+
+    _ = IfStatement;
+    _ = ForStatement;
+    _ = WhileStatement;
+    _ = SwitchExpr;
+}
 
 // `doc_comment? KEYWORD_pub? KEYWORD_usingnamespace Expr SEMICOLON`
 pub const Using = struct {
@@ -319,11 +558,11 @@ pub const Field = struct {
     }
 };
 
-/// `GlobalVarDecl <- VarDeclProto (EQUAL Expr)? SEMICOLON`
 pub const Variable = struct {
     decl: Declaration,
     proto: Prototype,
 
+    /// GlobalVarDecl <- VarDeclProto (EQUAL Expr)? SEMICOLON
     pub fn format(self: Variable, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
         if (self.decl.assign) |t| {
             try writer.print("{}{} = {};", .{ self.decl, self.proto, t });
@@ -333,9 +572,6 @@ pub const Variable = struct {
     }
 
     test {
-        _ = Declaration;
-        _ = Prototype;
-
         try testing.expectFmt("pub var foo: bool;", "{}", .{Variable{
             .decl = .{
                 .is_public = true,
@@ -346,7 +582,6 @@ pub const Variable = struct {
                 .type = TypeExpr{ .temp = "bool" },
             },
         }});
-
         try testing.expectFmt("const foo: bool = true;", "{}", .{Variable{
             .decl = .{
                 .assign = Expr{ .temp = "true" },
@@ -382,15 +617,15 @@ pub const Variable = struct {
             };
             if (self.is_local) try writer.writeAll("threadlocal ");
         }
-
-        test {
-            try testing.expectFmt("pub export threadlocal ", "{}", .{Declaration{
-                .is_public = true,
-                .specifier = .@"export",
-                .is_local = true,
-            }});
-        }
     };
+
+    test "Declaration" {
+        try testing.expectFmt("pub export threadlocal ", "{}", .{Declaration{
+            .is_public = true,
+            .specifier = .@"export",
+            .is_local = true,
+        }});
+    }
 
     /// `VarDeclProto <- (KEYWORD_const / KEYWORD_var) IDENTIFIER (COLON TypeExpr)? ByteAlign?`
     pub const Prototype = struct {
@@ -408,50 +643,24 @@ pub const Variable = struct {
             if (self.type) |t| try writer.print(": {}", .{t});
             if (self.alignment) |a| try writer.print(" {}", .{ByteAlign{ .expr = a }});
         }
-
-        test {
-            try testing.expectFmt("const foo", "{}", .{Prototype{
-                .identifier = Identifier{ .name = "foo" },
-                .type = null,
-            }});
-
-            try testing.expectFmt("var foo: Foo align(4)", "{}", .{Prototype{
-                .is_mutable = true,
-                .identifier = Identifier{ .name = "foo" },
-                .type = TypeExpr{ .temp = "Foo" },
-                .alignment = Expr{ .temp = "4" },
-            }});
-        }
     };
+
+    test "Prototype" {
+        try testing.expectFmt("const foo", "{}", .{Prototype{
+            .identifier = Identifier{ .name = "foo" },
+            .type = null,
+        }});
+
+        try testing.expectFmt("var foo: Foo align(4)", "{}", .{Prototype{
+            .is_mutable = true,
+            .identifier = Identifier{ .name = "foo" },
+            .type = TypeExpr{ .temp = "Foo" },
+            .alignment = Expr{ .temp = "4" },
+        }});
+    }
 };
 
 pub const Function = struct {
-    fn declare(writer: *const StackWriter, decl: Declaration, proto: Prototype) !Block {
-        try writer.lineFmt("{}{}", .{ decl, proto });
-        return Block.init(writer, .{}, .{});
-    }
-
-    test {
-        _ = Declaration;
-        _ = Prototype;
-
-        var list = std.ArrayList(u8).init(test_alloc);
-        const writer = StackWriter.init(test_alloc, list.writer().any(), .{});
-        defer list.deinit();
-
-        const func = try Function.declare(&writer, .{
-            .is_public = true,
-        }, .{
-            .identifier = Identifier{ .name = "foo" },
-            .parameters = &.{},
-            .return_type = null,
-        });
-        try func.statement(Statement{ .temp = "bar()" });
-        try func.end();
-
-        try testing.expectEqualStrings("\npub fn foo() void {\n    bar();\n}", list.items);
-    }
-
     /// ```
     /// doc_comment? KEYWORD_pub?
     /// (KEYWORD_export / KEYWORD_extern STRINGLITERALSINGLE? / KEYWORD_inline / KEYWORD_noinline)?
@@ -476,14 +685,14 @@ pub const Function = struct {
                 .@"noinline" => try writer.writeAll("noinline "),
             };
         }
-
-        test {
-            try testing.expectFmt("pub export ", "{}", .{Declaration{
-                .is_public = true,
-                .specifier = .@"export",
-            }});
-        }
     };
+
+    test "Declaration" {
+        try testing.expectFmt("pub export ", "{}", .{Declaration{
+            .is_public = true,
+            .specifier = .@"export",
+        }});
+    }
 
     /// ```
     /// FnProto <- KEYWORD_fn IDENTIFIER? LPAREN ParamDeclList RPAREN ByteAlign? CallConv? EXCLAMATIONMARK? TypeExpr
@@ -549,41 +758,41 @@ pub const Function = struct {
                 }
             }
         };
-
-        test {
-            try testing.expectFmt("fn foo() void", "{}", .{Prototype{
-                .identifier = Identifier{ .name = "foo" },
-                .parameters = &.{},
-                .return_type = null,
-            }});
-            try testing.expectFmt("fn foo(bar: bool, baz: anytype, _: bool) void", "{}", .{Prototype{
-                .identifier = Identifier{ .name = "foo" },
-                .parameters = &.{ .{
-                    .identifier = Identifier{ .name = "bar" },
-                    .type = TypeExpr{ .temp = "bool" },
-                }, .{
-                    .identifier = Identifier{ .name = "baz" },
-                    .type = null,
-                }, .{
-                    .identifier = null,
-                    .type = TypeExpr{ .temp = "bool" },
-                } },
-                .return_type = null,
-            }});
-            try testing.expectFmt("fn foo(...) callconv(.C) void", "{}", .{Prototype{
-                .identifier = Identifier{ .name = "foo" },
-                .parameters = &.{.{ .identifier = null, .type = null }},
-                .call_conv = .C,
-                .return_type = null,
-            }});
-            try testing.expectFmt("fn foo() align(4) void", "{}", .{Prototype{
-                .identifier = Identifier{ .name = "foo" },
-                .parameters = &.{},
-                .alignment = Expr{ .temp = "4" },
-                .return_type = null,
-            }});
-        }
     };
+
+    test "Prototype" {
+        try testing.expectFmt("fn foo() void", "{}", .{Prototype{
+            .identifier = Identifier{ .name = "foo" },
+            .parameters = &.{},
+            .return_type = null,
+        }});
+        try testing.expectFmt("fn foo(bar: bool, baz: anytype, _: bool) void", "{}", .{Prototype{
+            .identifier = Identifier{ .name = "foo" },
+            .parameters = &.{ .{
+                .identifier = Identifier{ .name = "bar" },
+                .type = TypeExpr{ .temp = "bool" },
+            }, .{
+                .identifier = Identifier{ .name = "baz" },
+                .type = null,
+            }, .{
+                .identifier = null,
+                .type = TypeExpr{ .temp = "bool" },
+            } },
+            .return_type = null,
+        }});
+        try testing.expectFmt("fn foo(...) callconv(.C) void", "{}", .{Prototype{
+            .identifier = Identifier{ .name = "foo" },
+            .parameters = &.{.{ .identifier = null, .type = null }},
+            .call_conv = .C,
+            .return_type = null,
+        }});
+        try testing.expectFmt("fn foo() align(4) void", "{}", .{Prototype{
+            .identifier = Identifier{ .name = "foo" },
+            .parameters = &.{},
+            .alignment = Expr{ .temp = "4" },
+            .return_type = null,
+        }});
+    }
 };
 
 /// ```
@@ -595,7 +804,7 @@ pub const Function = struct {
 /// ```
 pub const IfStatement = struct {
     allocator: Allocator,
-    writer: *const StackWriter,
+    writer: *StackWriter,
 
     pub const Prefix = struct {
         condition: Expr,
@@ -610,7 +819,7 @@ pub const IfStatement = struct {
         }
     };
 
-    fn init(allocator: Allocator, writer: *const StackWriter, prefix: Prefix) !IfStatement {
+    fn init(allocator: Allocator, writer: *StackWriter, prefix: Prefix) !IfStatement {
         try writer.writeFmt("{}", .{prefix});
         return .{
             .allocator = allocator,
@@ -648,9 +857,9 @@ pub const IfStatement = struct {
     }
 
     test "block" {
-        var list = std.ArrayList(u8).init(test_alloc);
-        const writer = StackWriter.init(test_alloc, list.writer().any(), .{});
-        defer list.deinit();
+        var buffer = std.ArrayList(u8).init(test_alloc);
+        var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+        defer buffer.deinit();
 
         const ifs = try IfStatement.init(test_alloc, &writer, .{
             .condition = Expr{ .temp = "true" },
@@ -664,14 +873,14 @@ pub const IfStatement = struct {
 
         try testing.expectEqualStrings(
             "if (true) |_| blk: {\n    break :blk foo();\n} else {\n    bar();\n}",
-            list.items,
+            buffer.items,
         );
     }
 
     test "assign" {
-        var list = std.ArrayList(u8).init(test_alloc);
-        const writer = StackWriter.init(test_alloc, list.writer().any(), .{});
-        defer list.deinit();
+        var buffer = std.ArrayList(u8).init(test_alloc);
+        var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+        defer buffer.deinit();
 
         const ifs = try IfStatement.init(test_alloc, &writer, .{
             .condition = Expr{ .temp = "true" },
@@ -682,14 +891,14 @@ pub const IfStatement = struct {
 
         try testing.expectEqualStrings(
             "if (true) |_| i++;",
-            list.items,
+            buffer.items,
         );
     }
 
     test "assign else" {
-        var list = std.ArrayList(u8).init(test_alloc);
-        const writer = StackWriter.init(test_alloc, list.writer().any(), .{});
-        defer list.deinit();
+        var buffer = std.ArrayList(u8).init(test_alloc);
+        var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+        defer buffer.deinit();
 
         const ifs = try IfStatement.init(test_alloc, &writer, .{
             .condition = Expr{ .temp = "true" },
@@ -700,7 +909,7 @@ pub const IfStatement = struct {
 
         try testing.expectEqualStrings(
             "if (true) |_| i++ else {}",
-            list.items,
+            buffer.items,
         );
     }
 };
@@ -716,9 +925,9 @@ pub const IfStatement = struct {
 /// ```
 pub const ForStatement = struct {
     allocator: Allocator,
-    writer: *const StackWriter,
+    writer: *StackWriter,
 
-    fn init(allocator: Allocator, writer: *const StackWriter, prefix: Prefix) !ForStatement {
+    fn init(allocator: Allocator, writer: *StackWriter, prefix: Prefix) !ForStatement {
         try writer.writeFmt("{}", .{prefix});
         return .{
             .allocator = allocator,
@@ -750,9 +959,9 @@ pub const ForStatement = struct {
     }
 
     test "block" {
-        var list = std.ArrayList(u8).init(test_alloc);
-        const writer = StackWriter.init(test_alloc, list.writer().any(), .{});
-        defer list.deinit();
+        var buffer = std.ArrayList(u8).init(test_alloc);
+        var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+        defer buffer.deinit();
 
         const ifs = try ForStatement.init(test_alloc, &writer, Prefix{
             .arguments = &.{.{ .single = Expr{ .temp = "foo" } }},
@@ -766,14 +975,14 @@ pub const ForStatement = struct {
 
         try testing.expectEqualStrings(
             "for (foo) |f| {\n    bar();\n} else {\n    baz();\n}",
-            list.items,
+            buffer.items,
         );
     }
 
     test "assign" {
-        var list = std.ArrayList(u8).init(test_alloc);
-        const writer = StackWriter.init(test_alloc, list.writer().any(), .{});
-        defer list.deinit();
+        var buffer = std.ArrayList(u8).init(test_alloc);
+        var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+        defer buffer.deinit();
 
         const ifs = try ForStatement.init(test_alloc, &writer, Prefix{
             .arguments = &.{.{ .single = Expr{ .temp = "foo" } }},
@@ -784,14 +993,14 @@ pub const ForStatement = struct {
 
         try testing.expectEqualStrings(
             "for (foo) |f| i++;",
-            list.items,
+            buffer.items,
         );
     }
 
     test "assign else" {
-        var list = std.ArrayList(u8).init(test_alloc);
-        const writer = StackWriter.init(test_alloc, list.writer().any(), .{});
-        defer list.deinit();
+        var buffer = std.ArrayList(u8).init(test_alloc);
+        var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+        defer buffer.deinit();
 
         const ifs = try ForStatement.init(test_alloc, &writer, Prefix{
             .arguments = &.{.{ .single = Expr{ .temp = "foo" } }},
@@ -802,7 +1011,7 @@ pub const ForStatement = struct {
 
         try testing.expectEqualStrings(
             "for (foo) |f| i++ else {}",
-            list.items,
+            buffer.items,
         );
     }
 
@@ -872,7 +1081,7 @@ pub const ForStatement = struct {
 /// ```
 const WhileStatement = struct {
     allocator: Allocator,
-    writer: *const StackWriter,
+    writer: *StackWriter,
 
     pub const Prefix = struct {
         condition: Expr,
@@ -894,7 +1103,7 @@ const WhileStatement = struct {
         }});
     }
 
-    fn init(allocator: Allocator, writer: *const StackWriter, prefix: Prefix) !WhileStatement {
+    fn init(allocator: Allocator, writer: *StackWriter, prefix: Prefix) !WhileStatement {
         try writer.writeFmt("{}", .{prefix});
         return .{
             .allocator = allocator,
@@ -932,9 +1141,9 @@ const WhileStatement = struct {
     }
 
     test "block" {
-        var list = std.ArrayList(u8).init(test_alloc);
-        const writer = StackWriter.init(test_alloc, list.writer().any(), .{});
-        defer list.deinit();
+        var buffer = std.ArrayList(u8).init(test_alloc);
+        var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+        defer buffer.deinit();
 
         const ifs = try WhileStatement.init(test_alloc, &writer, .{
             .condition = Expr{ .temp = "true" },
@@ -949,14 +1158,14 @@ const WhileStatement = struct {
 
         try testing.expectEqualStrings(
             "while (true) |_| : (i++) {\n    break;\n} else {\n    foo();\n}",
-            list.items,
+            buffer.items,
         );
     }
 
     test "assign" {
-        var list = std.ArrayList(u8).init(test_alloc);
-        const writer = StackWriter.init(test_alloc, list.writer().any(), .{});
-        defer list.deinit();
+        var buffer = std.ArrayList(u8).init(test_alloc);
+        var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+        defer buffer.deinit();
 
         const ifs = try WhileStatement.init(test_alloc, &writer, .{
             .condition = Expr{ .temp = "true" },
@@ -967,14 +1176,14 @@ const WhileStatement = struct {
 
         try testing.expectEqualStrings(
             "while (true) |_| i++;",
-            list.items,
+            buffer.items,
         );
     }
 
     test "assign else" {
-        var list = std.ArrayList(u8).init(test_alloc);
-        const writer = StackWriter.init(test_alloc, list.writer().any(), .{});
-        defer list.deinit();
+        var buffer = std.ArrayList(u8).init(test_alloc);
+        var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+        defer buffer.deinit();
 
         const ifs = try WhileStatement.init(test_alloc, &writer, .{
             .condition = Expr{ .temp = "true" },
@@ -985,7 +1194,7 @@ const WhileStatement = struct {
 
         try testing.expectEqualStrings(
             "while (true) |_| i++ else {}",
-            list.items,
+            buffer.items,
         );
     }
 };
@@ -1002,15 +1211,17 @@ const WhileStatement = struct {
 /// SingleAssignExpr <- Expr (AssignOp Expr)?
 /// ```
 pub const SwitchExpr = struct {
-    writer: *const StackWriter,
+    writer: *StackWriter,
 
     /// Call `end()` to complete the declaration.
-    fn init(writer: *const StackWriter, subject: Expr) !SwitchExpr {
+    fn init(writer: *StackWriter, subject: Expr) !SwitchExpr {
         try writer.writeFmt("switch ({})", .{subject});
         const scope = try Block.createScope(writer, .{}, null);
-        return .{
-            .writer = scope,
-        };
+        return .{ .writer = scope };
+    }
+
+    pub fn end(self: SwitchExpr) !void {
+        try self.writer.deinit();
     }
 
     /// Call `end()` to complete the block.
@@ -1043,10 +1254,6 @@ pub const SwitchExpr = struct {
         });
     }
 
-    pub fn end(self: SwitchExpr) !void {
-        _ = try self.writer.pop();
-    }
-
     pub const ProngItem = union(enum) {
         single: Expr,
         range: [2]Expr,
@@ -1074,11 +1281,12 @@ pub const SwitchExpr = struct {
     };
 
     test {
-        var list = std.ArrayList(u8).init(test_alloc);
-        const writer = StackWriter.init(test_alloc, list.writer().any(), .{});
-        defer list.deinit();
+        var buffer = std.ArrayList(u8).init(test_alloc);
+        defer buffer.deinit();
 
+        var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
         var expr = try SwitchExpr.init(&writer, Expr{ .temp = "foo" });
+
         var block = try expr.prong(&.{
             .{ .single = Expr{ .temp = ".foo" } },
         }, .{
@@ -1108,8 +1316,9 @@ pub const SwitchExpr = struct {
         });
         try block.statement(.{ .temp = "boom()" });
         try block.end();
-        try expr.end();
 
+        try expr.end();
+        try writer.deinit();
         try testing.expectEqualStrings(
             \\switch (foo) {
             \\    inline .foo => {
@@ -1122,12 +1331,12 @@ pub const SwitchExpr = struct {
             \\        boom();
             \\    },
             \\}
-        , list.items);
+        , buffer.items);
     }
 };
 
 pub const Block = struct {
-    writer: *const StackWriter,
+    writer: *StackWriter,
     options: BranchOptions,
 
     pub const Decor = struct {
@@ -1144,12 +1353,16 @@ pub const Block = struct {
         suffix: ?[]const u8 = null,
     };
 
-    fn init(writer: *const StackWriter, decor: Decor, options: BranchOptions) !Block {
+    fn init(writer: *StackWriter, decor: Decor, options: BranchOptions) !Block {
         const scope = try createScope(writer, decor, options.suffix);
         return .{
             .writer = scope,
             .options = options,
         };
+    }
+
+    pub fn end(self: Block) !void {
+        try self.writer.deinit();
     }
 
     /// Calling this method is instead of calling `end()`.
@@ -1159,7 +1372,8 @@ pub const Block = struct {
         assert(self.options.payload == .none or
             (decor.payload.len <= 1 and self.options.payload == .single) or
             self.options.payload == .multi);
-        const writer = try self.writer.pop();
+        const writer = self.writer.parent orelse unreachable;
+        try self.writer.deinit();
         try writer.writeFmt(" else if ({})", .{expr});
         const scope = try createScope(writer, decor, null);
         return .{
@@ -1175,7 +1389,8 @@ pub const Block = struct {
         assert(self.options.payload == .none or
             (decor.payload.len <= 1 and self.options.payload == .single) or
             self.options.payload == .multi);
-        const writer = try self.writer.pop();
+        const writer = self.writer.parent orelse unreachable;
+        try self.writer.deinit();
         try writer.writeAll(" else");
         const scope = try createScope(writer, decor, null);
         return .{
@@ -1188,16 +1403,12 @@ pub const Block = struct {
         try self.writer.lineFmt("{};", .{s});
     }
 
-    pub fn end(self: Block) !void {
-        _ = try self.writer.pop();
-    }
-
     /// ```
     /// BlockExpr <- BlockLabel? Block
     /// BlockLabel <- IDENTIFIER COLON
     /// Block <- LBRACE Statement* RBRACE
     /// ```
-    fn createScope(writer: *const StackWriter, decor: Decor, suffix: ?[]const u8) !*const StackWriter {
+    fn createScope(writer: *StackWriter, decor: Decor, suffix: ?[]const u8) !*StackWriter {
         switch (decor.payload.len) {
             0 => {},
             1 => try writer.writeFmt(" |{pre*}|", .{decor.payload[0]}),
@@ -1212,17 +1423,17 @@ pub const Block = struct {
         try writer.writeAll(" {");
         const scope = try writer.appendPrefix(INDENT);
         if (suffix) |s| {
-            try scope.deferLineFmt("}}{s}", .{s});
+            try scope.deferLineFmt(.parent, "}}{s}", .{s});
         } else {
-            try scope.deferLineAll("}");
+            try scope.deferLineAll(.parent, "}");
         }
         return scope;
     }
 
     test {
-        var list = std.ArrayList(u8).init(test_alloc);
-        const writer = StackWriter.init(test_alloc, list.writer().any(), .{});
-        defer list.deinit();
+        var buffer = std.ArrayList(u8).init(test_alloc);
+        var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+        defer buffer.deinit();
 
         var block = try Block.init(&writer, .{
             .payload = &.{Identifier{ .name = "p8" }},
@@ -1254,7 +1465,7 @@ pub const Block = struct {
             \\} else |p8, p9| blk: {
             \\    baz();
             \\}
-        , list.items);
+        , buffer.items);
     }
 };
 
@@ -1507,25 +1718,6 @@ pub const LazyIdentifier = struct {
     }
 };
 
-test {
-    _ = LazyIdentifier;
-    _ = Identifier;
-    _ = AssignExpr;
-    _ = ByteAlign;
-    _ = Extern;
-    _ = Block;
-
-    _ = Field;
-    _ = Using;
-    _ = Variable;
-    _ = Function;
-    _ = Container;
-
-    _ = IfStatement;
-    _ = ForStatement;
-    _ = WhileStatement;
-    _ = SwitchExpr;
-}
 
 const Statement = struct {
     temp: []const u8, // TODO
@@ -1535,11 +1727,16 @@ const Statement = struct {
     }
 };
 
-const Expr = struct {
-    temp: []const u8, // TODO
+const Expr = union(enum) {
+    // TODO
+    temp: []const u8,
+    temp_import: []const u8,
 
     pub fn format(self: Expr, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
-        try writer.writeAll(self.temp);
+        switch (self) {
+            .temp => try writer.writeAll(self.temp),
+            .temp_import => try writer.print("@import(\"{s}\")", .{self.temp_import}),
+        }
     }
 };
 

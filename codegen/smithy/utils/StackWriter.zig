@@ -14,11 +14,17 @@ pub const Options = struct {
     prefix: []const u8 = &.{},
 };
 
+pub const DeferTarget = enum { self, parent };
+const Deferred = struct {
+    bytes: []const u8,
+    target: DeferTarget,
+};
+
 allocator: Allocator,
 options: Options,
 output: std.io.AnyWriter,
-parent: ?*const Self = null,
-deferred: *std.ArrayListUnmanaged([]const u8) = undefined,
+deferred: std.ArrayListUnmanaged(Deferred) = .{},
+parent: ?*Self = null,
 
 pub fn init(allocator: Allocator, output: std.io.AnyWriter, options: Options) Self {
     return .{
@@ -28,65 +34,79 @@ pub fn init(allocator: Allocator, output: std.io.AnyWriter, options: Options) Se
     };
 }
 
-/// Returns a new writer context with the replacement prefix.
-/// Call `popPrefix()` to restore the previous context.
-pub fn replacePrefix(self: *const Self, prefix: []const u8) !*const Self {
-    const new_prefix = try self.allocator.alloc(u8, prefix.len);
-    @memcpy(new_prefix, prefix);
-    return self.push(new_prefix);
-}
-
-/// Returns a new writer context with the extended prefix.
-/// Call `popPrefix()` to restore the previous context.
-pub fn appendPrefix(self: *const Self, append: []const u8) !*const Self {
-    const alloc = self.allocator;
-    const old_prefix = self.options.prefix;
-    if (append.len == 0) {
-        return self.push(old_prefix);
-    } else {
-        var new_prefix = try alloc.alloc(u8, old_prefix.len + append.len);
-        @memcpy(new_prefix[0..old_prefix.len], old_prefix);
-        @memcpy(new_prefix[old_prefix.len..][0..append.len], append);
-        return self.push(new_prefix);
-    }
-}
-
-fn push(self: *const Self, prefix: []const u8) !*const Self {
-    const alloc = self.allocator;
-    var context = try alloc.create(Self);
+fn initContext(self: *Self, prefix: []const u8) !*Self {
+    var context = try self.allocator.create(Self);
     context.* = .{
-        .allocator = alloc,
+        .allocator = self.allocator,
         .output = self.output,
         .options = self.options,
         .parent = self,
-        .deferred = try alloc.create(std.ArrayListUnmanaged([]const u8)),
     };
     context.options.prefix = prefix;
-    context.deferred.* = .{};
     return context;
 }
 
-/// Restores the previous prefix context and writes the deferred lines to it.
-pub fn pop(self: *const Self) !*const Self {
-    const alloc = self.allocator;
-    const parent = self.parent orelse unreachable;
-    defer {
-        if (!std.mem.eql(u8, parent.options.prefix, self.options.prefix)) {
-            alloc.free(self.options.prefix);
-        }
-
-        self.deferred.deinit(alloc);
-        alloc.destroy(self.deferred);
-        alloc.destroy(self);
-    }
-    for (self.deferred.items) |bytes| {
-        try self.output.writeAll(bytes);
-        alloc.free(bytes);
-    }
-    return parent;
+/// Returns a new sub-writer with the replacement prefix.
+pub fn replacePrefix(self: *Self, prefix: []const u8) !*Self {
+    const new_prefix = try self.allocator.alloc(u8, prefix.len);
+    @memcpy(new_prefix, prefix);
+    return self.initContext(new_prefix);
 }
 
-pub fn writeByte(self: Self, byte: u8) !void {
+/// Returns a new sub-writer with the extended prefix.
+pub fn appendPrefix(self: *Self, append: []const u8) !*Self {
+    const old_prefix = self.options.prefix;
+    if (append.len == 0) {
+        return self.initContext(old_prefix);
+    } else {
+        var new_prefix = try self.allocator.alloc(u8, old_prefix.len + append.len);
+        @memcpy(new_prefix[0..old_prefix.len], old_prefix);
+        @memcpy(new_prefix[old_prefix.len..][0..append.len], append);
+        return self.initContext(new_prefix);
+    }
+}
+
+/// Returns the parent context.
+pub fn deinit(self: *Self) !void {
+    defer if (self.parent) |parent| {
+        if (!std.mem.eql(u8, parent.options.prefix, self.options.prefix)) {
+            self.allocator.free(self.options.prefix);
+        }
+        self.allocator.destroy(self);
+    };
+    try self.consumeDeferred();
+}
+
+fn consumeDeferred(self: *Self) !void {
+    var parent_cnt: usize = 0;
+    var parent_idx: [16]usize = undefined;
+    for (self.deferred.items, 0..) |line, i| switch (line.target) {
+        .self => {
+            try self.output.writeAll(line.bytes);
+            self.allocator.free(line.bytes);
+        },
+        .parent => {
+            if (parent_cnt < parent_idx.len) {
+                parent_idx[parent_cnt] = i;
+                parent_cnt += 1;
+            } else {
+                // Note that deferLineFmt consumes as 2 lines.
+                return error.ParentDeferredOverflow;
+            }
+        },
+    };
+
+    for (0..parent_cnt) |i| {
+        const idx = parent_idx[i];
+        const line = self.deferred.items[idx];
+        try self.output.writeAll(line.bytes);
+        self.allocator.free(line.bytes);
+    }
+
+    self.deferred.deinit(self.allocator);
+}
+
+pub fn writeByte(self: *Self, byte: u8) !void {
     try self.output.writeByte(byte);
 }
 
@@ -94,12 +114,13 @@ test "writeByte" {
     var buffer = std.ArrayList(u8).init(test_alloc);
     defer buffer.deinit();
 
-    const writer = init(test_alloc, buffer.writer().any(), .{});
+    var writer = init(test_alloc, buffer.writer().any(), .{});
     try writer.writeByte('f');
+    try writer.deinit();
     try testing.expectEqualStrings("f", buffer.items);
 }
 
-pub fn writeNByte(self: Self, byte: u8, n: usize) !void {
+pub fn writeNByte(self: *Self, byte: u8, n: usize) !void {
     try self.output.writeByteNTimes(byte, n);
 }
 
@@ -107,12 +128,13 @@ test "writeNByte" {
     var buffer = std.ArrayList(u8).init(test_alloc);
     defer buffer.deinit();
 
-    const writer = init(test_alloc, buffer.writer().any(), .{});
+    var writer = init(test_alloc, buffer.writer().any(), .{});
     try writer.writeNByte('x', 3);
+    try writer.deinit();
     try testing.expectEqualStrings("xxx", buffer.items);
 }
 
-pub fn writeAll(self: Self, bytes: []const u8) !void {
+pub fn writeAll(self: *Self, bytes: []const u8) !void {
     try self.output.writeAll(bytes);
 }
 
@@ -120,12 +142,13 @@ test "writeAll" {
     var buffer = std.ArrayList(u8).init(test_alloc);
     defer buffer.deinit();
 
-    const writer = init(test_alloc, buffer.writer().any(), .{});
+    var writer = init(test_alloc, buffer.writer().any(), .{});
     try writer.writeAll("foo");
+    try writer.deinit();
     try testing.expectEqualStrings("foo", buffer.items);
 }
 
-pub fn writeFmt(self: Self, comptime format: []const u8, args: anytype) !void {
+pub fn writeFmt(self: *Self, comptime format: []const u8, args: anytype) !void {
     try self.output.print(format, args);
 }
 
@@ -133,14 +156,15 @@ test "writeFmt" {
     var buffer = std.ArrayList(u8).init(test_alloc);
     defer buffer.deinit();
 
-    const writer = init(test_alloc, buffer.writer().any(), .{
+    var writer = init(test_alloc, buffer.writer().any(), .{
         .prefix = "  ",
     });
     try writer.writeFmt("{x}", .{16});
+    try writer.deinit();
     try testing.expectEqualStrings("10", buffer.items);
 }
 
-pub fn prefixedAll(self: Self, bytes: []const u8) !void {
+pub fn prefixedAll(self: *Self, bytes: []const u8) !void {
     try self.output.print("{s}{s}", .{ self.options.prefix, bytes });
 }
 
@@ -148,14 +172,15 @@ test "prefixedAll" {
     var buffer = std.ArrayList(u8).init(test_alloc);
     defer buffer.deinit();
 
-    const writer = init(test_alloc, buffer.writer().any(), .{
+    var writer = init(test_alloc, buffer.writer().any(), .{
         .prefix = "  ",
     });
     try writer.prefixedAll("foo");
+    try writer.deinit();
     try testing.expectEqualStrings("  foo", buffer.items);
 }
 
-pub fn prefixedFmt(self: Self, comptime format: []const u8, args: anytype) !void {
+pub fn prefixedFmt(self: *Self, comptime format: []const u8, args: anytype) !void {
     try self.output.print("{s}", .{self.options.prefix});
     try self.output.print(format, args);
 }
@@ -164,14 +189,15 @@ test "prefixedFmt" {
     var buffer = std.ArrayList(u8).init(test_alloc);
     defer buffer.deinit();
 
-    const writer = init(test_alloc, buffer.writer().any(), .{
+    var writer = init(test_alloc, buffer.writer().any(), .{
         .prefix = "  ",
     });
     try writer.prefixedFmt("{x}", .{16});
+    try writer.deinit();
     try testing.expectEqualStrings("  10", buffer.items);
 }
 
-pub fn lineAll(self: Self, bytes: []const u8) !void {
+pub fn lineAll(self: *Self, bytes: []const u8) !void {
     try self.output.print("\n{s}{s}", .{ self.options.prefix, bytes });
 }
 
@@ -179,14 +205,15 @@ test "lineAll" {
     var buffer = std.ArrayList(u8).init(test_alloc);
     defer buffer.deinit();
 
-    const writer = init(test_alloc, buffer.writer().any(), .{
+    var writer = init(test_alloc, buffer.writer().any(), .{
         .prefix = "  ",
     });
     try writer.lineAll("foo");
+    try writer.deinit();
     try testing.expectEqualStrings("\n  foo", buffer.items);
 }
 
-pub fn lineFmt(self: Self, comptime format: []const u8, args: anytype) !void {
+pub fn lineFmt(self: *Self, comptime format: []const u8, args: anytype) !void {
     try self.output.print("\n{s}", .{self.options.prefix});
     try self.output.print(format, args);
 }
@@ -195,79 +222,112 @@ test "lineFmt" {
     var buffer = std.ArrayList(u8).init(test_alloc);
     defer buffer.deinit();
 
-    const writer = init(test_alloc, buffer.writer().any(), .{
+    var writer = init(test_alloc, buffer.writer().any(), .{
         .prefix = "  ",
     });
     try writer.lineFmt("{x}", .{16});
+    try writer.deinit();
     try testing.expectEqualStrings("\n  10", buffer.items);
 }
 
-pub fn lineBreak(self: Self) !void {
-    try self.output.print("\n{s}", .{self.options.prefix});
+pub fn lineBreak(self: *Self, n: u8) !void {
+    for (0..n) |_| {
+        try self.output.print("\n{s}", .{self.options.prefix});
+    }
 }
 
 test "lineBreak" {
     var buffer = std.ArrayList(u8).init(test_alloc);
     defer buffer.deinit();
 
-    const writer = init(test_alloc, buffer.writer().any(), .{
+    var writer = init(test_alloc, buffer.writer().any(), .{
         .prefix = "  ",
     });
-    try writer.lineBreak();
-    try testing.expectEqualStrings("\n  ", buffer.items);
+    try writer.lineBreak(2);
+    try writer.deinit();
+    try testing.expectEqualStrings("\n  \n  ", buffer.items);
 }
 
-/// Write to the **parent** context when the current context is popped.
-pub fn deferLineAll(self: Self, bytes: []const u8) !void {
-    const prefix = if (self.parent) |p| p.options.prefix else unreachable;
-    var def_line = try self.allocator.alloc(u8, 1 + prefix.len + bytes.len);
-    def_line[0] = '\n';
-    @memcpy(def_line[1..][0..prefix.len], prefix);
-    @memcpy(def_line[1 + prefix.len ..][0..bytes.len], bytes);
-    try self.deferred.append(self.allocator, def_line);
+/// Defer writing the line until this context is deinitialized.
+pub fn deferLineAll(self: *Self, target: DeferTarget, bytes: []const u8) !void {
+    const prefix = switch (target) {
+        .self => self.options.prefix,
+        .parent => self.parent.?.options.prefix,
+    };
+    var line = try self.allocator.alloc(u8, 1 + prefix.len + bytes.len);
+    line[0] = '\n';
+    @memcpy(line[1..][0..prefix.len], prefix);
+    @memcpy(line[1 + prefix.len ..][0..bytes.len], bytes);
+    try self.deferred.append(self.allocator, Deferred{
+        .bytes = line,
+        .target = target,
+    });
 }
 
 test "deferLineAll" {
     var buffer = std.ArrayList(u8).init(test_alloc);
     defer buffer.deinit();
 
-    const writer = init(test_alloc, buffer.writer().any(), .{
+    var writer = init(test_alloc, buffer.writer().any(), .{
         .prefix = "// ",
     });
+    try writer.prefixedAll("foo");
 
     const scope = try writer.appendPrefix("- ");
-    try scope.deferLineAll("bar");
-    try scope.prefixedAll("foo");
-    _ = try scope.pop();
+    try scope.deferLineAll(.parent, "qux");
+    try scope.deferLineAll(.self, "baz");
+    try scope.lineAll("bar");
+    try scope.deinit();
 
-    try testing.expectEqualStrings("// - foo\n// bar", buffer.items);
+    try writer.deinit();
+    try testing.expectEqualStrings(
+        \\// foo
+        \\// - bar
+        \\// - baz
+        \\// qux
+    , buffer.items);
 }
 
-/// Write to the **parent** context when the current context is popped.
-pub fn deferLineFmt(self: Self, comptime format: []const u8, args: anytype) !void {
-    const prefix = if (self.parent) |p| p.options.prefix else unreachable;
-    const line0 = try fmt.allocPrint(self.allocator, "\n{s}", .{prefix});
-    errdefer self.allocator.free(line0);
-    const line1 = try fmt.allocPrint(self.allocator, format, args);
-    try self.deferred.ensureUnusedCapacity(self.allocator, 2);
-    self.deferred.appendAssumeCapacity(line0);
-    self.deferred.appendAssumeCapacity(line1);
+/// Defer writing the line until this context is deinitialized.
+pub fn deferLineFmt(self: *Self, target: DeferTarget, comptime format: []const u8, args: anytype) !void {
+    const prefix = switch (target) {
+        .self => self.options.prefix,
+        .parent => self.parent.?.options.prefix,
+    };
+    const line0 = Deferred{
+        .bytes = try fmt.allocPrint(self.allocator, "\n{s}", .{prefix}),
+        .target = target,
+    };
+    errdefer self.allocator.free(line0.bytes);
+    const line1 = Deferred{
+        .bytes = try fmt.allocPrint(self.allocator, format, args),
+        .target = target,
+    };
+    try self.deferred.appendSlice(self.allocator, &.{ line0, line1 });
 }
 
 test "deferLineFmt" {
     var buffer = std.ArrayList(u8).init(test_alloc);
     defer buffer.deinit();
 
-    const writer = init(test_alloc, buffer.writer().any(), .{
+    var writer = init(test_alloc, buffer.writer().any(), .{
         .prefix = "// ",
     });
+    try writer.prefixedAll("0x8");
 
     const scope = try writer.appendPrefix("- ");
-    try scope.deferLineFmt("{x}", .{16});
-    try scope.prefixedAll("foo");
-    _ = try scope.pop();
+    try scope.deferLineFmt(.parent, "0x{X}", .{17});
+    try scope.deferLineFmt(.self, "0x{X}", .{16});
+    try scope.lineAll("0x9");
+    try scope.deinit();
 
-    try testing.expectEqualStrings("// - foo\n// 10", buffer.items);
+    try writer.deinit();
+    try testing.expectEqualStrings(
+        \\// 0x8
+        \\// - 0x9
+        \\// - 0x10
+        \\// 0x11
+    , buffer.items);
 }
 
 pub const ListPadding = union(enum) {

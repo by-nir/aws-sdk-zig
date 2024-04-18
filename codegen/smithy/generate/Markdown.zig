@@ -10,16 +10,18 @@ const Zig = @import("Zig.zig");
 
 const Self = @This();
 
-writer: *const StackWriter,
+writer: *StackWriter,
 is_empty: bool = true,
 
-pub fn init(writer: *const StackWriter) Self {
+/// Call `end()` to complete the Markdown content and deinit.
+pub fn init(writer: *StackWriter) Self {
     return .{ .writer = writer };
 }
 
-/// Assumes that this script is not the root.
-pub fn end(self: *const Self) !void {
-    _ = try self.writer.pop();
+/// Complete the Markdown content and deinit.
+pub fn end(self: *Self) !void {
+    try self.writer.deinit();
+    self.* = undefined;
 }
 
 fn writeAll(self: *Self, text: []const u8) !void {
@@ -27,19 +29,21 @@ fn writeAll(self: *Self, text: []const u8) !void {
         self.is_empty = false;
         try self.writer.prefixedAll(text);
     } else {
-        try self.writer.lineBreak();
+        try self.writer.lineBreak(1);
         try self.writer.lineAll(text);
     }
 }
 
 test "writeAll" {
     var buffer = std.ArrayList(u8).init(test_alloc);
-    const writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+    var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
     defer buffer.deinit();
 
     var md = init(&writer);
     try md.writeAll("foo");
     try md.writeAll("bar");
+
+    try writer.deinit();
     try testing.expectEqualStrings("foo\n\nbar", buffer.items);
 }
 
@@ -48,19 +52,21 @@ fn writeFmt(self: *Self, comptime format: []const u8, args: anytype) !void {
         self.is_empty = false;
         try self.writer.prefixedFmt(format, args);
     } else {
-        try self.writer.lineBreak();
+        try self.writer.lineBreak(1);
         try self.writer.lineFmt(format, args);
     }
 }
 
 test "writeFmt" {
     var buffer = std.ArrayList(u8).init(test_alloc);
-    const writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+    var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
     defer buffer.deinit();
 
     var md = init(&writer);
     try md.writeFmt("0x{X}", .{108});
     try md.writeFmt("0x{X}", .{109});
+
+    try writer.deinit();
     try testing.expectEqualStrings("0x6C\n\n0x6D", buffer.items);
 }
 
@@ -70,11 +76,13 @@ pub fn paragraph(self: *Self, text: []const u8) !void {
 
 test "paragraph" {
     var buffer = std.ArrayList(u8).init(test_alloc);
-    const writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+    var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
     defer buffer.deinit();
 
     var md = init(&writer);
     try md.paragraph("foo.");
+
+    try writer.deinit();
     try testing.expectEqualStrings("foo.", buffer.items);
 }
 
@@ -87,25 +95,27 @@ pub fn header(self: *Self, level: u8, text: []const u8) !void {
 
 test "header" {
     var buffer = std.ArrayList(u8).init(test_alloc);
-    const writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+    var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
     defer buffer.deinit();
 
     var md = init(&writer);
     try md.header(2, "Foo");
+
+    try writer.deinit();
     try testing.expectEqualStrings("## Foo", buffer.items);
 }
 
 /// Call `end()` to complete the code block.
 pub fn codeblock(self: *Self) !Zig {
-    try self.writeAll("```zig");
+    try self.writeAll("```zig\n");
     const scope = try self.writer.appendPrefix("");
-    try scope.deferLineAll("```");
-    return Zig.init(self.writer.allocator, scope);
+    try scope.deferLineAll(.parent, "```");
+    return try Zig.init(scope, null);
 }
 
 test "codeblock" {
     var buffer = std.ArrayList(u8).init(test_alloc);
-    const writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+    var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
     defer buffer.deinit();
 
     var md = init(&writer);
@@ -116,6 +126,7 @@ test "codeblock" {
     });
     try code.end();
 
+    try writer.deinit();
     try testing.expectEqualStrings(
         \\```zig
         \\foo: u8,
@@ -131,7 +142,7 @@ pub fn list(self: *Self, ordered: bool) !List {
         const scope = try self.writer.appendPrefix(prefix);
         return List.init(scope, ordered, true);
     } else {
-        try self.writer.lineBreak();
+        try self.writer.lineBreak(1);
         const prefix = if (ordered) "  " else "  - ";
         const scope = try self.writer.appendPrefix(prefix);
         return List.init(scope, ordered, false);
@@ -139,11 +150,11 @@ pub fn list(self: *Self, ordered: bool) !List {
 }
 
 pub const List = struct {
-    writer: *const StackWriter,
+    writer: *StackWriter,
     ordered: bool,
     index: u16,
 
-    fn init(writer: *const StackWriter, ordered: bool, is_empty: bool) List {
+    fn init(writer: *StackWriter, ordered: bool, is_empty: bool) List {
         return .{
             .writer = writer,
             .ordered = ordered,
@@ -189,13 +200,13 @@ pub const List = struct {
     }
 
     pub fn end(self: *List) !void {
-        _ = try self.writer.pop();
+        try self.writer.deinit();
     }
 };
 
 test "list" {
     var buffer = std.ArrayList(u8).init(test_alloc);
-    const writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+    var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
     defer buffer.deinit();
 
     var md = init(&writer);
@@ -216,6 +227,7 @@ test "list" {
     try ls.item("qux");
     try ls.end();
 
+    try writer.deinit();
     try testing.expectEqualStrings(
         \\1. foo
         \\  - bar
@@ -226,9 +238,9 @@ test "list" {
     , buffer.items);
 }
 
-pub fn table(self: *Self, columns: []const TableColumn) !Table {
+pub fn table(self: *Self, columns: []const Table.Column) !Table {
     assert(columns.len > 1 and columns.len <= 255);
-    try self.writeFmt("| {} |", .{WriterList(TableColumn){
+    try self.writeFmt("| {} |", .{WriterList(Table.Column){
         .items = columns,
         .delimiter = " | ",
     }});
@@ -241,41 +253,11 @@ pub fn table(self: *Self, columns: []const TableColumn) !Table {
     return Table.init(self.writer, columns.len);
 }
 
-pub const TableColumn = struct {
-    header: []const u8,
-    alignment: Align = .center,
-
-    pub const Align = enum { center, left, right };
-
-    pub fn format(self: TableColumn, _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-        try writer.writeAll(self.header);
-    }
-
-    fn separator(self: TableColumn, writer: *const StackWriter) !void {
-        switch (self.alignment) {
-            .center => {
-                try writer.writeByte(':');
-                try writer.writeNByte('-', self.header.len);
-                try writer.writeByte(':');
-            },
-            .left => {
-                try writer.writeByte(':');
-                try writer.writeNByte('-', self.header.len + 1);
-            },
-            .right => {
-                try writer.writeNByte('-', self.header.len + 1);
-                try writer.writeByte(':');
-            },
-        }
-        try writer.writeByte('|');
-    }
-};
-
 pub const Table = struct {
-    writer: *const StackWriter,
+    writer: *StackWriter,
     coulmns: usize,
 
-    fn init(writer: *const StackWriter, coulmns: usize) Table {
+    fn init(writer: *StackWriter, coulmns: usize) Table {
         return .{ .writer = writer, .coulmns = coulmns };
     }
 
@@ -286,11 +268,41 @@ pub const Table = struct {
             .delimiter = " | ",
         }});
     }
+
+    pub const Column = struct {
+        header: []const u8,
+        alignment: Align = .center,
+
+        pub const Align = enum { center, left, right };
+
+        pub fn format(self: Column, _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            try writer.writeAll(self.header);
+        }
+
+        fn separator(self: Column, writer: *StackWriter) !void {
+            switch (self.alignment) {
+                .center => {
+                    try writer.writeByte(':');
+                    try writer.writeNByte('-', self.header.len);
+                    try writer.writeByte(':');
+                },
+                .left => {
+                    try writer.writeByte(':');
+                    try writer.writeNByte('-', self.header.len + 1);
+                },
+                .right => {
+                    try writer.writeNByte('-', self.header.len + 1);
+                    try writer.writeByte(':');
+                },
+            }
+            try writer.writeByte('|');
+        }
+    };
 };
 
 test "table" {
     var buffer = std.ArrayList(u8).init(test_alloc);
-    const writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+    var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
     defer buffer.deinit();
 
     var md = init(&writer);
@@ -309,6 +321,7 @@ test "table" {
     try tb.row(&.{ "27", "28", "29" });
     try tb.row(&.{ "37", "38", "39" });
 
+    try writer.deinit();
     try testing.expectEqualStrings(
         \\| Foo | Bar | Baz |
         \\|----:|:---:|:----|
