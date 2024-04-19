@@ -74,10 +74,11 @@ pub fn deinit(self: *Self) !void {
         }
         self.allocator.destroy(self);
     };
-    try self.consumeDeferred();
+    try self.applyDeferred();
+    self.deferred.deinit(self.allocator);
 }
 
-fn consumeDeferred(self: *Self) !void {
+fn applyDeferred(self: *Self) !void {
     var parent_cnt: usize = 0;
     var parent_idx: [16]usize = undefined;
     for (self.deferred.items, 0..) |line, i| switch (line.target) {
@@ -90,7 +91,6 @@ fn consumeDeferred(self: *Self) !void {
                 parent_idx[parent_cnt] = i;
                 parent_cnt += 1;
             } else {
-                // Note that deferLineFmt consumes as 2 lines.
                 return error.ParentDeferredOverflow;
             }
         },
@@ -102,8 +102,6 @@ fn consumeDeferred(self: *Self) !void {
         try self.output.writeAll(line.bytes);
         self.allocator.free(line.bytes);
     }
-
-    self.deferred.deinit(self.allocator);
 }
 
 pub fn writeByte(self: *Self, byte: u8) !void {
@@ -248,16 +246,69 @@ test "lineBreak" {
     try testing.expectEqualStrings("\n  \n  ", buffer.items);
 }
 
+/// Defer writing until this context is deinitialized.
+pub fn deferAll(self: *Self, target: DeferTarget, bytes: []const u8) !void {
+    const line = try self.allocator.dupe(u8, bytes);
+    try self.deferred.append(self.allocator, Deferred{
+        .bytes = line,
+        .target = target,
+    });
+}
+
+test "deferAll" {
+    var buffer = std.ArrayList(u8).init(test_alloc);
+    defer buffer.deinit();
+
+    var writer = init(test_alloc, buffer.writer().any(), .{
+        .prefix = "// ",
+    });
+    try writer.prefixedAll("foo");
+
+    const scope = try writer.appendPrefix("- ");
+    try scope.deferAll(.parent, ", qux");
+    try scope.deferAll(.self, ", baz");
+    try scope.writeAll(", bar");
+    try scope.deinit();
+
+    try writer.deinit();
+    try testing.expectEqualStrings("// foo, bar, baz, qux", buffer.items);
+}
+
+/// Defer writing until this context is deinitialized.
+pub fn deferFmt(self: *Self, target: DeferTarget, comptime format: []const u8, args: anytype) !void {
+    const line = try fmt.allocPrint(self.allocator, format, args);
+    try self.deferred.append(self.allocator, Deferred{
+        .bytes = line,
+        .target = target,
+    });
+}
+
+test "deferFmt" {
+    var buffer = std.ArrayList(u8).init(test_alloc);
+    defer buffer.deinit();
+
+    var writer = init(test_alloc, buffer.writer().any(), .{
+        .prefix = "// ",
+    });
+    try writer.prefixedAll("0x8");
+
+    const scope = try writer.appendPrefix("- ");
+    try scope.deferFmt(.parent, ", 0x{X}", .{17});
+    try scope.deferFmt(.self, ", 0x{X}", .{16});
+    try scope.writeAll(", 0x9");
+    try scope.deinit();
+
+    try writer.deinit();
+    try testing.expectEqualStrings("// 0x8, 0x9, 0x10, 0x11", buffer.items);
+}
+
 /// Defer writing the line until this context is deinitialized.
 pub fn deferLineAll(self: *Self, target: DeferTarget, bytes: []const u8) !void {
     const prefix = switch (target) {
         .self => self.options.prefix,
         .parent => self.parent.?.options.prefix,
     };
-    var line = try self.allocator.alloc(u8, 1 + prefix.len + bytes.len);
-    line[0] = '\n';
-    @memcpy(line[1..][0..prefix.len], prefix);
-    @memcpy(line[1 + prefix.len ..][0..bytes.len], bytes);
+    const line = try fmt.allocPrint(self.allocator, "\n{s}{s}", .{ prefix, bytes });
     try self.deferred.append(self.allocator, Deferred{
         .bytes = line,
         .target = target,
@@ -294,16 +345,17 @@ pub fn deferLineFmt(self: *Self, target: DeferTarget, comptime format: []const u
         .self => self.options.prefix,
         .parent => self.parent.?.options.prefix,
     };
-    const line0 = Deferred{
-        .bytes = try fmt.allocPrint(self.allocator, "\n{s}", .{prefix}),
-        .target = target,
-    };
-    errdefer self.allocator.free(line0.bytes);
-    const line1 = Deferred{
-        .bytes = try fmt.allocPrint(self.allocator, format, args),
-        .target = target,
-    };
-    try self.deferred.appendSlice(self.allocator, &.{ line0, line1 });
+
+    const len_user = fmt.count(format, args);
+    var line = try self.allocator.alloc(u8, 1 + prefix.len + len_user);
+    errdefer self.allocator.free(line);
+    line[0] = '\n';
+    @memcpy(line[1..][0..prefix.len], prefix);
+    _ = try fmt.bufPrint(line[1 + prefix.len ..], format, args);
+    try self.deferred.append(
+        self.allocator,
+        .{ .bytes = line, .target = target },
+    );
 }
 
 test "deferLineFmt" {
