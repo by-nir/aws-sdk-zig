@@ -75,10 +75,9 @@ pub fn deinit(self: *Self) !void {
         self.allocator.destroy(self);
     };
     try self.applyDeferred();
-    self.deferred.deinit(self.allocator);
 }
 
-fn applyDeferred(self: *Self) !void {
+pub fn applyDeferred(self: *Self) !void {
     var parent_cnt: usize = 0;
     var parent_idx: [16]usize = undefined;
     for (self.deferred.items, 0..) |line, i| switch (line.target) {
@@ -102,6 +101,8 @@ fn applyDeferred(self: *Self) !void {
         try self.output.writeAll(line.bytes);
         self.allocator.free(line.bytes);
     }
+
+    self.deferred.clearAndFree(self.allocator);
 }
 
 pub fn writeByte(self: *Self, byte: u8) !void {

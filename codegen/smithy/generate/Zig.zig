@@ -273,7 +273,7 @@ test "using" {
     , buffer.items);
 }
 
-pub fn function(self: *Container, decl: Function.Declaration, proto: Function.Prototype) !Block {
+pub fn function(self: *Container, decl: Function.Declaration, proto: Function.Prototype) !Scope {
     if (self.section != .none) {
         switch (self.previous) {
             .doc, .comment => try self.writer.lineBreak(1),
@@ -282,7 +282,10 @@ pub fn function(self: *Container, decl: Function.Declaration, proto: Function.Pr
     }
     try self.writer.prefixedFmt("{}{}", .{ decl, proto });
     self.section = .funcs;
-    return Block.init(self.writer, .{}, .{});
+    return Scope.init(self.writer, .{}, .{
+        .branching = false,
+        .form = .block,
+    });
 }
 
 test "function" {
@@ -310,7 +313,7 @@ test "function" {
 
 // `TestDecl <- KEYWORD_test (STRINGLITERALSINGLE / IDENTIFIER)? Block`
 /// Call `end()` to complete the declaration.
-pub fn testBlock(self: *Container, name: ?Identifier) !Block {
+pub fn testBlock(self: *Container, name: ?Identifier) !Scope {
     if (self.section == .none) {
         self.section = .fields;
     } else switch (self.previous) {
@@ -324,7 +327,10 @@ pub fn testBlock(self: *Container, name: ?Identifier) !Block {
     } else {
         try self.writer.prefixedAll("test");
     }
-    return Block.init(self.writer, .{}, .{});
+    return Scope.init(self.writer, .{}, .{
+        .branching = false,
+        .form = .block,
+    });
 }
 
 test "testBlock" {
@@ -371,7 +377,7 @@ test "testBlock" {
 
 // `ComptimeDecl <- KEYWORD_comptime Block`
 /// Call `end()` to complete the declaration.
-pub fn comptimeBlock(self: *Container) !Block {
+pub fn comptimeBlock(self: *Container) !Scope {
     if (self.section == .none) {
         self.section = .fields;
     } else switch (self.previous) {
@@ -381,7 +387,10 @@ pub fn comptimeBlock(self: *Container) !Block {
     }
     self.previous = .comptime_block;
     try self.writer.prefixedAll("comptime");
-    return Block.init(self.writer, .{}, .{});
+    return Scope.init(self.writer, .{}, .{
+        .branching = false,
+        .form = .block,
+    });
 }
 
 test "comptimeBlock" {
@@ -492,7 +501,7 @@ test {
     _ = AssignExpr;
     _ = ByteAlign;
     _ = Extern;
-    _ = Block;
+    _ = Scope;
 
     _ = Field;
     _ = Using;
@@ -1216,7 +1225,7 @@ pub const SwitchExpr = struct {
     /// Call `end()` to complete the declaration.
     fn init(writer: *StackWriter, subject: Expr) !SwitchExpr {
         try writer.writeFmt("switch ({})", .{subject});
-        const scope = try Block.createScope(writer, .{}, null);
+        const scope = try Scope.createSubWriter(writer, .{}, .block);
         return .{ .writer = scope };
     }
 
@@ -1225,7 +1234,7 @@ pub const SwitchExpr = struct {
     }
 
     /// Call `end()` to complete the block.
-    pub fn prong(self: SwitchExpr, items: []const ProngItem, case: ProngCase) !Block {
+    pub fn prong(self: SwitchExpr, items: []const ProngItem, case: ProngCase) !Scope {
         assert(items.len > 0);
         assert(case.payload.len <= 2);
         assert(!case.non_exhaustive);
@@ -1235,13 +1244,15 @@ pub const SwitchExpr = struct {
         } else {
             try self.writer.lineFmt("{} =>", .{list});
         }
-        return Block.init(self.writer, case.decor(), .{
+        return Scope.init(self.writer, case.decor(), .{
+            .branching = false,
+            .form = .block,
             .suffix = ",",
         });
     }
 
     /// Call `end()` to complete the block.
-    pub fn prongElse(self: SwitchExpr, case: ProngCase) !Block {
+    pub fn prongElse(self: SwitchExpr, case: ProngCase) !Scope {
         assert(case.payload.len <= 2);
         const prefix = if (case.@"inline") "inline " else "";
         if (case.non_exhaustive) {
@@ -1249,7 +1260,9 @@ pub const SwitchExpr = struct {
         } else {
             try self.writer.lineFmt("{s}else =>", .{prefix});
         }
-        return Block.init(self.writer, case.decor(), .{
+        return Scope.init(self.writer, case.decor(), .{
+            .form = .block,
+            .branching = false,
             .suffix = ",",
         });
     }
@@ -1272,7 +1285,7 @@ pub const SwitchExpr = struct {
         label: ?Identifier = null,
         payload: []const Identifier = &.{},
 
-        fn decor(self: ProngCase) Block.Decor {
+        fn decor(self: ProngCase) Scope.Decor {
             return .{
                 .label = self.label,
                 .payload = self.payload,
@@ -1335,136 +1348,129 @@ pub const SwitchExpr = struct {
     }
 };
 
-pub const Block = struct {
+pub const Scope = struct {
     writer: *StackWriter,
-    options: BranchOptions,
+    options: Options,
 
+    pub const Form = enum { block, inlined };
     pub const Decor = struct {
         label: ?Identifier = null,
         payload: []const Identifier = &.{},
     };
 
-    const Branching = enum { none, @"else", else_if };
-    const Payload = enum { none, single, multi };
-    const BranchOptions = struct {
-        branching: Branching = .none,
-        label: bool = false,
-        payload: Payload = .none,
+    const Options = struct {
+        form: Form,
+        branching: bool,
         suffix: ?[]const u8 = null,
     };
 
-    fn init(writer: *StackWriter, decor: Decor, options: BranchOptions) !Block {
-        const scope = try createScope(writer, decor, options.suffix);
-        return .{
-            .writer = scope,
-            .options = options,
-        };
+    fn init(writer: *StackWriter, decor: Decor, options: Options) !Scope {
+        const scope = try createSubWriter(writer, decor, options.form);
+        return .{ .writer = scope, .options = options };
     }
 
-    pub fn end(self: Block) !void {
+    pub fn elseIfBlock(self: *Scope, form: Form, expr: Expr, decor: Decor) !void {
+        assert(self.options.branching);
+        try self.writer.applyDeferred();
+        const root_writer = self.writer.parent orelse unreachable;
+        try root_writer.writeFmt(" else if ({})", .{expr});
+        try writeDecor(root_writer, decor, form);
+        try writeForm(self.writer, form);
+        self.options.form = form;
+    }
+
+    pub fn elseBlock(self: *Scope, form: Form, decor: Decor) !void {
+        assert(self.options.branching);
+        try self.writer.applyDeferred();
+        const root_writer = self.writer.parent orelse unreachable;
+        try root_writer.writeAll(" else");
+        try writeDecor(root_writer, decor, form);
+        try writeForm(self.writer, form);
+        self.options.form = form;
+        self.options.branching = false;
+    }
+
+    pub fn end(self: Scope) !void {
+        // There is no branch so we can write the suffix (if exists).
+        if (self.options.suffix) |s| {
+            // We use defer in case other content deferred as well.
+            try self.writer.deferAll(.parent, s);
+        }
         try self.writer.deinit();
     }
 
-    /// Calling this method is instead of calling `end()`.
-    pub fn branchElseIf(self: Block, expr: Expr, decor: Decor) !Block {
-        assert(self.options.branching == .else_if);
-        assert(decor.label == null or self.options.label);
-        assert(self.options.payload == .none or
-            (decor.payload.len <= 1 and self.options.payload == .single) or
-            self.options.payload == .multi);
-        const writer = self.writer.parent orelse unreachable;
-        try self.writer.deinit();
-        try writer.writeFmt(" else if ({})", .{expr});
-        const scope = try createScope(writer, decor, null);
-        return .{
-            .writer = scope,
-            .options = self.options,
-        };
+    fn createSubWriter(writer: *StackWriter, decor: Decor, form: Form) !*StackWriter {
+        try writeDecor(writer, decor, form);
+        const scope = try writer.appendPrefix(INDENT);
+        try writeForm(scope, form);
+        return scope;
     }
 
-    /// Calling this method is instead of calling `end()`.
-    pub fn branchElse(self: Block, decor: Decor) !Block {
-        assert(self.options.branching != .none);
-        assert(decor.label == null or self.options.label);
-        assert(self.options.payload == .none or
-            (decor.payload.len <= 1 and self.options.payload == .single) or
-            self.options.payload == .multi);
-        const writer = self.writer.parent orelse unreachable;
-        try self.writer.deinit();
-        try writer.writeAll(" else");
-        const scope = try createScope(writer, decor, null);
-        return .{
-            .writer = scope,
-            .options = .{}, // Default options prevent another branch
-        };
-    }
-
-    pub fn statement(self: Block, s: Statement) !void {
-        try self.writer.lineFmt("{};", .{s});
-    }
-
-    /// ```
-    /// BlockExpr <- BlockLabel? Block
-    /// BlockLabel <- IDENTIFIER COLON
-    /// Block <- LBRACE Statement* RBRACE
-    /// ```
-    fn createScope(writer: *StackWriter, decor: Decor, suffix: ?[]const u8) !*StackWriter {
+    fn writeDecor(root_writer: *StackWriter, decor: Decor, form: Form) !void {
         switch (decor.payload.len) {
             0 => {},
-            1 => try writer.writeFmt(" |{pre*}|", .{decor.payload[0]}),
-            else => try writer.writeFmt(" {pre*}", .{
+            1 => try root_writer.writeFmt(" |{pre*}|", .{decor.payload[0]}),
+            else => try root_writer.writeFmt(" {pre*}", .{
                 List(Identifier){
                     .padding = .{ .both = "|" },
                     .items = decor.payload,
                 },
             }),
         }
-        if (decor.label) |t| try writer.writeFmt(" {}:", .{t});
-        try writer.writeAll(" {");
-        const scope = try writer.appendPrefix(INDENT);
-        if (suffix) |s| {
-            try scope.deferLineFmt(.parent, "}}{s}", .{s});
-        } else {
-            try scope.deferLineAll(.parent, "}");
+        if (decor.label) |s| {
+            assert(form == .block);
+            try root_writer.writeFmt(" {}:", .{s});
         }
-        return scope;
     }
+
+    fn writeForm(scope_writer: *StackWriter, form: Form) !void {
+        switch (form) {
+            .block => {
+                try scope_writer.parent.?.writeAll(" {");
+                try scope_writer.deferLineAll(.parent, "}");
+            },
+            .inlined => try scope_writer.writeByte(' '),
+        }
+    }
+
+    pub fn statement(self: Scope, s: Statement) !void {
+        switch (self.options.form) {
+            .block => try self.writer.lineFmt("{};", .{s}),
+            .inlined => try self.writer.writeFmt("{}", .{s}),
+        }
+    }
+
 
     test {
         var buffer = std.ArrayList(u8).init(test_alloc);
         var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
         defer buffer.deinit();
 
-        var block = try Block.init(&writer, .{
+        var block = try Scope.init(&writer, .{
             .payload = &.{Identifier{ .name = "p8" }},
         }, .{
-            .label = true,
-            .payload = .multi,
-            .branching = .else_if,
+            .branching = true,
+            .form = .inlined,
+            .suffix = ";",
         });
         try block.statement(Statement{ .temp = "foo()" });
-        block = try block.branchElseIf(Expr{ .temp = "true" }, .{
+        try block.elseIfBlock(.block, Expr{ .temp = "true" }, .{
             .label = Identifier{ .name = "blk" },
         });
         try block.statement(Statement{ .temp = "bar()" });
-        block = try block.branchElse(.{
-            .label = Identifier{ .name = "blk" },
+        try block.elseBlock(.inlined, .{
             .payload = &.{
                 Identifier{ .name = "p8" },
                 Identifier{ .name = "p9" },
             },
         });
-        try block.statement(Statement{ .temp = "baz()" });
+        try block.TEMP_statement("baz()");
         try block.end();
 
         try testing.expectEqualStrings(
-            \\ |p8| {
-            \\    foo();
-            \\} else if (true) blk: {
+            \\ |p8| foo() else if (true) blk: {
             \\    bar();
-            \\} else |p8, p9| blk: {
-            \\    baz();
-            \\}
+            \\} else |p8, p9| baz();
         , buffer.items);
     }
 };
