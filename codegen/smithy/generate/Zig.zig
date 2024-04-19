@@ -246,20 +246,20 @@ test "using" {
     var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
     var scope = try init(&writer, null);
 
-    try scope.using(Using{ .expr = Expr{ .temp = "foo" } });
+    try scope.using(Using{ .expr = Expr{ .raw = "foo" } });
     try testing.expectEqual(.fields, scope.section);
 
-    try scope.using(Using{ .expr = Expr{ .temp = "bar" } });
+    try scope.using(Using{ .expr = Expr{ .raw = "bar" } });
     scope.previous = .doc;
-    try scope.using(Using{ .expr = Expr{ .temp = "baz" } });
+    try scope.using(Using{ .expr = Expr{ .raw = "baz" } });
     scope.previous = .comment;
-    try scope.using(Using{ .expr = Expr{ .temp = "qux" } });
+    try scope.using(Using{ .expr = Expr{ .raw = "qux" } });
     scope.previous = .variable;
-    try scope.using(Using{ .expr = Expr{ .temp = "quux" } });
+    try scope.using(Using{ .expr = Expr{ .raw = "quux" } });
 
     scope.section = .funcs;
     scope.previous = .comptime_block;
-    try scope.using(Using{ .expr = Expr{ .temp = "quuz" } });
+    try scope.using(Using{ .expr = Expr{ .raw = "quuz" } });
 
     try scope.end();
     try testing.expectEqualStrings(
@@ -282,10 +282,7 @@ pub fn function(self: *Container, decl: Function.Declaration, proto: Function.Pr
     }
     try self.writer.prefixedFmt("{}{}", .{ decl, proto });
     self.section = .funcs;
-    return Scope.init(self.writer, .{}, .{
-        .branching = false,
-        .form = .block,
-    });
+    return Scope.init(self.writer, .{}, .{ .form = .block });
 }
 
 test "function" {
@@ -296,7 +293,7 @@ test "function" {
     var scope = try init(&writer, null);
 
     scope.previous = .doc;
-    const func = try scope.function(.{
+    var func = try scope.function(.{
         .is_public = true,
     }, .{
         .identifier = Identifier{ .name = "foo" },
@@ -304,14 +301,14 @@ test "function" {
         .return_type = null,
     });
     try testing.expectEqual(.funcs, scope.section);
-    try func.statement(Statement{ .temp = "bar()" });
+    try func.expression(.{ .raw = "bar()" });
     try func.end();
 
     try scope.end();
     try testing.expectEqualStrings("pub fn foo() void {\n    bar();\n}", buffer.items);
 }
 
-// `TestDecl <- KEYWORD_test (STRINGLITERALSINGLE / IDENTIFIER)? Block`
+// TestDecl <- KEYWORD_test (STRINGLITERALSINGLE / IDENTIFIER)? Block
 /// Call `end()` to complete the declaration.
 pub fn testBlock(self: *Container, name: ?Identifier) !Scope {
     if (self.section == .none) {
@@ -327,10 +324,7 @@ pub fn testBlock(self: *Container, name: ?Identifier) !Scope {
     } else {
         try self.writer.prefixedAll("test");
     }
-    return Scope.init(self.writer, .{}, .{
-        .branching = false,
-        .form = .block,
-    });
+    return Scope.init(self.writer, .{}, .{ .form = .block });
 }
 
 test "testBlock" {
@@ -342,16 +336,16 @@ test "testBlock" {
 
     var block = try scope.testBlock(Identifier{ .name = "foo" });
     try testing.expectEqual(.fields, scope.section);
-    try block.statement(Statement{ .temp = "bar()" });
+    try block.expression(.{ .raw = "bar()" });
     try block.end();
 
     block = try scope.testBlock(Identifier{ .name = "foo" });
-    try block.statement(Statement{ .temp = "bar()" });
+    try block.expression(.{ .raw = "bar()" });
     try block.end();
 
     scope.previous = .comment;
     block = try scope.testBlock(Identifier{ .name = "foo" });
-    try block.statement(Statement{ .temp = "bar()" });
+    try block.expression(.{ .raw = "bar()" });
     try block.end();
 
     scope.previous = .doc;
@@ -375,7 +369,7 @@ test "testBlock" {
     , buffer.items);
 }
 
-// `ComptimeDecl <- KEYWORD_comptime Block`
+// ComptimeDecl <- KEYWORD_comptime Block
 /// Call `end()` to complete the declaration.
 pub fn comptimeBlock(self: *Container) !Scope {
     if (self.section == .none) {
@@ -387,10 +381,7 @@ pub fn comptimeBlock(self: *Container) !Scope {
     }
     self.previous = .comptime_block;
     try self.writer.prefixedAll("comptime");
-    return Scope.init(self.writer, .{}, .{
-        .branching = false,
-        .form = .block,
-    });
+    return Scope.init(self.writer, .{}, .{ .form = .block });
 }
 
 test "comptimeBlock" {
@@ -402,16 +393,16 @@ test "comptimeBlock" {
 
     var block = try scope.comptimeBlock();
     try testing.expectEqual(.fields, scope.section);
-    try block.statement(Statement{ .temp = "foo()" });
+    try block.expression(.{ .raw = "foo()" });
     try block.end();
 
     block = try scope.comptimeBlock();
-    try block.statement(Statement{ .temp = "foo()" });
+    try block.expression(.{ .raw = "foo()" });
     try block.end();
 
     scope.previous = .comment;
     block = try scope.comptimeBlock();
-    try block.statement(Statement{ .temp = "foo()" });
+    try block.expression(.{ .raw = "foo()" });
     try block.end();
 
     scope.previous = .doc;
@@ -498,23 +489,23 @@ test "comment" {
 test {
     _ = LazyIdentifier;
     _ = Identifier;
-    _ = AssignExpr;
     _ = ByteAlign;
     _ = Extern;
-    _ = Scope;
 
     _ = Field;
     _ = Using;
     _ = Variable;
     _ = Function;
 
-    _ = IfStatement;
-    _ = ForStatement;
-    _ = WhileStatement;
+    _ = IfPrefix;
+    _ = ForPrefix;
+    _ = WhilePrefix;
     _ = SwitchExpr;
+
+    _ = Scope;
 }
 
-// `doc_comment? KEYWORD_pub? KEYWORD_usingnamespace Expr SEMICOLON`
+// doc_comment? KEYWORD_pub? KEYWORD_usingnamespace Expr SEMICOLON
 pub const Using = struct {
     is_public: bool = false,
     expr: Expr,
@@ -526,16 +517,16 @@ pub const Using = struct {
 
     test {
         try testing.expectFmt("usingnamespace foo;", "{}", .{Using{
-            .expr = Expr{ .temp = "foo" },
+            .expr = Expr{ .raw = "foo" },
         }});
         try testing.expectFmt("pub usingnamespace foo;", "{}", .{Using{
             .is_public = true,
-            .expr = Expr{ .temp = "foo" },
+            .expr = Expr{ .raw = "foo" },
         }});
     }
 };
 
-/// `ContainerField <- doc_comment? KEYWORD_comptime? (IDENTIFIER COLON)? TypeExpr ByteAlign? (EQUAL Expr)?`
+// ContainerField <- doc_comment? KEYWORD_comptime? (IDENTIFIER COLON)? TypeExpr ByteAlign? (EQUAL Expr)?
 pub const Field = struct {
     is_comptime: bool = false,
     /// Set `null` when inside a tuple.
@@ -557,12 +548,12 @@ pub const Field = struct {
             .is_comptime = true,
             .identifier = Identifier{ .name = "foo" },
             .type = TypeExpr{ .temp = "bool" },
-            .assign = Expr{ .temp = "true" },
+            .assign = Expr{ .raw = "true" },
         }});
         try testing.expectFmt("u8 align(4)", "{}", .{Field{
             .identifier = null,
             .type = TypeExpr{ .temp = "u8" },
-            .alignment = Expr{ .temp = "4" },
+            .alignment = Expr{ .raw = "4" },
         }});
     }
 };
@@ -593,7 +584,7 @@ pub const Variable = struct {
         }});
         try testing.expectFmt("const foo: bool = true;", "{}", .{Variable{
             .decl = .{
-                .assign = Expr{ .temp = "true" },
+                .assign = Expr{ .raw = "true" },
             },
             .proto = .{
                 .identifier = Identifier{ .name = "foo" },
@@ -602,10 +593,8 @@ pub const Variable = struct {
         }});
     }
 
-    /// ```
-    /// doc_comment? KEYWORD_pub?
-    /// (KEYWORD_export / KEYWORD_extern STRINGLITERALSINGLE?)? KEYWORD_threadlocal? GlobalVarDecl
-    /// ```
+    // doc_comment? KEYWORD_pub?
+    // (KEYWORD_export / KEYWORD_extern STRINGLITERALSINGLE?)? KEYWORD_threadlocal? GlobalVarDecl
     pub const Declaration = struct {
         is_public: bool = false,
         specifier: ?Specifier = null,
@@ -636,7 +625,7 @@ pub const Variable = struct {
         }});
     }
 
-    /// `VarDeclProto <- (KEYWORD_const / KEYWORD_var) IDENTIFIER (COLON TypeExpr)? ByteAlign?`
+    // VarDeclProto <- (KEYWORD_const / KEYWORD_var) IDENTIFIER (COLON TypeExpr)? ByteAlign?
     pub const Prototype = struct {
         is_mutable: bool = false,
         identifier: Identifier,
@@ -664,16 +653,14 @@ pub const Variable = struct {
             .is_mutable = true,
             .identifier = Identifier{ .name = "foo" },
             .type = TypeExpr{ .temp = "Foo" },
-            .alignment = Expr{ .temp = "4" },
+            .alignment = Expr{ .raw = "4" },
         }});
     }
 };
 
 pub const Function = struct {
-    /// ```
-    /// doc_comment? KEYWORD_pub?
-    /// (KEYWORD_export / KEYWORD_extern STRINGLITERALSINGLE? / KEYWORD_inline / KEYWORD_noinline)?
-    /// ```
+    // doc_comment? KEYWORD_pub?
+    // (KEYWORD_export / KEYWORD_extern STRINGLITERALSINGLE? / KEYWORD_inline / KEYWORD_noinline)?
     pub const Declaration = struct {
         is_public: bool = false,
         specifier: ?Specifier = null,
@@ -703,17 +690,15 @@ pub const Function = struct {
         }});
     }
 
-    /// ```
-    /// FnProto <- KEYWORD_fn IDENTIFIER? LPAREN ParamDeclList RPAREN ByteAlign? CallConv? EXCLAMATIONMARK? TypeExpr
-    /// ParamDeclList <- (ParamDecl COMMA)* ParamDecl?
-    /// CallConv <- KEYWORD_callconv LPAREN Expr RPAREN
-    /// ParamDecl
-    ///     <- doc_comment? (KEYWORD_noalias / KEYWORD_comptime)? (IDENTIFIER COLON)? ParamType
-    ///      / DOT3
-    /// ParamType
-    ///     <- KEYWORD_anytype
-    ///      / TypeExpr
-    /// ```
+    // FnProto <- KEYWORD_fn IDENTIFIER? LPAREN ParamDeclList RPAREN ByteAlign? CallConv? EXCLAMATIONMARK? TypeExpr
+    // ParamDeclList <- (ParamDecl COMMA)* ParamDecl?
+    // CallConv <- KEYWORD_callconv LPAREN Expr RPAREN
+    // ParamDecl
+    //     <- doc_comment? (KEYWORD_noalias / KEYWORD_comptime)? (IDENTIFIER COLON)? ParamType
+    //      / DOT3
+    // ParamType
+    //     <- KEYWORD_anytype
+    //      / TypeExpr
     pub const Prototype = struct {
         identifier: Identifier,
         parameters: []const Parameter,
@@ -798,250 +783,351 @@ pub const Function = struct {
         try testing.expectFmt("fn foo() align(4) void", "{}", .{Prototype{
             .identifier = Identifier{ .name = "foo" },
             .parameters = &.{},
-            .alignment = Expr{ .temp = "4" },
+            .alignment = Expr{ .raw = "4" },
             .return_type = null,
         }});
     }
 };
 
-/// ```
-/// IfStatement
-///     <- IfPrefix BlockExpr ( KEYWORD_else Payload? Statement )?
-///      / IfPrefix AssignExpr ( SEMICOLON / KEYWORD_else Payload? Statement )
-/// IfPrefix <- KEYWORD_if LPAREN Expr RPAREN PtrPayload?
-/// PtrPayload <- PIPE ASTERISK? IDENTIFIER PIPE
-/// ```
-pub const IfStatement = struct {
-    allocator: Allocator,
+pub const Scope = struct {
     writer: *StackWriter,
+    options: Options,
+    consumed: bool = false,
 
-    pub const Prefix = struct {
-        condition: Expr,
-        payload: ?Identifier = null,
-
-        pub fn format(self: Prefix, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
-            if (self.payload) |t| {
-                try writer.print("if ({}) |{pre*}|", .{ self.condition, t });
-            } else {
-                try writer.print("if ({})", .{self.condition});
-            }
-        }
+    pub const Form = enum { block, inlined };
+    pub const Decor = struct {
+        label: ?Identifier = null,
+        payload: []const Identifier = &.{},
     };
 
-    fn init(allocator: Allocator, writer: *StackWriter, prefix: Prefix) !IfStatement {
-        try writer.writeFmt("{}", .{prefix});
-        return .{
-            .allocator = allocator,
-            .writer = writer,
-        };
+    const Options = struct {
+        form: Form,
+        branching: bool = false,
+        suffix: ?[]const u8 = null,
+    };
+
+    fn init(writer: *StackWriter, decor: Decor, options: Options) !Scope {
+        const scope = try createSubWriter(writer, decor, options.form);
+        return .{ .writer = scope, .options = options };
     }
 
-    pub fn block(self: IfStatement, label: ?Identifier) !Block {
-        return Block.init(self.writer, .{
-            .label = label,
-        }, .{
-            .branching = .else_if,
-            .payload = .single,
-            .label = true,
-        });
-    }
-
-    /// Call `assignElse()` or `assignEnd()` to complete the declaration.
-    pub fn assign(self: IfStatement, expr: AssignExpr) !void {
-        try self.writer.writeFmt(" {}", .{expr});
-    }
-
-    /// Don’t call both `assignElse()` and `assignEnd()`.
-    pub fn assignElse(self: IfStatement, statement: Statement, payload: ?Identifier) !void {
-        if (payload) |t| {
-            try self.writer.prefixedFmt(" else |{}| {}", .{ t, statement });
+    pub fn branch(self: *Scope, form: Form, decor: Decor, cond: ?Expr) !void {
+        assert(self.options.branching);
+        try self.writer.applyDeferred();
+        const root_writer = self.writer.parent orelse unreachable;
+        if (cond) |s| {
+            try root_writer.writeFmt(" else if ({})", .{s});
         } else {
-            try self.writer.prefixedFmt(" else {}", .{statement});
+            try root_writer.writeAll(" else");
+            self.options.branching = false;
+        }
+        try writeDecor(root_writer, decor, form);
+        switch (form) {
+            .block => try writeBlock(self.writer),
+            .inlined => self.consumed = false,
+        }
+        self.options.form = form;
+    }
+
+    pub fn end(self: Scope) !void {
+        // We use defer in case other content deferred as well.
+        if (self.options.form == .inlined) {
+            assert(self.consumed);
+            try self.writer.deferAll(.parent, self.options.suffix orelse ";");
+        } else if (self.options.suffix) |s| {
+            try self.writer.deferAll(.parent, s);
+        }
+        try self.writer.deinit();
+    }
+
+    fn createSubWriter(writer: *StackWriter, decor: Decor, form: Form) !*StackWriter {
+        try writeDecor(writer, decor, form);
+        const scope = try writer.appendPrefix(INDENT);
+        if (form == .block) try writeBlock(scope);
+        return scope;
+    }
+
+    fn writeDecor(root_writer: *StackWriter, decor: Decor, form: Form) !void {
+        switch (decor.payload.len) {
+            0 => {},
+            1 => try root_writer.writeFmt(" |{pre*}|", .{decor.payload[0]}),
+            else => try root_writer.writeFmt(" {pre*}", .{
+                List(Identifier){
+                    .padding = .{ .both = "|" },
+                    .items = decor.payload,
+                },
+            }),
+        }
+        if (decor.label) |s| {
+            assert(form == .block);
+            try root_writer.writeFmt(" {}:", .{s});
         }
     }
 
-    /// Don’t call both `assignElse()` and `assignEnd()`.
-    pub fn assignEnd(self: IfStatement) !void {
-        try self.writer.writeByte(';');
+    fn writeBlock(scope_writer: *StackWriter) !void {
+        try scope_writer.parent.?.writeAll(" {");
+        try scope_writer.deferLineAll(.parent, "}");
     }
 
-    test "block" {
+    fn preStatement(self: *Scope) !void {
+        switch (self.options.form) {
+            .block => try self.writer.lineBreak(1),
+            .inlined => {
+                assert(!self.consumed);
+                self.consumed = true;
+                try self.writer.writeByte(' ');
+            },
+        }
+    }
+
+    fn postStatement(self: *Scope) !void {
+        if (self.options.form == .block) try self.writer.writeByte(';');
+    }
+
+    fn postStatemntScope(self: *Scope, form: Form, decor: Decor) !Scope {
+        return Scope.init(self.writer, decor, .{
+            .form = form,
+            .branching = true,
+        });
+    }
+
+    fn statementAll(self: *Scope, bytes: []const u8) !void {
+        try self.preStatement();
+        try self.writer.writeAll(bytes);
+        try self.postStatement();
+    }
+
+    fn statementFmt(self: *Scope, comptime format: []const u8, args: anytype) !void {
+        try self.preStatement();
+        try self.writer.writeFmt(format, args);
+        try self.postStatement();
+    }
+
+    test {
+        var buffer = std.ArrayList(u8).init(test_alloc);
+        var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+        errdefer buffer.deinit();
+
+        var block = try Scope.init(&writer, .{
+            .payload = &.{Identifier{ .name = "p8" }},
+        }, .{
+            .branching = true,
+            .form = .inlined,
+        });
+        try block.statementAll("foo()");
+        try block.branch(.block, .{
+            .label = Identifier{ .name = "blk" },
+        }, Expr{ .raw = "true" });
+        try block.statementFmt("bar0x{X}()", .{16});
+        try block.branch(.inlined, .{
+            .payload = &.{
+                Identifier{ .name = "p8" },
+                Identifier{ .name = "p9" },
+            },
+        }, null);
+        try block.statementAll("baz()");
+        try block.end();
+
+        try testing.expectEqualStrings(
+            \\ |p8| foo() else if (true) blk: {
+            \\    bar0x10();
+            \\} else |p8, p9| baz();
+        , buffer.items);
+        buffer.clearAndFree();
+
+        block = try Scope.init(&writer, .{}, .{
+            .form = .block,
+            .suffix = " // SUFFIX",
+        });
+        try block.statementAll("foo()");
+        try block.end();
+        try testing.expectEqualStrings(
+            \\ {
+            \\    foo();
+            \\} // SUFFIX
+        , buffer.items);
+        buffer.clearAndFree();
+
+        block = try Scope.init(&writer, .{}, .{
+            .form = .inlined,
+            .suffix = ",",
+        });
+        try block.statementAll("foo()");
+        try block.end();
+        try testing.expectEqualStrings(" foo(),", buffer.items);
+        buffer.deinit();
+    }
+
+    pub fn expression(self: *Scope, expr: Expr) !void {
+        try self.statementFmt("{}", .{expr});
+    }
+
+    // Expr (AssignOp Expr / (COMMA Expr)+ EQUAL Expr)?
+    pub fn assign(self: *Scope, lhs: Identifier, op: AssignOp, rhs: Expr) !void {
+        try self.statementFmt("{} {} {}", .{ lhs, op, rhs });
+    }
+
+    // Expr (AssignOp Expr / (COMMA Expr)+ EQUAL Expr)?
+    pub fn destruct(self: *Scope, lhs: []const Assign, rhs: Expr) !void {
+        try self.statementFmt("{} = {}", .{ List(Assign){ .items = lhs }, rhs });
+    }
+
+    test "expressions" {
         var buffer = std.ArrayList(u8).init(test_alloc);
         var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
         defer buffer.deinit();
 
-        const ifs = try IfStatement.init(test_alloc, &writer, .{
-            .condition = Expr{ .temp = "true" },
-            .payload = Identifier{ .name = "_" },
-        });
-        var blk = try ifs.block(Identifier{ .name = "blk" });
-        try blk.statement(Statement{ .temp = "break :blk foo()" });
-        blk = try blk.branchElse(.{});
-        try blk.statement(Statement{ .temp = "bar()" });
-        try blk.end();
+        var block = try Scope.init(&writer, .{}, .{ .form = .block });
+        try block.expression(.{ .raw = "foo()" });
+        try block.assign(.{ .name = "foo" }, .plus_equal, .{ .raw = "bar" });
+        try block.destruct(&.{
+            .{ .unmut = .{ .name = "foo" } },
+            .{ .mut = .{ .name = "bar" } },
+            .{ .assign = .{ .name = "baz" } },
+        }, .{ .raw = "qux" });
+        try block.end();
 
         try testing.expectEqualStrings(
-            "if (true) |_| blk: {\n    break :blk foo();\n} else {\n    bar();\n}",
-            buffer.items,
-        );
+            \\ {
+            \\    foo();
+            \\    foo += bar;
+            \\    const foo, var bar, baz = qux;
+            \\}
+        , buffer.items);
     }
 
-    test "assign" {
+    // IfStatement
+    //     <- IfPrefix BlockExpr ( KEYWORD_else Payload? Statement )?
+    //      / IfPrefix AssignExpr ( SEMICOLON / KEYWORD_else Payload? Statement )
+    // PtrPayload <- PIPE ASTERISK? IDENTIFIER PIPE
+    pub fn ifCtrl(self: *Scope, form: Form, prefix: IfPrefix, label: ?Identifier) !Scope {
+        try self.preStatement();
+        try self.writer.writeFmt("{}", .{prefix});
+        return self.postStatemntScope(form, .{ .label = label });
+    }
+
+    // ForStatement
+    //     <- ForPrefix BlockExpr ( KEYWORD_else Statement )?
+    //      / ForPrefix AssignExpr ( SEMICOLON / KEYWORD_else Statement )
+    pub fn forLoop(self: *Scope, form: Form, prefix: ForPrefix) !Scope {
+        try self.preStatement();
+        try self.writer.writeFmt("{}", .{prefix});
+        return self.postStatemntScope(form, .{});
+    }
+
+    // WhileStatement
+    //     <- WhilePrefix BlockExpr ( KEYWORD_else Payload? Statement )?
+    //      / WhilePrefix AssignExpr ( SEMICOLON / KEYWORD_else Payload? Statement )
+    pub fn whileLoop(self: *Scope, form: Form, prefix: WhilePrefix) !Scope {
+        try self.preStatement();
+        try self.writer.writeFmt("{}", .{prefix});
+        return self.postStatemntScope(form, .{});
+    }
+
+    pub fn splitCtrl(self: *Scope, subject: Expr) !SwitchExpr {
+        try self.preStatement();
+        return SwitchExpr.init(self.writer, subject);
+    }
+
+    test "control flow" {
         var buffer = std.ArrayList(u8).init(test_alloc);
         var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
         defer buffer.deinit();
 
-        const ifs = try IfStatement.init(test_alloc, &writer, .{
-            .condition = Expr{ .temp = "true" },
-            .payload = Identifier{ .name = "_" },
-        });
-        try ifs.assign(AssignExpr{ .expr = Expr{ .temp = "i++" } });
-        try ifs.assignEnd();
+        var scope = try Scope.init(&writer, .{}, .{ .form = .block });
 
+        var block = try scope.ifCtrl(.inlined, .{
+            .condition = .{ .raw = "true" },
+        }, null);
+        try block.expression(.{ .raw = "foo()" });
+        try block.end();
+
+        block = try scope.forLoop(.inlined, ForPrefix{
+            .arguments = &.{
+                .{ .single = Expr{ .raw = "foo" } },
+                .{ .single = Expr{ .raw = "0.." } },
+            },
+            .payload = &.{ .{ .name = "f" }, .{ .name = "i" } },
+        });
+        try block.expression(.{ .raw = "bar()" });
+        try block.end();
+
+        block = try scope.whileLoop(.inlined, WhilePrefix{
+            .condition = .{ .raw = "foo" },
+            .payload = .{ .name = "*f" },
+            .@"continue" = .{ .raw = "i++" },
+        });
+        try block.expression(.{ .raw = "bar()" });
+        try block.end();
+
+        const expr = try scope.splitCtrl(.{ .raw = "foo" });
+        block = try expr.prongElse(.{}, .inlined);
+        try block.expression(.{ .raw = "bar()" });
+        try block.end();
+        try expr.end();
+
+        try scope.end();
         try testing.expectEqualStrings(
-            "if (true) |_| i++;",
-            buffer.items,
-        );
+            \\ {
+            \\    if (true) foo();
+            \\    for (foo, 0..) |f, i| bar();
+            \\    while (foo) |*f| : (i++) bar();
+            \\    switch (foo) {
+            \\        else => bar(),
+            \\    }
+            \\}
+        , buffer.items);
     }
 
-    test "assign else" {
-        var buffer = std.ArrayList(u8).init(test_alloc);
-        var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
-        defer buffer.deinit();
+};
 
-        const ifs = try IfStatement.init(test_alloc, &writer, .{
-            .condition = Expr{ .temp = "true" },
-            .payload = Identifier{ .name = "_" },
-        });
-        try ifs.assign(AssignExpr{ .expr = Expr{ .temp = "i++" } });
-        try ifs.assignElse(Statement{ .temp = "{}" }, null);
+// IfPrefix <- KEYWORD_if LPAREN Expr RPAREN PtrPayload?
+pub const IfPrefix = struct {
+    condition: Expr,
+    payload: ?Identifier = null,
 
-        try testing.expectEqualStrings(
-            "if (true) |_| i++ else {}",
-            buffer.items,
-        );
+    pub fn format(self: IfPrefix, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
+        if (self.payload) |t| {
+            try writer.print("if ({}) |{pre*}|", .{ self.condition, t });
+        } else {
+            try writer.print("if ({})", .{self.condition});
+        }
+    }
+
+    test {
+        try testing.expectFmt("if (foo) |f|", "{}", .{IfPrefix{
+            .condition = .{ .raw = "foo" },
+            .payload = Identifier{ .name = "f" },
+        }});
     }
 };
 
-/// ```
-/// ForStatement
-///     <- ForPrefix BlockExpr ( KEYWORD_else Statement )?
-///      / ForPrefix AssignExpr ( SEMICOLON / KEYWORD_else Statement )
-/// ForPrefix <- KEYWORD_for LPAREN ForArgumentsList RPAREN PtrListPayload
-/// ForArgumentsList <- ForItem (COMMA ForItem)* COMMA?
-/// ForItem <- Expr (DOT2 Expr?)?
-/// PtrListPayload <- PIPE ASTERISK? IDENTIFIER (COMMA ASTERISK? IDENTIFIER)* COMMA? PIPE
-/// ```
-pub const ForStatement = struct {
-    allocator: Allocator,
-    writer: *StackWriter,
+// ForPrefix <- KEYWORD_for LPAREN ForArgumentsList RPAREN PtrListPayload
+// ForArgumentsList <- ForItem (COMMA ForItem)* COMMA?
+// ForItem <- Expr (DOT2 Expr?)?
+// PtrListPayload <- PIPE ASTERISK? IDENTIFIER (COMMA ASTERISK? IDENTIFIER)* COMMA? PIPE
+pub const ForPrefix = struct {
+    label: ?Identifier = null,
+    inlined: bool = false,
+    arguments: []const Item,
+    payload: []const Identifier,
 
-    fn init(allocator: Allocator, writer: *StackWriter, prefix: Prefix) !ForStatement {
-        try writer.writeFmt("{}", .{prefix});
-        return .{
-            .allocator = allocator,
-            .writer = writer,
-        };
-    }
-
-    pub fn block(self: ForStatement) !Block {
-        return Block.init(self.writer, .{}, .{
-            .branching = .else_if,
-            .payload = .single,
-            .label = true,
+    pub fn format(self: ForPrefix, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
+        assert(self.arguments.len > 0);
+        assert(self.payload.len > 0);
+        if (self.label) |s| try writer.print("{}: ", .{s});
+        if (self.inlined) try writer.writeAll("inline ");
+        try writer.print("for ({}) |{pre*}|", .{
+            List(Item){ .items = self.arguments },
+            List(Identifier){ .items = self.payload },
         });
     }
 
-    /// Call `assignElse()` or `assignEnd()` to complete the declaration.
-    pub fn assign(self: ForStatement, expr: AssignExpr) !void {
-        try self.writer.writeFmt(" {}", .{expr});
-    }
-
-    /// Don’t call both `assignElse()` and `assignEnd()`.
-    pub fn assignElse(self: ForStatement, statement: Statement) !void {
-        try self.writer.prefixedFmt(" else {}", .{statement});
-    }
-
-    /// Don’t call both `assignElse()` and `assignEnd()`.
-    pub fn assignEnd(self: ForStatement) !void {
-        try self.writer.writeByte(';');
-    }
-
-    test "block" {
-        var buffer = std.ArrayList(u8).init(test_alloc);
-        var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
-        defer buffer.deinit();
-
-        const ifs = try ForStatement.init(test_alloc, &writer, Prefix{
-            .arguments = &.{.{ .single = Expr{ .temp = "foo" } }},
-            .payload = &.{Identifier{ .name = "f" }},
-        });
-        var blk = try ifs.block();
-        try blk.statement(Statement{ .temp = "bar()" });
-        blk = try blk.branchElse(.{});
-        try blk.statement(Statement{ .temp = "baz()" });
-        try blk.end();
-
-        try testing.expectEqualStrings(
-            "for (foo) |f| {\n    bar();\n} else {\n    baz();\n}",
-            buffer.items,
-        );
-    }
-
-    test "assign" {
-        var buffer = std.ArrayList(u8).init(test_alloc);
-        var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
-        defer buffer.deinit();
-
-        const ifs = try ForStatement.init(test_alloc, &writer, Prefix{
-            .arguments = &.{.{ .single = Expr{ .temp = "foo" } }},
-            .payload = &.{Identifier{ .name = "f" }},
-        });
-        try ifs.assign(AssignExpr{ .expr = Expr{ .temp = "i++" } });
-        try ifs.assignEnd();
-
-        try testing.expectEqualStrings(
-            "for (foo) |f| i++;",
-            buffer.items,
-        );
-    }
-
-    test "assign else" {
-        var buffer = std.ArrayList(u8).init(test_alloc);
-        var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
-        defer buffer.deinit();
-
-        const ifs = try ForStatement.init(test_alloc, &writer, Prefix{
-            .arguments = &.{.{ .single = Expr{ .temp = "foo" } }},
-            .payload = &.{Identifier{ .name = "f" }},
-        });
-        try ifs.assign(AssignExpr{ .expr = Expr{ .temp = "i++" } });
-        try ifs.assignElse(Statement{ .temp = "{}" });
-
-        try testing.expectEqualStrings(
-            "for (foo) |f| i++ else {}",
-            buffer.items,
-        );
-    }
-
-    pub const Prefix = struct {
-        arguments: []const ForItem,
-        payload: []const Identifier = &.{},
-
-        pub fn format(self: Prefix, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
-            assert(self.arguments.len > 0);
-            try writer.print("for ({}) |{pre*}|", .{
-                List(ForItem){ .items = self.arguments },
-                List(Identifier){ .items = self.payload },
-            });
-        }
-    };
-
-    pub const ForItem = union(enum) {
+    pub const Item = union(enum) {
         single: Expr,
         range: struct { Expr, ?Expr },
 
-        pub fn format(self: ForItem, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
+        pub fn format(self: Item, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
             switch (self) {
                 .single => |t| {
                     const depth = std.options.fmt_max_depth - 1;
@@ -1056,169 +1142,70 @@ pub const ForStatement = struct {
         }
     };
 
-    test "Prefix" {
-        try testing.expectFmt("for (&foo) |*f|", "{}", .{Prefix{
-            .arguments = &.{.{ .single = Expr{ .temp = "&foo" } }},
+    test {
+        try testing.expectFmt("for (&foo) |*f|", "{}", .{ForPrefix{
+            .arguments = &.{.{ .single = Expr{ .raw = "&foo" } }},
             .payload = &.{Identifier{ .name = "*f" }},
         }});
-        try testing.expectFmt("for (foo, 0..) |f, i|", "{}", .{Prefix{
+        try testing.expectFmt("for (foo, 0..) |f, i|", "{}", .{ForPrefix{
             .arguments = &.{
-                .{ .single = Expr{ .temp = "foo" } },
-                .{ .range = .{ Expr{ .temp = "0" }, null } },
+                .{ .single = Expr{ .raw = "foo" } },
+                .{ .range = .{ Expr{ .raw = "0" }, null } },
             },
             .payload = &.{
                 Identifier{ .name = "f" },
                 Identifier{ .name = "i" },
             },
         }});
-        try testing.expectFmt("for (0..8) |i|", "{}", .{Prefix{
+        try testing.expectFmt("foo: inline for (0..8) |i|", "{}", .{ForPrefix{
+            .label = .{ .name = "foo" },
+            .inlined = true,
             .arguments = &.{
-                .{ .range = .{ Expr{ .temp = "0" }, Expr{ .temp = "8" } } },
+                .{ .range = .{ Expr{ .raw = "0" }, Expr{ .raw = "8" } } },
             },
             .payload = &.{Identifier{ .name = "i" }},
         }});
     }
 };
 
-/// ```
-/// WhileStatement
-///     <- WhilePrefix BlockExpr ( KEYWORD_else Payload? Statement )?
-///      / WhilePrefix AssignExpr ( SEMICOLON / KEYWORD_else Payload? Statement )
-/// WhilePrefix <- KEYWORD_while LPAREN Expr RPAREN PtrPayload? WhileContinueExpr?
-/// PtrPayload <- PIPE ASTERISK? IDENTIFIER PIPE
-/// WhileContinueExpr <- COLON LPAREN AssignExpr RPAREN
-/// ```
-const WhileStatement = struct {
-    allocator: Allocator,
-    writer: *StackWriter,
+// WhilePrefix <- KEYWORD_while LPAREN Expr RPAREN PtrPayload? WhileContinueExpr?
+// WhileContinueExpr <- COLON LPAREN AssignExpr RPAREN
+// PtrPayload <- PIPE ASTERISK? IDENTIFIER PIPE
+pub const WhilePrefix = struct {
+    label: ?Identifier = null,
+    inlined: bool = false,
+    condition: Expr,
+    payload: ?Identifier = null,
+    @"continue": ?Expr = null,
 
-    pub const Prefix = struct {
-        condition: Expr,
-        payload: ?Identifier = null,
-        @"continue": ?AssignExpr = null,
+    pub fn format(self: WhilePrefix, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
+        if (self.label) |s| try writer.print("{}: ", .{s});
+        if (self.inlined) try writer.writeAll("inline ");
+        try writer.print("while ({})", .{self.condition});
+        if (self.payload) |t| try writer.print(" |{pre*}|", .{t});
+        if (self.@"continue") |t| try writer.print(" : ({})", .{t});
+    }
 
-        pub fn format(self: Prefix, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
-            try writer.print("while ({})", .{self.condition});
-            if (self.payload) |t| try writer.print(" |{pre*}|", .{t});
-            if (self.@"continue") |t| try writer.print(" : ({})", .{t});
-        }
-    };
-
-    test "Prefix" {
-        try testing.expectFmt("while (foo.next()) |*bar| : (i++)", "{}", .{Prefix{
-            .condition = Expr{ .temp = "foo.next()" },
-            .payload = Identifier{ .name = "*bar" },
-            .@"continue" = AssignExpr{ .expr = Expr{ .temp = "i++" } },
+    test {
+        try testing.expectFmt("foo: inline while (bar.next()) |*b| : (i++)", "{}", .{WhilePrefix{
+            .label = .{ .name = "foo" },
+            .inlined = true,
+            .condition = Expr{ .raw = "bar.next()" },
+            .payload = Identifier{ .name = "*b" },
+            .@"continue" = Expr{ .raw = "i++" },
         }});
-    }
-
-    fn init(allocator: Allocator, writer: *StackWriter, prefix: Prefix) !WhileStatement {
-        try writer.writeFmt("{}", .{prefix});
-        return .{
-            .allocator = allocator,
-            .writer = writer,
-        };
-    }
-
-    pub fn block(self: WhileStatement, label: ?Identifier) !Block {
-        return Block.init(self.writer, .{
-            .label = label,
-        }, .{
-            .branching = .else_if,
-            .payload = .single,
-            .label = true,
-        });
-    }
-
-    /// Call `assignElse()` or `assignEnd()` to complete the declaration.
-    pub fn assign(self: WhileStatement, expr: AssignExpr) !void {
-        try self.writer.writeFmt(" {}", .{expr});
-    }
-
-    /// Don’t call both `assignElse()` and `assignEnd()`.
-    pub fn assignElse(self: WhileStatement, statement: Statement, payload: ?Identifier) !void {
-        if (payload) |t| {
-            try self.writer.prefixedFmt(" else |{}| {}", .{ t, statement });
-        } else {
-            try self.writer.prefixedFmt(" else {}", .{statement});
-        }
-    }
-
-    /// Don’t call both `assignElse()` and `assignEnd()`.
-    pub fn assignEnd(self: WhileStatement) !void {
-        try self.writer.writeByte(';');
-    }
-
-    test "block" {
-        var buffer = std.ArrayList(u8).init(test_alloc);
-        var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
-        defer buffer.deinit();
-
-        const ifs = try WhileStatement.init(test_alloc, &writer, .{
-            .condition = Expr{ .temp = "true" },
-            .payload = Identifier{ .name = "_" },
-            .@"continue" = AssignExpr{ .expr = Expr{ .temp = "i++" } },
-        });
-        var blk = try ifs.block(null);
-        try blk.statement(Statement{ .temp = "break" });
-        blk = try blk.branchElse(.{});
-        try blk.statement(Statement{ .temp = "foo()" });
-        try blk.end();
-
-        try testing.expectEqualStrings(
-            "while (true) |_| : (i++) {\n    break;\n} else {\n    foo();\n}",
-            buffer.items,
-        );
-    }
-
-    test "assign" {
-        var buffer = std.ArrayList(u8).init(test_alloc);
-        var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
-        defer buffer.deinit();
-
-        const ifs = try WhileStatement.init(test_alloc, &writer, .{
-            .condition = Expr{ .temp = "true" },
-            .payload = Identifier{ .name = "_" },
-        });
-        try ifs.assign(AssignExpr{ .expr = Expr{ .temp = "i++" } });
-        try ifs.assignEnd();
-
-        try testing.expectEqualStrings(
-            "while (true) |_| i++;",
-            buffer.items,
-        );
-    }
-
-    test "assign else" {
-        var buffer = std.ArrayList(u8).init(test_alloc);
-        var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
-        defer buffer.deinit();
-
-        const ifs = try WhileStatement.init(test_alloc, &writer, .{
-            .condition = Expr{ .temp = "true" },
-            .payload = Identifier{ .name = "_" },
-        });
-        try ifs.assign(AssignExpr{ .expr = Expr{ .temp = "i++" } });
-        try ifs.assignElse(Statement{ .temp = "{}" }, null);
-
-        try testing.expectEqualStrings(
-            "while (true) |_| i++ else {}",
-            buffer.items,
-        );
     }
 };
 
-/// ```
-/// SwitchExpr <- KEYWORD_switch LPAREN Expr RPAREN LBRACE SwitchProngList RBRACE
-/// SwitchProngList <- (SwitchProng COMMA)* SwitchProng?
-/// SwitchProng <- KEYWORD_inline? SwitchCase EQUALRARROW PtrIndexPayload? SingleAssignExpr
-/// SwitchCase
-///     <- SwitchItem (COMMA SwitchItem)* COMMA?
-///      / KEYWORD_else
-/// SwitchItem <- Expr (DOT3 Expr)?
-/// PtrIndexPayload <- PIPE ASTERISK? IDENTIFIER (COMMA IDENTIFIER)? PIPE
-/// SingleAssignExpr <- Expr (AssignOp Expr)?
-/// ```
+// SwitchExpr <- KEYWORD_switch LPAREN Expr RPAREN LBRACE SwitchProngList RBRACE
+// SwitchProngList <- (SwitchProng COMMA)* SwitchProng?
+// SwitchProng <- KEYWORD_inline? SwitchCase EQUALRARROW PtrIndexPayload? SingleAssignExpr
+// SwitchCase
+//     <- SwitchItem (COMMA SwitchItem)* COMMA?
+//      / KEYWORD_else
+// SwitchItem <- Expr (DOT3 Expr)?
+// PtrIndexPayload <- PIPE ASTERISK? IDENTIFIER (COMMA IDENTIFIER)? PIPE
+// SingleAssignExpr <- Expr (AssignOp Expr)?
 pub const SwitchExpr = struct {
     writer: *StackWriter,
 
@@ -1234,7 +1221,7 @@ pub const SwitchExpr = struct {
     }
 
     /// Call `end()` to complete the block.
-    pub fn prong(self: SwitchExpr, items: []const ProngItem, case: ProngCase) !Scope {
+    pub fn prong(self: SwitchExpr, items: []const ProngItem, case: ProngCase, form: Scope.Form) !Scope {
         assert(items.len > 0);
         assert(case.payload.len <= 2);
         assert(!case.non_exhaustive);
@@ -1245,14 +1232,13 @@ pub const SwitchExpr = struct {
             try self.writer.lineFmt("{} =>", .{list});
         }
         return Scope.init(self.writer, case.decor(), .{
-            .branching = false,
-            .form = .block,
+            .form = form,
             .suffix = ",",
         });
     }
 
     /// Call `end()` to complete the block.
-    pub fn prongElse(self: SwitchExpr, case: ProngCase) !Scope {
+    pub fn prongElse(self: SwitchExpr, case: ProngCase, form: Scope.Form) !Scope {
         assert(case.payload.len <= 2);
         const prefix = if (case.@"inline") "inline " else "";
         if (case.non_exhaustive) {
@@ -1261,8 +1247,7 @@ pub const SwitchExpr = struct {
             try self.writer.lineFmt("{s}else =>", .{prefix});
         }
         return Scope.init(self.writer, case.decor(), .{
-            .form = .block,
-            .branching = false,
+            .form = form,
             .suffix = ",",
         });
     }
@@ -1298,27 +1283,27 @@ pub const SwitchExpr = struct {
         defer buffer.deinit();
 
         var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
-        var expr = try SwitchExpr.init(&writer, Expr{ .temp = "foo" });
+        var expr = try SwitchExpr.init(&writer, Expr{ .raw = "foo" });
 
         var block = try expr.prong(&.{
-            .{ .single = Expr{ .temp = ".foo" } },
+            .{ .single = Expr{ .raw = ".foo" } },
         }, .{
             .@"inline" = true,
-        });
-        try block.statement(.{ .temp = "boom()" });
+        }, .block);
+        try block.expression(.{ .raw = "boom()" });
         try block.end();
 
         block = try expr.prong(&.{
-            .{ .single = Expr{ .temp = ".bar" } },
-            .{ .range = .{ Expr{ .temp = "4" }, Expr{ .temp = "8" } } },
+            .{ .single = Expr{ .raw = ".bar" } },
+            .{ .range = .{ Expr{ .raw = "4" }, Expr{ .raw = "8" } } },
         }, .{
             .label = Identifier{ .name = "blk" },
             .payload = &.{
                 Identifier{ .name = "*a" },
                 Identifier{ .name = "b" },
             },
-        });
-        try block.statement(.{ .temp = "break :blk yo()" });
+        }, .block);
+        try block.expression(.{ .raw = "break :blk yo()" });
         try block.end();
 
         block = try expr.prongElse(.{
@@ -1326,8 +1311,8 @@ pub const SwitchExpr = struct {
             .payload = &.{
                 Identifier{ .name = "g" },
             },
-        });
-        try block.statement(.{ .temp = "boom()" });
+        }, .inlined);
+        try block.expression(.{ .raw = "boom()" });
         try block.end();
 
         try expr.end();
@@ -1340,142 +1325,27 @@ pub const SwitchExpr = struct {
             \\    .bar, 4...8 => |*a, b| blk: {
             \\        break :blk yo();
             \\    },
-            \\    inline else => |g| {
-            \\        boom();
-            \\    },
+            \\    inline else => |g| boom(),
             \\}
         , buffer.items);
     }
 };
 
-pub const Scope = struct {
-    writer: *StackWriter,
-    options: Options,
+pub const Assign = union(enum) {
+    unmut: Identifier,
+    mut: Identifier,
+    assign: Identifier,
 
-    pub const Form = enum { block, inlined };
-    pub const Decor = struct {
-        label: ?Identifier = null,
-        payload: []const Identifier = &.{},
-    };
-
-    const Options = struct {
-        form: Form,
-        branching: bool,
-        suffix: ?[]const u8 = null,
-    };
-
-    fn init(writer: *StackWriter, decor: Decor, options: Options) !Scope {
-        const scope = try createSubWriter(writer, decor, options.form);
-        return .{ .writer = scope, .options = options };
-    }
-
-    pub fn elseIfBlock(self: *Scope, form: Form, expr: Expr, decor: Decor) !void {
-        assert(self.options.branching);
-        try self.writer.applyDeferred();
-        const root_writer = self.writer.parent orelse unreachable;
-        try root_writer.writeFmt(" else if ({})", .{expr});
-        try writeDecor(root_writer, decor, form);
-        try writeForm(self.writer, form);
-        self.options.form = form;
-    }
-
-    pub fn elseBlock(self: *Scope, form: Form, decor: Decor) !void {
-        assert(self.options.branching);
-        try self.writer.applyDeferred();
-        const root_writer = self.writer.parent orelse unreachable;
-        try root_writer.writeAll(" else");
-        try writeDecor(root_writer, decor, form);
-        try writeForm(self.writer, form);
-        self.options.form = form;
-        self.options.branching = false;
-    }
-
-    pub fn end(self: Scope) !void {
-        // There is no branch so we can write the suffix (if exists).
-        if (self.options.suffix) |s| {
-            // We use defer in case other content deferred as well.
-            try self.writer.deferAll(.parent, s);
+    pub fn format(self: Assign, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
+        switch (self) {
+            .unmut => |t| try writer.print("const {}", .{t}),
+            .mut => |t| try writer.print("var {}", .{t}),
+            .assign => |t| try writer.print("{}", .{t}),
         }
-        try self.writer.deinit();
-    }
-
-    fn createSubWriter(writer: *StackWriter, decor: Decor, form: Form) !*StackWriter {
-        try writeDecor(writer, decor, form);
-        const scope = try writer.appendPrefix(INDENT);
-        try writeForm(scope, form);
-        return scope;
-    }
-
-    fn writeDecor(root_writer: *StackWriter, decor: Decor, form: Form) !void {
-        switch (decor.payload.len) {
-            0 => {},
-            1 => try root_writer.writeFmt(" |{pre*}|", .{decor.payload[0]}),
-            else => try root_writer.writeFmt(" {pre*}", .{
-                List(Identifier){
-                    .padding = .{ .both = "|" },
-                    .items = decor.payload,
-                },
-            }),
-        }
-        if (decor.label) |s| {
-            assert(form == .block);
-            try root_writer.writeFmt(" {}:", .{s});
-        }
-    }
-
-    fn writeForm(scope_writer: *StackWriter, form: Form) !void {
-        switch (form) {
-            .block => {
-                try scope_writer.parent.?.writeAll(" {");
-                try scope_writer.deferLineAll(.parent, "}");
-            },
-            .inlined => try scope_writer.writeByte(' '),
-        }
-    }
-
-    pub fn statement(self: Scope, s: Statement) !void {
-        switch (self.options.form) {
-            .block => try self.writer.lineFmt("{};", .{s}),
-            .inlined => try self.writer.writeFmt("{}", .{s}),
-        }
-    }
-
-
-    test {
-        var buffer = std.ArrayList(u8).init(test_alloc);
-        var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
-        defer buffer.deinit();
-
-        var block = try Scope.init(&writer, .{
-            .payload = &.{Identifier{ .name = "p8" }},
-        }, .{
-            .branching = true,
-            .form = .inlined,
-            .suffix = ";",
-        });
-        try block.statement(Statement{ .temp = "foo()" });
-        try block.elseIfBlock(.block, Expr{ .temp = "true" }, .{
-            .label = Identifier{ .name = "blk" },
-        });
-        try block.statement(Statement{ .temp = "bar()" });
-        try block.elseBlock(.inlined, .{
-            .payload = &.{
-                Identifier{ .name = "p8" },
-                Identifier{ .name = "p9" },
-            },
-        });
-        try block.TEMP_statement("baz()");
-        try block.end();
-
-        try testing.expectEqualStrings(
-            \\ |p8| foo() else if (true) blk: {
-            \\    bar();
-            \\} else |p8, p9| baz();
-        , buffer.items);
     }
 };
 
-/// `ByteAlign <- KEYWORD_align LPAREN Expr RPAREN`
+// ByteAlign <- KEYWORD_align LPAREN Expr RPAREN
 const ByteAlign = struct {
     expr: Expr,
 
@@ -1485,12 +1355,12 @@ const ByteAlign = struct {
 
     test {
         try testing.expectFmt("align(4)", "{}", .{ByteAlign{
-            .expr = Expr{ .temp = "4" },
+            .expr = Expr{ .raw = "4" },
         }});
     }
 };
 
-/// `KEYWORD_extern STRINGLITERALSINGLE?`
+// KEYWORD_extern STRINGLITERALSINGLE?
 const Extern = struct {
     source: ?[]const u8,
 
@@ -1508,52 +1378,6 @@ const Extern = struct {
     }
 };
 
-/// `AssignExpr <- Expr (AssignOp Expr / (COMMA Expr)+ EQUAL Expr)?`
-pub const AssignExpr = struct {
-    lhs: Lhs = .none,
-    expr: Expr,
-
-    pub const Lhs = union(enum) {
-        none,
-        op: struct { Expr, AssignOp },
-        destruct: []const Expr,
-    };
-
-    pub fn format(self: AssignExpr, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
-        switch (self.lhs) {
-            .none => try writer.print("{}", .{self.expr}),
-            .op => |t| try writer.print(
-                "{} {s} {}",
-                .{ t.@"0", t.@"1".resolve(), self.expr },
-            ),
-            .destruct => |exprs| try writer.print(
-                "{} = {}",
-                .{ List(Expr){ .items = exprs }, self.expr },
-            ),
-        }
-    }
-
-    test {
-        try testing.expectFmt("foo", "{}", .{AssignExpr{
-            .expr = Expr{ .temp = "foo" },
-        }});
-        try testing.expectFmt("foo += bar", "{}", .{AssignExpr{
-            .lhs = .{ .op = .{
-                Expr{ .temp = "foo" },
-                .plus_equal,
-            } },
-            .expr = Expr{ .temp = "bar" },
-        }});
-        try testing.expectFmt("const foo, const bar = baz", "{}", .{AssignExpr{
-            .lhs = .{ .destruct = &.{
-                Expr{ .temp = "const foo" },
-                Expr{ .temp = "const bar" },
-            } },
-            .expr = Expr{ .temp = "baz" },
-        }});
-    }
-};
-
 const AssignOp = enum {
     // zig fmt: off
     asterisk_equal, asterisk_pipe_equal, slash_equal, percent_equal, plus_equal,
@@ -1562,8 +1386,8 @@ const AssignOp = enum {
     asterisk_percent_equal, plus_percent_equal, minus_percent_equal, equal,
     // zig fmt: on
 
-    pub fn resolve(self: AssignOp) []const u8 {
-        return switch (self) {
+    pub fn format(self: AssignOp, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
+        try writer.writeAll(switch (self) {
             .asterisk_equal => "*=",
             .asterisk_pipe_equal => "*|=",
             .slash_equal => "/=",
@@ -1582,19 +1406,16 @@ const AssignOp = enum {
             .plus_percent_equal => "+%=",
             .minus_percent_equal => "-%=",
             .equal => "=",
-        };
+        });
     }
 };
 
 /// For allowing a prefix character (e.g. `@`) use the `{pre@}` (replace `@`
 /// with a desired character).
-///
-/// ```
-/// IDENTIFIER
-///     <- !keyword [A-Za-z_] [A-Za-z0-9_]* skip
-///      / "@" STRINGLITERALSINGLE
-/// BUILTINIDENTIFIER <- "@"[A-Za-z_][A-Za-z0-9_]* skip
-/// ```
+// IDENTIFIER
+//     <- !keyword [A-Za-z_] [A-Za-z0-9_]* skip
+//      / "@" STRINGLITERALSINGLE
+// BUILTINIDENTIFIER <- "@"[A-Za-z_][A-Za-z0-9_]* skip
 const Identifier = union(enum) {
     name: []const u8,
     lazy: *const LazyIdentifier,
@@ -1724,23 +1545,14 @@ pub const LazyIdentifier = struct {
     }
 };
 
-
-const Statement = struct {
-    temp: []const u8, // TODO
-
-    pub fn format(self: Statement, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
-        try writer.writeAll(self.temp);
-    }
-};
-
 const Expr = union(enum) {
+    raw: []const u8,
     // TODO
-    temp: []const u8,
     temp_import: []const u8,
 
     pub fn format(self: Expr, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
         switch (self) {
-            .temp => try writer.writeAll(self.temp),
+            .raw => try writer.writeAll(self.raw),
             .temp_import => try writer.print("@import(\"{s}\")", .{self.temp_import}),
         }
     }
