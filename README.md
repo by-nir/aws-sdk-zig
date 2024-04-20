@@ -1,11 +1,13 @@
 # AWS SDK for Zig
-![Zig v0.12 (dev)](https://img.shields.io/badge/Zig-v0.12_(dev)_-black?logo=zig&logoColor=F7A41D "Zig v0.12 – master branch")
+![Zig v0.13 (dev)](https://img.shields.io/badge/Zig-v0.13_(dev)_-black?logo=zig&logoColor=F7A41D "Zig v0.13 – master branch")
 [![MIT License](https://img.shields.io/github/license/by-nir/aws-sdk-zig)](/LICENSE)
 
 **The _AWS SDK for Zig_ provides an interface for _Amazon Web Services (AWS)_.**
 
-Building upon Zig’s strong foundation, this project provides a **performant** and
-fully functioning SDKs, while **minimizing dependencies** and increased **platform portability**.
+_Pure Zig implementation,_ from code generation to runtime SDKs.
+Building upon the language’s strong foundation, this project provides a
+**performant** and fully functioning SDKs, while **minimizing dependencies** and
+increased **platform portability**.
 
 > [!TIP]
 > Use the [AWS Lambda Runtime for Zig](https://github.com/by-nir/aws-lambda-zig)
@@ -14,7 +16,10 @@ fully functioning SDKs, while **minimizing dependencies** and increased **platfo
 ## Getting Started
 
 > [!CAUTION]
-> This project is in early development, **breaking changes are imminent!**
+> This project is in early development, DO NOT USE IN PRODUCTION!
+>
+> Support for the remaining services and features will be added as the project
+> matures and stabilize. Till then, **breaking changes are imminent!**.
 
 ## Contributing
 
@@ -22,11 +27,11 @@ Parts of this codebase are auto-generated, **do not modify them directly!**
 
 | 📁 | 👁️[^1] | 🏭[^2] | Description |
 |:-|:-:|:-:|:-|
+| [sdk](sdk) | 👁️ | 🏭 | AWS SDKs for Zig |
 | [src/types](src/types) | 👁️ | | Common types shared by all modules |
 | [src/runtime](src/runtime) | | | Shared client for interacting with _AWS_ services |
 | [codegen/aws](codegen) | | | SDKs source generation pipeline |
 | [codegen/smithy](codegen/smithy) | | | [Smithy 2.0](https://smithy.io/2.0) client generator |
-| [sdk](sdk) | 👁️ | 🏭 | AWS SDKs for Zig |
 
 [^1]: Module exposed publicly
 [^2]: Source auto-generated _(do not modify manyally)_
@@ -59,14 +64,15 @@ This codebase, including the generated code, are covered by a [standalone licens
 
 ## References
 
-### AWS SDKs Resources
+### Smithy
 
 - [Smithy Spec](https://smithy.io/2.0/index.html)
-- [AWS SDKs and Tools Reference Guide](https://docs.aws.amazon.com/sdkref/latest/guide/overview.html)
-
-### Other Implementations
-
+- [Smithy Reference Implementation](https://github.com/smithy-lang/smithy)
 - [Smithy Rust](https://github.com/smithy-lang/smithy-rs)
-- [AWS SDK for Rust](https://github.com/awslabs/aws-sdk-rust)
-- [AWS SDK for C++](https://github.com/aws/aws-sdk-cpp)
+
+### AWS SDKs
+
+- [AWS SDKs and Tools Reference Guide](https://docs.aws.amazon.com/sdkref/latest/guide/overview.html)
 - [AWS Common Runtime (CRT) libraries](https://docs.aws.amazon.com/sdkref/latest/guide/common-runtime.html)
+- [AWS SDK for C++](https://github.com/aws/aws-sdk-cpp)
+- [AWS SDK for Rust](https://github.com/awslabs/aws-sdk-rust)

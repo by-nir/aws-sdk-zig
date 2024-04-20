@@ -9,13 +9,13 @@ pub fn build(b: *std.Build) void {
 
     const smithy = b.createModule(.{
         .optimize = optimize,
-        .root_source_file = .{ .path = "codegen/smithy/root.zig" },
+        .root_source_file = b.path("codegen/smithy/root.zig"),
     });
 
     // Tests
     const smithy_unit_tests = b.addTest(.{
         .optimize = optimize,
-        .root_source_file = .{ .path = "codegen/smithy/root.zig" },
+        .root_source_file = b.path("codegen/smithy/root.zig"),
     });
     const smithy_unit_tests_step = b.step("test:smithy", "Run Smithy unit tests");
     smithy_unit_tests_step.dependOn(&b.addRunArtifact(smithy_unit_tests).step);
@@ -42,7 +42,7 @@ pub fn build(b: *std.Build) void {
         const codegen_sdk = b.addExecutable(.{
             .name = "codegen-sdk",
             .target = b.host,
-            .root_source_file = .{ .path = "codegen/aws/root.zig" },
+            .root_source_file = b.path("codegen/aws/root.zig"),
         });
         codegen_sdk.root_module.addOptions("options", sdk_options);
         codegen_sdk.root_module.addImport("smithy", smithy);
@@ -52,7 +52,7 @@ pub fn build(b: *std.Build) void {
     // Tests
     const codegen_sdk_tests = b.addTest(.{
         .optimize = optimize,
-        .root_source_file = .{ .path = "codegen/aws/root.zig" },
+        .root_source_file = b.path("codegen/aws/root.zig"),
     });
     codegen_sdk_tests.root_module.addImport("smithy", smithy);
     const acodegen_sdk_tests_step = b.step("test:aws", "Run AWS source generation unit tests");

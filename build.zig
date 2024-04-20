@@ -8,7 +8,7 @@ pub fn build(b: *std.Build) void {
     const aws = b.addModule("aws-types", .{
         .target = target,
         .optimize = optimize,
-        .root_source_file = .{ .path = "src/types/root.zig" },
+        .root_source_file = b.path("src/types/root.zig"),
     });
 
     // See runtime client for more information
@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
     const runtime = b.createModule(.{
         .target = target,
         .optimize = optimize,
-        .root_source_file = .{ .path = "src/runtime/root.zig" },
+        .root_source_file = b.path("src/runtime/root.zig"),
         .imports = &.{
             .{ .name = "aws-types", .module = aws },
             .{ .name = "https12", .module = https12.module("zig-tls12") },
@@ -44,14 +44,14 @@ pub fn build(b: *std.Build) void {
     const types_unit_tests = b.addTest(.{
         .target = target,
         .optimize = optimize,
-        .root_source_file = .{ .path = "src/types/root.zig" },
+        .root_source_file = b.path("src/types/root.zig"),
     });
     test_step.dependOn(&b.addRunArtifact(types_unit_tests).step);
 
     const runtime_unit_tests = b.addTest(.{
         .target = target,
         .optimize = optimize,
-        .root_source_file = .{ .path = "src/runtime/root.zig" },
+        .root_source_file = b.path("src/runtime/root.zig"),
     });
     runtime_unit_tests.root_module.addImport("aws-types", aws);
     runtime_unit_tests.root_module.addImport("https12", https12.module("zig-tls12"));
@@ -90,7 +90,7 @@ const AddGenerated = struct {
             .{
                 .target = self.options.target,
                 .optimize = self.options.optimize,
-                .root_source_file = .{ .path = path },
+                .root_source_file = self.b.path(path),
                 .imports = &.{
                     .{ .name = "aws-runtime", .module = runtime },
                 },
