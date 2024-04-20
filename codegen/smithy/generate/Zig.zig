@@ -89,7 +89,7 @@ pub fn import(self: *Container, rel_path: []const u8) !Identifier {
     }
     try self.writer.deferLineFmt(.self, "{}", .{Variable{
         .decl = .{
-            .assign = Expr{ .temp_import = rel_path },
+            .assign = Expr.callStr("@import", &.{Val.str(rel_path)}),
         },
         .proto = .{
             .identifier = id_name,
@@ -152,7 +152,7 @@ test "field" {
 
     const fld = Field{
         .identifier = "foo",
-        .type = TypeExpr{ .temp = "u8" },
+        .type = TypeExpr{ .raw = "u8" },
     };
     try testing.expectEqualDeep(Identifier{ .name = "foo" }, scope.field(fld));
     try testing.expectEqual(.fields, scope.section);
@@ -200,7 +200,7 @@ test "variable" {
 
     const proto = Variable.Prototype{
         .identifier = "foo",
-        .type = TypeExpr{ .temp = "bool" },
+        .type = TypeExpr{ .raw = "bool" },
     };
     try testing.expectEqualDeep(
         Identifier{ .name = "foo" },
@@ -492,6 +492,10 @@ test {
     _ = ByteAlign;
     _ = Extern;
 
+    _ = Val;
+    _ = Expr;
+    _ = TypeExpr;
+
     _ = Field;
     _ = Using;
     _ = Variable;
@@ -547,12 +551,12 @@ pub const Field = struct {
         try testing.expectFmt("comptime foo: bool = true", "{}", .{Field{
             .is_comptime = true,
             .identifier = "foo",
-            .type = TypeExpr{ .temp = "bool" },
+            .type = TypeExpr{ .raw = "bool" },
             .assign = Expr{ .raw = "true" },
         }});
         try testing.expectFmt("u8 align(4)", "{}", .{Field{
             .identifier = null,
-            .type = TypeExpr{ .temp = "u8" },
+            .type = TypeExpr{ .raw = "u8" },
             .alignment = Expr{ .raw = "4" },
         }});
     }
@@ -579,7 +583,7 @@ pub const Variable = struct {
             .proto = .{
                 .is_mutable = true,
                 .identifier = "foo",
-                .type = TypeExpr{ .temp = "bool" },
+                .type = TypeExpr{ .raw = "bool" },
             },
         }});
         try testing.expectFmt("const foo: bool = true;", "{}", .{Variable{
@@ -588,7 +592,7 @@ pub const Variable = struct {
             },
             .proto = .{
                 .identifier = "foo",
-                .type = TypeExpr{ .temp = "bool" },
+                .type = TypeExpr{ .raw = "bool" },
             },
         }});
     }
@@ -652,7 +656,7 @@ pub const Variable = struct {
         try testing.expectFmt("var foo: Foo align(4)", "{}", .{Prototype{
             .is_mutable = true,
             .identifier = "foo",
-            .type = TypeExpr{ .temp = "Foo" },
+            .type = TypeExpr{ .raw = "Foo" },
             .alignment = Expr{ .raw = "4" },
         }});
     }
@@ -764,13 +768,13 @@ pub const Function = struct {
             .identifier = Identifier{ .name = "foo" },
             .parameters = &.{ .{
                 .identifier = Identifier{ .name = "bar" },
-                .type = TypeExpr{ .temp = "bool" },
+                .type = TypeExpr{ .raw = "bool" },
             }, .{
                 .identifier = Identifier{ .name = "baz" },
                 .type = null,
             }, .{
                 .identifier = null,
-                .type = TypeExpr{ .temp = "bool" },
+                .type = TypeExpr{ .raw = "bool" },
             } },
             .return_type = null,
         }});
@@ -993,8 +997,8 @@ pub const Scope = struct {
     // Expr (COMMA Expr)+ EQUAL Expr
     // VarDeclExprStatement <- VarDeclProto (COMMA (VarDeclProto / Expr))* EQUAL Expr SEMICOLON
     /// Declare, assign, or destruct one or more variables.
-    pub fn variable(self: *Scope, lhs: []const Assign, rhs: Expr) !void {
-        try self.statementFmt("{} = {}", .{ List(Assign){ .items = lhs }, rhs });
+    pub fn variable(self: *Scope, lhs: []const Destruct, rhs: Expr) !void {
+        try self.statementFmt("{} = {}", .{ List(Destruct){ .items = lhs }, rhs });
     }
 
     pub fn block(self: *Scope, label: ?Identifier) !Scope {
@@ -1369,12 +1373,12 @@ pub const SwitchExpr = struct {
     }
 };
 
-pub const Assign = union(enum) {
+pub const Destruct = union(enum) {
     unmut: Identifier,
     mut: Identifier,
     assign: Identifier,
 
-    pub fn format(self: Assign, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
+    pub fn format(self: Destruct, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
         switch (self) {
             .unmut => |t| try writer.print("const {}", .{t}),
             .mut => |t| try writer.print("var {}", .{t}),
@@ -1471,8 +1475,8 @@ const Identifier = union(enum) {
 
     pub fn resolve(self: Identifier) ![]const u8 {
         const name = switch (self) {
-            .name => |val| val,
-            .lazy => |idn| try idn.resolve(),
+            .name => |s| s,
+            .lazy => |t| try t.resolve(),
         };
 
         try validate(name, null);
@@ -1481,8 +1485,8 @@ const Identifier = union(enum) {
 
     pub fn resolveAllowPrefix(self: Identifier, prefix: u8) ![]const u8 {
         const name = switch (self) {
-            .name => |val| val,
-            .lazy => |idn| try idn.resolve(),
+            .name => |s| s,
+            .lazy => |t| try t.resolve(),
         };
 
         try validate(name, prefix);
@@ -1583,23 +1587,272 @@ pub const LazyIdentifier = struct {
     }
 };
 
+pub const Val = union(enum) {
+    raw: []const u8,
+    undefined,
+    null,
+    void,
+    false,
+    true,
+    int: i64,
+    uint: u64,
+    float: f64,
+    err: []const u8,
+    enm: []const u8,
+    /// Values: tag name, value. Use `Val.enm` for void payloads.
+    unn: [2][]const u8,
+    string: []const u8,
+
+    pub fn format(self: Val, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
+        switch (self) {
+            .void => try writer.writeAll("{}"),
+            inline .undefined, .null, .false, .true => |_, t| try writer.writeAll(@tagName(t)),
+            inline .int, .uint, .float => |t| try writer.print("{d}", .{t}),
+            .err => |s| try writer.print("error.{s}", .{s}),
+            .enm => |s| try writer.print(".{s}", .{s}),
+            .unn => |t| try writer.print(".{{ .{s} = {s} }}", .{ t[0], t[1] }),
+            .string => |s| try writer.print("\"{s}\"", .{s}),
+            .raw => |s| try writer.writeAll(s),
+        }
+    }
+
+    test {
+        try testing.expectFmt("{}", "{}", .{Val{ .void = {} }});
+        try testing.expectFmt("undefined", "{}", .{Val{ .undefined = {} }});
+        try testing.expectFmt("null", "{}", .{Val{ .null = {} }});
+        try testing.expectFmt("false", "{}", .{Val{ .false = {} }});
+        try testing.expectFmt("true", "{}", .{Val{ .true = {} }});
+        try testing.expectFmt("-108", "{}", .{Val{ .int = -108 }});
+        try testing.expectFmt("108", "{}", .{Val{ .uint = 108 }});
+        try testing.expectFmt("1.08", "{}", .{Val{ .float = 1.08 }});
+        try testing.expectFmt("error.Foo", "{}", .{Val{ .err = "Foo" }});
+        try testing.expectFmt(".foo", "{}", .{Val{ .enm = "foo" }});
+        try testing.expectFmt(".{ .foo = 108 }", "{}", .{Val{ .unn = .{ "foo", "108" } }});
+        try testing.expectFmt("\"foo\"", "{}", .{Val{ .string = "foo" }});
+        try testing.expectFmt("foo", "{}", .{Val{ .raw = "foo" }});
+    }
+
+    pub fn str(val: []const u8) Val {
+        return Val{ .string = val };
+    }
+
+    test "str" {
+        try testing.expectEqualDeep(Val{ .string = "foo" }, Val.str("foo"));
+    }
+
+    pub fn of(comptime val: anytype) Val {
+        const T = @TypeOf(val);
+        return switch (@typeInfo(T)) {
+            .Bool => if (val) Val.true else Val.false,
+            .Int => |t| switch (t.signedness) {
+                .signed => Val{ .int = val },
+                .unsigned => Val{ .uint = val },
+            },
+            .ComptimeInt => if (val < 0) Val{ .int = val } else Val{ .uint = val },
+            .Float, .ComptimeFloat => Val{ .float = val },
+            .Enum, .EnumLiteral => Val{ .enm = @tagName(val) },
+            .Union => @compileError("Manually construct `Val.unn` or `Val.raw` instead."),
+            .ErrorSet => Val{ .err = @errorName(val) },
+            .ErrorUnion => |t| if (val) |v| switch (@typeInfo(t.payload)) {
+                .Void => Val.void,
+                else => of(v),
+            } else |v| Val{ .err = @errorName(v) },
+            .Optional => if (val) |v| of(v) else Val.null,
+            .Void => @compileError("Use `Val.void` instead of `Val.of(void)`."),
+            .Null => @compileError("Use `Val.null` instead of `Val.of(null)`."),
+            .Undefined => @compileError("Use `Val.undefined` instead of `Val.of(undefined)`."),
+            // Fn, Pointer, Array, Struct
+            else => @compileError("Type `" ++ @typeName(T) ++ "` can’t auto-convert into a Val."),
+        };
+    }
+
+    test "of" {
+        try testing.expectEqualDeep(Val.true, Val.of(true));
+        try testing.expectEqualDeep(Val.false, Val.of(false));
+        try testing.expectEqualDeep(Val{ .int = 108 }, Val.of(@as(i8, 108)));
+        try testing.expectEqualDeep(Val{ .uint = 108 }, Val.of(@as(u8, 108)));
+        try testing.expectEqualDeep(Val{ .int = -108 }, Val.of(-108));
+        try testing.expectEqualDeep(Val{ .uint = 108 }, Val.of(108));
+        try testing.expectEqualDeep(Val{ .float = 1.08 }, Val.of(@as(f64, 1.08)));
+        try testing.expectEqualDeep(Val{ .float = 1.08 }, Val.of(1.08));
+        try testing.expectEqualDeep(Val{ .enm = "foo" }, Val.of(.foo));
+        try testing.expectEqualDeep(Val{ .enm = "void" }, Val.of(Val.void));
+        try testing.expectEqualDeep(
+            Val{ .err = "Foo" },
+            Val.of(@as(error{Foo}!void, error.Foo)),
+        );
+        try testing.expectEqualDeep(
+            Val.void,
+            Val.of(@as(error{Foo}!void, {})),
+        );
+        try testing.expectEqualDeep(
+            Val{ .uint = 108 },
+            Val.of(@as(error{Foo}!u8, 108)),
+        );
+        try testing.expectEqualDeep(
+            Val{ .uint = 108 },
+            Val.of(@as(?u8, 108)),
+        );
+        try testing.expectEqualDeep(
+            Val.null,
+            Val.of(@as(?u8, null)),
+        );
+    }
+};
+
+// Expr <- BoolOrExpr
+// BoolOrExpr <- BoolAndExpr (KEYWORD_or BoolAndExpr)*
+// BoolAndExpr <- CompareExpr (KEYWORD_and CompareExpr)*
+// CompareExpr <- BitwiseExpr (CompareOp BitwiseExpr)?
+// BitwiseExpr <- BitShiftExpr (BitwiseOp BitShiftExpr)*
+// BitShiftExpr <- AdditionExpr (BitShiftOp AdditionExpr)*
+// AdditionExpr <- MultiplyExpr (AdditionOp MultiplyExpr)*
+// MultiplyExpr <- PrefixExpr (MultiplyOp PrefixExpr)*
+// PrefixExpr <- PrefixOp* PrimaryExpr
+// PrimaryExpr
+//     <- IfExpr
+//      / KEYWORD_break BreakLabel? Expr?
+//      / KEYWORD_comptime Expr
+//      / KEYWORD_nosuspend Expr
+//      / KEYWORD_continue BreakLabel?
+//      / KEYWORD_resume Expr
+//      / KEYWORD_return Expr?
+//      / BlockLabel? LoopExpr
+//      / Block
+//      / CurlySuffixExpr
+// BreakLabel <- COLON IDENTIFIER
+// IfExpr <- IfPrefix Expr (KEYWORD_else Payload? Expr)?
+// LoopExpr <- KEYWORD_inline? (ForExpr / WhileExpr)
+// ForExpr <- ForPrefix Expr (KEYWORD_else Expr)?
+// WhileExpr <- WhilePrefix Expr (KEYWORD_else Payload? Expr)?
+// CurlySuffixExpr <- TypeExpr InitList?
 const Expr = union(enum) {
     raw: []const u8,
-    // TODO
-    temp_import: []const u8,
+    call: struct { identifier: Identifier, args: []const Val },
 
     pub fn format(self: Expr, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
         switch (self) {
             .raw => try writer.writeAll(self.raw),
-            .temp_import => try writer.print("@import(\"{s}\")", .{self.temp_import}),
+            .call => |t| try writer.print("{pre@}({})", .{
+                t.identifier,
+                List(Val){ .items = t.args },
+            }),
         }
+    }
+
+    test "format" {
+        try testing.expectFmt("foo", "{}", .{Expr{ .raw = "foo" }});
+        try testing.expectFmt("foo()", "{}", .{
+            Expr{ .call = .{
+                .identifier = .{ .name = "foo" },
+                .args = &.{},
+            } },
+        });
+        try testing.expectFmt("foo(108, \"bar\")", "{}", .{Expr{
+            .call = .{
+                .identifier = .{ .name = "foo" },
+                .args = &.{ Val.of(108), Val.str("bar") },
+            },
+        }});
+    }
+
+    /// Assumes `args` is a list of `Val`s.
+    pub fn call(id: Identifier, args: []const Val) Expr {
+        return .{ .call = .{ .identifier = id, .args = args } };
+    }
+
+    /// Assumes `args` is a list of `Val`s.
+    pub fn callStr(id: []const u8, args: []const Val) Expr {
+        return .{ .call = .{ .identifier = .{ .name = id }, .args = args } };
+    }
+
+    test "call" {
+        try testing.expectEqualDeep(
+            Expr{ .call = .{
+                .identifier = .{ .name = "foo" },
+                .args = &.{ Val.of(108), Val.str("bar") },
+            } },
+            Expr.call(.{ .name = "foo" }, &.{ Val.of(108), Val.str("bar") }),
+        );
+        try testing.expectEqualDeep(
+            Expr{ .call = .{
+                .identifier = .{ .name = "foo" },
+                .args = &.{ Val.of(108), Val.str("bar") },
+            } },
+            Expr.callStr("foo", &.{ Val.of(108), Val.str("bar") }),
+        );
     }
 };
 
+// TypeExpr <- PrefixTypeOp* ErrorUnionExpr
+// PrefixTypeOp
+//     <- QUESTIONMARK
+//      / SliceTypeStart (ByteAlign / KEYWORD_const / KEYWORD_volatile / KEYWORD_allowzero)*
+//      / PtrTypeStart (KEYWORD_align LPAREN Expr (COLON Expr COLON Expr)? RPAREN / KEYWORD_const / KEYWORD_volatile / KEYWORD_allowzero)*
+//      / ArrayTypeStart
+// SliceTypeStart <- LBRACKET (COLON Expr)? RBRACKET
+// PtrTypeStart
+//     <- ASTERISK
+//      / ASTERISK2
+//      / LBRACKET ASTERISK (LETTERC / COLON Expr)? RBRACKET
+// ArrayTypeStart <- LBRACKET Expr (COLON Expr)? RBRACKET
+// ErrorUnionExpr <- SuffixExpr (EXCLAMATIONMARK TypeExpr)?
+// SuffixExpr
+//     <- KEYWORD_async PrimaryTypeExpr SuffixOp* FnCallArguments
+//      / PrimaryTypeExpr (SuffixOp / FnCallArguments)*
+// SuffixOp
+//     <- LBRACKET Expr (DOT2 (Expr? (COLON Expr)?)?)? RBRACKET
+//      / DOT IDENTIFIER
+//      / dotasterisk
+//      / dotquestionmark
+// PrimaryTypeExpr
+//     <- BUILTINIDENTIFIER FnCallArguments
+//      / CHAR_LITERAL
+//      / ContainerDecl
+//      / DOT IDENTIFIER
+//      / DOT InitList
+//      / ErrorSetDecl
+//      / FLOAT
+//      / FnProto
+//      / GroupedExpr
+//      / LabeledTypeExpr
+//      / IDENTIFIER
+//      / IfTypeExpr
+//      / INTEGER
+//      / KEYWORD_comptime TypeExpr
+//      / KEYWORD_error DOT IDENTIFIER
+//      / KEYWORD_unreachable
+//      / STRINGLITERAL
+//      / SwitchExpr
+// GroupedExpr <- LPAREN Expr RPAREN
+// LabeledTypeExpr
+//     <- BlockLabel Block
+//      / BlockLabel? LoopTypeExpr
+// LoopTypeExpr <- KEYWORD_inline? (ForTypeExpr / WhileTypeExpr)
+// IfTypeExpr <- IfPrefix TypeExpr (KEYWORD_else Payload? TypeExpr)?
+// ForTypeExpr <- ForPrefix TypeExpr (KEYWORD_else TypeExpr)?
+// WhileTypeExpr <- WhilePrefix TypeExpr (KEYWORD_else Payload? TypeExpr)?
+// ContainerDecl <- (KEYWORD_extern / KEYWORD_packed)? ContainerDeclAuto
+// ContainerDeclAuto <- ContainerDeclType LBRACE container_doc_comment? ContainerMembers RBRACE
+// ContainerDeclType
+//     <- KEYWORD_struct (LPAREN Expr RPAREN)?
+//      / KEYWORD_opaque
+//      / KEYWORD_enum (LPAREN Expr RPAREN)?
+//      / KEYWORD_union (LPAREN (KEYWORD_enum (LPAREN Expr RPAREN)? / Expr) RPAREN)?
+// ErrorSetDecl <- KEYWORD_error LBRACE IdentifierList RBRACE
+// IdentifierList <- (doc_comment? IDENTIFIER COMMA)* (doc_comment? IDENTIFIER)?
 const TypeExpr = struct {
-    temp: []const u8, // TODO
+    raw: []const u8,
 
     pub fn format(self: TypeExpr, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
-        try writer.writeAll(self.temp);
+        try writer.writeAll(self.raw);
+    }
+
+    pub fn of(T: type) TypeExpr {
+        return .{ .raw = @typeName(T) };
+    }
+
+    test {
+        try testing.expectFmt("error{Foo}!*const []u8", "{}", .{TypeExpr.of(error{Foo}!*const []u8)});
     }
 };

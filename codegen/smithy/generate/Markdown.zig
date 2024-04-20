@@ -122,7 +122,7 @@ test "codeblock" {
     var code = try md.codeblock();
     _ = try code.field(.{
         .identifier = "foo",
-        .type = .{ .temp = "u8" },
+        .type = .{ .raw = "u8" },
     });
     try code.end();
 
