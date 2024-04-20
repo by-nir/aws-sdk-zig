@@ -120,8 +120,8 @@ test "codeblock" {
 
     var md = init(&writer);
     var code = try md.codeblock();
-    try code.field(.{
-        .identifier = .{ .name = "foo" },
+    _ = try code.field(.{
+        .identifier = "foo",
         .type = .{ .temp = "u8" },
     });
     try code.end();
