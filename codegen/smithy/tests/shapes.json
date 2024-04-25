@@ -112,10 +112,12 @@
         "numberMember": {
           "target": "smithy.api#Integer",
           "traits": {
-            "test.trait#Void": {}
+            "test.trait#Void": {},
+            "test.trait#Unknown": {}
           }
         }
-      }
+      },
+      "unexpected": {}
     },
     "test.aggregate#Union": {
       "type": "union",

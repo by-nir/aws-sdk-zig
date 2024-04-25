@@ -6,16 +6,17 @@ const filter: []const []const u8 = options.filter;
 const models_path: []const u8 = options.models_path;
 const install_path: []const u8 = options.install_path;
 const smithy = @import("smithy");
+const IssuesBag = smithy.IssuesBag;
 const JsonReader = smithy.JsonReader;
-const TraitManager = smithy.TraitManager;
+const TraitsManager = smithy.TraitsManager;
 
 pub const Stats = struct { shapes: usize, duration_ns: u64 };
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    var manager = TraitManager{};
+    var traits_manager = TraitsManager{};
     defer {
-        manager.deinit(gpa.allocator());
+        traits_manager.deinit(gpa.allocator());
         _ = gpa.deinit();
     }
 
@@ -33,9 +34,10 @@ pub fn main() !void {
     var shapes_len: usize = 0;
     var duration: u64 = 0;
 
-    const input_alloc = input_arena.allocator();
+    const output_alloc = output_arena.allocator();
     if (filter.len > 0) {
         // Process filtered models
+        const input_alloc = input_arena.allocator();
         for (filter) |model_path| {
             defer _ = input_arena.reset(.retain_capacity);
             const filename = try std.fmt.allocPrint(input_alloc, "{s}.json", .{model_path});
@@ -43,12 +45,17 @@ pub fn main() !void {
             defer file.close();
 
             var reader = try JsonReader.initFile(input_arena.allocator(), file);
-            defer reader.deinit();
+            var issues = IssuesBag.init(output_alloc);
+            defer {
+                reader.deinit();
+                issues.deinit();
+            }
 
             if (processModelFile(
-                output_arena.allocator(),
-                manager,
+                output_alloc,
+                traits_manager,
                 filename,
+                &issues,
                 &reader,
             )) |stats| {
                 models_len += 1;
@@ -66,16 +73,19 @@ pub fn main() !void {
             const file = try openFile(models_dir, entry.name);
             defer file.close();
 
+            var issues = IssuesBag.init(output_alloc);
             var reader = JsonReader.init(input_arena.allocator(), file.reader().any());
             defer {
                 _ = input_arena.reset(.retain_capacity);
+                issues.deinit();
                 reader.deinit();
             }
 
             if (processModelFile(
-                output_arena.allocator(),
-                manager,
+                output_alloc,
+                traits_manager,
                 entry.name,
+                &issues,
                 &reader,
             )) |stats| {
                 models_len += 1;
@@ -85,15 +95,26 @@ pub fn main() !void {
         }
     }
 
+    // TODO: Move this to a utility function of Smithy
     const secs = @as(f64, @floatFromInt(duration)) / std.time.ns_per_s;
     std.log.info("\n\n" ++
-        \\╭─ SDK CodeGen ──────── {d:.2}s ─╮
+        \\╭─ AWS SDK CodeGen ──── {d:.2}s ─╮
         \\│                              │
-        \\│  Services {d:17}  │
-        \\│  Shapes {d:19}  │
+        \\│  Services                 ?  │
+        \\│  Resources                ?  │
+        \\│  Operations               ?  │
+        \\│                              │
+        \\├─ Parsed ─────────── (skips) ─┤
+        \\│                              │
+        \\│  Models               ? (?)  │
+        \\│  Meta items           ? (?)  │
+        \\│  Shapes               ? (?)  │
+        \\│  Members              ? (?)  │
+        \\│  Traits               ? (?)  │
         \\│                              │
         \\╰──────────────────────────────╯
-    ++ "\n", .{ secs, models_len, shapes_len });
+        \\
+    , .{secs});
 }
 
 fn openFile(models_dir: fs.Dir, filename: []const u8) !fs.File {
@@ -103,17 +124,28 @@ fn openFile(models_dir: fs.Dir, filename: []const u8) !fs.File {
     };
 }
 
-fn processModelFile(arena: Allocator, manager: TraitManager, name: []const u8, reader: *JsonReader) ?Stats {
+fn processModelFile(
+    arena: Allocator,
+    traits_manager: TraitsManager,
+    name: []const u8,
+    issues: *IssuesBag,
+    reader: *JsonReader,
+) ?Stats {
     std.log.info("Start processing model {s}", .{name});
-    const start = std.time.Instant.now() catch unreachable;
-    const model = smithy.parseJson(arena, reader, manager) catch |e| {
-        std.log.err(
-            "Failed processing model `{s}`: {s}.{any}\n",
-            .{ name, @errorName(e), @errorReturnTrace() },
-        );
+    var timer = std.time.Timer.start() catch unreachable;
+    if (smithy.parseJson(
+        arena,
+        traits_manager,
+        .{ .property = .abort, .trait = .skip },
+        issues,
+        reader,
+    )) |model| {
+        return .{ .shapes = model.shapes.size, .duration_ns = timer.read() };
+    } else |e| {
+        switch (e) {
+            error.AbortPolicy => {},
+            else => |err| issues.add(.{ .parse_model_error = @errorName(err) }) catch unreachable,
+        }
         return null;
-    };
-    const end = std.time.Instant.now() catch unreachable;
-
-    return .{ .shapes = model.shapes.size, .duration_ns = end.since(start) };
+    }
 }

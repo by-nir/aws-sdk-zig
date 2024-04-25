@@ -4,6 +4,7 @@ const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const JsonReader = @import("utils/JsonReader.zig");
+const IssuesBag = @import("utils/IssuesBag.zig");
 const syb_id = @import("symbols/identity.zig");
 const SmithyId = syb_id.SmithyId;
 const SmithyType = syb_id.SmithyType;
@@ -14,8 +15,15 @@ const syb_trait = @import("symbols/traits.zig");
 
 const Self = @This();
 
+pub const Policy = struct {
+    property: Resolution,
+    trait: Resolution,
+
+    pub const Resolution = enum { skip, abort };
+};
+
 const Context = struct {
-    id: ?[]const u8 = null,
+    name: ?[]const u8 = null,
     hash: SmithyId = SmithyId.NULL,
     target: Target = .none,
 
@@ -33,8 +41,10 @@ const Context = struct {
 };
 
 arena: Allocator,
-reader: *JsonReader,
 manager: syb_trait.TraitsManager,
+policy: Policy,
+issues: *IssuesBag,
+reader: *JsonReader,
 service: SmithyId = SmithyId.NULL,
 meta: std.AutoHashMapUnmanaged(SmithyId, SmithyMeta) = .{},
 shapes: std.AutoHashMapUnmanaged(SmithyId, syb_id.SmithyType) = .{},
@@ -46,11 +56,19 @@ mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId) = .{},
 /// `arena` is used to store the parsed symbols and must be retained as long as
 /// they are needed.
 /// `json_reader` may be disposed immediately after calling this.
-pub fn parseJson(arena: Allocator, json_reader: *JsonReader, traits: syb_trait.TraitsManager) !SmithyModel {
+pub fn parseJson(
+    arena: Allocator,
+    traits: syb_trait.TraitsManager,
+    policy: Policy,
+    issues: *IssuesBag,
+    json: *JsonReader,
+) !SmithyModel {
     var parser = Self{
         .arena = arena,
-        .reader = json_reader,
         .manager = traits,
+        .policy = policy,
+        .issues = issues,
+        .reader = json,
     };
     errdefer {
         parser.meta.deinit(arena);
@@ -80,12 +98,12 @@ fn parseScope(
     try self.reader.nextScope(*Self, scope, Context, parseFn, self, ctx);
 }
 
-fn parseProp(self: *Self, prop_id: []const u8, ctx: Context) !void {
-    switch (syb_id.SmithyProperty.of(prop_id)) {
+fn parseProp(self: *Self, prop_name: []const u8, ctx: Context) !void {
+    switch (syb_id.SmithyProperty.of(prop_name)) {
         .smithy => try self.validateSmithyVersion(),
         .mixins => try self.parseMixins(ctx.hash),
-        .traits => try self.parseTraits(ctx.hash),
-        .member, .key, .value => try self.parseMember(prop_id, ctx),
+        .traits => try self.parseTraits(ctx.name.?, ctx.hash),
+        .member, .key, .value => try self.parseMember(prop_name, ctx),
         .members => try self.parseScope(.object, parseMember, ctx),
         .shapes => try self.parseScope(.object, parseShape, .{}),
         .target => try self.putShape(ctx.hash, SmithyId.of(try self.reader.nextString()), .none),
@@ -132,20 +150,35 @@ fn parseProp(self: *Self, prop_id: []const u8, ctx: Context) !void {
             },
             else => return error.InvalidShapeProperty,
         },
-        else => {
-            if (ctx.id) |parent|
-                std.log.warn("Unexpected property: `{s}${s}`.", .{ parent, prop_id })
-            else
-                std.log.warn("Unexpected property: `{s}`.", .{prop_id});
-            try self.reader.skipValueOrScope();
+        else => switch (self.policy.property) {
+            .skip => {
+                try self.issues.add(.{ .parse_unexpected_prop = .{
+                    .context = ctx.name.?,
+                    .name = prop_name,
+                } });
+                try self.reader.skipValueOrScope();
+            },
+            .abort => {
+                std.log.err("Unexpected property: `{s}${s}`.", .{ ctx.name.?, prop_name });
+                return error.AbortPolicy;
+            },
         },
     }
 }
 
-fn parseMember(self: *Self, prop_id: []const u8, ctx: Context) !void {
-    const member_hash = SmithyId.compose(ctx.id.?, prop_id);
+fn parseMember(self: *Self, prop_name: []const u8, ctx: Context) !void {
+    const parent_name = ctx.name.?;
+    const len = 1 + parent_name.len + prop_name.len;
+    std.debug.assert(len <= 128);
+
+    var member_name: [128]u8 = undefined;
+    @memcpy(member_name[0..parent_name.len], parent_name);
+    member_name[parent_name.len] = '$';
+    @memcpy(member_name[parent_name.len + 1 ..][0..prop_name.len], prop_name);
+
+    const member_hash = SmithyId.compose(parent_name, prop_name);
     try ctx.target.id_list.append(self.arena, member_hash);
-    const scp = Context{ .id = ctx.id, .hash = member_hash };
+    const scp = Context{ .name = member_name[0..len], .hash = member_hash };
     try self.parseScope(.object, parseProp, scp);
 }
 
@@ -209,7 +242,7 @@ fn parseMixins(self: *Self, parent_hash: SmithyId) !void {
     try self.mixins.put(self.arena, parent_hash, slice);
 }
 
-fn parseTraits(self: *Self, parent_hash: SmithyId) !void {
+fn parseTraits(self: *Self, parent_name: []const u8, parent_hash: SmithyId) !void {
     var traits: std.ArrayListUnmanaged(syb_id.SmithyTaggedValue) = .{};
     errdefer traits.deinit(self.arena);
     try self.reader.nextObjectBegin();
@@ -222,10 +255,18 @@ fn parseTraits(self: *Self, parent_hash: SmithyId) !void {
                 .{ .id = trait_hash, .value = value },
             );
         } else |e| switch (e) {
-            error.UnknownTrait => {
-                std.log.warn("Unknown trait: {s}.", .{trait_id});
-                try self.reader.skipValueOrScope();
-                continue;
+            error.UnknownTrait => switch (self.policy.trait) {
+                .skip => {
+                    try self.issues.add(.{ .parse_unknown_trait = .{
+                        .context = parent_name,
+                        .name = trait_id,
+                    } });
+                    try self.reader.skipValueOrScope();
+                },
+                .abort => {
+                    std.log.err("Unknown trait: {s} ({s}).", .{ trait_id, parent_name });
+                    return error.AbortPolicy;
+                },
             },
             else => return e,
         }
@@ -243,15 +284,15 @@ fn parseTraits(self: *Self, parent_hash: SmithyId) !void {
     try self.traits.put(self.arena, parent_hash, slice);
 }
 
-fn parseShape(self: *Self, shape_id: []const u8, _: Context) !void {
-    const shape_hash = SmithyId.of(shape_id);
+fn parseShape(self: *Self, shape_name: []const u8, _: Context) !void {
+    const shape_hash = SmithyId.of(shape_name);
     try self.reader.nextObjectBegin();
     try self.reader.nextStringEql("type");
     const typ = SmithyId.of(try self.reader.nextString());
     const target: Context.Target = switch (typ) {
         .apply => {
             try self.parseScope(.current, parseProp, Context{
-                .id = shape_id,
+                .name = shape_name,
                 .hash = shape_hash,
             });
             // Not a standalone shape, skip the creation/override of a shape symbol.
@@ -284,7 +325,7 @@ fn parseShape(self: *Self, shape_id: []const u8, _: Context) !void {
         else => {},
     };
     try self.parseScope(.current, parseProp, Context{
-        .id = shape_id,
+        .name = shape_name,
         .hash = shape_hash,
         .target = target,
     });
@@ -346,8 +387,8 @@ fn parseMetaList(self: *Self, ctx: Context) !void {
     try ctx.target.meta_list.append(self.arena, try self.parseMetaValue());
 }
 
-fn parseMetaMap(self: *Self, meta_id: []const u8, ctx: Context) !void {
-    const meta_hash = SmithyId.of(meta_id);
+fn parseMetaMap(self: *Self, meta_name: []const u8, ctx: Context) !void {
+    const meta_hash = SmithyId.of(meta_name);
     const value = try self.parseMetaValue();
     switch (ctx.target) {
         .meta => try self.meta.put(self.arena, meta_hash, value),
@@ -397,25 +438,45 @@ fn validateSmithyVersion(self: *Self) !void {
 }
 
 test "parseJson" {
-    var manager = syb_trait.TraitsManager{};
-    defer manager.deinit(test_alloc);
-    try manager.register(test_alloc, SmithyId.of("test.trait#Void"), TestTraits.traitVoid());
-    try manager.register(test_alloc, SmithyId.of("test.trait#Int"), TestTraits.traitInt());
-    try manager.register(test_alloc, SmithyId.of("smithy.api#enumValue"), TestTraits.traitEnum());
+    var traits_manager = syb_trait.TraitsManager{};
+    defer traits_manager.deinit(test_alloc);
+    try traits_manager.register(test_alloc, SmithyId.of("test.trait#Void"), TestTraits.traitVoid());
+    try traits_manager.register(test_alloc, SmithyId.of("test.trait#Int"), TestTraits.traitInt());
+    try traits_manager.register(test_alloc, SmithyId.of("smithy.api#enumValue"), TestTraits.traitEnum());
 
     var input_arena = std.heap.ArenaAllocator.init(test_alloc);
     errdefer input_arena.deinit();
-
     var reader = try JsonReader.initFixed(input_arena.allocator(), @embedFile("tests/shapes.json"));
     errdefer reader.deinit();
 
+    var issues = IssuesBag.init(test_alloc);
+    defer issues.deinit();
+
     var output_arena = std.heap.ArenaAllocator.init(test_alloc);
     defer output_arena.deinit();
+    const model = try parseJson(output_arena.allocator(), traits_manager, .{
+        .property = .skip,
+        .trait = .skip,
+    }, &issues, &reader);
 
-    const model = try parseJson(output_arena.allocator(), &reader, manager);
-    // We dispose the reader to make sure the required data is copied:
+    // Dispose the reader to make sure the required data is copied.
     reader.deinit();
     input_arena.deinit();
+
+    //
+    // Issues
+    //
+
+    try testing.expectEqualDeep(&[_]IssuesBag.Issue{
+        .{ .parse_unknown_trait = .{
+            .context = "test.aggregate#Structure$numberMember",
+            .name = "test.trait#Unknown",
+        } },
+        .{ .parse_unexpected_prop = .{
+            .context = "test.aggregate#Structure",
+            .name = "unexpected",
+        } },
+    }, issues.all());
 
     //
     // Metadata

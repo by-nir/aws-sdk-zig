@@ -75,7 +75,7 @@ pub const SmithyId = enum(u32) {
         };
     }
 
-    /// `smithy.example.foo#ExampleShapeName` + `memberName`
+    /// `smithy.example.foo#ExampleShapeName$memberName`
     pub fn compose(shape: []const u8, member: []const u8) SmithyId {
         var buffer: [128]u8 = undefined;
         const len = shape.len + member.len + 1;

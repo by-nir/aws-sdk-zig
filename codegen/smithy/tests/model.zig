@@ -11,8 +11,8 @@ const SmithyService = syb_shapes.SmithyService;
 const SmithyOperation = syb_shapes.SmithyOperation;
 const SmithyResource = syb_shapes.SmithyResource;
 
-pub fn getTestModel() !*SmithyModel {
-    const model = try test_alloc.create(SmithyModel);
+pub fn createModel() *SmithyModel {
+    const model = test_alloc.create(SmithyModel) catch unreachable;
     model.* = SmithyModel{
         .service = SmithyId.of("test.serve#Service"),
         .meta = std.AutoHashMapUnmanaged(SmithyId, SmithyMeta){},
@@ -21,12 +21,12 @@ pub fn getTestModel() !*SmithyModel {
         .mixins = std.AutoHashMapUnmanaged(SmithyId, []const SmithyId){},
     };
 
-    model.shapes.put(test_alloc, SmithyId.of("test.operation#InputFoo"), .{ .structure = &.{} });
-    model.traits.put(test_alloc, SmithyId.of("test.operation#InputFoo"), &.{
+    model.shapes.put(test_alloc, SmithyId.of("test.operation#Input$Foo"), .{ .structure = &.{} });
+    model.traits.put(test_alloc, SmithyId.of("test.operation#Input$Foo"), &.{
         .{ .id = SmithyId.of("smithy.api#property"), .value = "test.resource#prop" },
     });
     model.shapes.put(test_alloc, SmithyId.of("test.operation#Input"), .{
-        .structure = &.{SmithyId.of("test.operation#InputFoo")},
+        .structure = &.{SmithyId.of("test.operation#Input$Foo")},
     });
     model.shapes.put(test_alloc, SmithyId.of("test.operation#Output"), .{ .structure = &.{} });
     model.shapes.put(test_alloc, SmithyId.of("test.error#NotFound"), .{ .structure = &.{} });
@@ -83,7 +83,7 @@ pub fn getTestModel() !*SmithyModel {
     return model;
 }
 
-pub fn deinitTestModel(model: *SmithyModel) void {
+pub fn deinitModel(model: *SmithyModel) void {
     model.meta.deinit(test_alloc);
     model.shapes.deinit(test_alloc);
     model.traits.deinit(test_alloc);
