@@ -152,6 +152,11 @@
           "target": "smithy.api#String"
         }
       },
+      "properties": {
+        "prop": {
+          "target": "test.resource#prop"
+        }
+      },
       "create": {
         "target": "test.resource#Create"
       },

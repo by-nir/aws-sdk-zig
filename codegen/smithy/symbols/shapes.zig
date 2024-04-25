@@ -122,10 +122,16 @@ test "SmithyModel" {
 ///
 /// [Smithy Spec](https://smithy.io/2.0/spec/service-types.html#service)
 pub const SmithyService = struct {
+    /// Defines the optional version of the service.
     version: []const u8 = &.{},
+    /// Binds a set of operation shapes to the service.
     operations: []const SmithyId = &.{},
+    /// Binds a set of resource shapes to the service.
     resources: []const SmithyId = &.{},
+    /// Defines a list of common errors that every operation bound within the closure of the service can return.
     errors: []const SmithyId = &.{},
+    /// Disambiguates shape name conflicts in the
+    /// [service closure](https://smithy.io/2.0/spec/service-types.html#service-closure).
     rename: []const identity.SmithyRefMapValue = &.{},
 };
 
@@ -133,16 +139,27 @@ pub const SmithyService = struct {
 ///
 /// [Smithy Spec](https://smithy.io/2.0/spec/service-types.html#resource)
 pub const SmithyResource = struct {
+    /// Defines a map of identifier string names to Shape IDs used to identify the resource.
     identifiers: []const identity.SmithyRefMapValue = &.{},
+    /// Defines a map of property string names to Shape IDs that enumerate the properties of the resource.
     properties: []const identity.SmithyRefMapValue = &.{},
+    /// Defines the lifecycle operation used to create a resource using one or more identifiers created by the service.
     create: SmithyId = SmithyId.NULL,
+    /// Defines an idempotent lifecycle operation used to create a resource using identifiers provided by the client.
     put: SmithyId = SmithyId.NULL,
+    /// Defines the lifecycle operation used to retrieve the resource.
     read: SmithyId = SmithyId.NULL,
+    /// Defines the lifecycle operation used to update the resource.
     update: SmithyId = SmithyId.NULL,
+    /// Defines the lifecycle operation used to delete the resource.
     delete: SmithyId = SmithyId.NULL,
+    /// Defines the lifecycle operation used to list resources of this type.
     list: SmithyId = SmithyId.NULL,
+    /// Binds a list of non-lifecycle instance operations to the resource.
     operations: []const SmithyId = &.{},
+    /// Binds a list of non-lifecycle collection operations to the resource.
     collection_ops: []const SmithyId = &.{},
+    /// Binds a list of resources to this resource as a child resource, forming a containment relationship.
     resources: []const SmithyId = &.{},
 };
 
@@ -150,8 +167,11 @@ pub const SmithyResource = struct {
 ///
 /// [Smithy Spec](https://smithy.io/2.0/spec/service-types.html#operation)
 pub const SmithyOperation = struct {
+    /// The input of the operation defined using a shape ID that MUST target a structure.
     input: ?SmithyId = null,
+    /// The output of the operation defined using a shape ID that MUST target a structure.
     output: ?SmithyId = null,
+    /// The errors that an operation can return.
     errors: []const SmithyId = &.{},
 };
 

@@ -545,6 +545,9 @@ test "parseJson" {
             .identifiers = &.{
                 .{ .name = "forecastId", .shape = SmithyId.of("smithy.api#String") },
             },
+            .properties = &.{
+                .{ .name = "prop", .shape = SmithyId.of("test.resource#prop") },
+            },
             .create = SmithyId.of("test.resource#Create"),
             .read = SmithyId.of("test.resource#Get"),
             .update = SmithyId.of("test.resource#Update"),
