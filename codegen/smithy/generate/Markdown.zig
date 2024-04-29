@@ -19,6 +19,7 @@ pub fn init(writer: *StackWriter) Self {
 }
 
 /// Complete the Markdown content and deinit.
+/// **This will also deinit the writer.**
 pub fn end(self: *Self) !void {
     try self.writer.deinit();
     self.* = undefined;
@@ -121,7 +122,7 @@ test "codeblock" {
     var md = init(&writer);
     var code = try md.codeblock();
     _ = try code.field(.{
-        .identifier = "foo",
+        .name = "foo",
         .type = .{ .raw = "u8" },
     });
     try code.end();
@@ -181,13 +182,13 @@ pub const List = struct {
 
     /// Call `end()` to complete the sub-list.
     pub fn list(self: *List, ordered: bool) !List {
-        const current = self.writer.options.prefix;
+        const current = self.writer.options.line_prefix;
         const scope = if (self.ordered) blk: {
             const prefix = if (ordered) "  " else "  - ";
             break :blk try self.writer.appendPrefix(prefix);
         } else blk: {
             var buffer: [64]u8 = undefined;
-            @memcpy(buffer[0..current.len], self.writer.options.prefix);
+            @memcpy(buffer[0..current.len], self.writer.options.line_prefix);
             buffer[current.len - 2] = ' ';
             if (ordered) {
                 break :blk try self.writer.replacePrefix(buffer[0..current.len]);

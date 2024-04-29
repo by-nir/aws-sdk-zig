@@ -11,15 +11,21 @@ const SmithyService = syb_shapes.SmithyService;
 const SmithyOperation = syb_shapes.SmithyOperation;
 const SmithyResource = syb_shapes.SmithyResource;
 
-pub fn createModel() !*SmithyModel {
+pub fn createEmpty() !*SmithyModel {
     const model = test_alloc.create(SmithyModel) catch unreachable;
     model.* = SmithyModel{
         .service = SmithyId.of("test.serve#Service"),
-        .meta = std.AutoHashMapUnmanaged(SmithyId, SmithyMeta){},
-        .shapes = std.AutoHashMapUnmanaged(SmithyId, SmithyType){},
-        .traits = std.AutoHashMapUnmanaged(SmithyId, []const TaggedValue){},
-        .mixins = std.AutoHashMapUnmanaged(SmithyId, []const SmithyId){},
+        .meta = .{},
+        .shapes = .{},
+        .traits = .{},
+        .mixins = .{},
+        .names = .{},
     };
+    return model;
+}
+
+pub fn createService() !*SmithyModel {
+    const model = try createEmpty();
 
     try model.shapes.put(test_alloc, SmithyId.of("test.operation#Input$Foo"), .{
         .structure = &.{},
@@ -94,5 +100,6 @@ pub fn deinitModel(model: *SmithyModel) void {
     model.shapes.deinit(test_alloc);
     model.traits.deinit(test_alloc);
     model.mixins.deinit(test_alloc);
+    model.names.deinit(test_alloc);
     test_alloc.destroy(model);
 }

@@ -11,6 +11,7 @@ pub const SmithyModel = struct {
     service: SmithyId,
     meta: std.AutoHashMapUnmanaged(SmithyId, SmithyMeta),
     shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType),
+    names: std.AutoHashMapUnmanaged(SmithyId, []const u8),
     traits: std.AutoHashMapUnmanaged(SmithyId, []const TaggedValue),
     mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId),
 
@@ -20,6 +21,18 @@ pub const SmithyModel = struct {
 
     pub fn getShape(self: SmithyModel, id: SmithyId) ?SmithyType {
         return self.shapes.get(id);
+    }
+
+    pub fn tryGetShape(self: SmithyModel, id: SmithyId) !SmithyType {
+        return self.shapes.get(id) orelse error.ShapeNotFound;
+    }
+
+    pub fn getName(self: SmithyModel, id: SmithyId) ?[]const u8 {
+        return self.names.get(id);
+    }
+
+    pub fn tryGetName(self: SmithyModel, id: SmithyId) ![]const u8 {
+        return self.names.get(id) orelse error.NameNotFound;
     }
 
     pub fn getMixins(self: SmithyModel, shape_id: SmithyId) ?[]const SmithyId {
@@ -73,6 +86,10 @@ test "SmithyModel" {
     defer shapes.deinit(test_alloc);
     try shapes.put(test_alloc, shape_id, .blob);
 
+    var names: std.AutoHashMapUnmanaged(SmithyId, []const u8) = .{};
+    defer names.deinit(test_alloc);
+    try names.put(test_alloc, shape_id, "Foo");
+
     var traits: std.AutoHashMapUnmanaged(SmithyId, []const TaggedValue) = .{};
     defer traits.deinit(test_alloc);
     try traits.put(test_alloc, shape_id, &.{
@@ -91,6 +108,7 @@ test "SmithyModel" {
         .service = SmithyId.NULL,
         .meta = meta,
         .shapes = shapes,
+        .names = names,
         .traits = traits,
         .mixins = mixins,
     };
@@ -101,6 +119,17 @@ test "SmithyModel" {
     );
 
     try testing.expectEqual(.blob, symbols.getShape(shape_id));
+    try testing.expectEqual(.blob, symbols.tryGetShape(shape_id));
+    try testing.expectError(
+        error.ShapeNotFound,
+        symbols.tryGetShape(SmithyId.of("test#undefined")),
+    );
+
+    try testing.expectEqualStrings("Foo", symbols.getName(shape_id).?);
+    try testing.expectError(
+        error.NameNotFound,
+        symbols.tryGetName(SmithyId.of("test#undefined")),
+    );
 
     try testing.expectEqualDeep(
         &.{ SmithyId.of("test.mixin#Foo"), SmithyId.of("test.mixin#Bar") },

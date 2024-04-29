@@ -89,6 +89,15 @@ pub const SmithyId = enum(u32) {
     fn hash32(value: []const u8) u32 {
         return std.hash.CityHash32.hash(value);
     }
+
+    pub fn isEmpty(self: SmithyId) bool {
+        return @intFromEnum(self) == 0;
+    }
+
+    test "isEmpty" {
+        try testing.expectEqual(true, SmithyId.NULL.isEmpty());
+        try testing.expectEqual(false, SmithyId.blob.isEmpty());
+    }
 };
 
 test "SmithyId" {

@@ -1926,6 +1926,8 @@ pub const Expr = union(enum) {
 // ErrorSetDecl <- KEYWORD_error LBRACE IdentifierList RBRACE
 // IdentifierList <- (doc_comment? IDENTIFIER COMMA)* (doc_comment? IDENTIFIER)?
 pub const TypeExpr = struct {
+    pub const string = TypeExpr{ .raw = "[]const u8" };
+
     raw: []const u8,
 
     pub fn format(self: TypeExpr, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {

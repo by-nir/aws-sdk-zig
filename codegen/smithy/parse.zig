@@ -24,7 +24,7 @@ pub const Policy = struct {
 
 const Context = struct {
     name: ?[]const u8 = null,
-    hash: SmithyId = SmithyId.NULL,
+    id: SmithyId = SmithyId.NULL,
     target: Target = .none,
 
     pub const Target = union(enum) {
@@ -50,6 +50,7 @@ meta: std.AutoHashMapUnmanaged(SmithyId, SmithyMeta) = .{},
 shapes: std.AutoHashMapUnmanaged(SmithyId, syb_id.SmithyType) = .{},
 traits: std.AutoHashMapUnmanaged(SmithyId, []const syb_id.SmithyTaggedValue) = .{},
 mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId) = .{},
+names: std.AutoHashMapUnmanaged(SmithyId, []const u8) = .{},
 
 /// Parse raw JSON into collection of Smithy symbols.
 ///
@@ -75,6 +76,7 @@ pub fn parseJson(
         parser.shapes.deinit(arena);
         parser.traits.deinit(arena);
         parser.mixins.deinit(arena);
+        parser.names.deinit(arena);
     }
 
     try parser.parseScope(.object, parseProp, .{});
@@ -86,6 +88,7 @@ pub fn parseJson(
         .shapes = parser.shapes.move(),
         .traits = parser.traits.move(),
         .mixins = parser.mixins.move(),
+        .names = parser.names.move(),
     };
 }
 
@@ -101,12 +104,12 @@ fn parseScope(
 fn parseProp(self: *Self, prop_name: []const u8, ctx: Context) !void {
     switch (syb_id.SmithyProperty.of(prop_name)) {
         .smithy => try self.validateSmithyVersion(),
-        .mixins => try self.parseMixins(ctx.hash),
-        .traits => try self.parseTraits(ctx.name.?, ctx.hash),
+        .mixins => try self.parseMixins(ctx.id),
+        .traits => try self.parseTraits(ctx.name.?, ctx.id),
         .member, .key, .value => try self.parseMember(prop_name, ctx),
         .members => try self.parseScope(.object, parseMember, ctx),
         .shapes => try self.parseScope(.object, parseShape, .{}),
-        .target => try self.putShape(ctx.hash, SmithyId.of(try self.reader.nextString()), .none),
+        .target => _ = try self.putShape(ctx.id, SmithyId.of(try self.reader.nextString()), .none),
         .metadata => try self.parseScope(.object, parseMetaMap, .{ .target = .meta }),
         .version => switch (ctx.target) {
             .service => |t| t.version = try self.arena.dupe(u8, try self.reader.nextString()),
@@ -176,9 +179,16 @@ fn parseMember(self: *Self, prop_name: []const u8, ctx: Context) !void {
     member_name[parent_name.len] = '$';
     @memcpy(member_name[parent_name.len + 1 ..][0..prop_name.len], prop_name);
 
-    const member_hash = SmithyId.compose(parent_name, prop_name);
-    try ctx.target.id_list.append(self.arena, member_hash);
-    const scp = Context{ .name = member_name[0..len], .hash = member_hash };
+    const member_id = SmithyId.compose(parent_name, prop_name);
+    if (!std.mem.eql(u8, prop_name, "member") and
+        !std.mem.eql(u8, prop_name, "key") and
+        !std.mem.eql(u8, prop_name, "value"))
+    {
+        try self.names.put(self.arena, member_id, try self.arena.dupe(u8, prop_name));
+    }
+
+    try ctx.target.id_list.append(self.arena, member_id);
+    const scp = Context{ .id = member_id, .name = member_name[0..len] };
     try self.parseScope(.object, parseProp, scp);
 }
 
@@ -232,39 +242,39 @@ fn parseShapeRef(self: *Self) !SmithyId {
     return shape_ref;
 }
 
-fn parseMixins(self: *Self, parent_hash: SmithyId) !void {
+fn parseMixins(self: *Self, parent_id: SmithyId) !void {
     var mixins = std.ArrayListUnmanaged(SmithyId){};
     errdefer mixins.deinit(self.arena);
     try self.parseScope(.array, parseShapeRefItem, .{
         .target = .{ .id_list = &mixins },
     });
     const slice = try mixins.toOwnedSlice(self.arena);
-    try self.mixins.put(self.arena, parent_hash, slice);
+    try self.mixins.put(self.arena, parent_id, slice);
 }
 
-fn parseTraits(self: *Self, parent_name: []const u8, parent_hash: SmithyId) !void {
+fn parseTraits(self: *Self, parent_name: []const u8, parent_id: SmithyId) !void {
     var traits: std.ArrayListUnmanaged(syb_id.SmithyTaggedValue) = .{};
     errdefer traits.deinit(self.arena);
     try self.reader.nextObjectBegin();
     while (try self.reader.peek() == .string) {
-        const trait_id = try self.reader.nextString();
-        const trait_hash = SmithyId.of(trait_id);
-        if (self.manager.parse(trait_hash, self.arena, self.reader)) |value| {
+        const trait_name = try self.reader.nextString();
+        const trait_id = SmithyId.of(trait_name);
+        if (self.manager.parse(trait_id, self.arena, self.reader)) |value| {
             try traits.append(
                 self.arena,
-                .{ .id = trait_hash, .value = value },
+                .{ .id = trait_id, .value = value },
             );
         } else |e| switch (e) {
             error.UnknownTrait => switch (self.policy.trait) {
                 .skip => {
                     try self.issues.add(.{ .parse_unknown_trait = .{
                         .context = parent_name,
-                        .name = trait_id,
+                        .name = trait_name,
                     } });
                     try self.reader.skipValueOrScope();
                 },
                 .abort => {
-                    std.log.err("Unknown trait: {s} ({s}).", .{ trait_id, parent_name });
+                    std.log.err("Unknown trait: {s} ({s}).", .{ trait_name, parent_name });
                     return error.AbortPolicy;
                 },
             },
@@ -275,25 +285,25 @@ fn parseTraits(self: *Self, parent_name: []const u8, parent_hash: SmithyId) !voi
     if (traits.items.len == 0) return;
 
     // ‘Apply’ types add external traits, in this case we merge the lists.
-    if (self.traits.getPtr(parent_hash)) |items| {
+    if (self.traits.getPtr(parent_id)) |items| {
         try traits.appendSlice(self.arena, items.*);
         self.arena.free(items.*);
     }
 
     const slice = try traits.toOwnedSlice(self.arena);
-    try self.traits.put(self.arena, parent_hash, slice);
+    try self.traits.put(self.arena, parent_id, slice);
 }
 
 fn parseShape(self: *Self, shape_name: []const u8, _: Context) !void {
-    const shape_hash = SmithyId.of(shape_name);
+    const shape_id = SmithyId.of(shape_name);
     try self.reader.nextObjectBegin();
     try self.reader.nextStringEql("type");
     const typ = SmithyId.of(try self.reader.nextString());
     const target: Context.Target = switch (typ) {
         .apply => {
             try self.parseScope(.current, parseProp, Context{
+                .id = shape_id,
                 .name = shape_name,
-                .hash = shape_hash,
             });
             // Not a standalone shape, skip the creation/override of a shape symbol.
             try self.reader.nextObjectEnd();
@@ -326,14 +336,26 @@ fn parseShape(self: *Self, shape_name: []const u8, _: Context) !void {
     };
     try self.parseScope(.current, parseProp, Context{
         .name = shape_name,
-        .hash = shape_hash,
+        .id = shape_id,
         .target = target,
     });
-    try self.putShape(shape_hash, typ, target);
+    if (try self.putShape(shape_id, typ, target)) {
+        try self.putShapeName(shape_id, shape_name);
+    }
     try self.reader.nextObjectEnd();
 }
 
-fn putShape(self: *Self, id: SmithyId, typ: SmithyId, target: Context.Target) !void {
+fn putShapeName(self: *Self, id: SmithyId, full_name: []const u8) !void {
+    const name = if (std.mem.indexOfScalar(u8, full_name, '#')) |i|
+        full_name[i + 1 .. full_name.len]
+    else
+        full_name;
+    try self.names.put(self.arena, id, try self.arena.dupe(u8, name));
+}
+
+/// Returns is aggregate shape type.
+fn putShape(self: *Self, id: SmithyId, typ: SmithyId, target: Context.Target) !bool {
+    var is_aggregate = false;
     try self.shapes.put(self.arena, id, switch (typ) {
         .unit => switch (target) {
             .none => SmithyType.unit,
@@ -345,11 +367,14 @@ fn putShape(self: *Self, id: SmithyId, typ: SmithyId, target: Context.Target) !v
             => |t| std.enums.nameCast(SmithyType, t),
         // zig fmt: on
         inline .@"enum", .int_enum, .structure, .@"union" => |t| switch (target) {
-            .id_list => |l| @unionInit(
-                SmithyType,
-                @tagName(t),
-                try l.toOwnedSlice(self.arena),
-            ),
+            .id_list => |l| blk: {
+                is_aggregate = true;
+                break :blk @unionInit(
+                    SmithyType,
+                    @tagName(t),
+                    try l.toOwnedSlice(self.arena),
+                );
+            },
             else => return error.InvalidMemberTarget,
         },
         .list => switch (target) {
@@ -381,6 +406,7 @@ fn putShape(self: *Self, id: SmithyId, typ: SmithyId, target: Context.Target) !v
             else => return error.UnknownType,
         },
     });
+    return is_aggregate;
 }
 
 fn parseMetaList(self: *Self, ctx: Context) !void {
@@ -388,11 +414,11 @@ fn parseMetaList(self: *Self, ctx: Context) !void {
 }
 
 fn parseMetaMap(self: *Self, meta_name: []const u8, ctx: Context) !void {
-    const meta_hash = SmithyId.of(meta_name);
+    const meta_id = SmithyId.of(meta_name);
     const value = try self.parseMetaValue();
     switch (ctx.target) {
-        .meta => try self.meta.put(self.arena, meta_hash, value),
-        .meta_map => |m| try m.append(self.arena, .{ .key = meta_hash, .value = value }),
+        .meta => try self.meta.put(self.arena, meta_id, value),
+        .meta_map => |m| try m.append(self.arena, .{ .key = meta_id, .value = value }),
         else => unreachable,
     }
 }
@@ -532,6 +558,8 @@ test "parseJson" {
         SmithyId.of("smithy.api#enumValue"),
         TestTraits.EnumValue,
     ));
+    try testing.expectEqualStrings("Enum", try model.tryGetName(SmithyId.of("test.simple#Enum")));
+    try testing.expectEqualStrings("FOO", try model.tryGetName(SmithyId.of("test.simple#Enum$FOO")));
 
     try testing.expectEqualDeep(
         SmithyType{ .int_enum = &.{SmithyId.of("test.simple#IntEnum$FOO")} },
@@ -543,16 +571,27 @@ test "parseJson" {
         SmithyId.of("smithy.api#enumValue"),
         TestTraits.EnumValue,
     ));
+    try testing.expectEqualStrings("IntEnum", try model.tryGetName(SmithyId.of("test.simple#IntEnum")));
+    try testing.expectEqualStrings(
+        "FOO",
+        try model.tryGetName(SmithyId.of("test.simple#IntEnum$FOO")),
+    );
 
     try testing.expectEqualDeep(
         SmithyType{ .list = SmithyId.of("test.aggregate#List$member") },
         model.getShape(SmithyId.of("test.aggregate#List")),
     );
     try testing.expectEqual(.string, model.getShape(SmithyId.of("test.aggregate#List$member")));
-    try testing.expect(model.hasTrait(SmithyId.of("test.aggregate#List$member"), SmithyId.of("test.trait#Void")));
+    try testing.expect(model.hasTrait(
+        SmithyId.of("test.aggregate#List$member"),
+        SmithyId.of("test.trait#Void"),
+    ));
 
     try testing.expectEqualDeep(
-        SmithyType{ .map = .{ SmithyId.of("test.aggregate#Map$key"), SmithyId.of("test.aggregate#Map$value") } },
+        SmithyType{ .map = .{
+            SmithyId.of("test.aggregate#Map$key"),
+            SmithyId.of("test.aggregate#Map$value"),
+        } },
         model.getShape(SmithyId.of("test.aggregate#Map")),
     );
     try testing.expectEqual(.string, model.getShape(SmithyId.of("test.aggregate#Map$key")));
@@ -565,8 +604,17 @@ test "parseJson" {
         } },
         model.getShape(SmithyId.of("test.aggregate#Structure")),
     );
+    try testing.expectEqualStrings("Structure", try model.tryGetName(SmithyId.of("test.aggregate#Structure")));
     try testing.expectEqual(.string, model.getShape(SmithyId.of("test.aggregate#Structure$stringMember")));
-    try testing.expect(model.hasTrait(SmithyId.of("test.aggregate#Structure$stringMember"), SmithyId.of("test.trait#Void")));
+
+    try testing.expect(model.hasTrait(
+        SmithyId.of("test.aggregate#Structure$stringMember"),
+        SmithyId.of("test.trait#Void"),
+    ));
+    try testing.expectEqualStrings(
+        "stringMember",
+        try model.tryGetName(SmithyId.of("test.aggregate#Structure$stringMember")),
+    );
     try testing.expectEqual(
         108,
         model.getTrait(SmithyId.of("test.aggregate#Structure$stringMember"), SmithyId.of("test.trait#Int"), i64),
@@ -574,7 +622,14 @@ test "parseJson" {
 
     try testing.expectEqual(.integer, model.getShape(SmithyId.of("test.aggregate#Structure$numberMember")));
     // The traits merged with external `apply` traits.
-    try testing.expect(model.hasTrait(SmithyId.of("test.aggregate#Structure$numberMember"), SmithyId.of("test.trait#Void")));
+    try testing.expect(model.hasTrait(
+        SmithyId.of("test.aggregate#Structure$numberMember"),
+        SmithyId.of("test.trait#Void"),
+    ));
+    try testing.expectEqualStrings(
+        "numberMember",
+        try model.tryGetName(SmithyId.of("test.aggregate#Structure$numberMember")),
+    );
     try testing.expectEqual(
         108,
         model.getTrait(SmithyId.of("test.aggregate#Structure$numberMember"), SmithyId.of("test.trait#Int"), i64),
@@ -587,8 +642,11 @@ test "parseJson" {
         } },
         model.getShape(SmithyId.of("test.aggregate#Union")),
     );
+    try testing.expectEqualStrings("Union", try model.tryGetName(SmithyId.of("test.aggregate#Union")));
     try testing.expectEqual(.string, model.getShape(SmithyId.of("test.aggregate#Union$a")));
     try testing.expectEqual(.integer, model.getShape(SmithyId.of("test.aggregate#Union$b")));
+    try testing.expectEqualStrings("a", try model.tryGetName(SmithyId.of("test.aggregate#Union$a")));
+    try testing.expectEqualStrings("b", try model.tryGetName(SmithyId.of("test.aggregate#Union$b")));
 
     try testing.expectEqualDeep(SmithyType{
         .operation = &.{
