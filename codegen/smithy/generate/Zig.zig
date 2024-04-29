@@ -27,22 +27,30 @@ previous: Statements = .comptime_block,
 imports: std.StringArrayHashMapUnmanaged(Identifier) = .{},
 
 const Section = enum { none, fields, funcs };
-const Statements = enum { comment, doc, test_block, comptime_block, field, variable, function, using };
+const Statements = enum { comment, doc, test_block, comptime_block, declare, field, variable, function, using };
 
 /// Call `end()` to complete the declaration and deinit.
 pub fn init(writer: *StackWriter, parent: ?*const Container) !Container {
     return .{
         .parent = parent,
-        .writer = if (parent != null) blk: {
+        .writer = if (parent == null) writer else blk: {
             try writer.writeAll("{\n");
             const scope = try writer.appendPrefix(INDENT);
             try scope.deferLineAll(.parent, "}");
             break :blk scope;
-        } else writer,
+        },
     };
 }
 
+fn initDecl(writer: *StackWriter, parent: *const Container, identifier: Identifier, decl: ContainerDecl) !Container {
+    try writer.writeFmt("const {} = {} {{\n", .{ identifier, decl });
+    const scope = try writer.appendPrefix(INDENT);
+    try scope.deferLineAll(.parent, "};");
+    return .{ .parent = parent, .writer = scope };
+}
+
 /// Complete the declaration and deinit.
+/// **This will also deinit the writer.**
 pub fn end(self: *Container) !void {
     const allocator = self.writer.allocator;
     for (self.imports.values()) |id| {
@@ -84,6 +92,7 @@ pub fn import(self: *Container, rel_path: []const u8) !Identifier {
     std.mem.replaceScalar(u8, output, '.', '_');
     std.mem.replaceScalar(u8, output, '/', '_');
 
+    const id = Identifier{ .name = id_name };
     if (self.parent == null and self.imports.count() == 0) {
         try self.writer.deferLineAll(.self, "");
     }
@@ -92,11 +101,10 @@ pub fn import(self: *Container, rel_path: []const u8) !Identifier {
             .assign = Expr.callStr("@import", &.{Val.str(rel_path)}),
         },
         .proto = .{
-            .identifier = id_name,
+            .identifier = id,
             .type = null,
         },
     }});
-    const id = Identifier{ .name = id_name };
     try self.imports.put(allocator, rel_path, id);
     return id;
 }
@@ -140,7 +148,7 @@ pub fn field(self: *Container, f: Field) !?Identifier {
     }
     self.previous = .field;
     try self.writer.prefixedFmt("{},", .{f});
-    return if (f.identifier) |id| Identifier{ .name = id } else null;
+    return if (f.name) |id| Identifier{ .name = id } else null;
 }
 
 test "field" {
@@ -151,7 +159,7 @@ test "field" {
     var scope = try init(&writer, null);
 
     const fld = Field{
-        .identifier = "foo",
+        .name = "foo",
         .type = TypeExpr{ .raw = "u8" },
     };
     try testing.expectEqualDeep(Identifier{ .name = "foo" }, scope.field(fld));
@@ -176,7 +184,7 @@ test "field" {
     );
 }
 
-pub fn variable(self: *Container, decl: Variable.Declaration, proto: Variable.Prototype) !Identifier {
+pub fn variable(self: *Container, decl: Variable.Declaration, proto: Variable.Prototype) !void {
     if (self.section == .none) {
         self.section = .fields;
     } else switch (self.previous) {
@@ -188,7 +196,6 @@ pub fn variable(self: *Container, decl: Variable.Declaration, proto: Variable.Pr
         .decl = decl,
         .proto = proto,
     }});
-    return Identifier{ .name = proto.identifier };
 }
 
 test "variable" {
@@ -199,25 +206,22 @@ test "variable" {
     var scope = try init(&writer, null);
 
     const proto = Variable.Prototype{
-        .identifier = "foo",
+        .identifier = .{ .name = "foo" },
         .type = TypeExpr{ .raw = "bool" },
     };
-    try testing.expectEqualDeep(
-        Identifier{ .name = "foo" },
-        scope.variable(.{}, proto),
-    );
+    try scope.variable(.{}, proto);
     try testing.expectEqual(.fields, scope.section);
 
-    _ = try scope.variable(.{}, proto);
+    try scope.variable(.{}, proto);
     scope.previous = .doc;
-    _ = try scope.variable(.{}, proto);
+    try scope.variable(.{}, proto);
     scope.previous = .comment;
-    _ = try scope.variable(.{}, proto);
+    try scope.variable(.{}, proto);
     scope.previous = .using;
-    _ = try scope.variable(.{}, proto);
+    try scope.variable(.{}, proto);
 
     scope.previous = .comptime_block;
-    _ = try scope.variable(.{}, proto);
+    try scope.variable(.{}, proto);
 
     try scope.end();
     try testing.expectEqualStrings(
@@ -228,6 +232,61 @@ test "variable" {
         \\const foo: bool;
         \\
         \\const foo: bool;
+    , buffer.items);
+}
+
+pub fn declare(self: *Container, identifier: Identifier, decl: ContainerDecl) !Container {
+    if (self.section == .none) {
+        self.section = .fields;
+    } else switch (self.previous) {
+        .doc, .comment => try self.writer.lineBreak(1),
+        else => try self.writer.lineBreak(2),
+    }
+    self.previous = .declare;
+    return Container.initDecl(self.writer, self, identifier, decl);
+}
+
+test "declare" {
+    var buffer = std.ArrayList(u8).init(test_alloc);
+    defer buffer.deinit();
+
+    var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+    var scope = try init(&writer, null);
+
+    var cnt = try scope.declare(.{ .name = "foo" }, .{ .type = .Opaque });
+    _ = try cnt.field(.{ .name = "bar", .type = TypeExpr.of(bool) });
+    try cnt.end();
+    try testing.expectEqual(.fields, scope.section);
+
+    cnt = try scope.declare(.{ .name = "foo" }, .{ .type = .Opaque });
+    _ = try cnt.field(.{ .name = "bar", .type = TypeExpr.of(bool) });
+    try cnt.end();
+
+    scope.previous = .doc;
+    cnt = try scope.declare(.{ .name = "foo" }, .{ .type = .Opaque });
+    _ = try cnt.field(.{ .name = "bar", .type = TypeExpr.of(bool) });
+    try cnt.end();
+
+    scope.previous = .comment;
+    cnt = try scope.declare(.{ .name = "foo" }, .{ .type = .Opaque });
+    _ = try cnt.field(.{ .name = "bar", .type = TypeExpr.of(bool) });
+    try cnt.end();
+
+    try scope.end();
+    try testing.expectEqualStrings(
+        \\const foo = opaque {
+        \\    bar: bool,
+        \\};
+        \\
+        \\const foo = opaque {
+        \\    bar: bool,
+        \\};
+        \\const foo = opaque {
+        \\    bar: bool,
+        \\};
+        \\const foo = opaque {
+        \\    bar: bool,
+        \\};
     , buffer.items);
 }
 
@@ -285,7 +344,7 @@ pub fn function(self: *Container, decl: Function.Declaration, proto: Function.Pr
     }
     try self.writer.prefixedFmt("{}{} ", .{ decl, proto });
     self.section = .funcs;
-    return Scope.init(self.writer, .{}, .{ .form = .block });
+    return Scope.init(self.writer, .{}, .{ .form = .block }, self);
 }
 
 test "function" {
@@ -327,7 +386,7 @@ pub fn testBlock(self: *Container, name: []const u8) !Scope {
     } else {
         try self.writer.prefixedAll("test ");
     }
-    return Scope.init(self.writer, .{}, .{ .form = .block });
+    return Scope.init(self.writer, .{}, .{ .form = .block }, self);
 }
 
 test "testBlock" {
@@ -381,7 +440,7 @@ pub fn comptimeBlock(self: *Container) !Scope {
     }
     self.previous = .comptime_block;
     try self.writer.prefixedAll("comptime ");
-    return Scope.init(self.writer, .{}, .{ .form = .block });
+    return Scope.init(self.writer, .{}, .{ .form = .block }, self);
 }
 
 test "comptimeBlock" {
@@ -495,6 +554,7 @@ test {
     _ = Val;
     _ = Expr;
     _ = TypeExpr;
+    _ = ContainerDecl;
 
     _ = Field;
     _ = Using;
@@ -534,14 +594,14 @@ pub const Using = struct {
 pub const Field = struct {
     is_comptime: bool = false,
     /// Set `null` when inside a tuple.
-    identifier: ?[]const u8,
+    name: ?[]const u8,
     type: TypeExpr,
     alignment: ?Expr = null,
     assign: ?Expr = null,
 
     pub fn format(self: Field, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
         if (self.is_comptime) try writer.writeAll("comptime ");
-        if (self.identifier) |t| try writer.print("{s}: ", .{t});
+        if (self.name) |t| try writer.print("{s}: ", .{t});
         try writer.print("{}", .{self.type});
         if (self.alignment) |a| try writer.print(" {}", .{ByteAlign{ .expr = a }});
         if (self.assign) |t| try writer.print(" = {}", .{t});
@@ -550,12 +610,12 @@ pub const Field = struct {
     test {
         try testing.expectFmt("comptime foo: bool = true", "{}", .{Field{
             .is_comptime = true,
-            .identifier = "foo",
+            .name = "foo",
             .type = TypeExpr{ .raw = "bool" },
             .assign = Expr{ .raw = "true" },
         }});
         try testing.expectFmt("u8 align(4)", "{}", .{Field{
-            .identifier = null,
+            .name = null,
             .type = TypeExpr{ .raw = "u8" },
             .alignment = Expr{ .raw = "4" },
         }});
@@ -582,7 +642,7 @@ pub const Variable = struct {
             },
             .proto = .{
                 .is_mutable = true,
-                .identifier = "foo",
+                .identifier = .{ .name = "foo" },
                 .type = TypeExpr{ .raw = "bool" },
             },
         }});
@@ -591,7 +651,7 @@ pub const Variable = struct {
                 .assign = Expr{ .raw = "true" },
             },
             .proto = .{
-                .identifier = "foo",
+                .identifier = .{ .name = "foo" },
                 .type = TypeExpr{ .raw = "bool" },
             },
         }});
@@ -632,15 +692,15 @@ pub const Variable = struct {
     // VarDeclProto <- (KEYWORD_const / KEYWORD_var) IDENTIFIER (COLON TypeExpr)? ByteAlign?
     pub const Prototype = struct {
         is_mutable: bool = false,
-        identifier: []const u8,
+        identifier: Identifier,
         type: ?TypeExpr,
         alignment: ?Expr = null,
 
         pub fn format(self: Prototype, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
             if (self.is_mutable) {
-                try writer.print("var {s}", .{self.identifier});
+                try writer.print("var {}", .{self.identifier});
             } else {
-                try writer.print("const {s}", .{self.identifier});
+                try writer.print("const {}", .{self.identifier});
             }
             if (self.type) |t| try writer.print(": {}", .{t});
             if (self.alignment) |a| try writer.print(" {}", .{ByteAlign{ .expr = a }});
@@ -649,13 +709,13 @@ pub const Variable = struct {
 
     test "Prototype" {
         try testing.expectFmt("const foo", "{}", .{Prototype{
-            .identifier = "foo",
+            .identifier = .{ .name = "foo" },
             .type = null,
         }});
 
         try testing.expectFmt("var foo: Foo align(4)", "{}", .{Prototype{
             .is_mutable = true,
-            .identifier = "foo",
+            .identifier = .{ .name = "foo" },
             .type = TypeExpr{ .raw = "Foo" },
             .alignment = Expr{ .raw = "4" },
         }});
@@ -798,6 +858,7 @@ pub const Scope = struct {
     options: Options,
     prfx: ?Prefix = null,
     consumed: bool = false,
+    container: *const Container,
 
     pub const Form = enum { block, inlined };
 
@@ -818,9 +879,13 @@ pub const Scope = struct {
         suffix: ?[]const u8 = null,
     };
 
-    fn init(writer: *StackWriter, decor: Decor, options: Options) !Scope {
+    fn init(writer: *StackWriter, decor: Decor, options: Options, container: *const Container) !Scope {
         const scope = try createSubWriter(writer, decor, options.form);
-        return .{ .writer = scope, .options = options };
+        return .{
+            .writer = scope,
+            .options = options,
+            .container = container,
+        };
     }
 
     pub fn branch(self: *Scope, form: Form, decor: Decor, cond: ?Expr) !void {
@@ -909,7 +974,7 @@ pub const Scope = struct {
         return Scope.init(self.writer, decor, .{
             .form = form,
             .branching = true,
-        });
+        }, self.container);
     }
 
     fn statementAll(self: *Scope, bytes: []const u8) !void {
@@ -934,7 +999,7 @@ pub const Scope = struct {
         }, .{
             .branching = true,
             .form = .inlined,
-        });
+        }, undefined);
         try scope.statementAll("foo()");
         try scope.branch(.block, .{
             .label = Identifier{ .name = "blk" },
@@ -959,7 +1024,7 @@ pub const Scope = struct {
         scope = try Scope.init(&writer, .{}, .{
             .form = .block,
             .suffix = " // SUFFIX",
-        });
+        }, undefined);
         try scope.statementAll("foo()");
         try scope.end();
         try testing.expectEqualStrings(
@@ -972,7 +1037,7 @@ pub const Scope = struct {
         scope = try Scope.init(&writer, .{}, .{
             .form = .inlined,
             .suffix = ",",
-        });
+        }, undefined);
         try scope.statementAll("foo()");
         try scope.end();
         try testing.expectEqualStrings("foo(),", buffer.items);
@@ -996,16 +1061,23 @@ pub const Scope = struct {
 
     // Expr (COMMA Expr)+ EQUAL Expr
     // VarDeclExprStatement <- VarDeclProto (COMMA (VarDeclProto / Expr))* EQUAL Expr SEMICOLON
-    /// Declare, assign, or destruct one or more variables.
-    pub fn variable(self: *Scope, lhs: []const Destruct, rhs: Expr) !void {
+    pub fn destruct(self: *Scope, lhs: []const Destruct, rhs: Expr) !void {
         try self.statementFmt("{} = {}", .{ List(Destruct){ .items = lhs }, rhs });
     }
 
+    /// Call `end()` to complete the block.
     pub fn block(self: *Scope, label: ?Identifier) !Scope {
         try self.preStatement();
         return Scope.init(self.writer, .{
             .label = label,
-        }, .{ .form = .block });
+        }, .{ .form = .block }, self.container);
+    }
+
+    /// Declare a container type.
+    /// Call `end()` to complete the declaration.
+    pub fn declare(self: *Scope, identifier: Identifier, decl: ContainerDecl) !Container {
+        try self.writer.lineBreak(1);
+        return Container.initDecl(self.writer, self.container, identifier, decl);
     }
 
     test "expressions" {
@@ -1013,10 +1085,11 @@ pub const Scope = struct {
         var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
         defer buffer.deinit();
 
-        var scope = try Scope.init(&writer, .{}, .{ .form = .block });
+        const parent_container: *const Container = undefined;
+        var scope = try Scope.init(&writer, .{}, .{ .form = .block }, parent_container);
         try scope.expression(.{ .raw = "foo()" });
         try scope.prefix(.deferred).assign(.{ .name = "foo" }, .plus_equal, .{ .raw = "bar" });
-        try scope.prefix(.comp).variable(&.{
+        try scope.prefix(.comp).destruct(&.{
             .{ .unmut = .{ .name = "foo" } },
             .{ .mut = .{ .name = "bar" } },
             .{ .assign = .{ .name = "baz" } },
@@ -1025,6 +1098,14 @@ pub const Scope = struct {
         var blk = try scope.prefix(.{ .errdeferred = .{ .name = "e" } }).block(null);
         try blk.expression(.{ .raw = "foo()" });
         try blk.end();
+
+        var cnt = try scope.declare(.{ .name = "foo" }, .{ .type = .Union });
+        try testing.expectEqual(parent_container, cnt.parent.?);
+        _ = try cnt.field(.{
+            .name = "bar",
+            .type = TypeExpr.of(bool),
+        });
+        try cnt.end();
 
         try scope.end();
         try testing.expectEqualStrings(
@@ -1035,6 +1116,9 @@ pub const Scope = struct {
             \\    errdefer |e| {
             \\        foo();
             \\    }
+            \\    const foo = union {
+            \\        bar: bool,
+            \\    };
             \\}
         , buffer.items);
     }
@@ -1043,6 +1127,7 @@ pub const Scope = struct {
     //     <- IfPrefix BlockExpr ( KEYWORD_else Payload? Statement )?
     //      / IfPrefix AssignExpr ( SEMICOLON / KEYWORD_else Payload? Statement )
     // PtrPayload <- PIPE ASTERISK? IDENTIFIER PIPE
+    /// Call `end()` to complete the declaration.
     pub fn ifCtrl(self: *Scope, form: Form, p: IfPrefix, label: ?Identifier) !Scope {
         try self.preStatement();
         try self.writer.writeFmt("{} ", .{p});
@@ -1052,6 +1137,7 @@ pub const Scope = struct {
     // ForStatement
     //     <- ForPrefix BlockExpr ( KEYWORD_else Statement )?
     //      / ForPrefix AssignExpr ( SEMICOLON / KEYWORD_else Statement )
+    /// Call `end()` to complete the declaration.
     pub fn forLoop(self: *Scope, form: Form, p: ForPrefix) !Scope {
         try self.preStatement();
         try self.writer.writeFmt("{} ", .{p});
@@ -1061,15 +1147,17 @@ pub const Scope = struct {
     // WhileStatement
     //     <- WhilePrefix BlockExpr ( KEYWORD_else Payload? Statement )?
     //      / WhilePrefix AssignExpr ( SEMICOLON / KEYWORD_else Payload? Statement )
+    /// Call `end()` to complete the declaration.
     pub fn whileLoop(self: *Scope, form: Form, p: WhilePrefix) !Scope {
         try self.preStatement();
         try self.writer.writeFmt("{} ", .{p});
         return self.postStatemntScope(form, .{});
     }
 
+    /// Call `end()` to complete the declaration.
     pub fn switchCtrl(self: *Scope, subject: Expr) !SwitchExpr {
         try self.preStatement();
-        return SwitchExpr.init(self.writer, subject);
+        return SwitchExpr.init(self.writer, subject, self.container);
     }
 
     test "control flow" {
@@ -1077,7 +1165,7 @@ pub const Scope = struct {
         var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
         defer buffer.deinit();
 
-        var scope = try Scope.init(&writer, .{}, .{ .form = .block });
+        var scope = try Scope.init(&writer, .{}, .{ .form = .block }, undefined);
 
         var blk = try scope.ifCtrl(.inlined, .{
             .condition = .{ .raw = "true" },
@@ -1250,12 +1338,13 @@ pub const WhilePrefix = struct {
 // SingleAssignExpr <- Expr (AssignOp Expr)?
 pub const SwitchExpr = struct {
     writer: *StackWriter,
+    container: *const Container,
 
     /// Call `end()` to complete the declaration.
-    fn init(writer: *StackWriter, subject: Expr) !SwitchExpr {
+    fn init(writer: *StackWriter, subject: Expr, container: *const Container) !SwitchExpr {
         try writer.writeFmt("switch ({}) ", .{subject});
         const scope = try Scope.createSubWriter(writer, .{}, .block);
-        return .{ .writer = scope };
+        return .{ .writer = scope, .container = container };
     }
 
     pub fn end(self: SwitchExpr) !void {
@@ -1276,7 +1365,7 @@ pub const SwitchExpr = struct {
         return Scope.init(self.writer, case.decor(), .{
             .form = form,
             .suffix = ",",
-        });
+        }, self.container);
     }
 
     /// Call `end()` to complete the block.
@@ -1291,7 +1380,7 @@ pub const SwitchExpr = struct {
         return Scope.init(self.writer, case.decor(), .{
             .form = form,
             .suffix = ",",
-        });
+        }, self.container);
     }
 
     pub const ProngItem = union(enum) {
@@ -1325,7 +1414,7 @@ pub const SwitchExpr = struct {
         defer buffer.deinit();
 
         var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
-        var expr = try SwitchExpr.init(&writer, Expr{ .raw = "foo" });
+        var expr = try SwitchExpr.init(&writer, Expr{ .raw = "foo" }, undefined);
 
         var block = try expr.prong(&.{
             .{ .single = Expr{ .raw = ".foo" } },
@@ -1726,7 +1815,7 @@ pub const Val = union(enum) {
 // ForExpr <- ForPrefix Expr (KEYWORD_else Expr)?
 // WhileExpr <- WhilePrefix Expr (KEYWORD_else Payload? Expr)?
 // CurlySuffixExpr <- TypeExpr InitList?
-const Expr = union(enum) {
+pub const Expr = union(enum) {
     raw: []const u8,
     call: struct { identifier: Identifier, args: []const Val },
 
@@ -1834,14 +1923,9 @@ const Expr = union(enum) {
 // WhileTypeExpr <- WhilePrefix TypeExpr (KEYWORD_else Payload? TypeExpr)?
 // ContainerDecl <- (KEYWORD_extern / KEYWORD_packed)? ContainerDeclAuto
 // ContainerDeclAuto <- ContainerDeclType LBRACE container_doc_comment? ContainerMembers RBRACE
-// ContainerDeclType
-//     <- KEYWORD_struct (LPAREN Expr RPAREN)?
-//      / KEYWORD_opaque
-//      / KEYWORD_enum (LPAREN Expr RPAREN)?
-//      / KEYWORD_union (LPAREN (KEYWORD_enum (LPAREN Expr RPAREN)? / Expr) RPAREN)?
 // ErrorSetDecl <- KEYWORD_error LBRACE IdentifierList RBRACE
 // IdentifierList <- (doc_comment? IDENTIFIER COMMA)* (doc_comment? IDENTIFIER)?
-const TypeExpr = struct {
+pub const TypeExpr = struct {
     raw: []const u8,
 
     pub fn format(self: TypeExpr, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
@@ -1854,5 +1938,73 @@ const TypeExpr = struct {
 
     test {
         try testing.expectFmt("error{Foo}!*const []u8", "{}", .{TypeExpr.of(error{Foo}!*const []u8)});
+    }
+};
+
+// ContainerDecl <- (KEYWORD_extern / KEYWORD_packed)? ContainerDeclType
+// ContainerDeclType
+//     <- KEYWORD_struct (LPAREN Expr RPAREN)?
+//      / KEYWORD_opaque
+//      / KEYWORD_enum (LPAREN Expr RPAREN)?
+//      / KEYWORD_union (LPAREN (KEYWORD_enum (LPAREN Expr RPAREN)? / Expr) RPAREN)?
+pub const ContainerDecl = struct {
+    type: Type,
+    is_packed: bool = false,
+    is_external: bool = false,
+
+    pub fn format(self: ContainerDecl, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
+        if (self.is_external) try writer.writeAll("extern ");
+        if (self.is_packed) try writer.writeAll("packed ");
+
+        switch (self.type) {
+            .Struct => |t| {
+                try if (t) |s| writer.print("struct({})", .{s}) else try writer.writeAll("struct");
+            },
+            .Opaque => try writer.writeAll("opaque"),
+            .Enum => |t| {
+                try if (t) |s| writer.print("enum({})", .{s}) else writer.writeAll("enum");
+            },
+            .Union => try writer.writeAll("union"),
+            .TaggedUnion => |t| {
+                try if (t) |s| writer.print("union(enum {})", .{s}) else writer.writeAll("union(enum)");
+            },
+        }
+    }
+
+    const Type = union(enum) {
+        Struct: ?Expr,
+        Opaque,
+        Enum: ?Expr,
+        Union,
+        TaggedUnion: ?Expr,
+    };
+
+    test {
+        try testing.expectFmt("extern packed struct", "{}", .{ContainerDecl{
+            .type = .{ .Struct = null },
+            .is_packed = true,
+            .is_external = true,
+        }});
+        try testing.expectFmt("struct(u24)", "{}", .{ContainerDecl{
+            .type = .{ .Struct = .{ .raw = "u24" } },
+        }});
+        try testing.expectFmt("opaque", "{}", .{ContainerDecl{
+            .type = .Opaque,
+        }});
+        try testing.expectFmt("enum", "{}", .{ContainerDecl{
+            .type = .{ .Enum = null },
+        }});
+        try testing.expectFmt("enum(u16)", "{}", .{ContainerDecl{
+            .type = .{ .Enum = .{ .raw = "u16" } },
+        }});
+        try testing.expectFmt("union", "{}", .{ContainerDecl{
+            .type = .Union,
+        }});
+        try testing.expectFmt("union(enum)", "{}", .{ContainerDecl{
+            .type = .{ .TaggedUnion = null },
+        }});
+        try testing.expectFmt("union(enum u16)", "{}", .{ContainerDecl{
+            .type = .{ .TaggedUnion = .{ .raw = "u16" } },
+        }});
     }
 };
