@@ -11,7 +11,7 @@ const Self = @This();
 pub const Options = struct {
     wrap_soft: u8 = 80,
     wrap_hard: u8 = 120,
-    prefix: []const u8 = &.{},
+    line_prefix: []const u8 = &.{},
 };
 
 pub const DeferTarget = enum { self, parent };
@@ -42,7 +42,7 @@ fn initContext(self: *Self, prefix: []const u8) !*Self {
         .options = self.options,
         .parent = self,
     };
-    context.options.prefix = prefix;
+    context.options.line_prefix = prefix;
     return context;
 }
 
@@ -55,7 +55,7 @@ pub fn replacePrefix(self: *Self, prefix: []const u8) !*Self {
 
 /// Returns a new sub-writer with the extended prefix.
 pub fn appendPrefix(self: *Self, append: []const u8) !*Self {
-    const old_prefix = self.options.prefix;
+    const old_prefix = self.options.line_prefix;
     if (append.len == 0) {
         return self.initContext(old_prefix);
     } else {
@@ -69,8 +69,8 @@ pub fn appendPrefix(self: *Self, append: []const u8) !*Self {
 /// Returns the parent context.
 pub fn deinit(self: *Self) !void {
     defer if (self.parent) |parent| {
-        if (!std.mem.eql(u8, parent.options.prefix, self.options.prefix)) {
-            self.allocator.free(self.options.prefix);
+        if (!std.mem.eql(u8, parent.options.line_prefix, self.options.line_prefix)) {
+            self.allocator.free(self.options.line_prefix);
         }
         self.allocator.destroy(self);
     };
@@ -156,7 +156,7 @@ test "writeFmt" {
     defer buffer.deinit();
 
     var writer = init(test_alloc, buffer.writer().any(), .{
-        .prefix = "  ",
+        .line_prefix = "  ",
     });
     try writer.writeFmt("{x}", .{16});
     try writer.deinit();
@@ -164,7 +164,7 @@ test "writeFmt" {
 }
 
 pub fn prefixedAll(self: *Self, bytes: []const u8) !void {
-    try self.output.print("{s}{s}", .{ self.options.prefix, bytes });
+    try self.output.print("{s}{s}", .{ self.options.line_prefix, bytes });
 }
 
 test "prefixedAll" {
@@ -172,7 +172,7 @@ test "prefixedAll" {
     defer buffer.deinit();
 
     var writer = init(test_alloc, buffer.writer().any(), .{
-        .prefix = "  ",
+        .line_prefix = "  ",
     });
     try writer.prefixedAll("foo");
     try writer.deinit();
@@ -180,7 +180,7 @@ test "prefixedAll" {
 }
 
 pub fn prefixedFmt(self: *Self, comptime format: []const u8, args: anytype) !void {
-    try self.output.print("{s}", .{self.options.prefix});
+    try self.output.print("{s}", .{self.options.line_prefix});
     try self.output.print(format, args);
 }
 
@@ -189,7 +189,7 @@ test "prefixedFmt" {
     defer buffer.deinit();
 
     var writer = init(test_alloc, buffer.writer().any(), .{
-        .prefix = "  ",
+        .line_prefix = "  ",
     });
     try writer.prefixedFmt("{x}", .{16});
     try writer.deinit();
@@ -197,7 +197,7 @@ test "prefixedFmt" {
 }
 
 pub fn lineAll(self: *Self, bytes: []const u8) !void {
-    try self.output.print("\n{s}{s}", .{ self.options.prefix, bytes });
+    try self.output.print("\n{s}{s}", .{ self.options.line_prefix, bytes });
 }
 
 test "lineAll" {
@@ -205,7 +205,7 @@ test "lineAll" {
     defer buffer.deinit();
 
     var writer = init(test_alloc, buffer.writer().any(), .{
-        .prefix = "  ",
+        .line_prefix = "  ",
     });
     try writer.lineAll("foo");
     try writer.deinit();
@@ -213,7 +213,7 @@ test "lineAll" {
 }
 
 pub fn lineFmt(self: *Self, comptime format: []const u8, args: anytype) !void {
-    try self.output.print("\n{s}", .{self.options.prefix});
+    try self.output.print("\n{s}", .{self.options.line_prefix});
     try self.output.print(format, args);
 }
 
@@ -222,7 +222,7 @@ test "lineFmt" {
     defer buffer.deinit();
 
     var writer = init(test_alloc, buffer.writer().any(), .{
-        .prefix = "  ",
+        .line_prefix = "  ",
     });
     try writer.lineFmt("{x}", .{16});
     try writer.deinit();
@@ -231,7 +231,7 @@ test "lineFmt" {
 
 pub fn lineBreak(self: *Self, n: u8) !void {
     for (0..n) |_| {
-        try self.output.print("\n{s}", .{self.options.prefix});
+        try self.output.print("\n{s}", .{self.options.line_prefix});
     }
 }
 
@@ -240,7 +240,7 @@ test "lineBreak" {
     defer buffer.deinit();
 
     var writer = init(test_alloc, buffer.writer().any(), .{
-        .prefix = "  ",
+        .line_prefix = "  ",
     });
     try writer.lineBreak(2);
     try writer.deinit();
@@ -261,7 +261,7 @@ test "deferAll" {
     defer buffer.deinit();
 
     var writer = init(test_alloc, buffer.writer().any(), .{
-        .prefix = "// ",
+        .line_prefix = "// ",
     });
     try writer.prefixedAll("foo");
 
@@ -289,7 +289,7 @@ test "deferFmt" {
     defer buffer.deinit();
 
     var writer = init(test_alloc, buffer.writer().any(), .{
-        .prefix = "// ",
+        .line_prefix = "// ",
     });
     try writer.prefixedAll("0x8");
 
@@ -306,8 +306,8 @@ test "deferFmt" {
 /// Defer writing the line until this context is deinitialized.
 pub fn deferLineAll(self: *Self, target: DeferTarget, bytes: []const u8) !void {
     const prefix = switch (target) {
-        .self => self.options.prefix,
-        .parent => self.parent.?.options.prefix,
+        .self => self.options.line_prefix,
+        .parent => self.parent.?.options.line_prefix,
     };
     const line = try fmt.allocPrint(self.allocator, "\n{s}{s}", .{ prefix, bytes });
     try self.deferred.append(self.allocator, Deferred{
@@ -321,7 +321,7 @@ test "deferLineAll" {
     defer buffer.deinit();
 
     var writer = init(test_alloc, buffer.writer().any(), .{
-        .prefix = "// ",
+        .line_prefix = "// ",
     });
     try writer.prefixedAll("foo");
 
@@ -343,8 +343,8 @@ test "deferLineAll" {
 /// Defer writing the line until this context is deinitialized.
 pub fn deferLineFmt(self: *Self, target: DeferTarget, comptime format: []const u8, args: anytype) !void {
     const prefix = switch (target) {
-        .self => self.options.prefix,
-        .parent => self.parent.?.options.prefix,
+        .self => self.options.line_prefix,
+        .parent => self.parent.?.options.line_prefix,
     };
 
     const len_user = fmt.count(format, args);
@@ -364,7 +364,7 @@ test "deferLineFmt" {
     defer buffer.deinit();
 
     var writer = init(test_alloc, buffer.writer().any(), .{
-        .prefix = "// ",
+        .line_prefix = "// ",
     });
     try writer.prefixedAll("0x8");
 

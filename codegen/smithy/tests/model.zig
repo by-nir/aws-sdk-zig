@@ -11,7 +11,7 @@ const SmithyService = syb_shapes.SmithyService;
 const SmithyOperation = syb_shapes.SmithyOperation;
 const SmithyResource = syb_shapes.SmithyResource;
 
-pub fn createModel() *SmithyModel {
+pub fn createModel() !*SmithyModel {
     const model = test_alloc.create(SmithyModel) catch unreachable;
     model.* = SmithyModel{
         .service = SmithyId.of("test.serve#Service"),
@@ -21,31 +21,35 @@ pub fn createModel() *SmithyModel {
         .mixins = std.AutoHashMapUnmanaged(SmithyId, []const SmithyId){},
     };
 
-    model.shapes.put(test_alloc, SmithyId.of("test.operation#Input$Foo"), .{ .structure = &.{} });
-    model.traits.put(test_alloc, SmithyId.of("test.operation#Input$Foo"), &.{
+    try model.shapes.put(test_alloc, SmithyId.of("test.operation#Input$Foo"), .{
+        .structure = &.{},
+    });
+    try model.traits.put(test_alloc, SmithyId.of("test.operation#Input$Foo"), &.{
         .{ .id = SmithyId.of("smithy.api#property"), .value = "test.resource#prop" },
     });
-    model.shapes.put(test_alloc, SmithyId.of("test.operation#Input"), .{
+    try model.shapes.put(test_alloc, SmithyId.of("test.operation#Input"), .{
         .structure = &.{SmithyId.of("test.operation#Input$Foo")},
     });
-    model.shapes.put(test_alloc, SmithyId.of("test.operation#Output"), .{ .structure = &.{} });
-    model.shapes.put(test_alloc, SmithyId.of("test.error#NotFound"), .{ .structure = &.{} });
-    model.traits.put(test_alloc, SmithyId.of("test.error#NotFound"), &.{
+    try model.shapes.put(test_alloc, SmithyId.of("test.operation#Output"), .{
+        .structure = &.{},
+    });
+    try model.shapes.put(test_alloc, SmithyId.of("test.error#NotFound"), .{
+        .structure = &.{},
+    });
+    try model.traits.put(test_alloc, SmithyId.of("test.error#NotFound"), &.{
         .{ .id = SmithyId.of("smithy.api#error"), .value = "client" },
     });
-    model.shapes.put(test_alloc, SmithyId.of("test.serve#Operation"), .{
-        .operation = SmithyOperation{
+    try model.shapes.put(test_alloc, SmithyId.of("test.serve#Operation"), .{
+        .operation = &SmithyOperation{
             .input = SmithyId.of("test.operation#Input"),
             .output = SmithyId.of("test.operation#Output"),
             .errors = &.{SmithyId.of("test.error#NotFound")},
         },
     });
 
-    model.shapes.put(test_alloc, SmithyId.of("test.resource#prop"), .{
-        .string = "foo",
-    });
-    model.shapes.put(test_alloc, SmithyId.of("test.serve#Resource"), .{
-        .resource = SmithyResource{
+    try model.shapes.put(test_alloc, SmithyId.of("test.resource#prop"), .string);
+    try model.shapes.put(test_alloc, SmithyId.of("test.serve#Resource"), .{
+        .resource = &SmithyResource{
             .identifiers = &.{
                 .{ .name = "forecastId", .shape = SmithyId.of("smithy.api#String") },
             },
@@ -64,15 +68,17 @@ pub fn createModel() *SmithyModel {
         },
     });
 
-    model.shapes.put(test_alloc, SmithyId.of("test.serve#Error"), .{ .structure = &.{} });
-    model.traits.put(test_alloc, SmithyId.of("test.serve#Service"), &.{
+    try model.shapes.put(test_alloc, SmithyId.of("test.serve#Error"), .{
+        .structure = &.{},
+    });
+    try model.traits.put(test_alloc, SmithyId.of("test.serve#Service"), &.{
         .{
             .id = SmithyId.of("smithy.api#documentation"),
             .value = "Foo bar baz.",
         },
     });
-    model.shapes.put(test_alloc, SmithyId.of("test.serve#Service"), .{
-        .resource = SmithyService{
+    try model.shapes.put(test_alloc, SmithyId.of("test.serve#Service"), .{
+        .service = &SmithyService{
             .version = "2017-02-11",
             .operations = &.{SmithyId.of("test.serve#Operation")},
             .resources = &.{SmithyId.of("test.serve#Resource")},
