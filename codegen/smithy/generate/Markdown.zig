@@ -8,6 +8,9 @@ const StackWriter = @import("../utils/StackWriter.zig");
 const WriterList = StackWriter.List;
 const Zig = @import("Zig.zig");
 
+// TODO: Inline text styling & links
+// TODO: Respect soft-/hard-guidelines
+
 const Self = @This();
 
 writer: *StackWriter,

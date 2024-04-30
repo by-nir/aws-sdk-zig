@@ -11,7 +11,7 @@ const Self = @This();
 pub const Options = struct {
     wrap_soft: u8 = 80,
     wrap_hard: u8 = 120,
-    line_prefix: []const u8 = &.{},
+    line_prefix: []const u8 = "",
 };
 
 pub const DeferTarget = enum { self, parent };
@@ -80,26 +80,41 @@ pub fn deinit(self: *Self) !void {
 pub fn applyDeferred(self: *Self) !void {
     var parent_cnt: usize = 0;
     var parent_idx: [16]usize = undefined;
-    for (self.deferred.items, 0..) |line, i| switch (line.target) {
-        .self => {
-            try self.output.writeAll(line.bytes);
-            self.allocator.free(line.bytes);
-        },
-        .parent => {
-            if (parent_cnt < parent_idx.len) {
-                parent_idx[parent_cnt] = i;
-                parent_cnt += 1;
-            } else {
-                return error.ParentDeferredOverflow;
-            }
-        },
-    };
 
-    for (0..parent_cnt) |i| {
-        const idx = parent_idx[i];
-        const line = self.deferred.items[idx];
-        try self.output.writeAll(line.bytes);
-        self.allocator.free(line.bytes);
+    const trim_self = std.mem.trimRight(u8, self.options.line_prefix, " ");
+    for (self.deferred.items, 0..) |line, i| {
+        switch (line.target) {
+            .self => {
+                if (line.bytes.ptr == LINE_BREAK.ptr) {
+                    try self.output.print("\n{s}", .{trim_self});
+                } else {
+                    try self.output.writeAll(line.bytes);
+                    self.allocator.free(line.bytes);
+                }
+            },
+            .parent => {
+                if (parent_cnt < parent_idx.len) {
+                    parent_idx[parent_cnt] = i;
+                    parent_cnt += 1;
+                } else {
+                    return error.ParentDeferredOverflow;
+                }
+            },
+        }
+    }
+
+    if (parent_cnt > 0) {
+        const trim_parent = std.mem.trimRight(u8, self.parent.?.options.line_prefix, " ");
+        for (0..parent_cnt) |i| {
+            const idx = parent_idx[i];
+            const line = self.deferred.items[idx];
+            if (line.bytes.ptr == LINE_BREAK.ptr) {
+                try self.output.print("\n{s}", .{trim_parent});
+            } else {
+                try self.output.writeAll(line.bytes);
+                self.allocator.free(line.bytes);
+            }
+        }
     }
 
     self.deferred.clearAndFree(self.allocator);
@@ -161,6 +176,22 @@ test "writeFmt" {
     try writer.writeFmt("{x}", .{16});
     try writer.deinit();
     try testing.expectEqualStrings("10", buffer.items);
+}
+
+pub fn writePrefix(self: *Self) !void {
+    try self.output.writeAll(self.options.line_prefix);
+}
+
+test "writePrefix" {
+    var buffer = std.ArrayList(u8).init(test_alloc);
+    defer buffer.deinit();
+
+    var writer = init(test_alloc, buffer.writer().any(), .{
+        .line_prefix = "//",
+    });
+    try writer.writePrefix();
+    try writer.deinit();
+    try testing.expectEqualStrings("//", buffer.items);
 }
 
 pub fn prefixedAll(self: *Self, bytes: []const u8) !void {
@@ -230,9 +261,14 @@ test "lineFmt" {
 }
 
 pub fn lineBreak(self: *Self, n: u8) !void {
-    for (0..n) |_| {
-        try self.output.print("\n{s}", .{self.options.line_prefix});
+    assert(n > 0);
+    if (n > 1) {
+        const trimmed = std.mem.trimRight(u8, self.options.line_prefix, " ");
+        for (0..n - 1) |_| {
+            try self.output.print("\n{s}", .{trimmed});
+        }
     }
+    try self.output.print("\n{s}", .{self.options.line_prefix});
 }
 
 test "lineBreak" {
@@ -240,11 +276,11 @@ test "lineBreak" {
     defer buffer.deinit();
 
     var writer = init(test_alloc, buffer.writer().any(), .{
-        .line_prefix = "  ",
+        .line_prefix = "//  ",
     });
     try writer.lineBreak(2);
     try writer.deinit();
-    try testing.expectEqualStrings("\n  \n  ", buffer.items);
+    try testing.expectEqualStrings("\n//\n//  ", buffer.items);
 }
 
 /// Defer writing until this context is deinitialized.
@@ -301,6 +337,43 @@ test "deferFmt" {
 
     try writer.deinit();
     try testing.expectEqualStrings("// 0x8, 0x9, 0x10, 0x11", buffer.items);
+}
+
+/// Defer writing the line until this context is deinitialized.
+const LINE_BREAK: []const u8 = "";
+pub fn deferLineBreak(self: *Self, target: DeferTarget, n: u8) !void {
+    for (0..n) |_| {
+        try self.deferred.append(self.allocator, Deferred{
+            .bytes = LINE_BREAK,
+            .target = target,
+        });
+    }
+}
+
+test "deferLineBreak" {
+    var buffer = std.ArrayList(u8).init(test_alloc);
+    defer buffer.deinit();
+
+    var writer = init(test_alloc, buffer.writer().any(), .{
+        .line_prefix = "// ",
+    });
+    try writer.prefixedAll("foo");
+
+    const scope = try writer.appendPrefix("- ");
+    try scope.deferLineBreak(.parent, 2);
+    try scope.deferLineBreak(.self, 2);
+    try scope.lineAll("bar");
+    try scope.deinit();
+
+    try writer.deinit();
+    try testing.expectEqualStrings(
+        \\// foo
+        \\// - bar
+        \\// -
+        \\// -
+        \\//
+        \\//
+    , buffer.items);
 }
 
 /// Defer writing the line until this context is deinitialized.

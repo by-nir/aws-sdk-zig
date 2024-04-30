@@ -353,9 +353,9 @@ fn putShapeName(self: *Self, id: SmithyId, full_name: []const u8) !void {
     try self.names.put(self.arena, id, try self.arena.dupe(u8, name));
 }
 
-/// Returns is aggregate shape type.
+/// Returns `true` when the shape type is a declaration.
 fn putShape(self: *Self, id: SmithyId, typ: SmithyId, target: Context.Target) !bool {
-    var is_aggregate = false;
+    var is_declaration = false;
     try self.shapes.put(self.arena, id, switch (typ) {
         .unit => switch (target) {
             .none => SmithyType.unit,
@@ -368,7 +368,7 @@ fn putShape(self: *Self, id: SmithyId, typ: SmithyId, target: Context.Target) !b
         // zig fmt: on
         inline .@"enum", .int_enum, .structure, .@"union" => |t| switch (target) {
             .id_list => |l| blk: {
-                is_aggregate = true;
+                is_declaration = true;
                 break :blk @unionInit(
                     SmithyType,
                     @tagName(t),
@@ -406,7 +406,7 @@ fn putShape(self: *Self, id: SmithyId, typ: SmithyId, target: Context.Target) !b
             else => return error.UnknownType,
         },
     });
-    return is_aggregate;
+    return is_declaration;
 }
 
 fn parseMetaList(self: *Self, ctx: Context) !void {

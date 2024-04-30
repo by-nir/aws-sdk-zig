@@ -24,6 +24,24 @@ pub fn createEmpty() !*SmithyModel {
     return model;
 }
 
+const aggr_enum = &.{ SmithyId.of("test#Enum$FOO_BAR"), SmithyId.of("test#Enum$BAZ_QUX") };
+pub fn createAggragates() !*SmithyModel {
+    const model = try createEmpty();
+
+    try model.shapes.put(test_alloc, SmithyId.of("test#Unit"), .unit);
+
+    try model.names.put(test_alloc, SmithyId.of("test#Enum"), "Enum");
+    try model.shapes.put(test_alloc, SmithyId.of("test#Enum"), .{
+        .@"enum" = aggr_enum,
+    });
+    try model.names.put(test_alloc, SmithyId.of("test#Enum$FOO_BAR"), "FOO_BAR");
+    try model.shapes.put(test_alloc, SmithyId.of("test#Enum$FOO_BAR"), .unit);
+    try model.names.put(test_alloc, SmithyId.of("test#Enum$BAZ_QUX"), "BAZ_QUX");
+    try model.shapes.put(test_alloc, SmithyId.of("test#Enum$BAZ_QUX"), .unit);
+
+    return model;
+}
+
 pub fn createService() !*SmithyModel {
     const model = try createEmpty();
 
