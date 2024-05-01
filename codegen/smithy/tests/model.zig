@@ -10,6 +10,7 @@ const SmithyModel = syb_shapes.SmithyModel;
 const SmithyService = syb_shapes.SmithyService;
 const SmithyOperation = syb_shapes.SmithyOperation;
 const SmithyResource = syb_shapes.SmithyResource;
+const trt_refine = @import("../prelude/refine.zig");
 
 pub fn createEmpty() !*SmithyModel {
     const model = test_alloc.create(SmithyModel) catch unreachable;
@@ -24,20 +25,32 @@ pub fn createEmpty() !*SmithyModel {
     return model;
 }
 
-const aggr_enum = &.{ SmithyId.of("test#Enum$FOO_BAR"), SmithyId.of("test#Enum$BAZ_QUX") };
 pub fn createAggragates() !*SmithyModel {
+    const Static = struct {
+        const enum_members = &.{
+            SmithyId.of("test#Enum$FOO_BAR"),
+            SmithyId.of("test#Enum$BAZ_QUX"),
+        };
+    };
+
     const model = try createEmpty();
 
     try model.shapes.put(test_alloc, SmithyId.of("test#Unit"), .unit);
 
     try model.names.put(test_alloc, SmithyId.of("test#Enum"), "Enum");
     try model.shapes.put(test_alloc, SmithyId.of("test#Enum"), .{
-        .@"enum" = aggr_enum,
+        .@"enum" = Static.enum_members,
     });
     try model.names.put(test_alloc, SmithyId.of("test#Enum$FOO_BAR"), "FOO_BAR");
     try model.shapes.put(test_alloc, SmithyId.of("test#Enum$FOO_BAR"), .unit);
     try model.names.put(test_alloc, SmithyId.of("test#Enum$BAZ_QUX"), "BAZ_QUX");
     try model.shapes.put(test_alloc, SmithyId.of("test#Enum$BAZ_QUX"), .unit);
+    try model.traits.put(test_alloc, SmithyId.of("test#Enum$BAZ_QUX"), &.{
+        .{
+            .id = trt_refine.EnumValue.id,
+            .value = &trt_refine.EnumValue.Val{ .string = "baz$qux" },
+        },
+    });
 
     return model;
 }

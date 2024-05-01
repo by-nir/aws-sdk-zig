@@ -22,37 +22,44 @@ pub const TYPE_BIGDEC = "smithy.api#BigDecimal";
 pub const TYPE_TIMESTAMP = "smithy.api#Timestamp";
 pub const TYPE_DOCUMENT = "smithy.api#Document";
 
-/// [Smithy Spec](https://smithy.io/2.0/spec/type-refinement-traits.html#sparse-trait)
-pub const AggregateOptional = enum {
-    /// Null values are not allowed in the aggregate.
-    dense,
-    /// Indicates that an aggregate MAY contain null values.
-    sparse,
-};
+const std = @import("std");
+const TraitsManager = @import("symbols/traits.zig").TraitsManager;
+const trt_auth = @import("prelude/auth.zig");
+const trt_behavior = @import("prelude/behavior.zig");
+const trt_constraint = @import("prelude/constraint.zig");
+const trt_doc = @import("prelude/doc.zig");
+const trt_endpoint = @import("prelude/endpoint.zig");
+const trt_http = @import("prelude/http.zig");
+const trt_protocol = @import("prelude/protocol.zig");
+const trt_refine = @import("prelude/refine.zig");
+const trt_resource = @import("prelude/resource.zig");
+const trt_stream = @import("prelude/stream.zig");
+const trt_validate = @import("prelude/validate.zig");
 
-/// Defines an optional custom timestamp serialization format.
-///
-/// [Smithy Spec](https://smithy.io/2.0/spec/protocol-traits.html#timestamp-formats)
-pub const TimestampFormat = enum {
-    /// By default, the serialization format of a timestamp is implicitly determined
-    /// by the protocol of a service.
-    default,
-    /// Date time as defined by the date-time production in RFC 3339 (section 5.6),
-    /// with optional millisecond precision but no UTC offset.
-    /// ```
-    /// 1985-04-12T23:20:50.520Z
-    /// ```
-    date_time,
-    /// An HTTP date as defined by the IMF-fixdate production in RFC 7231 (section 7.1.1.1).
-    /// ```
-    /// Tue, 29 Apr 2014 18:30:38 GMT
-    /// ```
-    http_date,
-    /// Also known as Unix time, the number of seconds that have elapsed since
-    /// _00:00:00 Coordinated Universal Time (UTC), Thursday, 1 January 1970_,
-    /// with optional millisecond precision.
-    /// ```
-    /// 1515531081.123
-    /// ```
-    epoch_seconds,
-};
+pub fn registerTraits(allocator: std.mem.Allocator, manager: *TraitsManager) !void {
+    try manager.registerAll(allocator, trt_auth.traits);
+    try manager.registerAll(allocator, trt_behavior.traits);
+    try manager.registerAll(allocator, trt_constraint.traits);
+    try manager.registerAll(allocator, trt_doc.traits);
+    try manager.registerAll(allocator, trt_endpoint.traits);
+    try manager.registerAll(allocator, trt_http.traits);
+    try manager.registerAll(allocator, trt_protocol.traits);
+    try manager.registerAll(allocator, trt_refine.traits);
+    try manager.registerAll(allocator, trt_resource.traits);
+    try manager.registerAll(allocator, trt_stream.traits);
+    try manager.registerAll(allocator, trt_validate.traits);
+}
+
+test {
+    _ = trt_auth;
+    _ = trt_behavior;
+    _ = trt_constraint;
+    _ = trt_doc;
+    _ = trt_endpoint;
+    _ = trt_http;
+    _ = trt_protocol;
+    _ = trt_refine;
+    _ = trt_resource;
+    _ = trt_stream;
+    _ = trt_validate;
+}

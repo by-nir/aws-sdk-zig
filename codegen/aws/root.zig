@@ -9,6 +9,7 @@ const smithy = @import("smithy");
 const IssuesBag = smithy.IssuesBag;
 const JsonReader = smithy.JsonReader;
 const TraitsManager = smithy.TraitsManager;
+const registerPreludeTraits = smithy.registerPreludeTraits;
 
 pub const Stats = struct { shapes: usize, duration_ns: u64 };
 
@@ -19,6 +20,7 @@ pub fn main() !void {
         traits_manager.deinit(gpa.allocator());
         _ = gpa.deinit();
     }
+    try registerPreludeTraits(gpa.allocator(), &traits_manager);
 
     var input_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     var output_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);

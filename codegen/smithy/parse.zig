@@ -11,7 +11,8 @@ const SmithyType = syb_id.SmithyType;
 const syb_shape = @import("symbols/shapes.zig");
 const SmithyMeta = syb_shape.SmithyMeta;
 const SmithyModel = syb_shape.SmithyModel;
-const syb_trait = @import("symbols/traits.zig");
+const TraitsManager = @import("symbols/traits.zig").TraitsManager;
+const EnumValueTrait = @import("prelude/refine.zig").EnumValue;
 
 const Self = @This();
 
@@ -41,7 +42,7 @@ const Context = struct {
 };
 
 arena: Allocator,
-manager: syb_trait.TraitsManager,
+manager: TraitsManager,
 policy: Policy,
 issues: *IssuesBag,
 reader: *JsonReader,
@@ -59,7 +60,7 @@ names: std.AutoHashMapUnmanaged(SmithyId, []const u8) = .{},
 /// `json_reader` may be disposed immediately after calling this.
 pub fn parseJson(
     arena: Allocator,
-    traits: syb_trait.TraitsManager,
+    traits: TraitsManager,
     policy: Policy,
     issues: *IssuesBag,
     json: *JsonReader,
@@ -464,11 +465,22 @@ fn validateSmithyVersion(self: *Self) !void {
 }
 
 test "parseJson" {
-    var traits_manager = syb_trait.TraitsManager{};
-    defer traits_manager.deinit(test_alloc);
-    try traits_manager.register(test_alloc, SmithyId.of("test.trait#Void"), TestTraits.traitVoid());
-    try traits_manager.register(test_alloc, SmithyId.of("test.trait#Int"), TestTraits.traitInt());
-    try traits_manager.register(test_alloc, SmithyId.of("smithy.api#enumValue"), TestTraits.traitEnum());
+    const Traits = struct {
+        fn parseInt(allocator: Allocator, reader: *JsonReader) !*const anyopaque {
+            const value = try reader.nextInteger();
+            const ptr = try allocator.create(i64);
+            ptr.* = value;
+            return ptr;
+        }
+    };
+
+    var traits = TraitsManager{};
+    defer traits.deinit(test_alloc);
+    try traits.registerAll(test_alloc, &.{
+        .{ SmithyId.of("test.trait#Void"), null },
+        .{ SmithyId.of("test.trait#Int"), Traits.parseInt },
+        .{ EnumValueTrait.id, EnumValueTrait.parse },
+    });
 
     var input_arena = std.heap.ArenaAllocator.init(test_alloc);
     errdefer input_arena.deinit();
@@ -480,7 +492,7 @@ test "parseJson" {
 
     var output_arena = std.heap.ArenaAllocator.init(test_alloc);
     defer output_arena.deinit();
-    const model = try parseJson(output_arena.allocator(), traits_manager, .{
+    const model = try parseJson(output_arena.allocator(), traits, .{
         .property = .skip,
         .trait = .skip,
     }, &issues, &reader);
@@ -553,11 +565,10 @@ test "parseJson" {
         model.getShape(SmithyId.of("test.simple#Enum")),
     );
     try testing.expectEqual(.unit, model.getShape(SmithyId.of("test.simple#Enum$FOO")));
-    try testing.expectEqualDeep(TestTraits.EnumValue{ .string = "foo" }, model.getTrait(
-        SmithyId.of("test.simple#Enum$FOO"),
-        SmithyId.of("smithy.api#enumValue"),
-        TestTraits.EnumValue,
-    ));
+    try testing.expectEqualDeep(
+        EnumValueTrait.Val{ .string = "foo" },
+        EnumValueTrait.get(&model, SmithyId.of("test.simple#Enum$FOO")),
+    );
     try testing.expectEqualStrings("Enum", try model.tryGetName(SmithyId.of("test.simple#Enum")));
     try testing.expectEqualStrings("FOO", try model.tryGetName(SmithyId.of("test.simple#Enum$FOO")));
 
@@ -566,11 +577,10 @@ test "parseJson" {
         model.getShape(SmithyId.of("test.simple#IntEnum")),
     );
     try testing.expectEqual(.unit, model.getShape(SmithyId.of("test.simple#IntEnum$FOO")));
-    try testing.expectEqual(TestTraits.EnumValue{ .integer = 1 }, model.getTrait(
-        SmithyId.of("test.simple#IntEnum$FOO"),
-        SmithyId.of("smithy.api#enumValue"),
-        TestTraits.EnumValue,
-    ));
+    try testing.expectEqual(
+        EnumValueTrait.Val{ .integer = 1 },
+        EnumValueTrait.get(&model, SmithyId.of("test.simple#IntEnum$FOO")),
+    );
     try testing.expectEqualStrings("IntEnum", try model.tryGetName(SmithyId.of("test.simple#IntEnum")));
     try testing.expectEqualStrings(
         "FOO",
@@ -696,37 +706,3 @@ test "parseJson" {
     );
     try testing.expectEqual(SmithyId.of("test.serve#Service"), model.service);
 }
-
-const TestTraits = struct {
-    pub fn traitVoid() syb_trait.SmithyTrait {
-        return .{ .ctx = undefined, .vtable = &.{ .parse = null } };
-    }
-
-    pub fn traitInt() syb_trait.SmithyTrait {
-        return .{ .ctx = undefined, .vtable = &.{ .parse = parseInt } };
-    }
-
-    pub fn traitEnum() syb_trait.SmithyTrait {
-        return .{ .ctx = undefined, .vtable = &.{ .parse = parseEnum } };
-    }
-
-    fn parseInt(_: *const anyopaque, allocator: Allocator, reader: *JsonReader) !*const anyopaque {
-        const value = try reader.nextInteger();
-        const ptr = try allocator.create(i64);
-        ptr.* = value;
-        return ptr;
-    }
-
-    pub const EnumValue = union(enum) { integer: i32, string: []const u8 };
-    fn parseEnum(_: *const anyopaque, allocator: Allocator, reader: *JsonReader) !*const anyopaque {
-        const value = try allocator.create(EnumValue);
-        value.* = switch (try reader.peek()) {
-            .number => .{ .integer = @intCast(try reader.nextInteger()) },
-            .string => blk: {
-                break :blk .{ .string = try allocator.dupe(u8, try reader.nextString()) };
-            },
-            else => unreachable,
-        };
-        return value;
-    }
-};

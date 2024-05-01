@@ -1,7 +1,9 @@
 pub const JsonReader = @import("utils/JsonReader.zig");
 
+const prelude = @import("prelude.zig");
 const symbols_traits = @import("symbols/traits.zig");
 pub const TraitsManager = symbols_traits.TraitsManager;
+pub const registerPreludeTraits = prelude.registerTraits;
 
 pub const IssuesBag = @import("utils/IssuesBag.zig");
 
@@ -20,7 +22,7 @@ test {
     _ = @import("symbols/identity.zig");
     _ = symbols_traits;
     _ = @import("symbols/shapes.zig");
-    _ = @import("prelude.zig");
+    _ = prelude;
     _ = parse;
     _ = generate;
     _ = @import("generate/Markdown.zig");

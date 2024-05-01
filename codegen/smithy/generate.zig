@@ -42,10 +42,8 @@ fn writeScriptShape(arena: Allocator, script: *Script, model: *const SmithyModel
 
 test "writeScriptShape" {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const arena_alloc = arena.allocator();
     defer arena.deinit();
-
-    const model = try test_model.createAggragates();
-    defer test_model.deinitModel(model);
 
     var buffer = std.ArrayList(u8).init(test_alloc);
     defer buffer.deinit();
@@ -53,7 +51,9 @@ test "writeScriptShape" {
     var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
     var script = try Script.init(&writer, null);
 
-    const arena_alloc = arena.allocator();
+    const model = try test_model.createAggragates();
+    defer test_model.deinitModel(model);
+
     try testing.expectError(
         error.InvalidRootShape,
         writeScriptShape(arena_alloc, &script, model, SmithyId.of("test#Unit")),
@@ -94,8 +94,9 @@ fn writeEnumShape(
     var pairs = try std.ArrayList(EnumParseTuple).initCapacity(arena, members.len);
     defer pairs.deinit();
     for (members) |m| {
-        const str_val = try model.tryGetName(m);
-        const enm_val = try zigifyFieldName(arena, str_val);
+        const name = try model.tryGetName(m);
+        const enm_val = try zigifyFieldName(arena, name);
+        const str_val = if (trt_refine.EnumValue.get(model, m)) |v| v.string else name;
         pairs.appendAssumeCapacity(.{ .str_val = str_val, .enum_val = .{ .name = enm_val } });
         _ = try scope.field(.{ .name = enm_val, .type = null });
     }
@@ -173,7 +174,7 @@ const TEST_ENUM =
     \\    const ParseMap = _imp_std.StaticStringMap(@This());
     \\    const parse_map = ParseMap.initComptime(.{
     \\        .{ "FOO_BAR", .foo_bar },
-    \\        .{ "BAZ_QUX", .baz_qux },
+    \\        .{ "baz$qux", .baz_qux },
     \\    });
     \\
     \\    pub fn parse(value: []const u8) This() {
@@ -184,7 +185,7 @@ const TEST_ENUM =
     \\        return switch (self) {
     \\            .UNKNOWN => |s| s,
     \\            .foo_bar => "FOO_BAR",
-    \\            .baz_qux => "BAZ_QUX",
+    \\            .baz_qux => "baz$qux",
     \\        }
     \\    }
     \\
