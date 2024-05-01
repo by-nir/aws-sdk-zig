@@ -81,12 +81,12 @@ pub fn applyDeferred(self: *Self) !void {
     var parent_cnt: usize = 0;
     var parent_idx: [16]usize = undefined;
 
-    const trim_self = std.mem.trimRight(u8, self.options.line_prefix, " ");
+    var prfx = std.mem.trimRight(u8, self.options.line_prefix, " ");
     for (self.deferred.items, 0..) |line, i| {
         switch (line.target) {
             .self => {
                 if (line.bytes.ptr == LINE_BREAK.ptr) {
-                    try self.output.print("\n{s}", .{trim_self});
+                    try self.output.print("\n{s}", .{prfx});
                 } else {
                     try self.output.writeAll(line.bytes);
                     self.allocator.free(line.bytes);
@@ -104,12 +104,12 @@ pub fn applyDeferred(self: *Self) !void {
     }
 
     if (parent_cnt > 0) {
-        const trim_parent = std.mem.trimRight(u8, self.parent.?.options.line_prefix, " ");
+        prfx = std.mem.trimRight(u8, self.parent.?.options.line_prefix, " ");
         for (0..parent_cnt) |i| {
             const idx = parent_idx[i];
             const line = self.deferred.items[idx];
             if (line.bytes.ptr == LINE_BREAK.ptr) {
-                try self.output.print("\n{s}", .{trim_parent});
+                try self.output.print("\n{s}", .{prfx});
             } else {
                 try self.output.writeAll(line.bytes);
                 self.allocator.free(line.bytes);

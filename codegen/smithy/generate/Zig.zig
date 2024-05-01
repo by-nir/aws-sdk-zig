@@ -22,7 +22,7 @@ pub const CommentLevel = enum { normal, doc, doc_top };
 const INDENT = "    ";
 pub const param_self = Function.Prototype.Parameter{
     .identifier = .{ .name = "self" },
-    .type = .this,
+    .type = .This,
 };
 
 writer: *StackWriter,
@@ -511,6 +511,7 @@ pub fn comment(self: *Container, level: CommentLevel) !Markdown {
         try self.writer.lineBreak(br);
     } else {
         self.section = .fields;
+        try self.writer.writePrefix();
     }
 
     const scope = try self.writer.appendPrefix(switch (level) {
@@ -1966,12 +1967,13 @@ pub const Val = union(enum) {
 pub const Expr = union(enum) {
     raw: []const u8,
     val: Val,
+    type: TypeExpr,
     call: struct { identifier: []const u8, args: []const Val },
 
     pub fn format(self: Expr, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
         switch (self) {
             .raw => try writer.writeAll(self.raw),
-            .val => |s| try writer.print("{}", .{s}),
+            inline .val, .type => |s| try writer.print("{}", .{s}),
             .call => |t| try writer.print("{s}({})", .{
                 t.identifier,
                 List(Val){ .items = t.args },
@@ -1981,6 +1983,9 @@ pub const Expr = union(enum) {
 
     test "format" {
         try testing.expectFmt("foo", "{}", .{Expr{ .raw = "foo" }});
+        try testing.expectFmt("\"foo\"", "{}", .{Expr{ .val = Val.of("foo") }});
+        try testing.expectFmt("u8", "{}", .{Expr{ .type = TypeExpr.of(u8) }});
+
         try testing.expectFmt("foo()", "{}", .{
             Expr{ .call = .{ .identifier = "foo", .args = &.{} } },
         });
@@ -2061,15 +2066,23 @@ pub const Expr = union(enum) {
 // ErrorSetDecl <- KEYWORD_error LBRACE IdentifierList RBRACE
 // IdentifierList <- (doc_comment? IDENTIFIER COMMA)* (doc_comment? IDENTIFIER)?
 pub const TypeExpr = union(enum) {
-    string,
-    this,
     raw: []const u8,
+    This,
+    string,
+    array: struct { len: usize, type: *const TypeExpr },
+    slice: struct { mutable: bool = false, type: *const TypeExpr },
+    pointer: struct { mutable: bool = false, type: *const TypeExpr },
 
     pub fn format(self: TypeExpr, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
         switch (self) {
-            .string => try writer.writeAll("[]const u8"),
-            .this => try writer.writeAll("@This()"),
             .raw => |s| try writer.writeAll(s),
+            .This => try writer.writeAll("@This()"),
+            .string => try writer.writeAll("[]const u8"),
+            .array => |t| try writer.print("[{d}]{}", .{ t.len, t.type }),
+            inline .slice, .pointer => |t, g| {
+                try if (g == .pointer) writer.writeByte('*') else writer.writeAll("[]");
+                try if (t.mutable) writer.print("{}", .{t.type}) else writer.print("const {}", .{t.type});
+            },
         }
     }
 
@@ -2078,11 +2091,28 @@ pub const TypeExpr = union(enum) {
     }
 
     test {
-        try testing.expectFmt(
-            "error{Foo}!*const []u8",
-            "{}",
-            .{TypeExpr.of(error{Foo}!*const []u8)},
-        );
+        try testing.expectFmt("error{Foo}!*const []u8", "{}", .{of(error{Foo}!*const []u8)});
+        try testing.expectFmt("[2]u8", "{}", .{
+            TypeExpr{ .array = .{ .len = 2, .type = &of(u8) } },
+        });
+        try testing.expectFmt("[]const u8", "{}", .{
+            TypeExpr{ .slice = .{ .type = &of(u8) } },
+        });
+        try testing.expectFmt("[]u8", "{}", .{
+            TypeExpr{ .slice = .{
+                .mutable = true,
+                .type = &of(u8),
+            } },
+        });
+        try testing.expectFmt("*const u8", "{}", .{
+            TypeExpr{ .pointer = .{ .type = &of(u8) } },
+        });
+        try testing.expectFmt("*u8", "{}", .{
+            TypeExpr{ .pointer = .{
+                .mutable = true,
+                .type = &of(u8),
+            } },
+        });
     }
 };
 

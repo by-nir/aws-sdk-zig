@@ -10,10 +10,13 @@ const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const test_model = @import("tests/model.zig");
-const SmithyId = @import("symbols/identity.zig").SmithyId;
+const syb_id = @import("symbols/identity.zig");
+const SmithyId = syb_id.SmithyId;
+const SmithyType = syb_id.SmithyType;
 const SmithyModel = @import("symbols/shapes.zig").SmithyModel;
 const Script = @import("generate/Zig.zig");
 const StackWriter = @import("utils/StackWriter.zig");
+const trt_refine = @import("prelude/refine.zig");
 
 /// Must `close()` the returned directory when complete.
 pub fn getModelDir(rel_base: []const u8, rel_model: []const u8) !fs.Dir {
@@ -35,7 +38,12 @@ pub fn generateModel(arena: Allocator, name: []const u8, model: SmithyModel) !vo
 
 fn writeScriptShape(arena: Allocator, script: *Script, model: *const SmithyModel, id: SmithyId) !void {
     switch (try model.tryGetShape(id)) {
-        .@"enum" => |members| try writeEnumShape(arena, script, model, id, members),
+        .str_enum => |m| try writeStrEnumShape(arena, script, model, id, m),
+        .int_enum => |m| try writeIntEnumShape(arena, script, model, id, m),
+        .structure => |m| try writeStructShape(arena, script, model, id, m),
+        .tagged_uinon => |m| try writeUnionShape(arena, script, model, id, m),
+        .list => |m| try writeListShape(script, model, id, m),
+        .map => |m| try writeMapShape(script, model, id, m),
         else => return error.InvalidRootShape,
     }
 }
@@ -58,13 +66,63 @@ test "writeScriptShape" {
         error.InvalidRootShape,
         writeScriptShape(arena_alloc, &script, model, SmithyId.of("test#Unit")),
     );
+
+    const imp_std = try script.import("std");
+    std.debug.assert(std.mem.eql(u8, imp_std.name, "_imp_std"));
+
+    try writeScriptShape(arena_alloc, &script, model, SmithyId.of("test#List"));
+    try writeScriptShape(arena_alloc, &script, model, SmithyId.of("test#Map"));
     try writeScriptShape(arena_alloc, &script, model, SmithyId.of("test#Enum"));
+    try writeScriptShape(arena_alloc, &script, model, SmithyId.of("test#IntEnum"));
+    try writeScriptShape(arena_alloc, &script, model, SmithyId.of("test#Union"));
+    try writeScriptShape(arena_alloc, &script, model, SmithyId.of("test#Struct"));
 
     try script.end();
-    try testing.expectEqualStrings(TEST_ENUM, buffer.items);
+    try testing.expectEqualStrings(
+        TEST_LIST ++ "\n" ++ TEST_MAP ++ "\n\n" ++
+            TEST_STR_ENUM ++ "\n\n" ++ TEST_INT_ENUM ++ "\n\n" ++ TEST_UNION ++ "\n\n" ++ TEST_STRUCT ++
+            "\n\n" ++ "const _imp_std = @import(\"std\");",
+        buffer.items,
+    );
 }
 
-fn writeEnumShape(
+fn writeListShape(script: *Script, model: *const SmithyModel, id: SmithyId, memeber: SmithyId) !void {
+    const shape_name = try model.tryGetName(id);
+    const target_name = try getShapeName(memeber, model);
+    _ = try script.variable(
+        .{ .is_public = true },
+        .{ .identifier = .{ .name = shape_name } },
+        .{ .type = Script.TypeExpr{
+            .slice = .{ .type = &.{ .raw = target_name } },
+        } },
+    );
+}
+
+const TEST_LIST = "pub const List = []const i32;";
+
+fn writeMapShape(
+    script: *Script,
+    model: *const SmithyModel,
+    id: SmithyId,
+    memeber: [2]SmithyId,
+) !void {
+    const shape_name = try model.tryGetName(id);
+    const key_name = try getShapeName(memeber[0], model);
+    const val_name = try getShapeName(memeber[1], model);
+
+    _ = try script.variable(
+        .{ .is_public = true },
+        .{ .identifier = .{ .name = shape_name } },
+        .{ .call = .{
+            .identifier = "*const _imp_std.AutoArrayHashMapUnmanaged",
+            .args = &.{ .{ .raw = key_name }, .{ .raw = val_name } },
+        } },
+    );
+}
+
+const TEST_MAP = "pub const Map = *const _imp_std.AutoArrayHashMapUnmanaged(i32, i32);";
+
+fn writeStrEnumShape(
     arena: Allocator,
     script: *Script,
     model: *const SmithyModel,
@@ -131,7 +189,7 @@ fn writeEnumShape(
         .parameters = &.{
             .{ .identifier = .{ .name = "value" }, .type = .string },
         },
-        .return_type = .{ .raw = "This()" },
+        .return_type = .This,
     });
     try blk.prefix(.ret).exprFmt("{}.get(value) orelse .{{ .UNKNOWN = value }}", .{map_values});
     try blk.end();
@@ -159,12 +217,13 @@ fn writeEnumShape(
         try prong.end();
     }
     try swtch.end();
+    try scope.writer.writeByte(';');
     try blk.end();
 
     try scope.end();
 }
 
-const TEST_ENUM =
+const TEST_STR_ENUM =
     \\pub const Enum = union(enum) {
     \\    /// Used for backwards compatibility when adding new values.
     \\    UNKNOWN: []const u8,
@@ -177,7 +236,7 @@ const TEST_ENUM =
     \\        .{ "baz$qux", .baz_qux },
     \\    });
     \\
-    \\    pub fn parse(value: []const u8) This() {
+    \\    pub fn parse(value: []const u8) @This() {
     \\        return parse_map.get(value) orelse .{ .UNKNOWN = value };
     \\    }
     \\
@@ -186,12 +245,161 @@ const TEST_ENUM =
     \\            .UNKNOWN => |s| s,
     \\            .foo_bar => "FOO_BAR",
     \\            .baz_qux => "baz$qux",
-    \\        }
+    \\        };
     \\    }
-    \\
-    \\    const _imp_std = @import("std");
     \\};
 ;
+
+fn writeIntEnumShape(
+    arena: Allocator,
+    script: *Script,
+    model: *const SmithyModel,
+    id: SmithyId,
+    members: []const SmithyId,
+) !void {
+    const shape_name = try model.tryGetName(id);
+    var scope = try script.declare(.{ .name = shape_name }, .{
+        .is_public = true,
+        .type = .{ .Enum = .{ .raw = "i32" } },
+    });
+
+    for (members) |m| {
+        _ = try scope.field(.{
+            .name = try zigifyFieldName(arena, try model.tryGetName(m)),
+            .type = null,
+            .assign = .{ .val = Script.Val.of(trt_refine.EnumValue.get(model, m).?.integer) },
+        });
+    }
+
+    var doc = try scope.comment(.doc);
+    try doc.paragraph("Used for backwards compatibility when adding new values.");
+    try doc.end();
+    _ = try scope.field(.{ .name = "_", .type = null });
+
+    var blk = try scope.function(.{
+        .is_public = true,
+    }, .{
+        .identifier = .{ .name = "parse" },
+        .parameters = &.{
+            .{ .identifier = .{ .name = "value" }, .type = Script.TypeExpr.of(i32) },
+        },
+        .return_type = .This,
+    });
+    try blk.prefix(.ret).expr(.{ .raw = "@enumFromInt(value)" });
+    try blk.end();
+
+    blk = try scope.function(.{
+        .is_public = true,
+    }, .{
+        .identifier = .{ .name = "serialize" },
+        .parameters = &.{Script.param_self},
+        .return_type = Script.TypeExpr.of(i32),
+    });
+    try blk.prefix(.ret).expr(.{ .raw = "@intFromEnum(self)" });
+    try blk.end();
+
+    try scope.end();
+}
+
+const TEST_INT_ENUM =
+    \\pub const IntEnum = enum(i32) {
+    \\    foo_bar = 8,
+    \\    baz_qux = 9,
+    \\
+    \\    /// Used for backwards compatibility when adding new values.
+    \\    _,
+    \\
+    \\    pub fn parse(value: i32) @This() {
+    \\        return @enumFromInt(value);
+    \\    }
+    \\
+    \\    pub fn serialize(self: @This()) i32 {
+    \\        return @intFromEnum(self);
+    \\    }
+    \\};
+;
+
+fn writeUnionShape(
+    arena: Allocator,
+    script: *Script,
+    model: *const SmithyModel,
+    id: SmithyId,
+    members: []const SmithyId,
+) !void {
+    const shape_name = try model.tryGetName(id);
+    var scope = try script.declare(.{ .name = shape_name }, .{
+        .is_public = true,
+        .type = .{ .TaggedUnion = null },
+    });
+    for (members) |m| {
+        _ = try scope.field(.{
+            .name = try zigifyFieldName(arena, try model.tryGetName(m)),
+            .type = .{ .raw = try getShapeName(m, model) },
+        });
+    }
+    try scope.end();
+}
+
+const TEST_UNION =
+    \\pub const Union = union(enum) {
+    \\    foo_bar: i32,
+    \\    baz_qux: []const u8,
+    \\};
+;
+
+fn writeStructShape(
+    arena: Allocator,
+    script: *Script,
+    model: *const SmithyModel,
+    id: SmithyId,
+    members: []const SmithyId,
+) !void {
+    const shape_name = try model.tryGetName(id);
+    var scope = try script.declare(.{ .name = shape_name }, .{
+        .is_public = true,
+        .type = .{ .Struct = null },
+    });
+    for (members) |m| {
+        _ = try scope.field(.{
+            .name = try zigifyFieldName(arena, try model.tryGetName(m)),
+            .type = .{ .raw = try getShapeName(m, model) },
+        });
+    }
+    try scope.end();
+}
+
+const TEST_STRUCT =
+    \\pub const Struct = struct {
+    \\    foo_bar: i32,
+    \\    baz_qux: IntEnum,
+    \\};
+;
+
+fn getShapeName(id: SmithyId, model: *const SmithyModel) ![]const u8 {
+    const shape = switch (id) {
+        // zig fmt: off
+        inline .unit, .blob, .boolean, .string, .byte, .short, .integer, .long,
+        .float, .double, .big_integer, .big_decimal, .timestamp, .document =>
+            |t| std.enums.nameCast(SmithyType, t),
+        // zig fmt: on
+        else => try model.tryGetShape(id),
+    };
+    return switch (shape) {
+        .unit => unreachable,
+        .boolean => "bool",
+        .byte => "i8",
+        .short => "i16",
+        .integer => "i32",
+        .long => "i64",
+        .float => "f32",
+        .double => "f64",
+        .string, .blob, .document => "[]const u8",
+        .big_integer, .big_decimal => "[]const u8",
+        .timestamp => "u64",
+        .target => |t| model.tryGetName(t),
+        else => unreachable,
+    };
+}
 
 pub const ReadmeSlots = struct {
     /// `{[title]s}` service title

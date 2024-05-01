@@ -32,7 +32,7 @@ pub const SmithyId = enum(u32) {
     blob = hash32("blob"),
     boolean = hash32("boolean"),
     string = hash32("string"),
-    @"enum" = hash32("enum"),
+    str_enum = hash32("enum"),
     byte = hash32("byte"),
     short = hash32("short"),
     integer = hash32("integer"),
@@ -47,7 +47,7 @@ pub const SmithyId = enum(u32) {
     list = hash32("list"),
     map = hash32("map"),
     structure = hash32("structure"),
-    @"union" = hash32("union"),
+    tagged_uinon = hash32("union"),
     operation = hash32("operation"),
     resource = hash32("resource"),
     service = hash32("service"),
@@ -139,7 +139,7 @@ pub const SmithyType = union(enum) {
     /// UTF-8 encoded string.
     string,
     /// A string with a fixed set of values.
-    @"enum": []const SmithyId,
+    str_enum: []const SmithyId,
     /// 8-bit signed integer ranging from -128 to 127 (inclusive).
     byte,
     /// 16-bit signed integer ranging from -32,768 to 32,767 (inclusive).
@@ -175,7 +175,7 @@ pub const SmithyType = union(enum) {
     /// Fixed set of named heterogeneous members.
     structure: []const SmithyId,
     /// Tagged union data structure that can take on one of several different, but fixed, types.
-    @"union": []const SmithyId,
+    tagged_uinon: []const SmithyId,
 
     //
     // Service types have specific semantics and define services, resources, and operations.

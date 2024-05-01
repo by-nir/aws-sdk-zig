@@ -1,6 +1,7 @@
 //! Smithy parser for [JSON AST](https://smithy.io/2.0/spec/json-ast.html) representation.
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const mem = std.mem;
+const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const JsonReader = @import("utils/JsonReader.zig");
@@ -110,7 +111,11 @@ fn parseProp(self: *Self, prop_name: []const u8, ctx: Context) !void {
         .member, .key, .value => try self.parseMember(prop_name, ctx),
         .members => try self.parseScope(.object, parseMember, ctx),
         .shapes => try self.parseScope(.object, parseShape, .{}),
-        .target => _ = try self.putShape(ctx.id, SmithyId.of(try self.reader.nextString()), .none),
+        .target => {
+            // No need for name; if the target’s declaration will handle it.
+            const id = SmithyId.of(try self.reader.nextString());
+            _ = try self.putShape(ctx.id, id, undefined, .none);
+        },
         .metadata => try self.parseScope(.object, parseMetaMap, .{ .target = .meta }),
         .version => switch (ctx.target) {
             .service => |t| t.version = try self.arena.dupe(u8, try self.reader.nextString()),
@@ -181,16 +186,17 @@ fn parseMember(self: *Self, prop_name: []const u8, ctx: Context) !void {
     @memcpy(member_name[parent_name.len + 1 ..][0..prop_name.len], prop_name);
 
     const member_id = SmithyId.compose(parent_name, prop_name);
-    if (!std.mem.eql(u8, prop_name, "member") and
-        !std.mem.eql(u8, prop_name, "key") and
-        !std.mem.eql(u8, prop_name, "value"))
-    {
-        try self.names.put(self.arena, member_id, try self.arena.dupe(u8, prop_name));
-    }
+    if (!isManagedMember(prop_name)) try self.putName(member_id, .{ .member = prop_name });
 
     try ctx.target.id_list.append(self.arena, member_id);
     const scp = Context{ .id = member_id, .name = member_name[0..len] };
     try self.parseScope(.object, parseProp, scp);
+}
+
+fn isManagedMember(prop_name: []const u8) bool {
+    return mem.eql(u8, prop_name, "member") or
+        mem.eql(u8, prop_name, "key") or
+        mem.eql(u8, prop_name, "value");
 }
 
 fn parseShapeRefList(
@@ -312,17 +318,17 @@ fn parseShape(self: *Self, shape_name: []const u8, _: Context) !void {
         },
         .service => .{ .service = blk: {
             const ptr = try self.arena.create(syb_shape.SmithyService);
-            ptr.* = std.mem.zeroInit(syb_shape.SmithyService, .{});
+            ptr.* = mem.zeroInit(syb_shape.SmithyService, .{});
             break :blk ptr;
         } },
         .resource => .{ .resource = blk: {
             const ptr = try self.arena.create(syb_shape.SmithyResource);
-            ptr.* = std.mem.zeroInit(syb_shape.SmithyResource, .{});
+            ptr.* = mem.zeroInit(syb_shape.SmithyResource, .{});
             break :blk ptr;
         } },
         .operation => .{ .operation = blk: {
             const ptr = try self.arena.create(syb_shape.SmithyOperation);
-            ptr.* = std.mem.zeroInit(syb_shape.SmithyOperation, .{});
+            ptr.* = mem.zeroInit(syb_shape.SmithyOperation, .{});
             break :blk ptr;
         } },
         else => blk: {
@@ -340,24 +346,13 @@ fn parseShape(self: *Self, shape_name: []const u8, _: Context) !void {
         .id = shape_id,
         .target = target,
     });
-    if (try self.putShape(shape_id, typ, target)) {
-        try self.putShapeName(shape_id, shape_name);
-    }
+    try self.putShape(shape_id, typ, shape_name, target);
     try self.reader.nextObjectEnd();
 }
 
-fn putShapeName(self: *Self, id: SmithyId, full_name: []const u8) !void {
-    const name = if (std.mem.indexOfScalar(u8, full_name, '#')) |i|
-        full_name[i + 1 .. full_name.len]
-    else
-        full_name;
-    try self.names.put(self.arena, id, try self.arena.dupe(u8, name));
-}
-
-/// Returns `true` when the shape type is a declaration.
-fn putShape(self: *Self, id: SmithyId, typ: SmithyId, target: Context.Target) !bool {
-    var is_declaration = false;
-    try self.shapes.put(self.arena, id, switch (typ) {
+fn putShape(self: *Self, id: SmithyId, typ: SmithyId, abs_name: []const u8, target: Context.Target) !void {
+    var is_named = false;
+    const sm_typ: SmithyType = switch (typ) {
         .unit => switch (target) {
             .none => SmithyType.unit,
             else => return error.InvalidShapeTarget,
@@ -367,9 +362,9 @@ fn putShape(self: *Self, id: SmithyId, typ: SmithyId, target: Context.Target) !b
         .float, .double, .big_integer, .big_decimal, .timestamp, .document,
             => |t| std.enums.nameCast(SmithyType, t),
         // zig fmt: on
-        inline .@"enum", .int_enum, .structure, .@"union" => |t| switch (target) {
+        inline .str_enum, .int_enum, .tagged_uinon, .structure => |t| switch (target) {
             .id_list => |l| blk: {
-                is_declaration = true;
+                is_named = true;
                 break :blk @unionInit(
                     SmithyType,
                     @tagName(t),
@@ -379,11 +374,17 @@ fn putShape(self: *Self, id: SmithyId, typ: SmithyId, target: Context.Target) !b
             else => return error.InvalidMemberTarget,
         },
         .list => switch (target) {
-            .id_list => |l| .{ .list = l.items[0] },
+            .id_list => |l| blk: {
+                is_named = true;
+                break :blk .{ .list = l.items[0] };
+            },
             else => return error.InvalidMemberTarget,
         },
         .map => switch (target) {
-            .id_list => |l| .{ .map = l.items[0..2].* },
+            .id_list => |l| blk: {
+                is_named = true;
+                break :blk .{ .map = l.items[0..2].* };
+            },
             else => return error.InvalidMemberTarget,
         },
         .operation => switch (target) {
@@ -406,8 +407,21 @@ fn putShape(self: *Self, id: SmithyId, typ: SmithyId, target: Context.Target) !b
             .none => .{ .target = typ },
             else => return error.UnknownType,
         },
-    });
-    return is_declaration;
+    };
+    try self.shapes.put(self.arena, id, sm_typ);
+    if (is_named) try self.putName(id, .{ .absolute = abs_name });
+}
+
+const Name = union(enum) { member: []const u8, absolute: []const u8 };
+fn putName(self: *Self, id: SmithyId, name: Name) !void {
+    const part = switch (name) {
+        .member => |s| s,
+        .absolute => |s| blk: {
+            const split = mem.indexOfScalar(u8, s, '#');
+            break :blk if (split) |i| s[i + 1 .. s.len] else s;
+        },
+    };
+    try self.names.put(self.arena, id, try self.arena.dupe(u8, part));
 }
 
 fn parseMetaList(self: *Self, ctx: Context) !void {
@@ -460,7 +474,7 @@ fn parseMetaValue(self: *Self) !SmithyMeta {
 
 fn validateSmithyVersion(self: *Self) !void {
     const version = try self.reader.nextString();
-    const valid = std.mem.eql(u8, "2.0", version) or std.mem.eql(u8, "2", version);
+    const valid = mem.eql(u8, "2.0", version) or mem.eql(u8, "2", version);
     if (!valid) return error.InvalidVersion;
 }
 
@@ -561,7 +575,7 @@ test "parseJson" {
     try testing.expectEqual(.timestamp, model.getShape(SmithyId.of("test.simple#Timestamp")));
 
     try testing.expectEqualDeep(
-        SmithyType{ .@"enum" = &.{SmithyId.of("test.simple#Enum$FOO")} },
+        SmithyType{ .str_enum = &.{SmithyId.of("test.simple#Enum$FOO")} },
         model.getShape(SmithyId.of("test.simple#Enum")),
     );
     try testing.expectEqual(.unit, model.getShape(SmithyId.of("test.simple#Enum$FOO")));
@@ -646,7 +660,7 @@ test "parseJson" {
     );
 
     try testing.expectEqualDeep(
-        SmithyType{ .@"union" = &.{
+        SmithyType{ .tagged_uinon = &.{
             SmithyId.of("test.aggregate#Union$a"),
             SmithyId.of("test.aggregate#Union$b"),
         } },

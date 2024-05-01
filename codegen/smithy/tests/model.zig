@@ -27,19 +27,29 @@ pub fn createEmpty() !*SmithyModel {
 
 pub fn createAggragates() !*SmithyModel {
     const Static = struct {
-        const enum_members = &.{
-            SmithyId.of("test#Enum$FOO_BAR"),
-            SmithyId.of("test#Enum$BAZ_QUX"),
-        };
+        const str_enum = &.{ SmithyId.of("test#Enum$FOO_BAR"), SmithyId.of("test#Enum$BAZ_QUX") };
+        const int_enum = &.{ SmithyId.of("test#IntEnum$FOO_BAR"), SmithyId.of("test#IntEnum$BAZ_QUX") };
+        const tagged_union = &.{ SmithyId.of("test#Union$FOO_BAR"), SmithyId.of("test#Union$BAZ_QUX") };
+        const structure = &.{ SmithyId.of("test#Struct$fooBar"), SmithyId.of("test#Struct$bazQux") };
     };
 
     const model = try createEmpty();
 
     try model.shapes.put(test_alloc, SmithyId.of("test#Unit"), .unit);
 
+    try model.names.put(test_alloc, SmithyId.of("test#List"), "List");
+    try model.shapes.put(test_alloc, SmithyId.of("test#List"), .{
+        .list = .integer,
+    });
+
+    try model.names.put(test_alloc, SmithyId.of("test#Map"), "Map");
+    try model.shapes.put(test_alloc, SmithyId.of("test#Map"), .{
+        .map = .{ .integer, .integer },
+    });
+
     try model.names.put(test_alloc, SmithyId.of("test#Enum"), "Enum");
     try model.shapes.put(test_alloc, SmithyId.of("test#Enum"), .{
-        .@"enum" = Static.enum_members,
+        .str_enum = Static.str_enum,
     });
     try model.names.put(test_alloc, SmithyId.of("test#Enum$FOO_BAR"), "FOO_BAR");
     try model.shapes.put(test_alloc, SmithyId.of("test#Enum$FOO_BAR"), .unit);
@@ -51,6 +61,48 @@ pub fn createAggragates() !*SmithyModel {
             .value = &trt_refine.EnumValue.Val{ .string = "baz$qux" },
         },
     });
+
+    try model.names.put(test_alloc, SmithyId.of("test#IntEnum"), "IntEnum");
+    try model.shapes.put(test_alloc, SmithyId.of("test#IntEnum"), .{
+        .int_enum = Static.int_enum,
+    });
+    try model.names.put(test_alloc, SmithyId.of("test#IntEnum$FOO_BAR"), "FOO_BAR");
+    try model.shapes.put(test_alloc, SmithyId.of("test#IntEnum$FOO_BAR"), .unit);
+    try model.traits.put(test_alloc, SmithyId.of("test#IntEnum$FOO_BAR"), &.{
+        .{
+            .id = trt_refine.EnumValue.id,
+            .value = &trt_refine.EnumValue.Val{ .integer = 8 },
+        },
+    });
+    try model.names.put(test_alloc, SmithyId.of("test#IntEnum$BAZ_QUX"), "BAZ_QUX");
+    try model.shapes.put(test_alloc, SmithyId.of("test#IntEnum$BAZ_QUX"), .unit);
+    try model.traits.put(test_alloc, SmithyId.of("test#IntEnum$BAZ_QUX"), &.{
+        .{
+            .id = trt_refine.EnumValue.id,
+            .value = &trt_refine.EnumValue.Val{ .integer = 9 },
+        },
+    });
+
+    try model.names.put(test_alloc, SmithyId.of("test#Union"), "Union");
+    try model.shapes.put(test_alloc, SmithyId.of("test#Union"), .{
+        .tagged_uinon = Static.tagged_union,
+    });
+    try model.names.put(test_alloc, SmithyId.of("test#Union$FOO_BAR"), "FOO_BAR");
+    try model.shapes.put(test_alloc, SmithyId.of("test#Union$FOO_BAR"), .integer);
+    try model.names.put(test_alloc, SmithyId.of("test#Union$BAZ_QUX"), "BAZ_QUX");
+    try model.shapes.put(test_alloc, SmithyId.of("test#Union$BAZ_QUX"), .string);
+
+    try model.names.put(test_alloc, SmithyId.of("test#Struct"), "Struct");
+    try model.shapes.put(test_alloc, SmithyId.of("test#Struct"), .{
+        .structure = Static.structure,
+    });
+    try model.names.put(test_alloc, SmithyId.of("test#Struct$fooBar"), "fooBar");
+    try model.shapes.put(test_alloc, SmithyId.of("test#Struct$fooBar"), .integer);
+    try model.names.put(test_alloc, SmithyId.of("test#Struct$bazQux"), "bazQux");
+    try model.shapes.put(test_alloc, SmithyId.of("test#Struct$bazQux"), .{
+        .target = SmithyId.of("test#IntEnum"),
+    });
+
 
     return model;
 }

@@ -31,7 +31,10 @@ pub fn end(self: *Self) !void {
 fn writeAll(self: *Self, text: []const u8) !void {
     if (self.is_empty) {
         self.is_empty = false;
-        try self.writer.prefixedAll(text);
+        try self.writer.writeFmt(
+            "{s}{s}",
+            .{ std.mem.trimLeft(u8, self.writer.options.line_prefix, " "), text },
+        );
     } else {
         try self.writer.lineBreak(1);
         try self.writer.lineAll(text);
