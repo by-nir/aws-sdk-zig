@@ -52,14 +52,18 @@ pub const SmithyModel = struct {
     }
 
     pub fn getTrait(self: SmithyModel, shape_id: SmithyId, trait_id: SmithyId, comptime T: type) ?TraitReturn(T) {
+        const trait = self.getTraitOpaque(shape_id, trait_id) orelse return null;
+        const ptr: *const T = @alignCast(@ptrCast(trait));
+        return switch (@typeInfo(T)) {
+            .Bool, .Int, .Float, .Enum, .Union, .Pointer => ptr.*,
+            else => ptr,
+        };
+    }
+
+    pub fn getTraitOpaque(self: SmithyModel, shape_id: SmithyId, trait_id: SmithyId) ?*const anyopaque {
         const traits = self.traits.get(shape_id) orelse return null;
         for (traits) |trait| {
-            if (trait.id != trait_id) continue;
-            const ptr: *const T = @alignCast(@ptrCast(trait.value));
-            return switch (@typeInfo(T)) {
-                .Bool, .Int, .Float, .Enum, .Union, .Pointer => ptr.*,
-                else => ptr,
-            };
+            if (trait.id == trait_id) return trait.value;
         }
         return null;
     }

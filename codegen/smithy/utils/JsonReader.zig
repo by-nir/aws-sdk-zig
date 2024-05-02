@@ -187,7 +187,7 @@ pub fn skipValueOrScope(self: *Self) !void {
     }
 }
 
-pub fn NextScopeFn(Context: type, scope: Scope, Payload: type) type {
+pub fn NextScopeFn(Context: type, Payload: type, scope: Scope) type {
     return if (Payload == void) switch (scope) {
         .array => fn (ctx: Context) anyerror!void,
         .object, .current => fn (ctx: Context, key: []const u8) anyerror!void,
@@ -200,27 +200,25 @@ pub fn NextScopeFn(Context: type, scope: Scope, Payload: type) type {
 pub fn nextScope(
     self: *Self,
     Context: type,
+    Payload: type,
     comptime scope: Scope,
-    comptime Payload: type,
-    comptime itemFn: NextScopeFn(Context, scope, Payload),
+    comptime itemFn: NextScopeFn(Context, Payload, scope),
     ctx: Context,
     payload: Payload,
 ) !void {
-    const is_void = comptime Payload == void;
     switch (scope) {
         inline .object, .current => |s| {
-            const is_obj = s == .object;
-            if (is_obj) try self.nextObjectBegin();
+            if (s == .object) try self.nextObjectBegin();
             while (try self.peek() == .string) {
                 const key = try self.nextString();
-                try if (is_void) itemFn(ctx, key) else itemFn(ctx, key, payload);
+                try if (Payload == void) itemFn(ctx, key) else itemFn(ctx, key, payload);
             }
-            if (is_obj) try self.nextObjectEnd();
+            try self.nextObjectEnd();
         },
         .array => {
             try self.nextArrayBegin();
             while (try self.peek() != .array_end) {
-                try if (is_void) itemFn(ctx) else itemFn(ctx, payload);
+                try if (Payload == void) itemFn(ctx) else itemFn(ctx, payload);
             }
             try self.nextArrayEnd();
         },
@@ -249,12 +247,12 @@ test "nextScope" {
     errdefer reader.deinit();
 
     TestFns.first = true;
-    try reader.nextScope(*Self, .object, void, TestFns.nextObject, &reader, {});
+    try reader.nextScope(*Self, void, .object, TestFns.nextObject, &reader, {});
     reader.deinit();
 
     TestFns.first = true;
     reader = try initFixed(test_alloc, "[ 108, 109 ]");
-    try reader.nextScope(*Self, .array, void, TestFns.nextArray, &reader, {});
+    try reader.nextScope(*Self, void, .array, TestFns.nextArray, &reader, {});
     reader.deinit();
 }
 

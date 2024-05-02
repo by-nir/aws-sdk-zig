@@ -4,6 +4,9 @@
 //! [Smithy Spec](https://smithy.io/2.0/spec/type-refinement-traits.html)
 
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+const testing = std.testing;
+const test_alloc = testing.allocator;
 const SmithyId = @import("../symbols/identity.zig").SmithyId;
 const TraitsList = @import("../symbols/traits.zig").TraitsList;
 const SmithyModel = @import("../symbols/shapes.zig").SmithyModel;
@@ -36,11 +39,11 @@ pub const EnumValue = struct {
         string: []const u8,
     };
 
-    pub fn parse(allocator: std.mem.Allocator, reader: *JsonReader) !*const anyopaque {
-        const value = try allocator.create(Val);
+    pub fn parse(arena: Allocator, reader: *JsonReader) !*const anyopaque {
+        const value = try arena.create(Val);
         value.* = switch (try reader.peek()) {
             .number => .{ .integer = @intCast(try reader.nextInteger()) },
-            .string => .{ .string = try allocator.dupe(u8, try reader.nextString()) },
+            .string => .{ .string = try arena.dupe(u8, try reader.nextString()) },
             else => unreachable,
         };
         return value;
@@ -50,3 +53,21 @@ pub const EnumValue = struct {
         return model.getTrait(shape_id, id, Val);
     }
 };
+
+test "EnumValue" {
+    var arena = std.heap.ArenaAllocator.init(test_alloc);
+    const allocator = arena.allocator();
+    defer arena.deinit();
+
+    var reader = try JsonReader.initFixed(allocator, "108");
+    errdefer reader.deinit();
+
+    const val_int: *const EnumValue.Val = @alignCast(@ptrCast(try EnumValue.parse(allocator, &reader)));
+    reader.deinit();
+    try testing.expectEqualDeep(&EnumValue.Val{ .integer = 108 }, val_int);
+
+    reader = try JsonReader.initFixed(allocator, "\"foo\"");
+    const val_str: *const EnumValue.Val = @alignCast(@ptrCast(try EnumValue.parse(allocator, &reader)));
+    reader.deinit();
+    try testing.expectEqualDeep(&EnumValue.Val{ .string = "foo" }, val_str);
+}

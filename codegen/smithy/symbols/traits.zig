@@ -8,7 +8,7 @@ const SmithyId = @import("identity.zig").SmithyId;
 /// Parse the trait’s value from the source JSON AST, which will be used
 /// during the source generation.
 const SmithyTrait = *const fn (
-    allocator: Allocator,
+    arena: Allocator,
     reader: *JsonReader,
 ) anyerror!*const anyopaque;
 
@@ -41,11 +41,11 @@ pub const TraitsManager = struct {
 
     /// Parse the trait’s value from the source JSON AST, which will be used
     /// during the source generation.
-    pub fn parse(self: TraitsManager, trait_id: SmithyId, allocator: Allocator, reader: *JsonReader) !?*const anyopaque {
+    pub fn parse(self: TraitsManager, trait_id: SmithyId, arena: Allocator, reader: *JsonReader) !?*const anyopaque {
         const trait = self.traits.get(trait_id) orelse return error.UnknownTrait;
         if (trait) |parseFn| {
             // Parse trait’s value
-            return parseFn(allocator, reader);
+            return parseFn(arena, reader);
         } else {
             // Annotation trait – skip the empty `{}`
             try reader.skipValueOrScope();
@@ -56,9 +56,9 @@ pub const TraitsManager = struct {
 
 test "TraitManager" {
     const SkipTwoTrait = struct {
-        fn parse(allocator: Allocator, reader: *JsonReader) !*const anyopaque {
+        fn parse(arena: Allocator, reader: *JsonReader) !*const anyopaque {
             for (0..2) |_| try reader.skipValueOrScope();
-            const dupe = try allocator.dupe(u8, try reader.nextString());
+            const dupe = try arena.dupe(u8, try reader.nextString());
             return dupe.ptr;
         }
 

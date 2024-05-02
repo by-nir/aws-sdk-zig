@@ -17,6 +17,7 @@ const SmithyModel = @import("symbols/shapes.zig").SmithyModel;
 const Script = @import("generate/Zig.zig");
 const StackWriter = @import("utils/StackWriter.zig");
 const trt_refine = @import("prelude/refine.zig");
+const trt_constraint = @import("prelude/constraint.zig");
 
 /// Must `close()` the returned directory when complete.
 pub fn getModelDir(rel_base: []const u8, rel_model: []const u8) !fs.Dir {
@@ -38,18 +39,19 @@ pub fn generateModel(arena: Allocator, name: []const u8, model: SmithyModel) !vo
 
 fn writeScriptShape(arena: Allocator, script: *Script, model: *const SmithyModel, id: SmithyId) !void {
     switch (try model.tryGetShape(id)) {
-        .str_enum => |m| try writeStrEnumShape(arena, script, model, id, m),
-        .int_enum => |m| try writeIntEnumShape(arena, script, model, id, m),
-        .structure => |m| try writeStructShape(arena, script, model, id, m),
-        .tagged_uinon => |m| try writeUnionShape(arena, script, model, id, m),
         .list => |m| try writeListShape(script, model, id, m),
         .map => |m| try writeMapShape(script, model, id, m),
+        .str_enum => |m| try writeStrEnumShape(arena, script, model, id, m),
+        .int_enum => |m| try writeIntEnumShape(arena, script, model, id, m),
+        .tagged_uinon => |m| try writeUnionShape(arena, script, model, id, m),
+        .structure => |m| try writeStructShape(arena, script, model, id, m),
+        // TODO: service/operation/resource
         else => return error.InvalidRootShape,
     }
 }
 
 test "writeScriptShape" {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    var arena = std.heap.ArenaAllocator.init(test_alloc);
     const arena_alloc = arena.allocator();
     defer arena.deinit();
 
@@ -73,18 +75,21 @@ test "writeScriptShape" {
     try writeScriptShape(arena_alloc, &script, model, SmithyId.of("test#List"));
     try writeScriptShape(arena_alloc, &script, model, SmithyId.of("test#Map"));
     try writeScriptShape(arena_alloc, &script, model, SmithyId.of("test#Enum"));
+    try writeScriptShape(arena_alloc, &script, model, SmithyId.of("test#EnumTrt"));
     try writeScriptShape(arena_alloc, &script, model, SmithyId.of("test#IntEnum"));
     try writeScriptShape(arena_alloc, &script, model, SmithyId.of("test#Union"));
     try writeScriptShape(arena_alloc, &script, model, SmithyId.of("test#Struct"));
 
     try script.end();
     try testing.expectEqualStrings(
-        TEST_LIST ++ "\n" ++ TEST_MAP ++ "\n\n" ++
-            TEST_STR_ENUM ++ "\n\n" ++ TEST_INT_ENUM ++ "\n\n" ++ TEST_UNION ++ "\n\n" ++ TEST_STRUCT ++
-            "\n\n" ++ "const _imp_std = @import(\"std\");",
+        TEST_LIST ++ "\n" ++ TEST_MAP ++ "\n\n" ++ TEST_STR_ENUM ++ "\n\n" ++ TEST_ENUM_TRT ++ "\n\n" ++
+            TEST_INT_ENUM ++ "\n\n" ++ TEST_UNION ++ "\n\n" ++ TEST_STRUCT ++
+            "\n\nconst _imp_std = @import(\"std\");",
         buffer.items,
     );
 }
+
+// TODO: How we de/init & parse/serialize shapes?
 
 fn writeListShape(script: *Script, model: *const SmithyModel, id: SmithyId, memeber: SmithyId) !void {
     const shape_name = try model.tryGetName(id);
@@ -129,6 +134,57 @@ fn writeStrEnumShape(
     id: SmithyId,
     members: []const SmithyId,
 ) !void {
+    var list = try std.ArrayList(StrEnumMember).initCapacity(arena, members.len);
+    defer list.deinit();
+    for (members) |m| {
+        const name = try model.tryGetName(m);
+        const value = trt_refine.EnumValue.get(model, m);
+        list.appendAssumeCapacity(.{
+            .value = if (value) |v| v.string else name,
+            .field = try zigifyFieldName(arena, name),
+        });
+    }
+    try writeEnumShape(arena, script, model, id, list.items);
+}
+
+const TEST_STR_ENUM = "pub const Enum = union(enum) {\n" ++ TEST_ENUM;
+
+fn writeTraitEnumShape(
+    arena: Allocator,
+    script: *Script,
+    model: *const SmithyModel,
+    id: SmithyId,
+    members: []const trt_constraint.Enum.Member,
+) !void {
+    var list = try std.ArrayList(StrEnumMember).initCapacity(arena, members.len);
+    defer list.deinit();
+    for (members) |m| {
+        list.appendAssumeCapacity(.{
+            .value = m.value,
+            .field = try zigifyFieldName(arena, m.name orelse m.value),
+        });
+    }
+    try writeEnumShape(arena, script, model, id, list.items);
+}
+
+const TEST_ENUM_TRT = "pub const EnumTrt = union(enum) {\n" ++ TEST_ENUM;
+
+const StrEnumMember = struct {
+    value: []const u8,
+    field: []const u8,
+
+    pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        try writer.print(".{{ \"{s}\", .{s} }}", .{ self.value, self.field });
+    }
+};
+
+fn writeEnumShape(
+    arena: Allocator,
+    script: *Script,
+    model: *const SmithyModel,
+    id: SmithyId,
+    members: []const StrEnumMember,
+) !void {
     const shape_name = try model.tryGetName(id);
     var scope = try script.declare(.{ .name = shape_name }, .{
         .is_public = true,
@@ -140,23 +196,8 @@ fn writeStrEnumShape(
     try doc.end();
     _ = try scope.field(.{ .name = "UNKNOWN", .type = .string });
 
-    const EnumParseTuple = struct {
-        str_val: []const u8,
-        enum_val: Script.Identifier,
-
-        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-            try writer.print(".{{ \"{s}\", .{} }}", .{ self.str_val, self.enum_val });
-        }
-    };
-
-    var pairs = try std.ArrayList(EnumParseTuple).initCapacity(arena, members.len);
-    defer pairs.deinit();
-    for (members) |m| {
-        const name = try model.tryGetName(m);
-        const enm_val = try zigifyFieldName(arena, name);
-        const str_val = if (trt_refine.EnumValue.get(model, m)) |v| v.string else name;
-        pairs.appendAssumeCapacity(.{ .str_val = str_val, .enum_val = .{ .name = enm_val } });
-        _ = try scope.field(.{ .name = enm_val, .type = null });
+    for (members) |member| {
+        _ = try scope.field(.{ .name = member.field, .type = null });
     }
 
     const imp_std = try scope.import("std");
@@ -168,10 +209,10 @@ fn writeStrEnumShape(
     ));
 
     const map_values = blk: {
-        var vals = std.ArrayList(EnumParseTuple).init(arena);
+        var vals = std.ArrayList(StrEnumMember).init(arena);
         defer vals.deinit();
 
-        const map_list = try scope.preRenderMultiline(arena, EnumParseTuple, pairs.items, ".{", "}");
+        const map_list = try scope.preRenderMultiline(arena, StrEnumMember, members, ".{", "}");
         defer arena.free(map_list);
 
         break :blk try scope.variable(.{}, .{
@@ -209,11 +250,11 @@ fn writeStrEnumShape(
     }, .inlined);
     try prong.expr(.{ .raw = "s" });
     try prong.end();
-    for (pairs.items) |pair| {
+    for (members) |member| {
         prong = try swtch.prong(&.{
-            .{ .value = pair.enum_val },
+            .{ .value = .{ .name = member.field } },
         }, .{}, .inlined);
-        try prong.expr(.{ .val = Script.Val.of(pair.str_val) });
+        try prong.expr(.{ .val = Script.Val.of(member.value) });
         try prong.end();
     }
     try swtch.end();
@@ -223,8 +264,7 @@ fn writeStrEnumShape(
     try scope.end();
 }
 
-const TEST_STR_ENUM =
-    \\pub const Enum = union(enum) {
+const TEST_ENUM =
     \\    /// Used for backwards compatibility when adding new values.
     \\    UNKNOWN: []const u8,
     \\    foo_bar,

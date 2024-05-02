@@ -97,10 +97,10 @@ pub fn parseJson(
 fn parseScope(
     self: *Self,
     comptime scope: JsonReader.Scope,
-    comptime parseFn: JsonReader.NextScopeFn(*Self, scope, Context),
+    comptime parseFn: JsonReader.NextScopeFn(*Self, Context, scope),
     ctx: Context,
 ) !void {
-    try self.reader.nextScope(*Self, scope, Context, parseFn, self, ctx);
+    try self.reader.nextScope(*Self, Context, scope, parseFn, self, ctx);
 }
 
 fn parseProp(self: *Self, prop_name: []const u8, ctx: Context) !void {
@@ -204,7 +204,7 @@ fn parseShapeRefList(
     target: anytype,
     comptime field: []const u8,
     comptime map: bool,
-    parsFn: JsonReader.NextScopeFn(*Self, if (map) .object else .array, Context),
+    parsFn: JsonReader.NextScopeFn(*Self, Context, if (map) .object else .array),
 ) !void {
     var list = std.ArrayListUnmanaged(if (map) syb_id.SmithyRefMapValue else SmithyId){};
     errdefer list.deinit(self.arena);
@@ -313,7 +313,6 @@ fn parseShape(self: *Self, shape_name: []const u8, _: Context) !void {
                 .name = shape_name,
             });
             // Not a standalone shape, skip the creation/override of a shape symbol.
-            try self.reader.nextObjectEnd();
             return;
         },
         .service => .{ .service = blk: {
@@ -347,7 +346,6 @@ fn parseShape(self: *Self, shape_name: []const u8, _: Context) !void {
         .target = target,
     });
     try self.putShape(shape_id, typ, shape_name, target);
-    try self.reader.nextObjectEnd();
 }
 
 fn putShape(self: *Self, id: SmithyId, typ: SmithyId, abs_name: []const u8, target: Context.Target) !void {
