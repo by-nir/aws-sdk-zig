@@ -30,14 +30,15 @@ pub fn createAggragates() !*SmithyModel {
     const Static = struct {
         const enum_trt: trt_constr.Enum.Sentinel = &.{
             .{ .value = "FOO_BAR" },
-            .{
-                .value = "baz$qux",
-                .name = "BAZ_QUX",
-            },
+            .{ .value = "baz$qux", .name = "BAZ_QUX" },
         };
         const str_enum = &.{ SmithyId.of("test#Enum$FOO_BAR"), SmithyId.of("test#Enum$BAZ_QUX") };
         const int_enum = &.{ SmithyId.of("test#IntEnum$FOO_BAR"), SmithyId.of("test#IntEnum$BAZ_QUX") };
-        const tagged_union = &.{ SmithyId.of("test#Union$FOO_BAR"), SmithyId.of("test#Union$BAZ_QUX") };
+        const tagged_union = &.{
+            SmithyId.of("test#Union$FOO"),
+            SmithyId.of("test#Union$BAR"),
+            SmithyId.of("test#Union$BAZ"),
+        };
         const structure = &.{ SmithyId.of("test#Struct$fooBar"), SmithyId.of("test#Struct$bazQux") };
     };
 
@@ -104,10 +105,12 @@ pub fn createAggragates() !*SmithyModel {
     try model.shapes.put(test_alloc, SmithyId.of("test#Union"), .{
         .tagged_uinon = Static.tagged_union,
     });
-    try model.names.put(test_alloc, SmithyId.of("test#Union$FOO_BAR"), "FOO_BAR");
-    try model.shapes.put(test_alloc, SmithyId.of("test#Union$FOO_BAR"), .integer);
-    try model.names.put(test_alloc, SmithyId.of("test#Union$BAZ_QUX"), "BAZ_QUX");
-    try model.shapes.put(test_alloc, SmithyId.of("test#Union$BAZ_QUX"), .string);
+    try model.names.put(test_alloc, SmithyId.of("test#Union$FOO"), "FOO");
+    try model.shapes.put(test_alloc, SmithyId.of("test#Union$FOO"), .unit);
+    try model.names.put(test_alloc, SmithyId.of("test#Union$BAR"), "BAR");
+    try model.shapes.put(test_alloc, SmithyId.of("test#Union$BAR"), .integer);
+    try model.names.put(test_alloc, SmithyId.of("test#Union$BAZ"), "BAZ");
+    try model.shapes.put(test_alloc, SmithyId.of("test#Union$BAZ"), .string);
 
     try model.names.put(test_alloc, SmithyId.of("test#Struct"), "Struct");
     try model.shapes.put(test_alloc, SmithyId.of("test#Struct"), .{

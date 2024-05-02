@@ -46,6 +46,18 @@ fn writeScriptShape(arena: Allocator, script: *Script, model: *const SmithyModel
         .tagged_uinon => |m| try writeUnionShape(arena, script, model, id, m),
         .structure => |m| try writeStructShape(arena, script, model, id, m),
         // TODO: service/operation/resource
+        .string => {
+            if (model.getTraits(id)) |traits| {
+                for (traits) |t| {
+                    const trait = t.id;
+                    if (trait == trt_constraint.Enum.id) {
+                        const members = trt_constraint.Enum.get(model, id).?;
+                        return writeTraitEnumShape(arena, script, model, id, members);
+                    }
+                }
+            }
+            return error.InvalidRootShape;
+        },
         else => return error.InvalidRootShape,
     }
 }
@@ -372,9 +384,10 @@ fn writeUnionShape(
         .type = .{ .TaggedUnion = null },
     });
     for (members) |m| {
+        const shape = try getShapeName(m, model);
         _ = try scope.field(.{
             .name = try zigifyFieldName(arena, try model.tryGetName(m)),
-            .type = .{ .raw = try getShapeName(m, model) },
+            .type = if (shape.len > 0) .{ .raw = shape } else null,
         });
     }
     try scope.end();
@@ -382,8 +395,9 @@ fn writeUnionShape(
 
 const TEST_UNION =
     \\pub const Union = union(enum) {
-    \\    foo_bar: i32,
-    \\    baz_qux: []const u8,
+    \\    foo,
+    \\    bar: i32,
+    \\    baz: []const u8,
     \\};
 ;
 
@@ -425,7 +439,7 @@ fn getShapeName(id: SmithyId, model: *const SmithyModel) ![]const u8 {
         else => try model.tryGetShape(id),
     };
     return switch (shape) {
-        .unit => unreachable,
+        .unit => "",
         .boolean => "bool",
         .byte => "i8",
         .short => "i16",
