@@ -17,7 +17,7 @@ const SmithyModel = @import("symbols/shapes.zig").SmithyModel;
 const Script = @import("generate/Zig.zig");
 const StackWriter = @import("utils/StackWriter.zig");
 const trt_refine = @import("prelude/refine.zig");
-const trt_constraint = @import("prelude/constraint.zig");
+const trt_constr = @import("prelude/constraint.zig");
 
 /// Must `close()` the returned directory when complete.
 pub fn getModelDir(rel_base: []const u8, rel_model: []const u8) !fs.Dir {
@@ -47,16 +47,11 @@ fn writeScriptShape(arena: Allocator, script: *Script, model: *const SmithyModel
         .structure => |m| try writeStructShape(arena, script, model, id, m),
         // TODO: service/operation/resource
         .string => {
-            if (model.getTraits(id)) |traits| {
-                for (traits) |t| {
-                    const trait = t.id;
-                    if (trait == trt_constraint.Enum.id) {
-                        const members = trt_constraint.Enum.get(model, id).?;
-                        return writeTraitEnumShape(arena, script, model, id, members);
-                    }
-                }
+            if (trt_constr.Enum.get(model, id)) |members| {
+                return writeTraitEnumShape(arena, script, model, id, members);
+            } else {
+                return error.InvalidRootShape;
             }
-            return error.InvalidRootShape;
         },
         else => return error.InvalidRootShape,
     }
@@ -105,17 +100,22 @@ test "writeScriptShape" {
 
 fn writeListShape(script: *Script, model: *const SmithyModel, id: SmithyId, memeber: SmithyId) !void {
     const shape_name = try model.tryGetName(id);
-    const target_name = try getShapeName(memeber, model);
+    const target_type = Script.TypeExpr{ .raw = try getShapeName(memeber, model) };
+    const target: Script.TypeExpr = if (model.hasTrait(id, trt_refine.sparse_id))
+        .{ .optional = &target_type }
+    else
+        target_type;
+
     _ = try script.variable(
         .{ .is_public = true },
         .{ .identifier = .{ .name = shape_name } },
         .{ .type = Script.TypeExpr{
-            .slice = .{ .type = &.{ .raw = target_name } },
+            .slice = .{ .type = &target },
         } },
     );
 }
 
-const TEST_LIST = "pub const List = []const i32;";
+const TEST_LIST = "pub const List = []const ?i32;";
 
 fn writeMapShape(
     script: *Script,
@@ -125,19 +125,23 @@ fn writeMapShape(
 ) !void {
     const shape_name = try model.tryGetName(id);
     const key_name = try getShapeName(memeber[0], model);
-    const val_name = try getShapeName(memeber[1], model);
+    const val_type = try getShapeName(memeber[1], model);
+    const value: Script.Val = if (model.hasTrait(id, trt_refine.sparse_id))
+        .{ .raw_seq = &.{ "?", val_type } }
+    else
+        .{ .raw = val_type };
 
     _ = try script.variable(
         .{ .is_public = true },
         .{ .identifier = .{ .name = shape_name } },
         .{ .call = .{
             .identifier = "*const _imp_std.AutoArrayHashMapUnmanaged",
-            .args = &.{ .{ .raw = key_name }, .{ .raw = val_name } },
+            .args = &.{ .{ .raw = key_name }, value },
         } },
     );
 }
 
-const TEST_MAP = "pub const Map = *const _imp_std.AutoArrayHashMapUnmanaged(i32, i32);";
+const TEST_MAP = "pub const Map = *const _imp_std.AutoArrayHashMapUnmanaged(i32, ?i32);";
 
 fn writeStrEnumShape(
     arena: Allocator,
@@ -166,7 +170,7 @@ fn writeTraitEnumShape(
     script: *Script,
     model: *const SmithyModel,
     id: SmithyId,
-    members: []const trt_constraint.Enum.Member,
+    members: []const trt_constr.Enum.Member,
 ) !void {
     var list = try std.ArrayList(StrEnumMember).initCapacity(arena, members.len);
     defer list.deinit();
@@ -413,10 +417,31 @@ fn writeStructShape(
         .is_public = true,
         .type = .{ .Struct = null },
     });
+
+    const is_input = model.hasTrait(id, trt_refine.input_id);
     for (members) |m| {
+        // https://smithy.io/2.0/spec/aggregate-types.html#structure-member-optionality
+        const optional = if (is_input) true else if (model.getTraits(m)) |bag| blk: {
+            break :blk bag.has(trt_refine.client_optional_id) or
+                !(bag.has(trt_refine.required_id) or bag.has(trt_refine.Default.id));
+        } else true;
+        const assign: ?Script.Expr = blk: {
+            break :blk if (optional)
+                .{ .raw = "null" }
+            else if (trt_refine.Default.get(model, m)) |t|
+                switch (try unwrapShapeType(m, model)) {
+                    .str_enum => .{ .val = Script.Val{ .enm = t.string } },
+                    .int_enum => Script.Expr.call("@enumFromInt", &.{Script.Val.of(t.integer)}),
+                    else => .{ .json = t },
+                }
+            else
+                null;
+        };
+        const type_expr = Script.TypeExpr{ .raw = try getShapeName(m, model) };
         _ = try scope.field(.{
             .name = try zigifyFieldName(arena, try model.tryGetName(m)),
-            .type = .{ .raw = try getShapeName(m, model) },
+            .type = if (optional) .{ .optional = &type_expr } else type_expr,
+            .assign = assign,
         });
     }
     try scope.end();
@@ -425,7 +450,7 @@ fn writeStructShape(
 const TEST_STRUCT =
     \\pub const Struct = struct {
     \\    foo_bar: i32,
-    \\    baz_qux: IntEnum,
+    \\    baz_qux: IntEnum = @enumFromInt(8),
     \\};
 ;
 
@@ -452,6 +477,20 @@ fn getShapeName(id: SmithyId, model: *const SmithyModel) ![]const u8 {
         .timestamp => "u64",
         .target => |t| model.tryGetName(t),
         else => unreachable,
+    };
+}
+
+fn unwrapShapeType(id: SmithyId, model: *const SmithyModel) !SmithyType {
+    return switch (id) {
+        // zig fmt: off
+        inline .unit, .blob, .boolean, .string, .byte, .short, .integer, .long,
+        .float, .double, .big_integer, .big_decimal, .timestamp, .document =>
+            |t| std.enums.nameCast(SmithyType, t),
+        // zig fmt: on
+        else => switch (try model.tryGetShape(id)) {
+            .target => |t| unwrapShapeType(t, model),
+            else => |t| t,
+        },
     };
 }
 

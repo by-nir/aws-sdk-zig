@@ -7,6 +7,9 @@ const testing = std.testing;
 const test_alloc = testing.allocator;
 
 const Self = @This();
+pub const Scope = enum { current, object, array };
+pub const Number = union(enum) { integer: i64, float: f64 };
+
 const Source = union(enum) {
     file: std.fs.File.Reader,
     fixed: struct {
@@ -19,15 +22,12 @@ const Source = union(enum) {
     }
 };
 
-pub const Scope = enum { current, object, array };
-pub const Number = union(enum) { integer: i64, float: f64 };
-
-allocator: Allocator,
+arena: Allocator,
 source: *Source,
 scanner: json.Reader(json.default_buffer_size, std.io.AnyReader),
 
-pub fn initFixed(allocator: Allocator, slice: []const u8) !Self {
-    const source = try allocator.create(Source);
+pub fn initFixed(arena: Allocator, slice: []const u8) !Self {
+    const source = try arena.create(Source);
     source.* = .{ .fixed = .{
         .stream = std.io.fixedBufferStream(slice),
         .reader = undefined,
@@ -35,25 +35,25 @@ pub fn initFixed(allocator: Allocator, slice: []const u8) !Self {
     const stream_reader = &source.fixed.reader;
     stream_reader.* = source.fixed.stream.reader();
     return .{
-        .allocator = allocator,
+        .arena = arena,
         .source = source,
-        .scanner = std.json.reader(allocator, stream_reader.any()),
+        .scanner = std.json.reader(arena, stream_reader.any()),
     };
 }
 
-pub fn initFile(allocator: Allocator, file: std.fs.File) !Self {
-    const source = try allocator.create(Source);
+pub fn initFile(arena: Allocator, file: std.fs.File) !Self {
+    const source = try arena.create(Source);
     source.* = .{ .file = file.reader() };
     return .{
-        .allocator = allocator,
+        .allocator = arena,
         .source = source,
-        .scanner = std.json.reader(allocator, source.file.any()),
+        .scanner = std.json.reader(arena, source.file.any()),
     };
 }
 
 pub fn deinit(self: *Self) void {
     self.scanner.deinit();
-    self.source.deinit(self.allocator);
+    self.source.deinit(self.arena);
     self.* = undefined;
 }
 
@@ -64,46 +64,46 @@ pub fn peek(self: *Self) !json.TokenType {
 
 /// Consume the following token.
 pub fn next(self: *Self) !json.Token {
-    return try self.scanner.nextAlloc(self.allocator, .alloc_if_needed);
+    return try self.scanner.nextAlloc(self.arena, .alloc_if_needed);
 }
 
-/// Get the next token, assuming it is an object.
+/// Get the next token, assuming it’s an object.
 pub fn nextObjectBegin(self: *Self) !void {
     const token = try self.next();
     if (token != .object_begin) return error.UnexpectedSyntax;
 }
 
-/// Get the next token, assuming it is the end of an object.
+/// Get the next token, assuming it’s the end of an object.
 pub fn nextObjectEnd(self: *Self) !void {
     const token = try self.next();
     if (token != .object_end) return error.UnexpectedSyntax;
 }
 
-/// Get the next token, assuming it is an array.
+/// Get the next token, assuming it’s an array.
 pub fn nextArrayBegin(self: *Self) !void {
     const token = try self.next();
     if (token != .array_begin) return error.UnexpectedSyntax;
 }
 
-/// Get the next token, assuming it is the end of an array.
+/// Get the next token, assuming it’s the end of an array.
 pub fn nextArrayEnd(self: *Self) !void {
     const token = try self.next();
     if (token != .array_end) return error.UnexpectedSyntax;
 }
 
-/// Get the next token, assuming it is the end of the document.
+/// Get the next token, assuming it’s the end of the document.
 pub fn nextDocumentEnd(self: *Self) !void {
     const token = try self.next();
     if (token != .end_of_document) return error.UnexpectedSyntax;
 }
 
-/// Get the next token, assuming it is a null value.
+/// Get the next token, assuming it’s a null value.
 pub fn nextNull(self: *Self) !void {
     const token = try self.next();
     if (token != .null) return error.UnexpectedSyntax;
 }
 
-/// Get the next token, assuming it is a boolean value.
+/// Get the next token, assuming it’s a boolean value.
 pub fn nextBoolean(self: *Self) !bool {
     const token = try self.next();
     return switch (token) {
@@ -125,7 +125,7 @@ pub fn nextNumber(self: *Self) !Number {
     };
 }
 
-/// Get the next token, assuming it is an integer value.
+/// Get the next token, assuming it’s an integer value.
 pub fn nextInteger(self: *Self) !i64 {
     const token = try self.next();
     return switch (token) {
@@ -138,7 +138,7 @@ pub fn nextInteger(self: *Self) !i64 {
     };
 }
 
-/// Get the next token, assuming it is a float value.
+/// Get the next token, assuming it’s a float value.
 pub fn nextFloat(self: *Self) !f64 {
     const token = try self.next();
     return switch (token) {
@@ -151,7 +151,7 @@ pub fn nextFloat(self: *Self) !f64 {
     };
 }
 
-/// Get the next token, assuming it is a string value.
+/// Get the next token, assuming it’s a string value.
 pub fn nextString(self: *Self) ![]const u8 {
     const token = try self.next();
     return switch (token) {
@@ -163,7 +163,7 @@ pub fn nextString(self: *Self) ![]const u8 {
     };
 }
 
-/// Get the next token, assuming it is a string matching the expected value.
+/// Get the next token, assuming it’s a string matching the expected value.
 pub fn nextStringEql(self: *Self, expectd: []const u8) !void {
     const actual = try self.nextString();
     if (!mem.eql(u8, expectd, actual)) return error.UnexpectedValue;
@@ -324,4 +324,118 @@ test "JsonReader" {
 
     try reader.nextObjectEnd();
     try reader.nextDocumentEnd();
+}
+
+pub const Value = union(enum) {
+    null,
+    boolean: bool,
+    integer: i64,
+    float: f64,
+    string: []const u8,
+    array: []const Value,
+    object: []const KV,
+
+    pub const KV = struct { key: []const u8, value: Value };
+};
+
+/// Get a duplicate of the next value.
+pub fn nextValueAlloc(self: *Self, allocator: Allocator) !Value {
+    return switch (try self.peek()) {
+        .null => blk: {
+            _ = try self.next();
+            break :blk .null;
+        },
+        inline .true, .false => |g| blk: {
+            _ = try self.next();
+            break :blk .{ .boolean = g == .true };
+        },
+        .number => switch (try self.nextNumber()) {
+            inline else => |n, g| @unionInit(Value, @tagName(g), n),
+        },
+        .string => .{ .string = try self.nextStringAlloc(allocator) },
+        .array_begin => blk: {
+            var list = std.ArrayList(Value).init(allocator);
+            try self.nextArrayBegin();
+            while (try self.peek() != .array_end) {
+                try list.append(try self.nextValueAlloc(allocator));
+            }
+            try self.nextArrayEnd();
+            break :blk .{ .array = try list.toOwnedSlice() };
+        },
+        .object_begin => blk: {
+            var list = std.ArrayList(Value.KV).init(allocator);
+            try self.nextObjectBegin();
+            while (try self.peek() != .object_end) {
+                try list.append(.{
+                    .key = try self.nextStringAlloc(allocator),
+                    .value = try self.nextValueAlloc(allocator),
+                });
+            }
+            try self.nextObjectEnd();
+            break :blk .{ .object = try list.toOwnedSlice() };
+        },
+        else => unreachable,
+    };
+}
+
+pub fn dinitValueDupe(allocator: Allocator, value: Value) void {
+    switch (value) {
+        .string => |s| allocator.free(s),
+        .array => |t| {
+            for (t) |v| {
+                dinitValueDupe(allocator, v);
+            }
+            allocator.free(t);
+        },
+        .object => |t| {
+            for (t) |kv| {
+                allocator.free(kv.key);
+                dinitValueDupe(allocator, kv.value);
+            }
+            allocator.free(t);
+        },
+        else => {},
+    }
+}
+
+/// Get a duplicate of the next value, assuming it’s a string.
+pub fn nextStringAlloc(self: *Self, allocator: Allocator) ![]const u8 {
+    const token = try self.scanner.nextAlloc(allocator, .alloc_always);
+    return token.allocated_string;
+}
+
+test "nextValueAlloc" {
+    var reader = try initFixed(test_alloc,
+        \\[
+        \\  null,
+        \\  true,
+        \\  false,
+        \\  108,
+        \\  1.08,
+        \\  "foo",
+        \\  { "key1": "bar", "key2": null }
+        \\]
+    );
+
+    const value = reader.nextValueAlloc(test_alloc) catch |e| {
+        reader.deinit();
+        return e;
+    };
+    defer dinitValueDupe(test_alloc, value);
+
+    reader.deinit();
+    try testing.expectEqualDeep(Value{
+        .array = &.{
+            .null,
+            .{ .boolean = true },
+            .{ .boolean = false },
+            .{ .integer = 108 },
+            .{ .float = 1.08 },
+            .{ .string = "foo" },
+            .{ .object = &.{
+                .{ .key = "key1", .value = .{ .string = "bar" } },
+                .{ .key = "key2", .value = .null },
+            } },
+        },
+    }, value);
 }

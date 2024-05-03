@@ -50,10 +50,16 @@ pub fn createAggragates() !*SmithyModel {
     try model.shapes.put(test_alloc, SmithyId.of("test#List"), .{
         .list = .integer,
     });
+    try model.traits.put(test_alloc, SmithyId.of("test#List"), &.{
+        .{ .id = trt_refine.sparse_id, .value = null },
+    });
 
     try model.names.put(test_alloc, SmithyId.of("test#Map"), "Map");
     try model.shapes.put(test_alloc, SmithyId.of("test#Map"), .{
         .map = .{ .integer, .integer },
+    });
+    try model.traits.put(test_alloc, SmithyId.of("test#Map"), &.{
+        .{ .id = trt_refine.sparse_id, .value = null },
     });
 
     try model.names.put(test_alloc, SmithyId.of("test#Enum"), "Enum");
@@ -64,12 +70,10 @@ pub fn createAggragates() !*SmithyModel {
     try model.shapes.put(test_alloc, SmithyId.of("test#Enum$FOO_BAR"), .unit);
     try model.names.put(test_alloc, SmithyId.of("test#Enum$BAZ_QUX"), "BAZ_QUX");
     try model.shapes.put(test_alloc, SmithyId.of("test#Enum$BAZ_QUX"), .unit);
-    try model.traits.put(test_alloc, SmithyId.of("test#Enum$BAZ_QUX"), &.{
-        .{
-            .id = trt_refine.EnumValue.id,
-            .value = &trt_refine.EnumValue.Val{ .string = "baz$qux" },
-        },
-    });
+    try model.traits.put(test_alloc, SmithyId.of("test#Enum$BAZ_QUX"), &.{.{
+        .id = trt_refine.EnumValue.id,
+        .value = &trt_refine.EnumValue.Val{ .string = "baz$qux" },
+    }});
 
     try model.names.put(test_alloc, SmithyId.of("test#IntEnum"), "IntEnum");
     try model.shapes.put(test_alloc, SmithyId.of("test#IntEnum"), .{
@@ -77,29 +81,23 @@ pub fn createAggragates() !*SmithyModel {
     });
     try model.names.put(test_alloc, SmithyId.of("test#IntEnum$FOO_BAR"), "FOO_BAR");
     try model.shapes.put(test_alloc, SmithyId.of("test#IntEnum$FOO_BAR"), .unit);
-    try model.traits.put(test_alloc, SmithyId.of("test#IntEnum$FOO_BAR"), &.{
-        .{
-            .id = trt_refine.EnumValue.id,
-            .value = &trt_refine.EnumValue.Val{ .integer = 8 },
-        },
-    });
+    try model.traits.put(test_alloc, SmithyId.of("test#IntEnum$FOO_BAR"), &.{.{
+        .id = trt_refine.EnumValue.id,
+        .value = &trt_refine.EnumValue.Val{ .integer = 8 },
+    }});
     try model.names.put(test_alloc, SmithyId.of("test#IntEnum$BAZ_QUX"), "BAZ_QUX");
     try model.shapes.put(test_alloc, SmithyId.of("test#IntEnum$BAZ_QUX"), .unit);
-    try model.traits.put(test_alloc, SmithyId.of("test#IntEnum$BAZ_QUX"), &.{
-        .{
-            .id = trt_refine.EnumValue.id,
-            .value = &trt_refine.EnumValue.Val{ .integer = 9 },
-        },
-    });
+    try model.traits.put(test_alloc, SmithyId.of("test#IntEnum$BAZ_QUX"), &.{.{
+        .id = trt_refine.EnumValue.id,
+        .value = &trt_refine.EnumValue.Val{ .integer = 9 },
+    }});
 
     try model.names.put(test_alloc, SmithyId.of("test#EnumTrt"), "EnumTrt");
     try model.shapes.put(test_alloc, SmithyId.of("test#EnumTrt"), .string);
-    try model.traits.put(test_alloc, SmithyId.of("test#EnumTrt"), &.{
-        .{
-            .id = trt_constr.Enum.id,
-            .value = Static.enum_trt,
-        },
-    });
+    try model.traits.put(test_alloc, SmithyId.of("test#EnumTrt"), &.{.{
+        .id = trt_constr.Enum.id,
+        .value = Static.enum_trt,
+    }});
 
     try model.names.put(test_alloc, SmithyId.of("test#Union"), "Union");
     try model.shapes.put(test_alloc, SmithyId.of("test#Union"), .{
@@ -118,10 +116,17 @@ pub fn createAggragates() !*SmithyModel {
     });
     try model.names.put(test_alloc, SmithyId.of("test#Struct$fooBar"), "fooBar");
     try model.shapes.put(test_alloc, SmithyId.of("test#Struct$fooBar"), .integer);
+    try model.traits.put(test_alloc, SmithyId.of("test#Struct$fooBar"), &.{
+        .{ .id = trt_refine.required_id, .value = null },
+    });
     try model.names.put(test_alloc, SmithyId.of("test#Struct$bazQux"), "bazQux");
     try model.shapes.put(test_alloc, SmithyId.of("test#Struct$bazQux"), .{
         .target = SmithyId.of("test#IntEnum"),
     });
+    try model.traits.put(test_alloc, SmithyId.of("test#Struct$bazQux"), &.{.{
+        .id = trt_refine.Default.id,
+        .value = &trt_refine.Default.Value{ .integer = 8 },
+    }});
 
     return model;
 }

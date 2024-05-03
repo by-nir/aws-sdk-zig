@@ -2,9 +2,10 @@
 //!
 //! [Smithy Spec](https://smithy.io/2.0/spec/model-validation.html)
 
-const TraitsList = @import("../symbols/traits.zig").TraitsList;
+const TraitsList = @import("../symbols/traits.zig").TraitsRegistry;
 
-// TODO: Pending traits
-// smithy.api#suppress
-// smithy.api#traitValidators
-pub const traits: TraitsList = &.{};
+// TODO: Remainig traits
+pub const traits: TraitsList = &.{
+    // smithy.api#suppress
+    // smithy.api#traitValidators
+};

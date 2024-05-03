@@ -9,6 +9,7 @@ const testing = std.testing;
 const test_alloc = testing.allocator;
 const StackWriter = @import("../utils/StackWriter.zig");
 const List = StackWriter.List;
+const JsonValue = @import("../utils/JsonReader.zig").Value;
 const Markdown = @import("Markdown.zig");
 
 // In general, a better approach would be to incorporate more of the Zig’s AST
@@ -1821,6 +1822,7 @@ pub const LazyIdentifier = struct {
 
 pub const Val = union(enum) {
     raw: []const u8,
+    raw_seq: []const []const u8,
     undefined,
     null,
     void,
@@ -1845,6 +1847,11 @@ pub const Val = union(enum) {
             .unn => |t| try writer.print(".{{ .{s} = {s} }}", .{ t[0], t[1] }),
             .string => |s| try writer.print("\"{s}\"", .{s}),
             .raw => |s| try writer.writeAll(s),
+            .raw_seq => |t| {
+                for (t) |s| {
+                    try writer.writeAll(s);
+                }
+            },
         }
     }
 
@@ -1862,6 +1869,7 @@ pub const Val = union(enum) {
         try testing.expectFmt(".{ .foo = 108 }", "{}", .{Val{ .unn = .{ "foo", "108" } }});
         try testing.expectFmt("\"foo\"", "{}", .{Val{ .string = "foo" }});
         try testing.expectFmt("foo", "{}", .{Val{ .raw = "foo" }});
+        try testing.expectFmt("foobar", "{}", .{Val{ .raw_seq = &.{ "foo", "bar" } }});
     }
 
     pub fn of(val: anytype) Val {
@@ -1968,7 +1976,23 @@ pub const Expr = union(enum) {
     raw: []const u8,
     val: Val,
     type: TypeExpr,
+    json: JsonValue,
     call: struct { identifier: []const u8, args: []const Val },
+
+    /// Assumes `args` is a list of `Val`s.
+    pub fn call(identifier: []const u8, args: []const Val) Expr {
+        return .{ .call = .{ .identifier = identifier, .args = args } };
+    }
+
+    test "call" {
+        try testing.expectEqualDeep(
+            Expr{ .call = .{
+                .identifier = "foo",
+                .args = &.{ Val.of(108), Val.of("bar") },
+            } },
+            Expr.call("foo", &.{ Val.of(108), Val.of("bar") }),
+        );
+    }
 
     pub fn format(self: Expr, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
         switch (self) {
@@ -1978,6 +2002,31 @@ pub const Expr = union(enum) {
                 t.identifier,
                 List(Val){ .items = t.args },
             }),
+            .json => |json| switch (json) {
+                .null => try writer.writeAll("null"),
+                .boolean => |v| try writer.writeAll(if (v) "true" else "false"),
+                inline .integer, .float => |v| try writer.print("{d}", .{v}),
+                .string => |v| try writer.print("\"{s}\"", .{v}),
+                .array => |items| {
+                    try writer.writeAll(".{ ");
+                    for (items, 0..) |item, i| {
+                        if (i > 0) try writer.writeAll(", ");
+                        try writer.print("{}", .{Expr{ .json = item }});
+                    }
+                    try writer.writeAll(" }");
+                },
+                // TODO: Respect new line prefix
+                .object => |items| {
+                    try writer.writeAll(".{");
+                    for (items) |item| {
+                        try writer.print(
+                            "\n" ++ INDENT ++ ".{s} = {},",
+                            .{ item.key, Expr{ .json = item.value } },
+                        );
+                    }
+                    try writer.writeAll("\n}");
+                },
+            },
         }
     }
 
@@ -1995,21 +2044,25 @@ pub const Expr = union(enum) {
                 .args = &.{ Val.of(108), Val.of("bar") },
             },
         }});
-    }
-
-    /// Assumes `args` is a list of `Val`s.
-    pub fn call(identifier: []const u8, args: []const Val) Expr {
-        return .{ .call = .{ .identifier = identifier, .args = args } };
-    }
-
-    test "call" {
-        try testing.expectEqualDeep(
-            Expr{ .call = .{
-                .identifier = "foo",
-                .args = &.{ Val.of(108), Val.of("bar") },
+        try testing.expectFmt(
+            \\.{ null, true, false, 108, 1.08, "foo", .{
+            \\    .key1 = "bar",
+            \\    .key2 = null,
+            \\} }
+        , "{}", .{Expr{
+            .json = .{ .array = &.{
+                .null,
+                .{ .boolean = true },
+                .{ .boolean = false },
+                .{ .integer = 108 },
+                .{ .float = 1.08 },
+                .{ .string = "foo" },
+                .{ .object = &.{
+                    .{ .key = "key1", .value = .{ .string = "bar" } },
+                    .{ .key = "key2", .value = .null },
+                } },
             } },
-            Expr.call("foo", &.{ Val.of(108), Val.of("bar") }),
-        );
+        }});
     }
 };
 
@@ -2069,6 +2122,7 @@ pub const TypeExpr = union(enum) {
     raw: []const u8,
     This,
     string,
+    optional: *const TypeExpr,
     array: struct { len: usize, type: *const TypeExpr },
     slice: struct { mutable: bool = false, type: *const TypeExpr },
     pointer: struct { mutable: bool = false, type: *const TypeExpr },
@@ -2078,6 +2132,7 @@ pub const TypeExpr = union(enum) {
             .raw => |s| try writer.writeAll(s),
             .This => try writer.writeAll("@This()"),
             .string => try writer.writeAll("[]const u8"),
+            .optional => |t| try writer.print("?{}", .{t}),
             .array => |t| try writer.print("[{d}]{}", .{ t.len, t.type }),
             inline .slice, .pointer => |t, g| {
                 try if (g == .pointer) writer.writeByte('*') else writer.writeAll("[]");
@@ -2092,6 +2147,9 @@ pub const TypeExpr = union(enum) {
 
     test {
         try testing.expectFmt("error{Foo}!*const []u8", "{}", .{of(error{Foo}!*const []u8)});
+        try testing.expectFmt("?u8", "{}", .{
+            TypeExpr{ .optional = &of(u8) },
+        });
         try testing.expectFmt("[2]u8", "{}", .{
             TypeExpr{ .array = .{ .len = 2, .type = &of(u8) } },
         });

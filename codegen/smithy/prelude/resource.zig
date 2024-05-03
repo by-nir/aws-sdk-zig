@@ -2,13 +2,14 @@
 //!
 //! [Smithy Spec](https://smithy.io/2.0/spec/resource-traits.html)
 
-const TraitsList = @import("../symbols/traits.zig").TraitsList;
+const TraitsList = @import("../symbols/traits.zig").TraitsRegistry;
 
-// TODO: Pending traits
-// smithy.api#nestedProperties
-// smithy.api#noReplace
-// smithy.api#notProperty
-// smithy.api#property
-// smithy.api#references
-// smithy.api#resourceIdentifier
-pub const traits: TraitsList = &.{};
+// TODO: Remainig traits
+pub const traits: TraitsList = &.{
+    // smithy.api#nestedProperties
+    // smithy.api#noReplace
+    // smithy.api#notProperty
+    // smithy.api#property
+    // smithy.api#references
+    // smithy.api#resourceIdentifier
+};

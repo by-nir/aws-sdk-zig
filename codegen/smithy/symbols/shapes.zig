@@ -5,6 +5,7 @@ const identity = @import("identity.zig");
 const SmithyId = identity.SmithyId;
 const SmithyType = identity.SmithyType;
 const TaggedValue = identity.SmithyTaggedValue;
+const TraitsBag = @import("traits.zig").TraitsBag;
 
 /// Parsed symbols (shapes and metadata) from a Smithy model.
 pub const SmithyModel = struct {
@@ -39,40 +40,26 @@ pub const SmithyModel = struct {
         return self.mixins.get(shape_id) orelse null;
     }
 
-    pub fn getTraits(self: SmithyModel, shape_id: SmithyId) ?[]const TaggedValue {
-        return self.traits.get(shape_id) orelse null;
+    pub fn getTraits(self: SmithyModel, shape_id: SmithyId) ?TraitsBag {
+        const traits = self.traits.get(shape_id) orelse return null;
+        return TraitsBag{ .values = traits };
     }
 
     pub fn hasTrait(self: SmithyModel, shape_id: SmithyId, trait_id: SmithyId) bool {
-        const traits = self.traits.get(shape_id) orelse return false;
-        for (traits) |trait| {
-            if (trait.id == trait_id) return true;
-        }
-        return false;
-    }
-
-    pub fn getTrait(self: SmithyModel, shape_id: SmithyId, trait_id: SmithyId, comptime T: type) ?TraitReturn(T) {
-        const trait = self.getTraitOpaque(shape_id, trait_id) orelse return null;
-        const ptr: *const T = @alignCast(@ptrCast(trait));
-        return switch (@typeInfo(T)) {
-            .Bool, .Int, .Float, .Enum, .Union, .Pointer => ptr.*,
-            else => ptr,
-        };
+        return if (self.getTraits(shape_id)) |t| t.has(trait_id) else false;
     }
 
     pub fn getTraitOpaque(self: SmithyModel, shape_id: SmithyId, trait_id: SmithyId) ?*const anyopaque {
-        const traits = self.traits.get(shape_id) orelse return null;
-        for (traits) |trait| {
-            if (trait.id == trait_id) return trait.value;
-        }
-        return null;
+        return if (self.getTraits(shape_id)) |t| t.getOpaque(trait_id) else null;
     }
 
-    fn TraitReturn(comptime T: type) type {
-        return switch (@typeInfo(T)) {
-            .Bool, .Int, .Float, .Enum, .Union, .Pointer => T,
-            else => *const T,
-        };
+    pub fn getTrait(
+        self: SmithyModel,
+        shape_id: SmithyId,
+        trait_id: SmithyId,
+        comptime T: type,
+    ) ?TraitsBag.TraitReturn(T) {
+        return if (self.getTraits(shape_id)) |t| t.get(trait_id, T) else null;
     }
 };
 
@@ -140,15 +127,10 @@ test "SmithyModel" {
         symbols.getMixins(shape_id),
     );
 
-    try testing.expectEqualDeep(&.{
+    try testing.expectEqualDeep(TraitsBag{ .values = &.{
         TaggedValue{ .id = trait_void, .value = null },
         TaggedValue{ .id = trait_int, .value = &int },
-    }, symbols.getTraits(shape_id));
-    try testing.expect(symbols.hasTrait(shape_id, trait_void));
-    try testing.expectEqual(
-        108,
-        symbols.getTrait(shape_id, trait_int, u8),
-    );
+    } }, symbols.getTraits(shape_id));
 }
 
 /// A service is the entry point of an API that aggregates resources and operations together.

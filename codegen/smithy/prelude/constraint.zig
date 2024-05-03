@@ -9,20 +9,23 @@ const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const SmithyId = @import("../symbols/identity.zig").SmithyId;
-const TraitsList = @import("../symbols/traits.zig").TraitsList;
+const TraitsList = @import("../symbols/traits.zig").TraitsRegistry;
 const SmithyModel = @import("../symbols/shapes.zig").SmithyModel;
 const JsonReader = @import("../utils/JsonReader.zig");
 
-// TODO: Pending traits
-// smithy.api#idRef
-// smithy.api#length
-// smithy.api#pattern
-// smithy.api#private
-// smithy.api#range
-// smithy.api#uniqueItems
+// TODO: Remainig traits
 pub const traits: TraitsList = &.{
+    .{ id_ref_id, null },
+    // smithy.api#length
+    // smithy.api#pattern
+    .{ private_id, null },
+    // smithy.api#range
+    // smithy.api#uniqueItems
     .{ Enum.id, Enum.parse },
 };
+
+pub const id_ref_id = SmithyId.of("smithy.api#idRef");
+pub const private_id = SmithyId.of("smithy.api#private");
 
 /// **[DEPRECATED]**
 /// Constrains the acceptable values of a string to a fixed set.
@@ -99,10 +102,10 @@ pub const Enum = struct {
 
     pub fn get(model: *const SmithyModel, shape_id: SmithyId) ?[]const Member {
         const trait = model.getTraitOpaque(shape_id, id);
-        return if (trait) |ptr| toSlice(ptr) else null;
+        return if (trait) |ptr| cast(ptr) else null;
     }
 
-    fn toSlice(ptr: *const anyopaque) []const Member {
+    fn cast(ptr: *const anyopaque) []const Member {
         const pairs: Sentinel = @alignCast(@ptrCast(ptr));
         var i: usize = 0;
         while (true) : (i += 1) {
@@ -135,7 +138,7 @@ test "Enum" {
     );
     errdefer reader.deinit();
 
-    const members = Enum.toSlice(try Enum.parse(allocator, &reader));
+    const members = Enum.cast(try Enum.parse(allocator, &reader));
     reader.deinit();
     try testing.expectEqualDeep(Enum.Member{
         .value = "FooBar",

@@ -3,11 +3,12 @@
 //!
 //! [Smithy Spec](https://smithy.io/2.0/spec/streaming.html)
 
-const TraitsList = @import("../symbols/traits.zig").TraitsList;
+const TraitsList = @import("../symbols/traits.zig").TraitsRegistry;
 
-// TODO: Pending traits
-// smithy.api#eventHeader
-// smithy.api#eventPayload
-// smithy.api#requiresLength
-// smithy.api#streaming
-pub const traits: TraitsList = &.{};
+// TODO: Remainig traits
+pub const traits: TraitsList = &.{
+    // smithy.api#eventHeader
+    // smithy.api#eventPayload
+    // smithy.api#requiresLength
+    // smithy.api#streaming
+};
