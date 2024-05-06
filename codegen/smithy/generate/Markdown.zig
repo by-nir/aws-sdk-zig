@@ -24,7 +24,7 @@ pub fn init(writer: *StackWriter) Self {
 /// Complete the Markdown content and deinit.
 /// **This will also deinit the writer.**
 pub fn end(self: *Self) !void {
-    try self.writer.deinit();
+    try self.writer.end();
     self.* = undefined;
 }
 
@@ -50,7 +50,7 @@ test "writeAll" {
     try md.writeAll("foo");
     try md.writeAll("bar");
 
-    try writer.deinit();
+    try writer.end();
     try testing.expectEqualStrings("foo\n\nbar", buffer.items);
 }
 
@@ -73,7 +73,7 @@ test "writeFmt" {
     try md.writeFmt("0x{X}", .{108});
     try md.writeFmt("0x{X}", .{109});
 
-    try writer.deinit();
+    try writer.end();
     try testing.expectEqualStrings("0x6C\n\n0x6D", buffer.items);
 }
 
@@ -89,7 +89,7 @@ test "paragraph" {
     var md = init(&writer);
     try md.paragraph("foo.");
 
-    try writer.deinit();
+    try writer.end();
     try testing.expectEqualStrings("foo.", buffer.items);
 }
 
@@ -108,7 +108,7 @@ test "header" {
     var md = init(&writer);
     try md.header(2, "Foo");
 
-    try writer.deinit();
+    try writer.end();
     try testing.expectEqualStrings("## Foo", buffer.items);
 }
 
@@ -133,7 +133,7 @@ test "codeblock" {
     });
     try code.end();
 
-    try writer.deinit();
+    try writer.end();
     try testing.expectEqualStrings(
         \\```zig
         \\foo: u8,
@@ -207,7 +207,7 @@ pub const List = struct {
     }
 
     pub fn end(self: *List) !void {
-        try self.writer.deinit();
+        try self.writer.end();
     }
 };
 
@@ -234,7 +234,7 @@ test "list" {
     try ls.item("qux");
     try ls.end();
 
-    try writer.deinit();
+    try writer.end();
     try testing.expectEqualStrings(
         \\1. foo
         \\  - bar
@@ -328,7 +328,7 @@ test "table" {
     try tb.row(&.{ "27", "28", "29" });
     try tb.row(&.{ "37", "38", "39" });
 
-    try writer.deinit();
+    try writer.end();
     try testing.expectEqualStrings(
         \\| Foo | Bar | Baz |
         \\|----:|:---:|:----|

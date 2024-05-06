@@ -66,14 +66,27 @@ pub fn appendPrefix(self: *Self, append: []const u8) !*Self {
     }
 }
 
-/// Returns the parent context.
-pub fn deinit(self: *Self) !void {
-    defer if (self.parent) |parent| {
-        if (!std.mem.eql(u8, parent.options.line_prefix, self.options.line_prefix)) {
-            self.allocator.free(self.options.line_prefix);
-        }
-        self.allocator.destroy(self);
-    };
+fn deinitContext(self: *Self) void {
+    const parent = self.parent orelse return;
+    if (!std.mem.eql(u8, parent.options.line_prefix, self.options.line_prefix)) {
+        self.allocator.free(self.options.line_prefix);
+    }
+
+    self.allocator.destroy(self);
+}
+
+pub fn deinit(self: *Self) void {
+    for (self.deferred.items) |line| {
+        if (line.bytes.ptr == LINE_BREAK.ptr) continue;
+        self.allocator.free(line.bytes);
+    }
+    self.deferred.clearAndFree(self.allocator);
+    self.deinitContext();
+}
+
+/// This will apply deferred writes **and call `deinit()`**.
+pub fn end(self: *Self) !void {
+    defer self.deinitContext();
     try self.applyDeferred();
 }
 
@@ -130,7 +143,7 @@ test "writeByte" {
 
     var writer = init(test_alloc, buffer.writer().any(), .{});
     try writer.writeByte('f');
-    try writer.deinit();
+    try writer.end();
     try testing.expectEqualStrings("f", buffer.items);
 }
 
@@ -144,7 +157,7 @@ test "writeNByte" {
 
     var writer = init(test_alloc, buffer.writer().any(), .{});
     try writer.writeNByte('x', 3);
-    try writer.deinit();
+    try writer.end();
     try testing.expectEqualStrings("xxx", buffer.items);
 }
 
@@ -158,7 +171,7 @@ test "writeAll" {
 
     var writer = init(test_alloc, buffer.writer().any(), .{});
     try writer.writeAll("foo");
-    try writer.deinit();
+    try writer.end();
     try testing.expectEqualStrings("foo", buffer.items);
 }
 
@@ -174,7 +187,7 @@ test "writeFmt" {
         .line_prefix = "  ",
     });
     try writer.writeFmt("{x}", .{16});
-    try writer.deinit();
+    try writer.end();
     try testing.expectEqualStrings("10", buffer.items);
 }
 
@@ -190,7 +203,7 @@ test "writePrefix" {
         .line_prefix = "//",
     });
     try writer.writePrefix();
-    try writer.deinit();
+    try writer.end();
     try testing.expectEqualStrings("//", buffer.items);
 }
 
@@ -206,7 +219,7 @@ test "prefixedAll" {
         .line_prefix = "  ",
     });
     try writer.prefixedAll("foo");
-    try writer.deinit();
+    try writer.end();
     try testing.expectEqualStrings("  foo", buffer.items);
 }
 
@@ -223,7 +236,7 @@ test "prefixedFmt" {
         .line_prefix = "  ",
     });
     try writer.prefixedFmt("{x}", .{16});
-    try writer.deinit();
+    try writer.end();
     try testing.expectEqualStrings("  10", buffer.items);
 }
 
@@ -239,7 +252,7 @@ test "lineAll" {
         .line_prefix = "  ",
     });
     try writer.lineAll("foo");
-    try writer.deinit();
+    try writer.end();
     try testing.expectEqualStrings("\n  foo", buffer.items);
 }
 
@@ -256,7 +269,7 @@ test "lineFmt" {
         .line_prefix = "  ",
     });
     try writer.lineFmt("{x}", .{16});
-    try writer.deinit();
+    try writer.end();
     try testing.expectEqualStrings("\n  10", buffer.items);
 }
 
@@ -279,7 +292,7 @@ test "lineBreak" {
         .line_prefix = "//  ",
     });
     try writer.lineBreak(2);
-    try writer.deinit();
+    try writer.end();
     try testing.expectEqualStrings("\n//\n//  ", buffer.items);
 }
 
@@ -305,9 +318,9 @@ test "deferAll" {
     try scope.deferAll(.parent, ", qux");
     try scope.deferAll(.self, ", baz");
     try scope.writeAll(", bar");
-    try scope.deinit();
+    try scope.end();
 
-    try writer.deinit();
+    try writer.end();
     try testing.expectEqualStrings("// foo, bar, baz, qux", buffer.items);
 }
 
@@ -333,9 +346,9 @@ test "deferFmt" {
     try scope.deferFmt(.parent, ", 0x{X}", .{17});
     try scope.deferFmt(.self, ", 0x{X}", .{16});
     try scope.writeAll(", 0x9");
-    try scope.deinit();
+    try scope.end();
 
-    try writer.deinit();
+    try writer.end();
     try testing.expectEqualStrings("// 0x8, 0x9, 0x10, 0x11", buffer.items);
 }
 
@@ -363,9 +376,9 @@ test "deferLineBreak" {
     try scope.deferLineBreak(.parent, 2);
     try scope.deferLineBreak(.self, 2);
     try scope.lineAll("bar");
-    try scope.deinit();
+    try scope.end();
 
-    try writer.deinit();
+    try writer.end();
     try testing.expectEqualStrings(
         \\// foo
         \\// - bar
@@ -402,9 +415,9 @@ test "deferLineAll" {
     try scope.deferLineAll(.parent, "qux");
     try scope.deferLineAll(.self, "baz");
     try scope.lineAll("bar");
-    try scope.deinit();
+    try scope.end();
 
-    try writer.deinit();
+    try writer.end();
     try testing.expectEqualStrings(
         \\// foo
         \\// - bar
@@ -445,9 +458,9 @@ test "deferLineFmt" {
     try scope.deferLineFmt(.parent, "0x{X}", .{17});
     try scope.deferLineFmt(.self, "0x{X}", .{16});
     try scope.lineAll("0x9");
-    try scope.deinit();
+    try scope.end();
 
-    try writer.deinit();
+    try writer.end();
     try testing.expectEqualStrings(
         \\// 0x8
         \\// - 0x9
@@ -492,11 +505,11 @@ pub fn List(comptime T: type) type {
             }
         }
 
-        fn writePadding(padding: ListPadding, writer: anytype, end: bool) !void {
+        fn writePadding(padding: ListPadding, writer: anytype, is_end: bool) !void {
             switch (padding) {
                 .none => {},
                 .both => |s| try writer.writeAll(s),
-                .sides => |s| try writer.writeAll(s[if (end) 1 else 0]),
+                .sides => |s| try writer.writeAll(s[if (is_end) 1 else 0]),
             }
         }
     };

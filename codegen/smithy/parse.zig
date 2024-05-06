@@ -47,12 +47,7 @@ manager: TraitsManager,
 policy: Policy,
 issues: *IssuesBag,
 reader: *JsonReader,
-service: SmithyId = SmithyId.NULL,
-meta: std.AutoHashMapUnmanaged(SmithyId, SmithyMeta) = .{},
-shapes: std.AutoHashMapUnmanaged(SmithyId, syb_id.SmithyType) = .{},
-traits: std.AutoHashMapUnmanaged(SmithyId, []const syb_id.SmithyTaggedValue) = .{},
-mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId) = .{},
-names: std.AutoHashMapUnmanaged(SmithyId, []const u8) = .{},
+model: SmithyModel = .{},
 
 /// Parse raw JSON into collection of Smithy symbols.
 ///
@@ -73,25 +68,11 @@ pub fn parseJson(
         .issues = issues,
         .reader = json,
     };
-    errdefer {
-        parser.meta.deinit(arena);
-        parser.shapes.deinit(arena);
-        parser.traits.deinit(arena);
-        parser.mixins.deinit(arena);
-        parser.names.deinit(arena);
-    }
+    errdefer parser.model.deinit(arena);
 
     try parser.parseScope(.object, parseProp, .{});
     try parser.reader.nextDocumentEnd();
-
-    return .{
-        .service = parser.service,
-        .meta = parser.meta.move(),
-        .shapes = parser.shapes.move(),
-        .traits = parser.traits.move(),
-        .mixins = parser.mixins.move(),
-        .names = parser.names.move(),
-    };
+    return parser.model;
 }
 
 fn parseScope(
@@ -256,7 +237,7 @@ fn parseMixins(self: *Self, parent_id: SmithyId) !void {
         .target = .{ .id_list = &mixins },
     });
     const slice = try mixins.toOwnedSlice(self.arena);
-    try self.mixins.put(self.arena, parent_id, slice);
+    try self.model.mixins.put(self.arena, parent_id, slice);
 }
 
 fn parseTraits(self: *Self, parent_name: []const u8, parent_id: SmithyId) !void {
@@ -292,13 +273,13 @@ fn parseTraits(self: *Self, parent_name: []const u8, parent_id: SmithyId) !void 
     if (traits.items.len == 0) return;
 
     // ‘Apply’ types add external traits, in this case we merge the lists.
-    if (self.traits.getPtr(parent_id)) |items| {
+    if (self.model.traits.getPtr(parent_id)) |items| {
         try traits.appendSlice(self.arena, items.*);
         self.arena.free(items.*);
     }
 
     const slice = try traits.toOwnedSlice(self.arena);
-    try self.traits.put(self.arena, parent_id, slice);
+    try self.model.traits.put(self.arena, parent_id, slice);
 }
 
 fn parseShape(self: *Self, shape_name: []const u8, _: Context) !void {
@@ -395,7 +376,7 @@ fn putShape(self: *Self, id: SmithyId, typ: SmithyId, abs_name: []const u8, targ
         },
         .service => switch (target) {
             .service => |val| blk: {
-                self.service = id;
+                self.model.service = id;
                 break :blk .{ .service = val };
             },
             else => return error.InvalidMemberTarget,
@@ -406,7 +387,7 @@ fn putShape(self: *Self, id: SmithyId, typ: SmithyId, abs_name: []const u8, targ
             else => return error.UnknownType,
         },
     };
-    try self.shapes.put(self.arena, id, sm_typ);
+    try self.model.shapes.put(self.arena, id, sm_typ);
     if (is_named) try self.putName(id, .{ .absolute = abs_name });
 }
 
@@ -419,7 +400,7 @@ fn putName(self: *Self, id: SmithyId, name: Name) !void {
             break :blk if (split) |i| s[i + 1 .. s.len] else s;
         },
     };
-    try self.names.put(self.arena, id, try self.arena.dupe(u8, part));
+    try self.model.names.put(self.arena, id, try self.arena.dupe(u8, part));
 }
 
 fn parseMetaList(self: *Self, ctx: Context) !void {
@@ -430,7 +411,7 @@ fn parseMetaMap(self: *Self, meta_name: []const u8, ctx: Context) !void {
     const meta_id = SmithyId.of(meta_name);
     const value = try self.parseMetaValue();
     switch (ctx.target) {
-        .meta => try self.meta.put(self.arena, meta_id, value),
+        .meta => try self.model.meta.put(self.arena, meta_id, value),
         .meta_map => |m| try m.append(self.arena, .{ .key = meta_id, .value = value }),
         else => unreachable,
     }

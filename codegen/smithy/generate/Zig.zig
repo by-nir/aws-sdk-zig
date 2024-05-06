@@ -56,17 +56,26 @@ fn initDecl(writer: *StackWriter, parent: *const Container, identifier: Identifi
     return .{ .parent = parent, .writer = scope };
 }
 
+pub fn deinit(self: *Container) void {
+    self.dinitImports();
+    self.writer.deinit();
+    self.* = undefined;
+}
+
 /// Complete the declaration and deinit.
 /// **This will also deinit the writer.**
 pub fn end(self: *Container) !void {
+    self.dinitImports();
+    try self.writer.end();
+    self.* = undefined;
+}
+
+fn dinitImports(self: *Container) void {
     const allocator = self.writer.allocator;
     for (self.imports.values()) |id| {
         allocator.free(id.name);
     }
     self.imports.deinit(allocator);
-
-    try self.writer.deinit();
-    self.* = undefined;
 }
 
 // Root <- skip container_doc_comment? ContainerMembers eof
@@ -981,7 +990,7 @@ pub const Scope = struct {
         } else if (self.options.suffix) |s| {
             try self.writer.deferAll(.parent, s);
         }
-        try self.writer.deinit();
+        try self.writer.end();
     }
 
     fn createSubWriter(writer: *StackWriter, decor: Decor, form: Form) !*StackWriter {
@@ -1461,7 +1470,7 @@ pub const SwitchExpr = struct {
     }
 
     pub fn end(self: SwitchExpr) !void {
-        try self.writer.deinit();
+        try self.writer.end();
     }
 
     /// Call `end()` to complete the block.
@@ -1562,7 +1571,7 @@ pub const SwitchExpr = struct {
         try block.end();
 
         try expr.end();
-        try writer.deinit();
+        try writer.end();
         try testing.expectEqualStrings(
             \\switch (foo) {
             \\    inline .foo => {

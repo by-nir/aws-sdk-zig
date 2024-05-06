@@ -9,12 +9,20 @@ const TraitsBag = @import("traits.zig").TraitsBag;
 
 /// Parsed symbols (shapes and metadata) from a Smithy model.
 pub const SmithyModel = struct {
-    service: SmithyId,
-    meta: std.AutoHashMapUnmanaged(SmithyId, SmithyMeta),
-    shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType),
-    names: std.AutoHashMapUnmanaged(SmithyId, []const u8),
-    traits: std.AutoHashMapUnmanaged(SmithyId, []const TaggedValue),
-    mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId),
+    service: SmithyId = SmithyId.NULL,
+    meta: std.AutoHashMapUnmanaged(SmithyId, SmithyMeta) = .{},
+    shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType) = .{},
+    names: std.AutoHashMapUnmanaged(SmithyId, []const u8) = .{},
+    traits: std.AutoHashMapUnmanaged(SmithyId, []const TaggedValue) = .{},
+    mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId) = .{},
+
+    pub fn deinit(self: *SmithyModel, allocator: std.mem.Allocator) void {
+        self.meta.deinit(allocator);
+        self.shapes.deinit(allocator);
+        self.traits.deinit(allocator);
+        self.mixins.deinit(allocator);
+        self.names.deinit(allocator);
+    }
 
     pub fn getMeta(self: SmithyModel, key: SmithyId) ?SmithyMeta {
         return self.meta.get(key);
