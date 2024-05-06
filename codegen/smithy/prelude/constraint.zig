@@ -20,12 +20,13 @@ pub const traits: TraitsList = &.{
     // smithy.api#pattern
     .{ private_id, null },
     // smithy.api#range
-    // smithy.api#uniqueItems
+    .{ unique_items_id, null },
     .{ Enum.id, Enum.parse },
 };
 
 pub const id_ref_id = SmithyId.of("smithy.api#idRef");
 pub const private_id = SmithyId.of("smithy.api#private");
+pub const unique_items_id = SmithyId.of("smithy.api#uniqueItems");
 
 /// **[DEPRECATED]**
 /// Constrains the acceptable values of a string to a fixed set.

@@ -40,6 +40,8 @@ pub fn createAggragates() !*SmithyModel {
             SmithyId.of("test#Union$BAZ"),
         };
         const structure = &.{ SmithyId.of("test#Struct$fooBar"), SmithyId.of("test#Struct$bazQux") };
+        const struct_mixins = &.{SmithyId.of("test#Mixin")};
+        const struct_mixed = &.{SmithyId.of("test#Mixin$mixed")};
     };
 
     const model = try createEmpty();
@@ -52,6 +54,14 @@ pub fn createAggragates() !*SmithyModel {
     });
     try model.traits.put(test_alloc, SmithyId.of("test#List"), &.{
         .{ .id = trt_refine.sparse_id, .value = null },
+    });
+
+    try model.names.put(test_alloc, SmithyId.of("test#Set"), "Set");
+    try model.shapes.put(test_alloc, SmithyId.of("test#Set"), .{
+        .list = .integer,
+    });
+    try model.traits.put(test_alloc, SmithyId.of("test#Set"), &.{
+        .{ .id = trt_constr.unique_items_id, .value = null },
     });
 
     try model.names.put(test_alloc, SmithyId.of("test#Map"), "Map");
@@ -114,6 +124,7 @@ pub fn createAggragates() !*SmithyModel {
     try model.shapes.put(test_alloc, SmithyId.of("test#Struct"), .{
         .structure = Static.structure,
     });
+    try model.mixins.put(test_alloc, SmithyId.of("test#Struct"), Static.struct_mixins);
     try model.names.put(test_alloc, SmithyId.of("test#Struct$fooBar"), "fooBar");
     try model.shapes.put(test_alloc, SmithyId.of("test#Struct$fooBar"), .integer);
     try model.traits.put(test_alloc, SmithyId.of("test#Struct$fooBar"), &.{
@@ -127,6 +138,16 @@ pub fn createAggragates() !*SmithyModel {
         .id = trt_refine.Default.id,
         .value = &trt_refine.Default.Value{ .integer = 8 },
     }});
+
+    try model.names.put(test_alloc, SmithyId.of("test#Mixin"), "Mixin");
+    try model.shapes.put(test_alloc, SmithyId.of("test#Mixin"), .{
+        .structure = Static.struct_mixed,
+    });
+    try model.traits.put(test_alloc, SmithyId.of("test#Mixin"), &.{
+        .{ .id = trt_refine.mixin_id, .value = null },
+    });
+    try model.names.put(test_alloc, SmithyId.of("test#Mixin$mixed"), "mixed");
+    try model.shapes.put(test_alloc, SmithyId.of("test#Mixin$mixed"), .boolean);
 
     return model;
 }

@@ -80,6 +80,7 @@ test "writeScriptShape" {
     std.debug.assert(std.mem.eql(u8, imp_std.name, "_imp_std"));
 
     try writeScriptShape(arena_alloc, &script, model, SmithyId.of("test#List"));
+    try writeScriptShape(arena_alloc, &script, model, SmithyId.of("test#Set"));
     try writeScriptShape(arena_alloc, &script, model, SmithyId.of("test#Map"));
     try writeScriptShape(arena_alloc, &script, model, SmithyId.of("test#Enum"));
     try writeScriptShape(arena_alloc, &script, model, SmithyId.of("test#EnumTrt"));
@@ -89,9 +90,9 @@ test "writeScriptShape" {
 
     try script.end();
     try testing.expectEqualStrings(
-        TEST_LIST ++ "\n" ++ TEST_MAP ++ "\n\n" ++ TEST_STR_ENUM ++ "\n\n" ++ TEST_ENUM_TRT ++ "\n\n" ++
-            TEST_INT_ENUM ++ "\n\n" ++ TEST_UNION ++ "\n\n" ++ TEST_STRUCT ++
-            "\n\nconst _imp_std = @import(\"std\");",
+        TEST_LIST ++ "\n" ++ TEST_SET ++ "\n" ++ TEST_MAP ++ "\n\n" ++
+            TEST_STR_ENUM ++ "\n\n" ++ TEST_ENUM_TRT ++ "\n\n" ++ TEST_INT_ENUM ++
+            "\n\n" ++ TEST_UNION ++ "\n\n" ++ TEST_STRUCT ++ "\n\nconst _imp_std = @import(\"std\");",
         buffer.items,
     );
 }
@@ -101,21 +102,35 @@ test "writeScriptShape" {
 fn writeListShape(script: *Script, model: *const SmithyModel, id: SmithyId, memeber: SmithyId) !void {
     const shape_name = try model.tryGetName(id);
     const target_type = Script.TypeExpr{ .raw = try getShapeName(memeber, model) };
-    const target: Script.TypeExpr = if (model.hasTrait(id, trt_refine.sparse_id))
-        .{ .optional = &target_type }
-    else
-        target_type;
-
-    _ = try script.variable(
-        .{ .is_public = true },
-        .{ .identifier = .{ .name = shape_name } },
-        .{ .type = Script.TypeExpr{
-            .slice = .{ .type = &target },
-        } },
-    );
+    if (model.hasTrait(id, trt_constr.unique_items_id)) {
+        const target = Script.TypeExpr{
+            .expr = &Script.Expr.call(
+                "*const _imp_std.AutoArrayHashMapUnmanaged",
+                &.{ .{ .expr = &.{ .type = target_type } }, .{ .raw = "void" } },
+            ),
+        };
+        _ = try script.variable(
+            .{ .is_public = true },
+            .{ .identifier = .{ .name = shape_name } },
+            .{ .type = target },
+        );
+    } else {
+        const target = if (model.hasTrait(id, trt_refine.sparse_id))
+            Script.TypeExpr{ .optional = &target_type }
+        else
+            target_type;
+        _ = try script.variable(
+            .{ .is_public = true },
+            .{ .identifier = .{ .name = shape_name } },
+            .{
+                .type = .{ .slice = .{ .type = &target } },
+            },
+        );
+    }
 }
 
 const TEST_LIST = "pub const List = []const ?i32;";
+const TEST_SET = "pub const Set = *const _imp_std.AutoArrayHashMapUnmanaged(i32, void);";
 
 fn writeMapShape(
     script: *Script,
@@ -134,10 +149,10 @@ fn writeMapShape(
     _ = try script.variable(
         .{ .is_public = true },
         .{ .identifier = .{ .name = shape_name } },
-        .{ .call = .{
-            .identifier = "*const _imp_std.AutoArrayHashMapUnmanaged",
-            .args = &.{ .{ .raw = key_name }, value },
-        } },
+        Script.Expr.call(
+            "*const _imp_std.AutoArrayHashMapUnmanaged",
+            &.{ .{ .raw = key_name }, value },
+        ),
     );
 }
 
@@ -413,42 +428,70 @@ fn writeStructShape(
     members: []const SmithyId,
 ) !void {
     const shape_name = try model.tryGetName(id);
+    const is_input = model.hasTrait(id, trt_refine.input_id);
     var scope = try script.declare(.{ .name = shape_name }, .{
         .is_public = true,
         .type = .{ .Struct = null },
     });
-
-    const is_input = model.hasTrait(id, trt_refine.input_id);
+    try writeStructShapeMixin(arena, &scope, model, is_input, id);
     for (members) |m| {
-        // https://smithy.io/2.0/spec/aggregate-types.html#structure-member-optionality
-        const optional = if (is_input) true else if (model.getTraits(m)) |bag| blk: {
-            break :blk bag.has(trt_refine.client_optional_id) or
-                !(bag.has(trt_refine.required_id) or bag.has(trt_refine.Default.id));
-        } else true;
-        const assign: ?Script.Expr = blk: {
-            break :blk if (optional)
-                .{ .raw = "null" }
-            else if (trt_refine.Default.get(model, m)) |t|
-                switch (try unwrapShapeType(m, model)) {
-                    .str_enum => .{ .val = Script.Val{ .enm = t.string } },
-                    .int_enum => Script.Expr.call("@enumFromInt", &.{Script.Val.of(t.integer)}),
-                    else => .{ .json = t },
-                }
-            else
-                null;
-        };
-        const type_expr = Script.TypeExpr{ .raw = try getShapeName(m, model) };
-        _ = try scope.field(.{
-            .name = try zigifyFieldName(arena, try model.tryGetName(m)),
-            .type = if (optional) .{ .optional = &type_expr } else type_expr,
-            .assign = assign,
-        });
+        try writeStructShapeMember(arena, &scope, model, is_input, m);
     }
     try scope.end();
 }
 
+fn writeStructShapeMixin(
+    arena: Allocator,
+    script: *Script,
+    model: *const SmithyModel,
+    is_input: bool,
+    id: SmithyId,
+) !void {
+    const mixins = model.getMixins(id) orelse return;
+    for (mixins) |mix_id| {
+        try writeStructShapeMixin(arena, script, model, is_input, mix_id);
+        const mixin = (try model.tryGetShape(mix_id)).structure;
+        for (mixin) |m| {
+            try writeStructShapeMember(arena, script, model, is_input, m);
+        }
+    }
+}
+
+fn writeStructShapeMember(
+    arena: Allocator,
+    script: *Script,
+    model: *const SmithyModel,
+    is_input: bool,
+    id: SmithyId,
+) !void {
+    // https://smithy.io/2.0/spec/aggregate-types.html#structure-member-optionality
+    const optional = if (is_input) true else if (model.getTraits(id)) |bag| blk: {
+        break :blk bag.has(trt_refine.client_optional_id) or
+            !(bag.has(trt_refine.required_id) or bag.has(trt_refine.Default.id));
+    } else true;
+    const assign: ?Script.Expr = blk: {
+        break :blk if (optional)
+            .{ .raw = "null" }
+        else if (trt_refine.Default.get(model, id)) |t|
+            switch (try unwrapShapeType(id, model)) {
+                .str_enum => .{ .val = Script.Val{ .enm = t.string } },
+                .int_enum => Script.Expr.call("@enumFromInt", &.{Script.Val.of(t.integer)}),
+                else => .{ .json = t },
+            }
+        else
+            null;
+    };
+    const type_expr = Script.TypeExpr{ .raw = try getShapeName(id, model) };
+    _ = try script.field(.{
+        .name = try zigifyFieldName(arena, try model.tryGetName(id)),
+        .type = if (optional) .{ .optional = &type_expr } else type_expr,
+        .assign = assign,
+    });
+}
+
 const TEST_STRUCT =
     \\pub const Struct = struct {
+    \\    mixed: ?bool = null,
     \\    foo_bar: i32,
     \\    baz_qux: IntEnum = @enumFromInt(8),
     \\};

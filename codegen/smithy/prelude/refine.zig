@@ -25,7 +25,7 @@ pub const traits: TraitsList = &.{
     .{ input_id, null },
     .{ output_id, null },
     .{ sparse_id, null },
-    // smithy.api#mixin
+    .{ mixin_id, null },
 };
 
 pub const default_added_id = SmithyId.of("smithy.api#addedDefault");
@@ -34,6 +34,7 @@ pub const client_optional_id = SmithyId.of("smithy.api#clientOptional");
 pub const input_id = SmithyId.of("smithy.api#input");
 pub const output_id = SmithyId.of("smithy.api#output");
 pub const sparse_id = SmithyId.of("smithy.api#sparse");
+pub const mixin_id = SmithyId.of("mixin.api#mixin");
 
 pub const Default = struct {
     pub const Value = JsonReader.Value;

@@ -1823,6 +1823,7 @@ pub const LazyIdentifier = struct {
 pub const Val = union(enum) {
     raw: []const u8,
     raw_seq: []const []const u8,
+    expr: *const Expr,
     undefined,
     null,
     void,
@@ -1846,6 +1847,7 @@ pub const Val = union(enum) {
             .enm => |s| try writer.print(".{s}", .{s}),
             .unn => |t| try writer.print(".{{ .{s} = {s} }}", .{ t[0], t[1] }),
             .string => |s| try writer.print("\"{s}\"", .{s}),
+            .expr => |t| try writer.print("{}", .{t}),
             .raw => |s| try writer.writeAll(s),
             .raw_seq => |t| {
                 for (t) |s| {
@@ -1870,6 +1872,7 @@ pub const Val = union(enum) {
         try testing.expectFmt("\"foo\"", "{}", .{Val{ .string = "foo" }});
         try testing.expectFmt("foo", "{}", .{Val{ .raw = "foo" }});
         try testing.expectFmt("foobar", "{}", .{Val{ .raw_seq = &.{ "foo", "bar" } }});
+        try testing.expectFmt("foo", "{}", .{Val{ .expr = &.{ .raw = "foo" } }});
     }
 
     pub fn of(val: anytype) Val {
@@ -2122,6 +2125,7 @@ pub const TypeExpr = union(enum) {
     raw: []const u8,
     This,
     string,
+    expr: *const Expr,
     optional: *const TypeExpr,
     array: struct { len: usize, type: *const TypeExpr },
     slice: struct { mutable: bool = false, type: *const TypeExpr },
@@ -2132,6 +2136,7 @@ pub const TypeExpr = union(enum) {
             .raw => |s| try writer.writeAll(s),
             .This => try writer.writeAll("@This()"),
             .string => try writer.writeAll("[]const u8"),
+            .expr => |s| try writer.print("{}", .{s}),
             .optional => |t| try writer.print("?{}", .{t}),
             .array => |t| try writer.print("[{d}]{}", .{ t.len, t.type }),
             inline .slice, .pointer => |t, g| {
@@ -2147,6 +2152,9 @@ pub const TypeExpr = union(enum) {
 
     test {
         try testing.expectFmt("error{Foo}!*const []u8", "{}", .{of(error{Foo}!*const []u8)});
+        try testing.expectFmt("foo", "{}", .{
+            TypeExpr{ .expr = &.{ .raw = "foo" } },
+        });
         try testing.expectFmt("?u8", "{}", .{
             TypeExpr{ .optional = &of(u8) },
         });
