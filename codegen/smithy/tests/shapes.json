@@ -115,6 +115,27 @@
             "test.trait#Void": {},
             "test.trait#Unknown": {}
           }
+        },
+        "primitiveBool": {
+          "target": "smithy.api#PrimitiveBoolean"
+        },
+        "primitiveByte": {
+          "target": "smithy.api#PrimitiveByte"
+        },
+        "primitiveShort": {
+          "target": "smithy.api#PrimitiveShort"
+        },
+        "primitiveInt": {
+          "target": "smithy.api#PrimitiveInteger"
+        },
+        "primitiveLong": {
+          "target": "smithy.api#PrimitiveLong"
+        },
+        "primitiveFloat": {
+          "target": "smithy.api#PrimitiveFloat"
+        },
+        "primitiveDouble": {
+          "target": "smithy.api#PrimitiveDouble"
         }
       },
       "unexpected": {}

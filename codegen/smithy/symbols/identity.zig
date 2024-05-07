@@ -59,14 +59,14 @@ pub const SmithyId = enum(u32) {
         return switch (hash32(shape_id)) {
             hash32(prelude.TYPE_UNIT) => .unit,
             hash32(prelude.TYPE_BLOB) => .blob,
-            hash32(prelude.TYPE_BOOL) => .boolean,
             hash32(prelude.TYPE_STRING) => .string,
-            hash32(prelude.TYPE_BYTE) => .byte,
-            hash32(prelude.TYPE_SHORT) => .short,
-            hash32(prelude.TYPE_INT) => .integer,
-            hash32(prelude.TYPE_LONG) => .long,
-            hash32(prelude.TYPE_FLOAT) => .float,
-            hash32(prelude.TYPE_DOUBLE) => .double,
+            hash32(prelude.TYPE_BOOL), hash32(prelude.PRIMITIVE_BOOL) => .boolean,
+            hash32(prelude.TYPE_BYTE), hash32(prelude.PRIMITIVE_BYTE) => .byte,
+            hash32(prelude.TYPE_SHORT), hash32(prelude.PRIMITIVE_SHORT) => .short,
+            hash32(prelude.TYPE_INT), hash32(prelude.PRIMITIVE_INT) => .integer,
+            hash32(prelude.TYPE_LONG), hash32(prelude.PRIMITIVE_LONG) => .long,
+            hash32(prelude.TYPE_FLOAT), hash32(prelude.PRIMITIVE_FLOAT) => .float,
+            hash32(prelude.TYPE_DOUBLE), hash32(prelude.PRIMITIVE_DOUBLE) => .double,
             hash32(prelude.TYPE_BIGINT) => .big_integer,
             hash32(prelude.TYPE_BIGDEC) => .big_decimal,
             hash32(prelude.TYPE_TIMESTAMP) => .timestamp,
@@ -101,8 +101,9 @@ pub const SmithyId = enum(u32) {
 };
 
 test "SmithyId" {
-    try testing.expectEqual(.blob, SmithyId.of("blob"));
-    try testing.expectEqual(.blob, SmithyId.of("smithy.api#Blob"));
+    try testing.expectEqual(.boolean, SmithyId.of("boolean"));
+    try testing.expectEqual(.boolean, SmithyId.of("smithy.api#Boolean"));
+    try testing.expectEqual(.boolean, SmithyId.of("smithy.api#PrimitiveBoolean"));
     try testing.expectEqual(.list, SmithyId.of("list"));
     try testing.expectEqual(
         @as(SmithyId, @enumFromInt(0x6f8b5d99)),

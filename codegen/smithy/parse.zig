@@ -13,7 +13,7 @@ const syb_shape = @import("symbols/shapes.zig");
 const SmithyMeta = syb_shape.SmithyMeta;
 const SmithyModel = syb_shape.SmithyModel;
 const TraitsManager = @import("symbols/traits.zig").TraitsManager;
-const EnumValueTrait = @import("prelude/refine.zig").EnumValue;
+const trt_refine = @import("prelude/refine.zig");
 
 const Self = @This();
 
@@ -93,9 +93,8 @@ fn parseProp(self: *Self, prop_name: []const u8, ctx: Context) !void {
         .members => try self.parseScope(.object, parseMember, ctx),
         .shapes => try self.parseScope(.object, parseShape, .{}),
         .target => {
-            // No need for name; if the target’s declaration will handle it.
-            const id = SmithyId.of(try self.reader.nextString());
-            _ = try self.putShape(ctx.id, id, undefined, .none);
+            const shape = try self.reader.nextString();
+            _ = try self.putShape(ctx.id, SmithyId.of(shape), shape, .none);
         },
         .metadata => try self.parseScope(.object, parseMetaMap, .{ .target = .meta }),
         .version => switch (ctx.target) {
@@ -279,7 +278,25 @@ fn parseTraits(self: *Self, parent_name: []const u8, parent_id: SmithyId) !void 
     }
 
     const slice = try traits.toOwnedSlice(self.arena);
-    try self.model.traits.put(self.arena, parent_id, slice);
+    if (try self.putTraits(parent_id, slice)) {
+        self.arena.free(slice);
+    }
+}
+
+/// Returns `true` if already had traits.
+fn putTraits(self: *Self, id: SmithyId, traits: []const syb_id.SmithyTaggedValue) !bool {
+    const result = try self.model.traits.getOrPut(self.arena, id);
+    if (result.found_existing) {
+        const current_len = result.value_ptr.*.len;
+        const all = try self.arena.alloc(syb_id.SmithyTaggedValue, current_len + traits.len);
+        @memcpy(all[0..current_len], result.value_ptr.*);
+        @memcpy(all[current_len..][0..traits.len], traits);
+        self.arena.free(result.value_ptr.*);
+        result.value_ptr.* = all;
+    } else {
+        try self.model.traits.put(self.arena, id, traits);
+    }
+    return result.found_existing;
 }
 
 fn parseShape(self: *Self, shape_name: []const u8, _: Context) !void {
@@ -329,18 +346,37 @@ fn parseShape(self: *Self, shape_name: []const u8, _: Context) !void {
     try self.putShape(shape_id, typ, shape_name, target);
 }
 
-fn putShape(self: *Self, id: SmithyId, typ: SmithyId, abs_name: []const u8, target: Context.Target) !void {
+const PRIMITIVE_BOOL = JsonReader.Value{ .boolean = false };
+const PRIMITIVE_INT = JsonReader.Value{ .integer = 0 };
+const PRIMITIVE_FLOAT = JsonReader.Value{ .float = 0.0 };
+fn putShape(self: *Self, id: SmithyId, type_id: SmithyId, name: []const u8, target: Context.Target) !void {
     var is_named = false;
-    const sm_typ: SmithyType = switch (typ) {
+    const smithy_type: SmithyType = switch (type_id) {
         .unit => switch (target) {
             .none => SmithyType.unit,
             else => return error.InvalidShapeTarget,
         },
-        // zig fmt: off
-        inline .blob, .boolean, .string, .byte, .short, .integer, .long,
-        .float, .double, .big_integer, .big_decimal, .timestamp, .document,
-            => |t| std.enums.nameCast(SmithyType, t),
-        // zig fmt: on
+        inline .boolean, .byte, .short, .integer, .long, .float, .double => |t| blk: {
+            if (mem.startsWith(u8, name, "smithy.api#Primitive")) {
+                const traits = try self.arena.alloc(syb_id.SmithyTaggedValue, 1);
+                traits[0] = .{
+                    .id = trt_refine.Default.id,
+                    .value = switch (t) {
+                        .boolean => &PRIMITIVE_BOOL,
+                        .byte, .short, .integer, .long => &PRIMITIVE_INT,
+                        .float, .double => &PRIMITIVE_FLOAT,
+                        else => unreachable,
+                    },
+                };
+                if (try self.putTraits(id, traits)) {
+                    self.arena.free(traits);
+                }
+            }
+            break :blk std.enums.nameCast(SmithyType, t);
+        },
+        inline .blob, .string, .big_integer, .big_decimal, .timestamp, .document => |t| blk: {
+            break :blk std.enums.nameCast(SmithyType, t);
+        },
         inline .str_enum, .int_enum, .tagged_uinon, .structure => |t| switch (target) {
             .id_list => |l| blk: {
                 is_named = true;
@@ -383,12 +419,12 @@ fn putShape(self: *Self, id: SmithyId, typ: SmithyId, abs_name: []const u8, targ
         },
         .apply => unreachable,
         _ => switch (target) {
-            .none => .{ .target = typ },
+            .none => .{ .target = type_id },
             else => return error.UnknownType,
         },
     };
-    try self.model.shapes.put(self.arena, id, sm_typ);
-    if (is_named) try self.putName(id, .{ .absolute = abs_name });
+    try self.model.shapes.put(self.arena, id, smithy_type);
+    if (is_named) try self.putName(id, .{ .absolute = name });
 }
 
 const Name = union(enum) { member: []const u8, absolute: []const u8 };
@@ -472,7 +508,7 @@ test "parseJson" {
     try traits.registerAll(test_alloc, &.{
         .{ SmithyId.of("test.trait#Void"), null },
         .{ SmithyId.of("test.trait#Int"), Traits.parseInt },
-        .{ EnumValueTrait.id, EnumValueTrait.parse },
+        .{ trt_refine.EnumValue.id, trt_refine.EnumValue.parse },
     });
 
     var input_arena = std.heap.ArenaAllocator.init(test_alloc);
@@ -559,8 +595,8 @@ test "parseJson" {
     );
     try testing.expectEqual(.unit, model.getShape(SmithyId.of("test.simple#Enum$FOO")));
     try testing.expectEqualDeep(
-        EnumValueTrait.Val{ .string = "foo" },
-        EnumValueTrait.get(&model, SmithyId.of("test.simple#Enum$FOO")),
+        trt_refine.EnumValue.Val{ .string = "foo" },
+        trt_refine.EnumValue.get(&model, SmithyId.of("test.simple#Enum$FOO")),
     );
     try testing.expectEqualStrings("Enum", try model.tryGetName(SmithyId.of("test.simple#Enum")));
     try testing.expectEqualStrings("FOO", try model.tryGetName(SmithyId.of("test.simple#Enum$FOO")));
@@ -571,8 +607,8 @@ test "parseJson" {
     );
     try testing.expectEqual(.unit, model.getShape(SmithyId.of("test.simple#IntEnum$FOO")));
     try testing.expectEqual(
-        EnumValueTrait.Val{ .integer = 1 },
-        EnumValueTrait.get(&model, SmithyId.of("test.simple#IntEnum$FOO")),
+        trt_refine.EnumValue.Val{ .integer = 1 },
+        trt_refine.EnumValue.get(&model, SmithyId.of("test.simple#IntEnum$FOO")),
     );
     try testing.expectEqualStrings("IntEnum", try model.tryGetName(SmithyId.of("test.simple#IntEnum")));
     try testing.expectEqualStrings(
@@ -604,6 +640,13 @@ test "parseJson" {
         SmithyType{ .structure = &.{
             SmithyId.of("test.aggregate#Structure$stringMember"),
             SmithyId.of("test.aggregate#Structure$numberMember"),
+            SmithyId.of("test.aggregate#Structure$primitiveBool"),
+            SmithyId.of("test.aggregate#Structure$primitiveByte"),
+            SmithyId.of("test.aggregate#Structure$primitiveShort"),
+            SmithyId.of("test.aggregate#Structure$primitiveInt"),
+            SmithyId.of("test.aggregate#Structure$primitiveLong"),
+            SmithyId.of("test.aggregate#Structure$primitiveFloat"),
+            SmithyId.of("test.aggregate#Structure$primitiveDouble"),
         } },
         model.getShape(SmithyId.of("test.aggregate#Structure")),
     );
@@ -618,12 +661,16 @@ test "parseJson" {
         "stringMember",
         try model.tryGetName(SmithyId.of("test.aggregate#Structure$stringMember")),
     );
-    try testing.expectEqual(
-        108,
-        model.getTrait(SmithyId.of("test.aggregate#Structure$stringMember"), SmithyId.of("test.trait#Int"), i64),
-    );
+    try testing.expectEqual(108, model.getTrait(
+        SmithyId.of("test.aggregate#Structure$stringMember"),
+        SmithyId.of("test.trait#Int"),
+        i64,
+    ));
 
-    try testing.expectEqual(.integer, model.getShape(SmithyId.of("test.aggregate#Structure$numberMember")));
+    try testing.expectEqual(
+        .integer,
+        model.getShape(SmithyId.of("test.aggregate#Structure$numberMember")),
+    );
     // The traits merged with external `apply` traits.
     try testing.expect(model.hasTrait(
         SmithyId.of("test.aggregate#Structure$numberMember"),
@@ -633,10 +680,47 @@ test "parseJson" {
         "numberMember",
         try model.tryGetName(SmithyId.of("test.aggregate#Structure$numberMember")),
     );
-    try testing.expectEqual(
-        108,
-        model.getTrait(SmithyId.of("test.aggregate#Structure$numberMember"), SmithyId.of("test.trait#Int"), i64),
-    );
+    try testing.expectEqual(108, model.getTrait(
+        SmithyId.of("test.aggregate#Structure$numberMember"),
+        SmithyId.of("test.trait#Int"),
+        i64,
+    ));
+
+    try testing.expectEqualDeep(JsonReader.Value{ .boolean = false }, model.getTrait(
+        SmithyId.of("test.aggregate#Structure$primitiveBool"),
+        trt_refine.Default.id,
+        JsonReader.Value,
+    ));
+    try testing.expectEqualDeep(JsonReader.Value{ .integer = 0 }, model.getTrait(
+        SmithyId.of("test.aggregate#Structure$primitiveByte"),
+        trt_refine.Default.id,
+        JsonReader.Value,
+    ));
+    try testing.expectEqualDeep(JsonReader.Value{ .integer = 0 }, model.getTrait(
+        SmithyId.of("test.aggregate#Structure$primitiveShort"),
+        trt_refine.Default.id,
+        JsonReader.Value,
+    ));
+    try testing.expectEqualDeep(JsonReader.Value{ .integer = 0 }, model.getTrait(
+        SmithyId.of("test.aggregate#Structure$primitiveInt"),
+        trt_refine.Default.id,
+        JsonReader.Value,
+    ));
+    try testing.expectEqualDeep(JsonReader.Value{ .integer = 0 }, model.getTrait(
+        SmithyId.of("test.aggregate#Structure$primitiveLong"),
+        trt_refine.Default.id,
+        JsonReader.Value,
+    ));
+    try testing.expectEqualDeep(JsonReader.Value{ .float = 0 }, model.getTrait(
+        SmithyId.of("test.aggregate#Structure$primitiveFloat"),
+        trt_refine.Default.id,
+        JsonReader.Value,
+    ));
+    try testing.expectEqualDeep(JsonReader.Value{ .float = 0 }, model.getTrait(
+        SmithyId.of("test.aggregate#Structure$primitiveDouble"),
+        trt_refine.Default.id,
+        JsonReader.Value,
+    ));
 
     try testing.expectEqualDeep(
         SmithyType{ .tagged_uinon = &.{

@@ -22,6 +22,14 @@ pub const TYPE_BIGDEC = "smithy.api#BigDecimal";
 pub const TYPE_TIMESTAMP = "smithy.api#Timestamp";
 pub const TYPE_DOCUMENT = "smithy.api#Document";
 
+pub const PRIMITIVE_BOOL = "smithy.api#PrimitiveBoolean";
+pub const PRIMITIVE_BYTE = "smithy.api#PrimitiveByte";
+pub const PRIMITIVE_SHORT = "smithy.api#PrimitiveShort";
+pub const PRIMITIVE_INT = "smithy.api#PrimitiveInteger";
+pub const PRIMITIVE_LONG = "smithy.api#PrimitiveLong";
+pub const PRIMITIVE_FLOAT = "smithy.api#PrimitiveFloat";
+pub const PRIMITIVE_DOUBLE = "smithy.api#PrimitiveDouble";
+
 const std = @import("std");
 const TraitsManager = @import("symbols/traits.zig").TraitsManager;
 const trt_auth = @import("prelude/auth.zig");
