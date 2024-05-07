@@ -111,30 +111,26 @@ test "writeScriptShape" {
 
 fn writeListShape(self: Self, script: *Script, id: SmithyId, memeber: SmithyId) !void {
     const shape_name = try self.model.tryGetName(id);
-    const target_type = Script.TypeExpr{ .raw = try self.getShapeName(memeber) };
+    const target_type = Script.Expr{ .raw = try self.getShapeName(memeber) };
     if (self.model.hasTrait(id, trt_constr.unique_items_id)) {
-        const target = Script.TypeExpr{
-            .expr = &Script.Expr.call(
+        const target = Script.Expr.call(
                 "*const _imp_std.AutoArrayHashMapUnmanaged",
-                &.{ .{ .type = target_type }, .{ .raw = "void" } },
-            ),
-        };
+            &.{ target_type, .{ .raw = "void" } },
+        );
         _ = try script.variable(
             .{ .is_public = true },
             .{ .identifier = .{ .name = shape_name } },
-            .{ .type = target },
+            target,
         );
     } else {
         const target = if (self.model.hasTrait(id, trt_refine.sparse_id))
-            Script.TypeExpr{ .optional = &target_type }
+            Script.Expr{ .typ_optional = &target_type }
         else
             target_type;
         _ = try script.variable(
             .{ .is_public = true },
             .{ .identifier = .{ .name = shape_name } },
-            .{
-                .type = .{ .slice = .{ .type = &target } },
-            },
+            .{ .typ_slice = .{ .type = &target } },
         );
     }
 }
@@ -243,7 +239,7 @@ fn writeEnumShape(self: Self, script: *Script, id: SmithyId, members: []const St
     var doc = try scope.comment(.doc);
     try doc.paragraph("Used for backwards compatibility when adding new values.");
     try doc.end();
-    _ = try scope.field(.{ .name = "UNKNOWN", .type = .string });
+    _ = try scope.field(.{ .name = "UNKNOWN", .type = .typ_string });
 
     for (members) |member| {
         _ = try scope.field(.{ .name = member.field, .type = null });
@@ -277,9 +273,9 @@ fn writeEnumShape(self: Self, script: *Script, id: SmithyId, members: []const St
     }, .{
         .identifier = .{ .name = "parse" },
         .parameters = &.{
-            .{ .identifier = .{ .name = "value" }, .type = .string },
+            .{ .identifier = .{ .name = "value" }, .type = .typ_string },
         },
-        .return_type = .This,
+        .return_type = .typ_This,
     });
     try blk.prefix(.ret).exprFmt("{}.get(value) orelse .{{ .UNKNOWN = value }}", .{map_values});
     try blk.end();
@@ -289,7 +285,7 @@ fn writeEnumShape(self: Self, script: *Script, id: SmithyId, members: []const St
     }, .{
         .identifier = .{ .name = "serialize" },
         .parameters = &.{Script.param_self},
-        .return_type = .string,
+        .return_type = .typ_string,
     });
     const swtch = try blk.prefix(.ret).switchCtrl(.{ .raw = "self" });
     var prong = try swtch.prong(&.{
@@ -385,9 +381,9 @@ fn writeIntEnumShape(self: Self, script: *Script, id: SmithyId, members: []const
     }, .{
         .identifier = .{ .name = "parse" },
         .parameters = &.{
-            .{ .identifier = .{ .name = "value" }, .type = Script.TypeExpr.of(i32) },
+            .{ .identifier = .{ .name = "value" }, .type = Script.Expr.typ(i32) },
         },
-        .return_type = .This,
+        .return_type = .typ_This,
     });
     try blk.prefix(.ret).expr(.{ .raw = "@enumFromInt(value)" });
     try blk.end();
@@ -397,7 +393,7 @@ fn writeIntEnumShape(self: Self, script: *Script, id: SmithyId, members: []const
     }, .{
         .identifier = .{ .name = "serialize" },
         .parameters = &.{Script.param_self},
-        .return_type = Script.TypeExpr.of(i32),
+        .return_type = Script.Expr.typ(i32),
     });
     try blk.prefix(.ret).expr(.{ .raw = "@intFromEnum(self)" });
     try blk.end();
@@ -522,10 +518,10 @@ fn writeStructShapeMember(self: Self, script: *Script, is_input: bool, id: Smith
         else
             null;
     };
-    const type_expr = Script.TypeExpr{ .raw = try self.getShapeName(id) };
+    const type_expr = Script.Expr{ .raw = try self.getShapeName(id) };
     _ = try script.field(.{
         .name = try zigifyFieldName(self.arena, try self.model.tryGetName(id)),
-        .type = if (optional) .{ .optional = &type_expr } else type_expr,
+        .type = if (optional) .{ .typ_optional = &type_expr } else type_expr,
         .assign = assign,
     });
 }

@@ -23,7 +23,7 @@ pub const CommentLevel = enum { normal, doc, doc_top };
 const INDENT = "    ";
 pub const param_self = Function.Prototype.Parameter{
     .identifier = .{ .name = "self" },
-    .type = .This,
+    .type = .typ_This,
 };
 
 writer: *StackWriter,
@@ -176,10 +176,7 @@ test "field" {
     var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
     var scope = try init(&writer, null);
 
-    const fld = Field{
-        .name = "foo",
-        .type = TypeExpr{ .raw = "u8" },
-    };
+    const fld = Field{ .name = "foo", .type = Expr{ .raw = "u8" } };
     try testing.expectEqualDeep(Identifier{ .name = "foo" }, scope.field(fld));
     try testing.expectEqual(.fields, scope.section);
 
@@ -228,7 +225,7 @@ test "variable" {
 
     const proto = Variable.Prototype{
         .identifier = .{ .name = "foo" },
-        .type = TypeExpr{ .raw = "bool" },
+        .type = Expr.typ(bool),
     };
     _ = try scope.variable(.{}, proto, null);
     try testing.expectEqual(.fields, scope.section);
@@ -276,23 +273,23 @@ test "declare" {
     var scope = try init(&writer, null);
 
     var cnt = try scope.declare(.{ .name = "foo" }, .{ .type = .Opaque });
-    _ = try cnt.field(.{ .name = "bar", .type = TypeExpr.of(bool) });
-    _ = try cnt.field(.{ .name = "baz", .type = TypeExpr.of(bool) });
+    _ = try cnt.field(.{ .name = "bar", .type = Expr.typ(bool) });
+    _ = try cnt.field(.{ .name = "baz", .type = Expr.typ(bool) });
     try cnt.end();
     try testing.expectEqual(.fields, scope.section);
 
     cnt = try scope.declare(.{ .name = "foo" }, .{ .type = .Opaque });
-    _ = try cnt.field(.{ .name = "bar", .type = TypeExpr.of(bool) });
+    _ = try cnt.field(.{ .name = "bar", .type = Expr.typ(bool) });
     try cnt.end();
 
     scope.previous = .doc;
     cnt = try scope.declare(.{ .name = "foo" }, .{ .type = .Opaque });
-    _ = try cnt.field(.{ .name = "bar", .type = TypeExpr.of(bool) });
+    _ = try cnt.field(.{ .name = "bar", .type = Expr.typ(bool) });
     try cnt.end();
 
     scope.previous = .comment;
     cnt = try scope.declare(.{ .name = "foo" }, .{ .type = .Opaque });
-    _ = try cnt.field(.{ .name = "bar", .type = TypeExpr.of(bool) });
+    _ = try cnt.field(.{ .name = "bar", .type = Expr.typ(bool) });
     try cnt.end();
 
     try scope.end();
@@ -622,7 +619,6 @@ test {
     _ = Extern;
 
     _ = Expr;
-    _ = TypeExpr;
     _ = ContainerDecl;
 
     _ = Field;
@@ -664,7 +660,7 @@ pub const Field = struct {
     is_comptime: bool = false,
     /// Set `null` when inside a tuple.
     name: ?[]const u8,
-    type: ?TypeExpr,
+    type: ?Expr,
     alignment: ?Expr = null,
     assign: ?Expr = null,
 
@@ -687,13 +683,13 @@ pub const Field = struct {
         try testing.expectFmt("comptime foo: bool = true", "{}", .{Field{
             .is_comptime = true,
             .name = "foo",
-            .type = TypeExpr{ .raw = "bool" },
-            .assign = Expr{ .raw = "true" },
+            .type = Expr.typ(bool),
+            .assign = Expr.val(true),
         }});
         try testing.expectFmt("u8 align(4)", "{}", .{Field{
             .name = null,
-            .type = TypeExpr{ .raw = "u8" },
-            .alignment = Expr{ .raw = "4" },
+            .type = Expr.typ(u8),
+            .alignment = Expr.val(4),
         }});
     }
 };
@@ -720,16 +716,16 @@ pub const Variable = struct {
             .proto = .{
                 .is_mutable = true,
                 .identifier = .{ .name = "foo" },
-                .type = TypeExpr{ .raw = "bool" },
+                .type = Expr.typ(bool),
             },
         }});
         try testing.expectFmt("const foo: bool = true;", "{}", .{Variable{
             .decl = .{},
             .proto = .{
                 .identifier = .{ .name = "foo" },
-                .type = TypeExpr{ .raw = "bool" },
+                .type = Expr.typ(bool),
             },
-            .assign = Expr{ .raw = "true" },
+            .assign = Expr.val(true),
         }});
     }
 
@@ -768,7 +764,7 @@ pub const Variable = struct {
     pub const Prototype = struct {
         is_mutable: bool = false,
         identifier: Identifier,
-        type: ?TypeExpr = null,
+        type: ?Expr = null,
         alignment: ?Expr = null,
 
         pub fn format(self: Prototype, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
@@ -790,7 +786,7 @@ pub const Variable = struct {
         try testing.expectFmt("var foo: Foo align(4)", "{}", .{Prototype{
             .is_mutable = true,
             .identifier = .{ .name = "foo" },
-            .type = TypeExpr{ .raw = "Foo" },
+            .type = Expr{ .raw = "Foo" },
             .alignment = Expr{ .raw = "4" },
         }});
     }
@@ -840,7 +836,7 @@ pub const Function = struct {
     pub const Prototype = struct {
         identifier: Identifier,
         parameters: []const Parameter,
-        return_type: ?TypeExpr,
+        return_type: ?Expr,
         alignment: ?Expr = null,
         call_conv: ?builtin.CallingConvention = null,
 
@@ -865,7 +861,7 @@ pub const Function = struct {
         pub const Parameter = struct {
             specifier: Specifier = .none,
             identifier: ?Identifier,
-            type: ?TypeExpr,
+            type: ?Expr,
 
             pub fn format(self: Parameter, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
                 switch (self.specifier) {
@@ -902,13 +898,13 @@ pub const Function = struct {
             .identifier = Identifier{ .name = "foo" },
             .parameters = &.{ .{
                 .identifier = Identifier{ .name = "bar" },
-                .type = TypeExpr{ .raw = "bool" },
+                .type = Expr.typ(bool),
             }, .{
                 .identifier = Identifier{ .name = "baz" },
                 .type = null,
             }, .{
                 .identifier = null,
-                .type = TypeExpr{ .raw = "bool" },
+                .type = Expr.typ(bool),
             } },
             .return_type = null,
         }});
@@ -1180,8 +1176,8 @@ pub const Scope = struct {
 
         var cnt = try scope.declare(.{ .name = "foo" }, .{ .type = .Union });
         try testing.expectEqual(parent_container, cnt.parent.?);
-        _ = try cnt.field(.{ .name = "bar", .type = TypeExpr.of(bool) });
-        _ = try cnt.field(.{ .name = "baz", .type = TypeExpr.of(bool) });
+        _ = try cnt.field(.{ .name = "bar", .type = Expr.typ(bool) });
+        _ = try cnt.field(.{ .name = "baz", .type = Expr.typ(bool) });
         try cnt.end();
 
         try scope.prefix(.ret).expr(.{ .raw = "foo()" });
@@ -1831,7 +1827,6 @@ pub const LazyIdentifier = struct {
 pub const Expr = union(enum) {
     raw: []const u8,
     raw_seq: []const []const u8,
-    type: TypeExpr,
     json: JsonValue,
     call: struct { identifier: []const u8, args: []const Expr },
     val_undefined,
@@ -1847,6 +1842,12 @@ pub const Expr = union(enum) {
     /// Values: tag name, value. Use `Val.enm` for void payloads.
     val_union: [2][]const u8,
     val_string: []const u8,
+    typ_This,
+    typ_string,
+    typ_optional: *const Expr,
+    typ_array: struct { len: usize, type: *const Expr },
+    typ_slice: struct { mutable: bool = false, type: *const Expr },
+    typ_pointer: struct { mutable: bool = false, type: *const Expr },
 
     /// Assumes `args` is a list of `Val`s.
     pub fn call(identifier: []const u8, args: []const Expr) Expr {
@@ -1923,11 +1924,21 @@ pub const Expr = union(enum) {
         try testing.expectEqualDeep(Expr{ .val_string = "foo" }, val("foo"));
     }
 
+    pub fn typ(comptime T: type) Expr {
+        return .{ .raw = @typeName(T) };
+    }
+
+    test "typ" {
+        try testing.expectEqualDeep(
+            Expr{ .raw = "error{Foo}!*const []u8" },
+            typ(error{Foo}!*const []u8),
+        );
+    }
+
     pub fn format(self: Expr, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
         switch (self) {
             .raw => try writer.writeAll(self.raw),
             .raw_seq => |t| for (t) |s| try writer.writeAll(s),
-            .type => |s| try writer.print("{}", .{s}),
             .call => |t| try writer.print("{s}({})", .{
                 t.identifier,
                 List(Expr){ .items = t.args },
@@ -1942,6 +1953,14 @@ pub const Expr = union(enum) {
             .val_enum => |s| try writer.print(".{s}", .{s}),
             .val_union => |t| try writer.print(".{{ .{s} = {s} }}", .{ t[0], t[1] }),
             .val_string => |s| try writer.print("\"{s}\"", .{s}),
+            .typ_This => try writer.writeAll("@This()"),
+            .typ_string => try writer.writeAll("[]const u8"),
+            .typ_optional => |t| try writer.print("?{}", .{t}),
+            .typ_array => |t| try writer.print("[{d}]{}", .{ t.len, t.type }),
+            inline .typ_slice, .typ_pointer => |t, g| {
+                try if (g == .typ_pointer) writer.writeByte('*') else writer.writeAll("[]");
+                try if (t.mutable) writer.print("{}", .{t.type}) else writer.print("const {}", .{t.type});
+            },
             .json => |json| switch (json) {
                 .null => try writer.writeAll("null"),
                 .boolean => |v| try writer.writeAll(if (v) "true" else "false"),
@@ -1975,7 +1994,7 @@ pub const Expr = union(enum) {
         try testing.expectFmt("foobar", "{}", .{
             Expr{ .raw_seq = &.{ "foo", "bar" } },
         });
-        try testing.expectFmt("u8", "{}", .{Expr{ .type = TypeExpr.of(u8) }});
+
         try testing.expectFmt("{}", "{}", .{Expr{ .val_void = {} }});
         try testing.expectFmt("undefined", "{}", .{Expr{ .val_undefined = {} }});
         try testing.expectFmt("null", "{}", .{Expr{ .val_null = {} }});
@@ -1999,6 +2018,23 @@ pub const Expr = union(enum) {
             },
         }});
 
+        try testing.expectFmt("?u8", "{}", .{Expr{ .typ_optional = &typ(u8) }});
+        try testing.expectFmt("[2]u8", "{}", .{
+            Expr{ .typ_array = .{ .len = 2, .type = &typ(u8) } },
+        });
+        try testing.expectFmt("[]const u8", "{}", .{
+            Expr{ .typ_slice = .{ .type = &typ(u8) } },
+        });
+        try testing.expectFmt("[]u8", "{}", .{
+            Expr{ .typ_slice = .{ .mutable = true, .type = &typ(u8) } },
+        });
+        try testing.expectFmt("*const u8", "{}", .{
+            Expr{ .typ_pointer = .{ .type = &typ(u8) } },
+        });
+        try testing.expectFmt("*u8", "{}", .{
+            Expr{ .typ_pointer = .{ .mutable = true, .type = &typ(u8) } },
+        });
+
         try testing.expectFmt(
             \\.{ null, true, false, 108, 1.08, "foo", .{
             \\    .key1 = "bar",
@@ -2018,119 +2054,6 @@ pub const Expr = union(enum) {
                 } },
             } },
         }});
-    }
-};
-
-// TypeExpr <- PrefixTypeOp* ErrorUnionExpr
-// PrefixTypeOp
-//     <- QUESTIONMARK
-//      / SliceTypeStart (ByteAlign / KEYWORD_const / KEYWORD_volatile / KEYWORD_allowzero)*
-//      / PtrTypeStart (KEYWORD_align LPAREN Expr (COLON Expr COLON Expr)? RPAREN / KEYWORD_const / KEYWORD_volatile / KEYWORD_allowzero)*
-//      / ArrayTypeStart
-// SliceTypeStart <- LBRACKET (COLON Expr)? RBRACKET
-// PtrTypeStart
-//     <- ASTERISK
-//      / ASTERISK2
-//      / LBRACKET ASTERISK (LETTERC / COLON Expr)? RBRACKET
-// ArrayTypeStart <- LBRACKET Expr (COLON Expr)? RBRACKET
-// ErrorUnionExpr <- SuffixExpr (EXCLAMATIONMARK TypeExpr)?
-// SuffixExpr
-//     <- KEYWORD_async PrimaryTypeExpr SuffixOp* FnCallArguments
-//      / PrimaryTypeExpr (SuffixOp / FnCallArguments)*
-// SuffixOp
-//     <- LBRACKET Expr (DOT2 (Expr? (COLON Expr)?)?)? RBRACKET
-//      / DOT IDENTIFIER
-//      / dotasterisk
-//      / dotquestionmark
-// PrimaryTypeExpr
-//     <- BUILTINIDENTIFIER FnCallArguments
-//      / CHAR_LITERAL
-//      / ContainerDecl
-//      / DOT IDENTIFIER
-//      / DOT InitList
-//      / ErrorSetDecl
-//      / FLOAT
-//      / FnProto
-//      / GroupedExpr
-//      / LabeledTypeExpr
-//      / IDENTIFIER
-//      / IfTypeExpr
-//      / INTEGER
-//      / KEYWORD_comptime TypeExpr
-//      / KEYWORD_error DOT IDENTIFIER
-//      / KEYWORD_unreachable
-//      / STRINGLITERAL
-//      / SwitchExpr
-// GroupedExpr <- LPAREN Expr RPAREN
-// LabeledTypeExpr
-//     <- BlockLabel Block
-//      / BlockLabel? LoopTypeExpr
-// LoopTypeExpr <- KEYWORD_inline? (ForTypeExpr / WhileTypeExpr)
-// IfTypeExpr <- IfPrefix TypeExpr (KEYWORD_else Payload? TypeExpr)?
-// ForTypeExpr <- ForPrefix TypeExpr (KEYWORD_else TypeExpr)?
-// WhileTypeExpr <- WhilePrefix TypeExpr (KEYWORD_else Payload? TypeExpr)?
-// ContainerDecl <- (KEYWORD_extern / KEYWORD_packed)? ContainerDeclAuto
-// ContainerDeclAuto <- ContainerDeclType LBRACE container_doc_comment? ContainerMembers RBRACE
-// ErrorSetDecl <- KEYWORD_error LBRACE IdentifierList RBRACE
-// IdentifierList <- (doc_comment? IDENTIFIER COMMA)* (doc_comment? IDENTIFIER)?
-pub const TypeExpr = union(enum) {
-    raw: []const u8,
-    This,
-    string,
-    expr: *const Expr,
-    optional: *const TypeExpr,
-    array: struct { len: usize, type: *const TypeExpr },
-    slice: struct { mutable: bool = false, type: *const TypeExpr },
-    pointer: struct { mutable: bool = false, type: *const TypeExpr },
-
-    pub fn format(self: TypeExpr, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
-        switch (self) {
-            .raw => |s| try writer.writeAll(s),
-            .This => try writer.writeAll("@This()"),
-            .string => try writer.writeAll("[]const u8"),
-            .expr => |s| try writer.print("{}", .{s}),
-            .optional => |t| try writer.print("?{}", .{t}),
-            .array => |t| try writer.print("[{d}]{}", .{ t.len, t.type }),
-            inline .slice, .pointer => |t, g| {
-                try if (g == .pointer) writer.writeByte('*') else writer.writeAll("[]");
-                try if (t.mutable) writer.print("{}", .{t.type}) else writer.print("const {}", .{t.type});
-            },
-        }
-    }
-
-    pub fn of(T: type) TypeExpr {
-        return .{ .raw = @typeName(T) };
-    }
-
-    test {
-        try testing.expectFmt("error{Foo}!*const []u8", "{}", .{of(error{Foo}!*const []u8)});
-        try testing.expectFmt("foo", "{}", .{
-            TypeExpr{ .expr = &.{ .raw = "foo" } },
-        });
-        try testing.expectFmt("?u8", "{}", .{
-            TypeExpr{ .optional = &of(u8) },
-        });
-        try testing.expectFmt("[2]u8", "{}", .{
-            TypeExpr{ .array = .{ .len = 2, .type = &of(u8) } },
-        });
-        try testing.expectFmt("[]const u8", "{}", .{
-            TypeExpr{ .slice = .{ .type = &of(u8) } },
-        });
-        try testing.expectFmt("[]u8", "{}", .{
-            TypeExpr{ .slice = .{
-                .mutable = true,
-                .type = &of(u8),
-            } },
-        });
-        try testing.expectFmt("*const u8", "{}", .{
-            TypeExpr{ .pointer = .{ .type = &of(u8) } },
-        });
-        try testing.expectFmt("*u8", "{}", .{
-            TypeExpr{ .pointer = .{
-                .mutable = true,
-                .type = &of(u8),
-            } },
-        });
     }
 };
 
