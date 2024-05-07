@@ -14,28 +14,61 @@ const TraitsList = @import("../symbols/traits.zig").TraitsRegistry;
 const SmithyModel = @import("../symbols/shapes.zig").SmithyModel;
 const JsonReader = @import("../utils/JsonReader.zig");
 
-// TODO: Remainig traits
 pub const traits: TraitsList = &.{
     .{ Default.id, Default.parse },
     .{ default_added_id, null },
     .{ required_id, null },
     .{ client_optional_id, null },
     .{ EnumValue.id, EnumValue.parse },
-    // smithy.api#error
+    .{ Error.id, Error.parse },
     .{ input_id, null },
     .{ output_id, null },
     .{ sparse_id, null },
     .{ mixin_id, null },
 };
 
+/// Indicates that the default trait was added to a structure member after
+/// initially publishing the member.
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/type-refinement-traits.html#addeddefault-trait)
 pub const default_added_id = SmithyId.of("smithy.api#addedDefault");
+
+/// Marks a structure member as required, meaning a value for the member MUST be present.
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/type-refinement-traits.html#required-trait)
 pub const required_id = SmithyId.of("smithy.api#required");
+
+/// Requires that non-authoritative generators like clients treat a structure
+/// member as optional regardless of if the member is also marked with the
+/// _required trait_ or _default trait_.
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/type-refinement-traits.html#clientoptional-trait)
 pub const client_optional_id = SmithyId.of("smithy.api#clientOptional");
+
+/// Specializes a structure for use only as the input of a single operation,
+/// providing relaxed backward compatibility requirements for structure members.
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/type-refinement-traits.html#input-trait)
 pub const input_id = SmithyId.of("smithy.api#input");
+
+/// Specializes a structure for use only as the output of a single operation.
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/type-refinement-traits.html#output-trait)
 pub const output_id = SmithyId.of("smithy.api#output");
+
+/// Indicates that lists and maps MAY contain null values.
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/type-refinement-traits.html#sparse-trait)
 pub const sparse_id = SmithyId.of("smithy.api#sparse");
+
+/// Indicates that the targeted shape is a mixin.
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/type-refinement-traits.html#mixin-trait)
 pub const mixin_id = SmithyId.of("mixin.api#mixin");
 
+/// Provides a structure member with a default value.
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/type-refinement-traits.html#default-trait)
 pub const Default = struct {
     pub const Value = JsonReader.Value;
     pub const id = SmithyId.of("smithy.api#default");
@@ -113,4 +146,46 @@ test "EnumValue" {
     }));
     reader.deinit();
     try testing.expectEqualDeep(&EnumValue.Val{ .string = "foo" }, val_str);
+}
+
+/// Indicates that a structure shape represents an error.
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/type-refinement-traits.html#error-trait)
+pub const Error = struct {
+    pub const id = SmithyId.of("smithy.api#error");
+
+    pub const Source = enum { client, server };
+
+    pub fn parse(arena: Allocator, reader: *JsonReader) !*const anyopaque {
+        const source = try reader.nextString();
+        const value = try arena.create(Source);
+        value.* = if (source[0] == 'c') Source.client else Source.server;
+        return value;
+    }
+
+    pub fn get(model: *const SmithyModel, shape_id: SmithyId) ?Source {
+        return model.getTrait(shape_id, id, Source);
+    }
+};
+
+test "Error" {
+    var arena = std.heap.ArenaAllocator.init(test_alloc);
+    const allocator = arena.allocator();
+    defer arena.deinit();
+
+    var reader = try JsonReader.initFixed(allocator, "\"client\"");
+    const val_int: *const Error.Source = @alignCast(@ptrCast(Error.parse(allocator, &reader) catch |e| {
+        reader.deinit();
+        return e;
+    }));
+    reader.deinit();
+    try testing.expectEqualDeep(&Error.Source.client, val_int);
+
+    reader = try JsonReader.initFixed(allocator, "\"server\"");
+    const val_str: *const Error.Source = @alignCast(@ptrCast(Error.parse(allocator, &reader) catch |e| {
+        reader.deinit();
+        return e;
+    }));
+    reader.deinit();
+    try testing.expectEqualDeep(&Error.Source.server, val_str);
 }

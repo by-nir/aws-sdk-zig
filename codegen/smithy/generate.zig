@@ -4,6 +4,7 @@
 //! - `<service_name>/`
 //!   - `README.md`
 //!   - `root.zig`
+//!   - `client.zig`
 const std = @import("std");
 const fs = std.fs;
 const Allocator = std.mem.Allocator;
@@ -15,12 +16,23 @@ const SmithyId = syb_id.SmithyId;
 const SmithyType = syb_id.SmithyType;
 const SmithyModel = @import("symbols/shapes.zig").SmithyModel;
 const Script = @import("generate/Zig.zig");
-const StackWriter = @import("utils/StackWriter.zig");
+const trt_http = @import("prelude/http.zig");
 const trt_refine = @import("prelude/refine.zig");
+const trt_behave = @import("prelude/behavior.zig");
 const trt_constr = @import("prelude/constraint.zig");
+const StackWriter = @import("utils/StackWriter.zig");
 
 const Self = @This();
 pub const Options = struct {
+    script_hook: ?*const fn (*Script) anyerror!void = null,
+    shape_error_hook: *const fn (*Script, *const SmithyModel, ErrorShape) anyerror!void,
+
+    pub const ErrorShape = struct {
+        id: SmithyId,
+        source: trt_refine.Error.Source,
+        code: u10,
+        retryable: bool,
+    };
 };
 
 arena: Allocator,
@@ -77,7 +89,6 @@ fn writeScriptShape(self: Self, script: *Script, id: SmithyId) !void {
         .int_enum => |m| try self.writeIntEnumShape(script, id, m),
         .tagged_uinon => |m| try self.writeUnionShape(script, id, m),
         .structure => |m| try self.writeStructShape(script, id, m),
-        // TODO: service/operation/resource
         .string => {
             if (trt_constr.Enum.get(self.model, id)) |members| {
                 return self.writeTraitEnumShape(script, id, members);
@@ -99,7 +110,7 @@ test "writeScriptShape" {
 
     const self = Self{
         .arena = tester.arena.allocator(),
-        .options = .{},
+        .options = TEST_OPTIONS,
         .model = &model,
     };
     try testing.expectError(
@@ -114,7 +125,7 @@ fn writeListShape(self: Self, script: *Script, id: SmithyId, memeber: SmithyId) 
     const target_type = Script.Expr{ .raw = try self.getShapeName(memeber) };
     if (self.model.hasTrait(id, trt_constr.unique_items_id)) {
         const target = Script.Expr.call(
-                "*const _imp_std.AutoArrayHashMapUnmanaged",
+            "*const _imp_std.AutoArrayHashMapUnmanaged",
             &.{ target_type, .{ .raw = "void" } },
         );
         _ = try script.variable(
@@ -145,7 +156,7 @@ test "writeListShape" {
 
     const self = Self{
         .arena = tester.arena.allocator(),
-        .options = .{},
+        .options = TEST_OPTIONS,
         .model = &model,
     };
 
@@ -186,7 +197,7 @@ test "writeMapShape" {
 
     const self = Self{
         .arena = tester.arena.allocator(),
-        .options = .{},
+        .options = TEST_OPTIONS,
         .model = &model,
     };
 
@@ -319,7 +330,7 @@ test "writeEnumShape" {
 
     const self = Self{
         .arena = tester.arena.allocator(),
-        .options = .{},
+        .options = TEST_OPTIONS,
         .model = &model,
     };
 
@@ -411,7 +422,7 @@ test "writeIntEnumShape" {
 
     const self = Self{
         .arena = tester.arena.allocator(),
-        .options = .{},
+        .options = TEST_OPTIONS,
         .model = &model,
     };
 
@@ -461,7 +472,7 @@ test "writeUnionShape" {
 
     const self = Self{
         .arena = tester.arena.allocator(),
-        .options = .{},
+        .options = TEST_OPTIONS,
         .model = &model,
     };
 
@@ -482,11 +493,22 @@ fn writeStructShape(self: Self, script: *Script, id: SmithyId, members: []const 
         .is_public = true,
         .type = .{ .Struct = null },
     });
+    try self.writeStructShapeError(&scope, id);
     try self.writeStructShapeMixin(&scope, is_input, id);
     for (members) |m| {
         try self.writeStructShapeMember(&scope, is_input, m);
     }
     try scope.end();
+}
+
+fn writeStructShapeError(self: Self, script: *Script, id: SmithyId) !void {
+    const source = trt_refine.Error.get(self.model, id) orelse return;
+    _ = try self.options.shape_error_hook(script, self.model, .{
+        .id = id,
+        .source = source,
+        .retryable = self.model.hasTrait(id, trt_behave.retryable_id),
+        .code = trt_http.HttpError.get(self.model, id) orelse if (source == .client) 400 else 500,
+    });
 }
 
 fn writeStructShapeMixin(self: Self, script: *Script, is_input: bool, id: SmithyId) !void {
@@ -532,20 +554,28 @@ test "writeStructShape" {
 
     var model = SmithyModel{};
     try test_model.setupStruct(&model);
+    try test_model.setupError(&model);
     defer model.deinit(test_alloc);
 
     const self = Self{
         .arena = tester.arena.allocator(),
-        .options = .{},
+        .options = TEST_OPTIONS,
         .model = &model,
     };
 
     try self.writeScriptShape(tester.script, SmithyId.of("test#Struct"));
+    try self.writeScriptShape(tester.script, SmithyId.of("test#Error"));
     try tester.expect(
         \\pub const Struct = struct {
         \\    mixed: ?bool = null,
         \\    foo_bar: i32,
         \\    baz_qux: IntEnum = @enumFromInt(8),
+        \\};
+        \\
+        \\pub const Error = struct {
+        \\    pub const source: ErrorSource = .client;
+        \\    pub const code: u10 = 429;
+        \\    pub const retryable = true;
         \\};
     );
 }
@@ -642,6 +672,26 @@ test "zigifyFieldName" {
         "foo_bar",
         try zigifyFieldName(arena.allocator(), "FOO_BAR"),
     );
+}
+
+const TEST_OPTIONS = Options{
+    .shape_error_hook = testShapeErrorHook,
+};
+
+fn testShapeErrorHook(script: *Script, _: *const SmithyModel, shape: Options.ErrorShape) !void {
+    _ = try script.variable(.{ .is_public = true }, .{
+        .identifier = .{ .name = "source" },
+        .type = .{ .raw = "ErrorSource" },
+    }, Script.Expr.val(shape.source));
+
+    _ = try script.variable(.{ .is_public = true }, .{
+        .identifier = .{ .name = "code" },
+        .type = Script.Expr.typ(u10),
+    }, Script.Expr.val(shape.code));
+
+    _ = try script.variable(.{ .is_public = true }, .{
+        .identifier = .{ .name = "retryable" },
+    }, Script.Expr.val(shape.retryable));
 }
 
 const ScriptTester = struct {

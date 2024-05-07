@@ -10,8 +10,10 @@ const SmithyModel = syb_shapes.SmithyModel;
 const SmithyService = syb_shapes.SmithyService;
 const SmithyOperation = syb_shapes.SmithyOperation;
 const SmithyResource = syb_shapes.SmithyResource;
-const trt_refine = @import("../prelude/refine.zig");
+const trt_behave = @import("../prelude/behavior.zig");
 const trt_constr = @import("../prelude/constraint.zig");
+const trt_http = @import("../prelude/http.zig");
+const trt_refine = @import("../prelude/refine.zig");
 
 pub fn setupUnit(model: *SmithyModel) !void {
     try model.shapes.put(test_alloc, SmithyId.of("test#Unit"), .unit);
@@ -141,6 +143,20 @@ pub fn setupStruct(model: *SmithyModel) !void {
     });
     try model.names.put(test_alloc, SmithyId.of("test#Mixin$mixed"), "mixed");
     try model.shapes.put(test_alloc, SmithyId.of("test#Mixin$mixed"), .boolean);
+}
+
+const ERROR_CODE: u10 = 429;
+const ERROR_SOURCE = trt_refine.Error.Source.client;
+pub fn setupError(model: *SmithyModel) !void {
+    try model.names.put(test_alloc, SmithyId.of("test#Error"), "Error");
+    try model.shapes.put(test_alloc, SmithyId.of("test#Error"), .{
+        .structure = &.{},
+    });
+    try model.traits.put(test_alloc, SmithyId.of("test#Error"), &.{
+        .{ .id = trt_refine.Error.id, .value = &ERROR_SOURCE },
+        .{ .id = trt_behave.retryable_id, .value = null },
+        .{ .id = trt_http.HttpError.id, .value = &ERROR_CODE },
+    });
 }
 
 pub fn setupService(model: *SmithyModel) !void {

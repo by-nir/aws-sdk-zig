@@ -11,9 +11,10 @@ const parse = @import("parse.zig");
 pub const parseJson = parse.parseJson;
 
 const generate = @import("generate.zig");
+pub const Options = generate.Options;
+pub const ReadmeSlots = generate.ReadmeSlots;
 pub const getModelDir = generate.getModelDir;
 pub const generateModel = generate.generateModel;
-pub const ReadmeSlots = generate.ReadmeSlots;
 
 test {
     _ = IssuesBag;

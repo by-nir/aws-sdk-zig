@@ -24,8 +24,19 @@ pub const traits: TraitsList = &.{
     .{ Enum.id, Enum.parse },
 };
 
+/// Indicates that a string value MUST contain a valid absolute _shape ID_.
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/constraint-traits.html#idref-trait)
 pub const id_ref_id = SmithyId.of("smithy.api#idRef");
+
+/// Prevents models defined in a different namespace from referencing the targeted shape.
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/constraint-traits.html#private-trait)
 pub const private_id = SmithyId.of("smithy.api#private");
+
+/// Requires the items in a list to be unique based on Value equality.
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/constraint-traits.html#uniqueitems-trait)
 pub const unique_items_id = SmithyId.of("smithy.api#uniqueItems");
 
 /// **[DEPRECATED]**
