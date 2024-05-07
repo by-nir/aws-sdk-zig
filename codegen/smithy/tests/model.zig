@@ -19,6 +19,22 @@ pub fn setupUnit(model: *SmithyModel) !void {
     try model.shapes.put(test_alloc, SmithyId.of("test#Unit"), .unit);
 }
 
+pub fn setupShapeQueue(model: *SmithyModel) !void {
+    try model.names.put(test_alloc, SmithyId.of("test#Root"), "Root");
+    try model.shapes.put(test_alloc, SmithyId.of("test#Root"), .{
+        .list = SmithyId.of("test#Root$child"),
+    });
+
+    try model.shapes.put(test_alloc, SmithyId.of("test#Root$child"), .{
+        .target = SmithyId.of("test#Child"),
+    });
+
+    try model.names.put(test_alloc, SmithyId.of("test#Child"), "Child");
+    try model.shapes.put(test_alloc, SmithyId.of("test#Child"), .{
+        .list = .integer,
+    });
+}
+
 pub fn setupList(model: *SmithyModel) !void {
     try model.names.put(test_alloc, SmithyId.of("test#List"), "List");
     try model.shapes.put(test_alloc, SmithyId.of("test#List"), .{

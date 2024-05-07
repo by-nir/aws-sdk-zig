@@ -38,6 +38,8 @@ pub const Options = struct {
 arena: Allocator,
 options: Options,
 model: *const SmithyModel,
+shape_queue: std.DoublyLinkedList(SmithyId) = .{},
+shape_visited: std.AutoHashMapUnmanaged(SmithyId, void) = .{},
 
 /// Must `close()` the returned directory when complete.
 pub fn getModelDir(rel_base: []const u8, rel_model: []const u8) !fs.Dir {
@@ -64,24 +66,105 @@ pub fn generateModel(arena: Allocator, name: []const u8, model: *const SmithyMod
     _ = name;
 }
 
+fn appendShape(self: *Self, id: SmithyId) !void {
+    if (self.shape_visited.contains(id)) return;
+    try self.shape_visited.put(self.arena, id, void{});
+    const node = try self.arena.create(std.DoublyLinkedList(SmithyId).Node);
+    node.data = id;
+    self.shape_queue.append(node);
+}
+
+fn nextShape(self: *Self) ?SmithyId {
+    const node = self.shape_queue.popFirst() orelse return null;
+    const shape = node.data;
+    self.arena.destroy(node);
+    return shape;
+}
+
+test "shapes queue" {
+    var self = Self{
+        .arena = test_alloc,
+        .options = TEST_OPTIONS,
+        .model = undefined,
+    };
+    defer self.shape_visited.deinit(test_alloc);
+
+    try self.appendShape(SmithyId.of("A"));
+    try testing.expectEqualDeep(SmithyId.of("A"), self.nextShape());
+    try self.appendShape(SmithyId.of("A"));
+    try testing.expectEqual(null, self.nextShape());
+    try self.appendShape(SmithyId.of("B"));
+    try self.appendShape(SmithyId.of("C"));
+    try testing.expectEqualDeep(SmithyId.of("B"), self.nextShape());
+    try testing.expectEqualDeep(SmithyId.of("C"), self.nextShape());
+    try testing.expectEqual(null, self.nextShape());
+}
+
 /// Optionaly add any (or none) of the ReadmeSlots to the template. Each specifier
 /// may appear more then once or not at all.
-fn writeReadme(arena: Allocator, comptime template: []const u8, slots: ReadmeSlots) ![]const u8 {
-    return std.fmt.allocPrint(arena, template, slots);
+fn writeReadme(output: std.io.AnyWriter, comptime template: []const u8, slots: ReadmeSlots) !void {
+    try output.print(template, slots);
 }
 
 test "writeReadme" {
-    const template = @embedFile("tests/README.md.template");
+    var buffer = std.ArrayList(u8).init(test_alloc);
+    const buffer_writer = buffer.writer().any();
+    defer buffer.deinit();
+
     const slots = ReadmeSlots{ .title = "Foo Bar", .slug = "foo-bar" };
-    const output = try writeReadme(test_alloc, template, slots);
-    defer test_alloc.free(output);
+    try writeReadme(buffer_writer, @embedFile("tests/README.md.template"), slots);
     try testing.expectEqualStrings(
         \\# Generated Foo Bar Service
         \\Learn more – [user guide](https://example.com/foo-bar)
-    , output);
+    , buffer.items);
 }
 
-fn writeScriptShape(self: Self, script: *Script, id: SmithyId) !void {
+fn writeScript(self: *Self, output: std.io.AnyWriter, root: SmithyId) !void {
+    var writer = StackWriter.init(self.arena, output, .{});
+    var script = try Script.init(&writer, null);
+
+    if (self.options.script_hook) |hook| {
+        try hook(&script);
+    }
+
+    const imp_std = try script.import("std");
+    std.debug.assert(std.mem.eql(u8, imp_std.name, "_imp_std"));
+
+    try self.appendShape(root);
+    while (self.nextShape()) |id| {
+        try self.writeScriptShape(&script, id);
+    }
+
+    try script.end();
+}
+
+test "writeScript" {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    var buffer = std.ArrayList(u8).init(test_alloc);
+    const buffer_writer = buffer.writer().any();
+    defer buffer.deinit();
+
+    var model = SmithyModel{};
+    try test_model.setupShapeQueue(&model);
+    defer model.deinit(test_alloc);
+
+    var self = Self{
+        .arena = arena.allocator(),
+        .options = TEST_OPTIONS,
+        .model = &model,
+    };
+    try self.writeScript(buffer_writer, SmithyId.of("test#Root"));
+    try testing.expectEqualStrings(
+        \\pub const Root = []const Child;
+        \\pub const Child = []const i32;
+        \\
+        \\const _imp_std = @import("std");
+    , buffer.items);
+}
+
+fn writeScriptShape(self: *Self, script: *Script, id: SmithyId) !void {
     switch (try self.model.tryGetShape(id)) {
         .list => |m| try self.writeListShape(script, id, m),
         .map => |m| try self.writeMapShape(script, id, m),
@@ -90,11 +173,10 @@ fn writeScriptShape(self: Self, script: *Script, id: SmithyId) !void {
         .tagged_uinon => |m| try self.writeUnionShape(script, id, m),
         .structure => |m| try self.writeStructShape(script, id, m),
         .string => {
-            if (trt_constr.Enum.get(self.model, id)) |members| {
-                return self.writeTraitEnumShape(script, id, members);
-            } else {
-                return error.InvalidRootShape;
-            }
+            return if (trt_constr.Enum.get(self.model, id)) |members|
+                self.writeTraitEnumShape(script, id, members)
+            else
+                error.InvalidRootShape;
         },
         else => return error.InvalidRootShape,
     }
@@ -108,7 +190,7 @@ test "writeScriptShape" {
     try test_model.setupUnit(&model);
     defer model.deinit(test_alloc);
 
-    const self = Self{
+    var self = Self{
         .arena = tester.arena.allocator(),
         .options = TEST_OPTIONS,
         .model = &model,
@@ -120,7 +202,7 @@ test "writeScriptShape" {
     try tester.expect("");
 }
 
-fn writeListShape(self: Self, script: *Script, id: SmithyId, memeber: SmithyId) !void {
+fn writeListShape(self: *Self, script: *Script, id: SmithyId, memeber: SmithyId) !void {
     const shape_name = try self.model.tryGetName(id);
     const target_type = Script.Expr{ .raw = try self.getShapeName(memeber) };
     if (self.model.hasTrait(id, trt_constr.unique_items_id)) {
@@ -154,12 +236,11 @@ test "writeListShape" {
     try test_model.setupList(&model);
     defer model.deinit(test_alloc);
 
-    const self = Self{
+    var self = Self{
         .arena = tester.arena.allocator(),
         .options = TEST_OPTIONS,
         .model = &model,
     };
-
     try self.writeScriptShape(tester.script, SmithyId.of("test#List"));
     try self.writeScriptShape(tester.script, SmithyId.of("test#Set"));
     try tester.expect(
@@ -168,7 +249,7 @@ test "writeListShape" {
     );
 }
 
-fn writeMapShape(self: Self, script: *Script, id: SmithyId, memeber: [2]SmithyId) !void {
+fn writeMapShape(self: *Self, script: *Script, id: SmithyId, memeber: [2]SmithyId) !void {
     const shape_name = try self.model.tryGetName(id);
     const key_name = try self.getShapeName(memeber[0]);
     const val_type = try self.getShapeName(memeber[1]);
@@ -195,17 +276,16 @@ test "writeMapShape" {
     try test_model.setupMap(&model);
     defer model.deinit(test_alloc);
 
-    const self = Self{
+    var self = Self{
         .arena = tester.arena.allocator(),
         .options = TEST_OPTIONS,
         .model = &model,
     };
-
     try self.writeScriptShape(tester.script, SmithyId.of("test#Map"));
     try tester.expect("pub const Map = *const _imp_std.AutoArrayHashMapUnmanaged(i32, ?i32);");
 }
 
-fn writeStrEnumShape(self: Self, script: *Script, id: SmithyId, members: []const SmithyId) !void {
+fn writeStrEnumShape(self: *Self, script: *Script, id: SmithyId, members: []const SmithyId) !void {
     var list = try std.ArrayList(StrEnumMember).initCapacity(self.arena, members.len);
     defer list.deinit();
     for (members) |m| {
@@ -219,7 +299,7 @@ fn writeStrEnumShape(self: Self, script: *Script, id: SmithyId, members: []const
     try self.writeEnumShape(script, id, list.items);
 }
 
-fn writeTraitEnumShape(self: Self, script: *Script, id: SmithyId, members: []const trt_constr.Enum.Member) !void {
+fn writeTraitEnumShape(self: *Self, script: *Script, id: SmithyId, members: []const trt_constr.Enum.Member) !void {
     var list = try std.ArrayList(StrEnumMember).initCapacity(self.arena, members.len);
     defer list.deinit();
     for (members) |m| {
@@ -240,7 +320,7 @@ const StrEnumMember = struct {
     }
 };
 
-fn writeEnumShape(self: Self, script: *Script, id: SmithyId, members: []const StrEnumMember) !void {
+fn writeEnumShape(self: *Self, script: *Script, id: SmithyId, members: []const StrEnumMember) !void {
     const shape_name = try self.model.tryGetName(id);
     var scope = try script.declare(.{ .name = shape_name }, .{
         .is_public = true,
@@ -328,12 +408,11 @@ test "writeEnumShape" {
     try test_model.setupEnum(&model);
     defer model.deinit(test_alloc);
 
-    const self = Self{
+    var self = Self{
         .arena = tester.arena.allocator(),
         .options = TEST_OPTIONS,
         .model = &model,
     };
-
     try self.writeScriptShape(tester.script, SmithyId.of("test#Enum"));
     try self.writeScriptShape(tester.script, SmithyId.of("test#EnumTrt"));
 
@@ -367,7 +446,7 @@ test "writeEnumShape" {
         "\n\n" ++ "pub const EnumTrt = union(enum) {\n" ++ BODY);
 }
 
-fn writeIntEnumShape(self: Self, script: *Script, id: SmithyId, members: []const SmithyId) !void {
+fn writeIntEnumShape(self: *Self, script: *Script, id: SmithyId, members: []const SmithyId) !void {
     const shape_name = try self.model.tryGetName(id);
     var scope = try script.declare(.{ .name = shape_name }, .{
         .is_public = true,
@@ -420,12 +499,11 @@ test "writeIntEnumShape" {
     try test_model.setupIntEnum(&model);
     defer model.deinit(test_alloc);
 
-    const self = Self{
+    var self = Self{
         .arena = tester.arena.allocator(),
         .options = TEST_OPTIONS,
         .model = &model,
     };
-
     try self.writeScriptShape(tester.script, SmithyId.of("test#IntEnum"));
     try tester.expect(
         \\pub const IntEnum = enum(i32) {
@@ -446,7 +524,7 @@ test "writeIntEnumShape" {
     );
 }
 
-fn writeUnionShape(self: Self, script: *Script, id: SmithyId, members: []const SmithyId) !void {
+fn writeUnionShape(self: *Self, script: *Script, id: SmithyId, members: []const SmithyId) !void {
     const shape_name = try self.model.tryGetName(id);
     var scope = try script.declare(.{ .name = shape_name }, .{
         .is_public = true,
@@ -470,12 +548,11 @@ test "writeUnionShape" {
     try test_model.setupUnion(&model);
     defer model.deinit(test_alloc);
 
-    const self = Self{
+    var self = Self{
         .arena = tester.arena.allocator(),
         .options = TEST_OPTIONS,
         .model = &model,
     };
-
     try self.writeScriptShape(tester.script, SmithyId.of("test#Union"));
     try tester.expect(
         \\pub const Union = union(enum) {
@@ -486,7 +563,7 @@ test "writeUnionShape" {
     );
 }
 
-fn writeStructShape(self: Self, script: *Script, id: SmithyId, members: []const SmithyId) !void {
+fn writeStructShape(self: *Self, script: *Script, id: SmithyId, members: []const SmithyId) !void {
     const shape_name = try self.model.tryGetName(id);
     const is_input = self.model.hasTrait(id, trt_refine.input_id);
     var scope = try script.declare(.{ .name = shape_name }, .{
@@ -501,7 +578,7 @@ fn writeStructShape(self: Self, script: *Script, id: SmithyId, members: []const 
     try scope.end();
 }
 
-fn writeStructShapeError(self: Self, script: *Script, id: SmithyId) !void {
+fn writeStructShapeError(self: *Self, script: *Script, id: SmithyId) !void {
     const source = trt_refine.Error.get(self.model, id) orelse return;
     _ = try self.options.shape_error_hook(script, self.model, .{
         .id = id,
@@ -511,7 +588,7 @@ fn writeStructShapeError(self: Self, script: *Script, id: SmithyId) !void {
     });
 }
 
-fn writeStructShapeMixin(self: Self, script: *Script, is_input: bool, id: SmithyId) !void {
+fn writeStructShapeMixin(self: *Self, script: *Script, is_input: bool, id: SmithyId) !void {
     const mixins = self.model.getMixins(id) orelse return;
     for (mixins) |mix_id| {
         try self.writeStructShapeMixin(script, is_input, mix_id);
@@ -522,7 +599,7 @@ fn writeStructShapeMixin(self: Self, script: *Script, is_input: bool, id: Smithy
     }
 }
 
-fn writeStructShapeMember(self: Self, script: *Script, is_input: bool, id: SmithyId) !void {
+fn writeStructShapeMember(self: *Self, script: *Script, is_input: bool, id: SmithyId) !void {
     // https://smithy.io/2.0/spec/aggregate-types.html#structure-member-optionality
     const optional = if (is_input) true else if (self.model.getTraits(id)) |bag| blk: {
         break :blk bag.has(trt_refine.client_optional_id) or
@@ -531,11 +608,11 @@ fn writeStructShapeMember(self: Self, script: *Script, is_input: bool, id: Smith
     const assign: ?Script.Expr = blk: {
         break :blk if (optional)
             .{ .raw = "null" }
-        else if (trt_refine.Default.get(self.model, id)) |t|
+        else if (trt_refine.Default.get(self.model, id)) |json|
             switch (try self.unwrapShapeType(id)) {
-                .str_enum => Script.Expr{ .val_enum = t.string },
-                .int_enum => Script.Expr.call("@enumFromInt", &.{Script.Expr.val(t.integer)}),
-                else => .{ .json = t },
+                .str_enum => Script.Expr{ .val_enum = json.string },
+                .int_enum => Script.Expr.call("@enumFromInt", &.{Script.Expr.val(json.integer)}),
+                else => .{ .json = json },
             }
         else
             null;
@@ -557,12 +634,11 @@ test "writeStructShape" {
     try test_model.setupError(&model);
     defer model.deinit(test_alloc);
 
-    const self = Self{
+    var self = Self{
         .arena = tester.arena.allocator(),
         .options = TEST_OPTIONS,
         .model = &model,
     };
-
     try self.writeScriptShape(tester.script, SmithyId.of("test#Struct"));
     try self.writeScriptShape(tester.script, SmithyId.of("test#Error"));
     try tester.expect(
@@ -580,7 +656,7 @@ test "writeStructShape" {
     );
 }
 
-fn getShapeName(self: Self, id: SmithyId) ![]const u8 {
+fn getShapeName(self: *Self, id: SmithyId) ![]const u8 {
     const shape = switch (id) {
         // zig fmt: off
         inline .unit, .blob, .boolean, .string, .byte, .short, .integer, .long,
@@ -601,12 +677,15 @@ fn getShapeName(self: Self, id: SmithyId) ![]const u8 {
         .string, .blob, .document => "[]const u8",
         .big_integer, .big_decimal => "[]const u8",
         .timestamp => "u64",
-        .target => |t| self.model.tryGetName(t),
+        .target => |t| blk: {
+            try self.appendShape(t);
+            break :blk self.model.tryGetName(t);
+        },
         else => unreachable,
     };
 }
 
-fn unwrapShapeType(self: Self, id: SmithyId) !SmithyType {
+fn unwrapShapeType(self: *Self, id: SmithyId) !SmithyType {
     return switch (id) {
         // zig fmt: off
         inline .unit, .blob, .boolean, .string, .byte, .short, .integer, .long,
@@ -675,8 +754,13 @@ test "zigifyFieldName" {
 }
 
 const TEST_OPTIONS = Options{
+    .script_hook = testScriptHook,
     .shape_error_hook = testShapeErrorHook,
 };
+
+fn testScriptHook(script: *Script) !void {
+    _ = try script.import("std");
+}
 
 fn testShapeErrorHook(script: *Script, _: *const SmithyModel, shape: Options.ErrorShape) !void {
     _ = try script.variable(.{ .is_public = true }, .{
