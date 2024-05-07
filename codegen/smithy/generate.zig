@@ -116,7 +116,7 @@ fn writeListShape(self: Self, script: *Script, id: SmithyId, memeber: SmithyId) 
         const target = Script.TypeExpr{
             .expr = &Script.Expr.call(
                 "*const _imp_std.AutoArrayHashMapUnmanaged",
-                &.{ .{ .expr = &.{ .type = target_type } }, .{ .raw = "void" } },
+                &.{ .{ .type = target_type }, .{ .raw = "void" } },
             ),
         };
         _ = try script.variable(
@@ -165,7 +165,7 @@ fn writeMapShape(self: Self, script: *Script, id: SmithyId, memeber: [2]SmithyId
     const shape_name = try self.model.tryGetName(id);
     const key_name = try self.getShapeName(memeber[0]);
     const val_type = try self.getShapeName(memeber[1]);
-    const value: Script.Val = if (self.model.hasTrait(id, trt_refine.sparse_id))
+    const value: Script.Expr = if (self.model.hasTrait(id, trt_refine.sparse_id))
         .{ .raw_seq = &.{ "?", val_type } }
     else
         .{ .raw = val_type };
@@ -303,7 +303,7 @@ fn writeEnumShape(self: Self, script: *Script, id: SmithyId, members: []const St
         prong = try swtch.prong(&.{
             .{ .value = .{ .name = member.field } },
         }, .{}, .inlined);
-        try prong.expr(.{ .val = Script.Val.of(member.value) });
+        try prong.expr(Script.Expr.val(member.value));
         try prong.end();
     }
     try swtch.end();
@@ -371,7 +371,7 @@ fn writeIntEnumShape(self: Self, script: *Script, id: SmithyId, members: []const
         _ = try scope.field(.{
             .name = try zigifyFieldName(self.arena, try self.model.tryGetName(m)),
             .type = null,
-            .assign = .{ .val = Script.Val.of(trt_refine.EnumValue.get(self.model, m).?.integer) },
+            .assign = Script.Expr.val(trt_refine.EnumValue.get(self.model, m).?.integer),
         });
     }
 
@@ -515,8 +515,8 @@ fn writeStructShapeMember(self: Self, script: *Script, is_input: bool, id: Smith
             .{ .raw = "null" }
         else if (trt_refine.Default.get(self.model, id)) |t|
             switch (try self.unwrapShapeType(id)) {
-                .str_enum => .{ .val = Script.Val{ .enm = t.string } },
-                .int_enum => Script.Expr.call("@enumFromInt", &.{Script.Val.of(t.integer)}),
+                .str_enum => Script.Expr{ .val_enum = t.string },
+                .int_enum => Script.Expr.call("@enumFromInt", &.{Script.Expr.val(t.integer)}),
                 else => .{ .json = t },
             }
         else

@@ -117,7 +117,7 @@ pub fn import(self: *Container, rel_path: []const u8) !Identifier {
         .proto = .{
             .identifier = id,
         },
-        .assign = Expr.call("@import", &.{Val.of(rel_path)}),
+        .assign = Expr.call("@import", &.{Expr.val(rel_path)}),
     }});
     try self.imports.put(allocator, rel_path, id);
     return id;
@@ -621,7 +621,6 @@ test {
     _ = ByteAlign;
     _ = Extern;
 
-    _ = Val;
     _ = Expr;
     _ = TypeExpr;
     _ = ContainerDecl;
@@ -1829,170 +1828,28 @@ pub const LazyIdentifier = struct {
     }
 };
 
-pub const Val = union(enum) {
-    raw: []const u8,
-    raw_seq: []const []const u8,
-    expr: *const Expr,
-    undefined,
-    null,
-    void,
-    false,
-    true,
-    int: i64,
-    uint: u64,
-    float: f64,
-    err: []const u8,
-    enm: []const u8,
-    /// Values: tag name, value. Use `Val.enm` for void payloads.
-    unn: [2][]const u8,
-    string: []const u8,
-
-    pub fn format(self: Val, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
-        switch (self) {
-            .void => try writer.writeAll("{}"),
-            inline .undefined, .null, .false, .true => |_, t| try writer.writeAll(@tagName(t)),
-            inline .int, .uint, .float => |t| try writer.print("{d}", .{t}),
-            .err => |s| try writer.print("error.{s}", .{s}),
-            .enm => |s| try writer.print(".{s}", .{s}),
-            .unn => |t| try writer.print(".{{ .{s} = {s} }}", .{ t[0], t[1] }),
-            .string => |s| try writer.print("\"{s}\"", .{s}),
-            .expr => |t| try writer.print("{}", .{t}),
-            .raw => |s| try writer.writeAll(s),
-            .raw_seq => |t| {
-                for (t) |s| {
-                    try writer.writeAll(s);
-                }
-            },
-        }
-    }
-
-    test {
-        try testing.expectFmt("{}", "{}", .{Val{ .void = {} }});
-        try testing.expectFmt("undefined", "{}", .{Val{ .undefined = {} }});
-        try testing.expectFmt("null", "{}", .{Val{ .null = {} }});
-        try testing.expectFmt("false", "{}", .{Val{ .false = {} }});
-        try testing.expectFmt("true", "{}", .{Val{ .true = {} }});
-        try testing.expectFmt("-108", "{}", .{Val{ .int = -108 }});
-        try testing.expectFmt("108", "{}", .{Val{ .uint = 108 }});
-        try testing.expectFmt("1.08", "{}", .{Val{ .float = 1.08 }});
-        try testing.expectFmt("error.Foo", "{}", .{Val{ .err = "Foo" }});
-        try testing.expectFmt(".foo", "{}", .{Val{ .enm = "foo" }});
-        try testing.expectFmt(".{ .foo = 108 }", "{}", .{Val{ .unn = .{ "foo", "108" } }});
-        try testing.expectFmt("\"foo\"", "{}", .{Val{ .string = "foo" }});
-        try testing.expectFmt("foo", "{}", .{Val{ .raw = "foo" }});
-        try testing.expectFmt("foobar", "{}", .{Val{ .raw_seq = &.{ "foo", "bar" } }});
-        try testing.expectFmt("foo", "{}", .{Val{ .expr = &.{ .raw = "foo" } }});
-    }
-
-    pub fn of(val: anytype) Val {
-        const T = @TypeOf(val);
-        return if (T == []const u8)
-            Val{ .string = val }
-        else switch (@typeInfo(T)) {
-            .Bool => if (val) Val.true else Val.false,
-            .Int => |t| switch (t.signedness) {
-                .signed => Val{ .int = val },
-                .unsigned => Val{ .uint = val },
-            },
-            .ComptimeInt => if (val < 0) Val{ .int = val } else Val{ .uint = val },
-            .Float, .ComptimeFloat => Val{ .float = val },
-            .Enum, .EnumLiteral => Val{ .enm = @tagName(val) },
-            .Union => @compileError("Manually construct `Val.unn` or `Val.raw` instead."),
-            .ErrorSet => Val{ .err = @errorName(val) },
-            .ErrorUnion => |t| if (val) |v| switch (@typeInfo(t.payload)) {
-                .Void => Val.void,
-                else => of(v),
-            } else |v| Val{ .err = @errorName(v) },
-            .Optional => if (val) |v| of(v) else Val.null,
-            .Void => @compileError("Use `Val.void` instead of `Val.of(void)`."),
-            .Null => @compileError("Use `Val.null` instead of `Val.of(null)`."),
-            .Undefined => @compileError("Use `Val.undefined` instead of `Val.of(undefined)`."),
-            .Pointer => |t| blk: {
-                if (t.size == .Slice and t.child == u8) {
-                    break :blk Val{ .string = val };
-                } else if (t.size == .One) {
-                    const meta = @typeInfo(t.child);
-                    if (meta == .Array and meta.Array.child == u8) {
-                        break :blk Val{ .string = val };
-                    }
-                }
-                @compileError("Only string pointers can auto-covert into a Val.");
-            },
-            // Fn, Pointer, Array, Struct
-            else => @compileError("Type `" ++ @typeName(T) ++ "` can’t auto-convert into a Val."),
-        };
-    }
-
-    test "of" {
-        try testing.expectEqualDeep(Val.true, Val.of(true));
-        try testing.expectEqualDeep(Val.false, Val.of(false));
-        try testing.expectEqualDeep(Val{ .int = 108 }, Val.of(@as(i8, 108)));
-        try testing.expectEqualDeep(Val{ .uint = 108 }, Val.of(@as(u8, 108)));
-        try testing.expectEqualDeep(Val{ .int = -108 }, Val.of(-108));
-        try testing.expectEqualDeep(Val{ .uint = 108 }, Val.of(108));
-        try testing.expectEqualDeep(Val{ .float = 1.08 }, Val.of(@as(f64, 1.08)));
-        try testing.expectEqualDeep(Val{ .float = 1.08 }, Val.of(1.08));
-        try testing.expectEqualDeep(Val{ .enm = "foo" }, Val.of(.foo));
-        try testing.expectEqualDeep(Val{ .enm = "void" }, Val.of(Val.void));
-        try testing.expectEqualDeep(
-            Val{ .err = "Foo" },
-            Val.of(@as(error{Foo}!void, error.Foo)),
-        );
-        try testing.expectEqualDeep(
-            Val.void,
-            Val.of(@as(error{Foo}!void, {})),
-        );
-        try testing.expectEqualDeep(
-            Val{ .uint = 108 },
-            Val.of(@as(error{Foo}!u8, 108)),
-        );
-        try testing.expectEqualDeep(
-            Val{ .uint = 108 },
-            Val.of(@as(?u8, 108)),
-        );
-        try testing.expectEqualDeep(
-            Val.null,
-            Val.of(@as(?u8, null)),
-        );
-        try testing.expectEqualDeep(Val{ .string = "foo" }, Val.of("foo"));
-    }
-};
-
-// Expr <- BoolOrExpr
-// BoolOrExpr <- BoolAndExpr (KEYWORD_or BoolAndExpr)*
-// BoolAndExpr <- CompareExpr (KEYWORD_and CompareExpr)*
-// CompareExpr <- BitwiseExpr (CompareOp BitwiseExpr)?
-// BitwiseExpr <- BitShiftExpr (BitwiseOp BitShiftExpr)*
-// BitShiftExpr <- AdditionExpr (BitShiftOp AdditionExpr)*
-// AdditionExpr <- MultiplyExpr (AdditionOp MultiplyExpr)*
-// MultiplyExpr <- PrefixExpr (MultiplyOp PrefixExpr)*
-// PrefixExpr <- PrefixOp* PrimaryExpr
-// PrimaryExpr
-//     <- IfExpr
-//      / KEYWORD_break BreakLabel? Expr?
-//      / KEYWORD_comptime Expr
-//      / KEYWORD_nosuspend Expr
-//      / KEYWORD_continue BreakLabel?
-//      / KEYWORD_resume Expr
-//      / KEYWORD_return Expr?
-//      / BlockLabel? LoopExpr
-//      / Block
-//      / CurlySuffixExpr
-// BreakLabel <- COLON IDENTIFIER
-// IfExpr <- IfPrefix Expr (KEYWORD_else Payload? Expr)?
-// LoopExpr <- KEYWORD_inline? (ForExpr / WhileExpr)
-// ForExpr <- ForPrefix Expr (KEYWORD_else Expr)?
-// WhileExpr <- WhilePrefix Expr (KEYWORD_else Payload? Expr)?
-// CurlySuffixExpr <- TypeExpr InitList?
 pub const Expr = union(enum) {
     raw: []const u8,
-    val: Val,
+    raw_seq: []const []const u8,
     type: TypeExpr,
     json: JsonValue,
-    call: struct { identifier: []const u8, args: []const Val },
+    call: struct { identifier: []const u8, args: []const Expr },
+    val_undefined,
+    val_null,
+    val_void,
+    val_false,
+    val_true,
+    val_int: i64,
+    val_uint: u64,
+    val_float: f64,
+    val_error: []const u8,
+    val_enum: []const u8,
+    /// Values: tag name, value. Use `Val.enm` for void payloads.
+    val_union: [2][]const u8,
+    val_string: []const u8,
 
     /// Assumes `args` is a list of `Val`s.
-    pub fn call(identifier: []const u8, args: []const Val) Expr {
+    pub fn call(identifier: []const u8, args: []const Expr) Expr {
         return .{ .call = .{ .identifier = identifier, .args = args } };
     }
 
@@ -2000,20 +1857,91 @@ pub const Expr = union(enum) {
         try testing.expectEqualDeep(
             Expr{ .call = .{
                 .identifier = "foo",
-                .args = &.{ Val.of(108), Val.of("bar") },
+                .args = &.{ val(108), val("bar") },
             } },
-            Expr.call("foo", &.{ Val.of(108), Val.of("bar") }),
+            Expr.call("foo", &.{ val(108), val("bar") }),
         );
+    }
+
+    pub fn val(v: anytype) Expr {
+        const T = @TypeOf(v);
+        return if (T == []const u8)
+            Expr{ .val_string = v }
+        else switch (@typeInfo(T)) {
+            .Bool => if (v) Expr.val_true else Expr.val_false,
+            .Int => |t| switch (t.signedness) {
+                .signed => Expr{ .val_int = v },
+                .unsigned => Expr{ .val_uint = v },
+            },
+            .ComptimeInt => if (v < 0) Expr{ .val_int = v } else Expr{ .val_uint = v },
+            .Float, .ComptimeFloat => Expr{ .val_float = v },
+            .Enum, .EnumLiteral => Expr{ .val_enum = @tagName(v) },
+            .Union => @compileError("Manually construct `Val.val_union` or `Val.val_raw` instead."),
+            .ErrorSet => Expr{ .val_error = @errorName(v) },
+            .ErrorUnion => |t| if (v) |s| switch (@typeInfo(t.payload)) {
+                .Void => Expr.val_void,
+                else => val(s),
+            } else |e| Expr{ .val_error = @errorName(e) },
+            .Optional => if (v) |s| val(s) else Expr.val_null,
+            .Void => @compileError("Use `Expr.val_void` instead of `Expr.val(void)`."),
+            .Null => @compileError("Use `Expr.val_null` instead of `Expr.val(null)`."),
+            .Undefined => @compileError("Use `Expr.val_undefined` instead of `Expr.val(undefined)`."),
+            .Pointer => |t| blk: {
+                if (t.size == .Slice and t.child == u8) {
+                    break :blk Expr{ .val_string = v };
+                } else if (t.size == .One) {
+                    const meta = @typeInfo(t.child);
+                    if (meta == .Array and meta.Array.child == u8) {
+                        break :blk Expr{ .val_string = v };
+                    }
+                }
+                @compileError("Only string pointers can auto-covert into a value Expr.");
+            },
+            // Fn, Pointer, Array, Struct
+            else => @compileError("Type `" ++ @typeName(T) ++ "` can’t auto-convert into a value Expr."),
+        };
+    }
+
+    test "val" {
+        try testing.expectEqualDeep(Expr.val_true, val(true));
+        try testing.expectEqualDeep(Expr.val_false, val(false));
+        try testing.expectEqualDeep(Expr{ .val_int = 108 }, val(@as(i8, 108)));
+        try testing.expectEqualDeep(Expr{ .val_uint = 108 }, val(@as(u8, 108)));
+        try testing.expectEqualDeep(Expr{ .val_int = -108 }, val(-108));
+        try testing.expectEqualDeep(Expr{ .val_uint = 108 }, val(108));
+        try testing.expectEqualDeep(Expr{ .val_float = 1.08 }, val(@as(f64, 1.08)));
+        try testing.expectEqualDeep(Expr{ .val_float = 1.08 }, val(1.08));
+        try testing.expectEqualDeep(Expr{ .val_enum = "foo" }, val(.foo));
+        try testing.expectEqualDeep(
+            Expr{ .val_error = "Foo" },
+            val(@as(error{Foo}!void, error.Foo)),
+        );
+        try testing.expectEqualDeep(Expr.val_void, val(@as(error{Foo}!void, {})));
+        try testing.expectEqualDeep(Expr{ .val_uint = 108 }, val(@as(error{Foo}!u8, 108)));
+        try testing.expectEqualDeep(Expr{ .val_uint = 108 }, val(@as(?u8, 108)));
+        try testing.expectEqualDeep(Expr.val_null, val(@as(?u8, null)));
+        try testing.expectEqualDeep(Expr{ .val_string = "foo" }, val("foo"));
     }
 
     pub fn format(self: Expr, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
         switch (self) {
             .raw => try writer.writeAll(self.raw),
-            inline .val, .type => |s| try writer.print("{}", .{s}),
+            .raw_seq => |t| for (t) |s| try writer.writeAll(s),
+            .type => |s| try writer.print("{}", .{s}),
             .call => |t| try writer.print("{s}({})", .{
                 t.identifier,
-                List(Val){ .items = t.args },
+                List(Expr){ .items = t.args },
             }),
+            .val_void => try writer.writeAll("{}"),
+            inline .val_undefined, .val_null, .val_false, .val_true => |_, t| {
+                const tag = @tagName(t);
+                try writer.writeAll(tag[4..tag.len]);
+            },
+            inline .val_int, .val_uint, .val_float => |t| try writer.print("{d}", .{t}),
+            .val_error => |s| try writer.print("error.{s}", .{s}),
+            .val_enum => |s| try writer.print(".{s}", .{s}),
+            .val_union => |t| try writer.print(".{{ .{s} = {s} }}", .{ t[0], t[1] }),
+            .val_string => |s| try writer.print("\"{s}\"", .{s}),
             .json => |json| switch (json) {
                 .null => try writer.writeAll("null"),
                 .boolean => |v| try writer.writeAll(if (v) "true" else "false"),
@@ -2044,8 +1972,22 @@ pub const Expr = union(enum) {
 
     test "format" {
         try testing.expectFmt("foo", "{}", .{Expr{ .raw = "foo" }});
-        try testing.expectFmt("\"foo\"", "{}", .{Expr{ .val = Val.of("foo") }});
+        try testing.expectFmt("foobar", "{}", .{
+            Expr{ .raw_seq = &.{ "foo", "bar" } },
+        });
         try testing.expectFmt("u8", "{}", .{Expr{ .type = TypeExpr.of(u8) }});
+        try testing.expectFmt("{}", "{}", .{Expr{ .val_void = {} }});
+        try testing.expectFmt("undefined", "{}", .{Expr{ .val_undefined = {} }});
+        try testing.expectFmt("null", "{}", .{Expr{ .val_null = {} }});
+        try testing.expectFmt("false", "{}", .{Expr{ .val_false = {} }});
+        try testing.expectFmt("true", "{}", .{Expr{ .val_true = {} }});
+        try testing.expectFmt("-108", "{}", .{Expr{ .val_int = -108 }});
+        try testing.expectFmt("108", "{}", .{Expr{ .val_uint = 108 }});
+        try testing.expectFmt("1.08", "{}", .{Expr{ .val_float = 1.08 }});
+        try testing.expectFmt("error.Foo", "{}", .{Expr{ .val_error = "Foo" }});
+        try testing.expectFmt(".foo", "{}", .{Expr{ .val_enum = "foo" }});
+        try testing.expectFmt(".{ .foo = 108 }", "{}", .{Expr{ .val_union = .{ "foo", "108" } }});
+        try testing.expectFmt("\"foo\"", "{}", .{Expr{ .val_string = "foo" }});
 
         try testing.expectFmt("foo()", "{}", .{
             Expr{ .call = .{ .identifier = "foo", .args = &.{} } },
@@ -2053,9 +1995,10 @@ pub const Expr = union(enum) {
         try testing.expectFmt("foo(108, \"bar\")", "{}", .{Expr{
             .call = .{
                 .identifier = "foo",
-                .args = &.{ Val.of(108), Val.of("bar") },
+                .args = &.{ val(108), val("bar") },
             },
         }});
+
         try testing.expectFmt(
             \\.{ null, true, false, 108, 1.08, "foo", .{
             \\    .key1 = "bar",
