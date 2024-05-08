@@ -154,10 +154,10 @@
     "test.serve#Operation": {
       "type": "operation",
       "input": {
-        "target": "test.operation#Input"
+        "target": "test.operation#OperationInput"
       },
       "output": {
-        "target": "test.operation#Output"
+        "target": "test.operation#OperationOutput"
       },
       "errors": [
         {

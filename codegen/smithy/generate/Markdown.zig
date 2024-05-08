@@ -81,6 +81,10 @@ pub fn paragraph(self: *Self, text: []const u8) !void {
     try self.writeAll(text);
 }
 
+pub fn paragraphFmt(self: *Self, comptime format: []const u8, args: anytype) !void {
+    try self.writeFmt(format, args);
+}
+
 test "paragraph" {
     var buffer = std.ArrayList(u8).init(test_alloc);
     var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
@@ -88,9 +92,10 @@ test "paragraph" {
 
     var md = init(&writer);
     try md.paragraph("foo.");
+    try md.paragraphFmt("{s}.", .{"bar"});
 
     try writer.end();
-    try testing.expectEqualStrings("foo.", buffer.items);
+    try testing.expectEqualStrings("foo.\n\nbar.", buffer.items);
 }
 
 const HEADER_PREFIX = "### ";

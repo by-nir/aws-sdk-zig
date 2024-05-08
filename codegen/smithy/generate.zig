@@ -3,7 +3,6 @@
 //! The following codebase is generated for a Smithy model:
 //! - `<service_name>/`
 //!   - `README.md`
-//!   - `root.zig`
 //!   - `client.zig`
 const std = @import("std");
 const fs = std.fs;
@@ -14,7 +13,8 @@ const test_model = @import("tests/model.zig");
 const syb_id = @import("symbols/identity.zig");
 const SmithyId = syb_id.SmithyId;
 const SmithyType = syb_id.SmithyType;
-const SmithyModel = @import("symbols/shapes.zig").SmithyModel;
+const syb_shape = @import("symbols/shapes.zig");
+const SmithyModel = syb_shape.SmithyModel;
 const Script = @import("generate/Zig.zig");
 const trt_http = @import("prelude/http.zig");
 const trt_refine = @import("prelude/refine.zig");
@@ -23,9 +23,13 @@ const trt_constr = @import("prelude/constraint.zig");
 const StackWriter = @import("utils/StackWriter.zig");
 
 const Self = @This();
-pub const Options = struct {
-    script_hook: ?*const fn (*Script) anyerror!void = null,
-    shape_error_hook: *const fn (*Script, *const SmithyModel, ErrorShape) anyerror!void,
+pub const Hooks = struct {
+    scriptHead: ?*const fn (*Script) anyerror!void = null,
+    shapeError: *const fn (*Script, *const SmithyModel, ErrorShape) anyerror!void,
+    shapeServiceHead: ?*const fn (*Script, *const SmithyModel, SmithyId, *const syb_shape.SmithyService) anyerror!void = null,
+    shapeResourceHead: ?*const fn (*Script, *const SmithyModel, SmithyId, *const syb_shape.SmithyResource) anyerror!void = null,
+    shapeOperationReturn: ?*const fn (*const SmithyModel, OperationShape) anyerror!Script.Expr = null,
+    shapeOperationBody: *const fn (*Script.Scope, *const SmithyModel, OperationShape) anyerror!void,
 
     pub const ErrorShape = struct {
         id: SmithyId,
@@ -33,10 +37,18 @@ pub const Options = struct {
         code: u10,
         retryable: bool,
     };
+
+    pub const OperationShape = struct {
+        id: SmithyId,
+        input: ?struct { identifier: Script.Identifier, type: Script.Expr },
+        output_type: ?Script.Expr,
+        errors: []const SmithyId,
+        common_errors: []const SmithyId,
+    };
 };
 
 arena: Allocator,
-options: Options,
+hooks: Hooks,
 model: *const SmithyModel,
 shape_queue: std.DoublyLinkedList(SmithyId) = .{},
 shape_visited: std.AutoHashMapUnmanaged(SmithyId, void) = .{},
@@ -56,10 +68,10 @@ pub fn getModelDir(rel_base: []const u8, rel_model: []const u8) !fs.Dir {
     };
 }
 
-pub fn generateModel(arena: Allocator, name: []const u8, model: *const SmithyModel, options: Options) !void {
+pub fn generateModel(arena: Allocator, name: []const u8, model: *const SmithyModel, hooks: Hooks) !void {
     const self = Self{
         .arena = arena,
-        .options = options,
+        .hooks = hooks,
         .model = model,
     };
     _ = self;
@@ -84,7 +96,7 @@ fn nextShape(self: *Self) ?SmithyId {
 test "shapes queue" {
     var self = Self{
         .arena = test_alloc,
-        .options = TEST_OPTIONS,
+        .hooks = TEST_HOOKS,
         .model = undefined,
     };
     defer self.shape_visited.deinit(test_alloc);
@@ -123,7 +135,7 @@ fn writeScript(self: *Self, output: std.io.AnyWriter, root: SmithyId) !void {
     var writer = StackWriter.init(self.arena, output, .{});
     var script = try Script.init(&writer, null);
 
-    if (self.options.script_hook) |hook| {
+    if (self.hooks.scriptHead) |hook| {
         try hook(&script);
     }
 
@@ -152,7 +164,7 @@ test "writeScript" {
 
     var self = Self{
         .arena = arena.allocator(),
-        .options = TEST_OPTIONS,
+        .hooks = TEST_HOOKS,
         .model = &model,
     };
     try self.writeScript(buffer_writer, SmithyId.of("test#Root"));
@@ -172,6 +184,7 @@ fn writeScriptShape(self: *Self, script: *Script, id: SmithyId) !void {
         .int_enum => |m| try self.writeIntEnumShape(script, id, m),
         .tagged_uinon => |m| try self.writeUnionShape(script, id, m),
         .structure => |m| try self.writeStructShape(script, id, m),
+        .service => |t| try self.writeServiceShape(script, id, t),
         .string => {
             return if (trt_constr.Enum.get(self.model, id)) |members|
                 self.writeTraitEnumShape(script, id, members)
@@ -192,7 +205,7 @@ test "writeScriptShape" {
 
     var self = Self{
         .arena = tester.arena.allocator(),
-        .options = TEST_OPTIONS,
+        .hooks = TEST_HOOKS,
         .model = &model,
     };
     try testing.expectError(
@@ -238,7 +251,7 @@ test "writeListShape" {
 
     var self = Self{
         .arena = tester.arena.allocator(),
-        .options = TEST_OPTIONS,
+        .hooks = TEST_HOOKS,
         .model = &model,
     };
     try self.writeScriptShape(tester.script, SmithyId.of("test#List"));
@@ -278,7 +291,7 @@ test "writeMapShape" {
 
     var self = Self{
         .arena = tester.arena.allocator(),
-        .options = TEST_OPTIONS,
+        .hooks = TEST_HOOKS,
         .model = &model,
     };
     try self.writeScriptShape(tester.script, SmithyId.of("test#Map"));
@@ -293,7 +306,7 @@ fn writeStrEnumShape(self: *Self, script: *Script, id: SmithyId, members: []cons
         const value = trt_refine.EnumValue.get(self.model, m);
         list.appendAssumeCapacity(.{
             .value = if (value) |v| v.string else name,
-            .field = try zigifyFieldName(self.arena, name),
+            .field = try snakeCaseName(self.arena, name),
         });
     }
     try self.writeEnumShape(script, id, list.items);
@@ -305,7 +318,7 @@ fn writeTraitEnumShape(self: *Self, script: *Script, id: SmithyId, members: []co
     for (members) |m| {
         list.appendAssumeCapacity(.{
             .value = m.value,
-            .field = try zigifyFieldName(self.arena, m.name orelse m.value),
+            .field = try snakeCaseName(self.arena, m.name orelse m.value),
         });
     }
     try self.writeEnumShape(script, id, list.items);
@@ -410,7 +423,7 @@ test "writeEnumShape" {
 
     var self = Self{
         .arena = tester.arena.allocator(),
-        .options = TEST_OPTIONS,
+        .hooks = TEST_HOOKS,
         .model = &model,
     };
     try self.writeScriptShape(tester.script, SmithyId.of("test#Enum"));
@@ -455,7 +468,7 @@ fn writeIntEnumShape(self: *Self, script: *Script, id: SmithyId, members: []cons
 
     for (members) |m| {
         _ = try scope.field(.{
-            .name = try zigifyFieldName(self.arena, try self.model.tryGetName(m)),
+            .name = try snakeCaseName(self.arena, try self.model.tryGetName(m)),
             .type = null,
             .assign = Script.Expr.val(trt_refine.EnumValue.get(self.model, m).?.integer),
         });
@@ -501,7 +514,7 @@ test "writeIntEnumShape" {
 
     var self = Self{
         .arena = tester.arena.allocator(),
-        .options = TEST_OPTIONS,
+        .hooks = TEST_HOOKS,
         .model = &model,
     };
     try self.writeScriptShape(tester.script, SmithyId.of("test#IntEnum"));
@@ -533,7 +546,7 @@ fn writeUnionShape(self: *Self, script: *Script, id: SmithyId, members: []const 
     for (members) |m| {
         const shape = try self.getShapeName(m);
         _ = try scope.field(.{
-            .name = try zigifyFieldName(self.arena, try self.model.tryGetName(m)),
+            .name = try snakeCaseName(self.arena, try self.model.tryGetName(m)),
             .type = if (shape.len > 0) .{ .raw = shape } else null,
         });
     }
@@ -550,7 +563,7 @@ test "writeUnionShape" {
 
     var self = Self{
         .arena = tester.arena.allocator(),
-        .options = TEST_OPTIONS,
+        .hooks = TEST_HOOKS,
         .model = &model,
     };
     try self.writeScriptShape(tester.script, SmithyId.of("test#Union"));
@@ -580,7 +593,7 @@ fn writeStructShape(self: *Self, script: *Script, id: SmithyId, members: []const
 
 fn writeStructShapeError(self: *Self, script: *Script, id: SmithyId) !void {
     const source = trt_refine.Error.get(self.model, id) orelse return;
-    _ = try self.options.shape_error_hook(script, self.model, .{
+    _ = try self.hooks.shapeError(script, self.model, .{
         .id = id,
         .source = source,
         .retryable = self.model.hasTrait(id, trt_behave.retryable_id),
@@ -619,7 +632,7 @@ fn writeStructShapeMember(self: *Self, script: *Script, is_input: bool, id: Smit
     };
     const type_expr = Script.Expr{ .raw = try self.getShapeName(id) };
     _ = try script.field(.{
-        .name = try zigifyFieldName(self.arena, try self.model.tryGetName(id)),
+        .name = try snakeCaseName(self.arena, try self.model.tryGetName(id)),
         .type = if (optional) .{ .typ_optional = &type_expr } else type_expr,
         .assign = assign,
     });
@@ -636,7 +649,7 @@ test "writeStructShape" {
 
     var self = Self{
         .arena = tester.arena.allocator(),
-        .options = TEST_OPTIONS,
+        .hooks = TEST_HOOKS,
         .model = &model,
     };
     try self.writeScriptShape(tester.script, SmithyId.of("test#Struct"));
@@ -654,6 +667,221 @@ test "writeStructShape" {
         \\    pub const retryable = true;
         \\};
     );
+}
+
+fn writeOperationShape(self: *Self, script: *Script, id: SmithyId) !void {
+    const operation = (try self.model.tryGetShape(id)).operation;
+
+    if (operation.input) |in_id| {
+        const members = (try self.model.tryGetShape(in_id)).structure;
+        try self.writeStructShape(script, in_id, members);
+    }
+
+    if (operation.output) |out_id| {
+        const members = (try self.model.tryGetShape(out_id)).structure;
+        try self.writeStructShape(script, out_id, members);
+    }
+
+    for (operation.errors) |err_id| {
+        // We don't write directly since an error may be used by multiple operations.
+        try self.appendShape(err_id);
+    }
+}
+
+test "writeOperationShape" {
+    var tester = try ScriptTester.init();
+    defer tester.deinit();
+
+    var model = SmithyModel{};
+    try test_model.setupOperation(&model);
+    defer model.deinit(test_alloc);
+
+    var self = Self{
+        .arena = tester.arena.allocator(),
+        .hooks = TEST_HOOKS,
+        .model = &model,
+    };
+    try self.writeOperationShape(tester.script, SmithyId.of("test.serve#Operation"));
+    try tester.expect(
+        \\pub const OperationInput = struct {
+        \\
+        \\};
+        \\
+        \\pub const OperationOutput = struct {
+        \\
+        \\};
+    );
+    const node = self.shape_queue.first.?;
+    try testing.expectEqual(null, node.next);
+    try testing.expectEqual(SmithyId.of("test.error#NotFound"), node.data);
+}
+
+fn writeServiceShape(self: *Self, script: *Script, id: SmithyId, service: *const syb_shape.SmithyService) !void {
+    if (service.version) |v| {
+        var doc = try script.comment(.doc);
+        try doc.paragraphFmt("API version: {s}", .{v});
+        try doc.end();
+    }
+
+    var scope = try script.declare(.{
+        .name = try self.model.tryGetName(id),
+    }, .{
+        .is_public = true,
+        .type = .{ .Struct = null },
+    });
+    if (self.hooks.shapeServiceHead) |hook| {
+        try hook(&scope, self.model, id, service);
+    }
+    for (service.operations) |op_id| {
+        try self.writeOperationFunction(&scope, op_id, service.errors);
+    }
+    try scope.end();
+
+    for (service.operations) |op_id| {
+        try self.writeOperationShape(script, op_id);
+    }
+    for (service.resources) |rsc_id| {
+        try self.writeResourceShape(script, rsc_id, service.errors);
+    }
+    for (service.errors) |err_id| {
+        try self.appendShape(err_id);
+    }
+}
+
+fn writeResourceShape(self: *Self, script: *Script, id: SmithyId, common_errors: []const SmithyId) !void {
+    const resource = (try self.model.tryGetShape(id)).resource;
+    const resource_name = try self.model.tryGetName(id);
+    var scope = try script.declare(.{ .name = resource_name }, .{
+        .is_public = true,
+        .type = .{ .Struct = null },
+    });
+    if (self.hooks.shapeResourceHead) |hook| {
+        try hook(&scope, self.model, id, resource);
+    }
+    for (resource.identifiers) |idn| {
+        _ = try scope.field(.{
+            .name = try snakeCaseName(self.arena, idn.name),
+            .type = .{ .raw = try self.getShapeName(idn.shape) },
+        });
+    }
+    const lifecycle_ops = &.{ "create", "put", "read", "update", "delete", "list" };
+    inline for (lifecycle_ops) |field| {
+        if (@field(resource, field)) |op_id| {
+            try self.writeOperationFunction(&scope, op_id, common_errors);
+        }
+    }
+    for (resource.operations) |op_id| {
+        try self.writeOperationFunction(&scope, op_id, common_errors);
+    }
+    for (resource.collection_ops) |op_id| {
+        try self.writeOperationFunction(&scope, op_id, common_errors);
+    }
+    try scope.end();
+
+    inline for (lifecycle_ops) |field| {
+        if (@field(resource, field)) |op_id| {
+            try self.writeOperationShape(script, op_id);
+        }
+    }
+    for (resource.operations) |op_id| {
+        try self.writeOperationShape(script, op_id);
+    }
+    for (resource.collection_ops) |op_id| {
+        try self.writeOperationShape(script, op_id);
+    }
+    for (resource.resources) |rsc_id| {
+        try self.writeResourceShape(script, rsc_id, common_errors);
+    }
+}
+
+fn writeOperationFunction(self: *Self, script: *Script, id: SmithyId, common_errors: []const SmithyId) !void {
+    const operation = (try self.model.tryGetShape(id)).operation;
+    const op_name = try camelCaseName(self.arena, try self.model.tryGetName(id));
+
+    var shape = Hooks.OperationShape{
+        .id = id,
+        .input = if (operation.input) |d| .{
+            .identifier = .{ .name = "input" },
+            .type = .{ .raw = try self.model.tryGetName(d) },
+        } else null,
+        .output_type = if (operation.output) |d|
+            Script.Expr{ .raw = try self.model.tryGetName(d) }
+        else
+            null,
+        .errors = operation.errors,
+        .common_errors = common_errors,
+    };
+    if (self.hooks.shapeOperationReturn) |hook| {
+        shape.output_type = try hook(self.model, shape);
+    }
+
+    var block = try script.function(.{
+        .is_public = true,
+    }, .{
+        .identifier = .{ .name = op_name },
+        .parameters = if (shape.input) |input|
+            &.{ Script.param_self, .{
+                .identifier = input.identifier,
+                .type = input.type,
+            } }
+        else
+            &.{Script.param_self},
+        .return_type = shape.output_type,
+    });
+    try self.hooks.shapeOperationBody(&block, self.model, shape);
+    try block.end();
+}
+
+test "writeServiceShape" {
+    var tester = try ScriptTester.init();
+    defer tester.deinit();
+
+    var model = SmithyModel{};
+    try test_model.setupService(&model);
+    defer model.deinit(test_alloc);
+
+    var self = Self{
+        .arena = tester.arena.allocator(),
+        .hooks = TEST_HOOKS,
+        .model = &model,
+    };
+    try self.writeScriptShape(tester.script, SmithyId.of("test.serve#Service"));
+    try tester.expect(
+        \\/// API version: 2017-02-11
+        \\pub const Service = struct {
+        \\    pub fn operation(self: @This(), input: OperationInput) OperationOutput {
+        \\        return undefined;
+        \\    }
+        \\};
+        \\
+        \\pub const OperationInput = struct {
+        \\
+        \\};
+        \\
+        \\pub const OperationOutput = struct {
+        \\
+        \\};
+        \\
+        \\pub const Resource = struct {
+        \\    forecast_id: []const u8,
+        \\
+        \\    pub fn operation(self: @This(), input: OperationInput) OperationOutput {
+        \\        return undefined;
+        \\    }
+        \\};
+        \\
+        \\pub const OperationInput = struct {
+        \\
+        \\};
+        \\
+        \\pub const OperationOutput = struct {
+        \\
+        \\};
+    );
+
+    var it = self.shape_visited.iterator();
+    try testing.expectEqual(SmithyId.of("test.error#NotFound"), it.next().?.key_ptr.*);
+    try testing.expectEqual(SmithyId.of("test.error#ServiceError"), it.next().?.key_ptr.*);
 }
 
 fn getShapeName(self: *Self, id: SmithyId) ![]const u8 {
@@ -706,12 +934,17 @@ pub const ReadmeSlots = struct {
     slug: []const u8,
 };
 
-fn zigifyFieldName(arena: Allocator, input: []const u8) ![]const u8 {
+fn snakeCaseName(arena: Allocator, input: []const u8) ![]const u8 {
     var retain = true;
     for (input) |c| {
         if (std.ascii.isUpper(c)) retain = false;
     }
-    if (retain) return input;
+    if (retain) {
+        if (std.zig.Token.keywords.has(input))
+            return std.fmt.allocPrint(arena, "@\"{s}\"", .{input})
+        else
+            return input;
+    }
 
     var buffer = try std.ArrayList(u8).initCapacity(arena, input.len);
     errdefer buffer.deinit();
@@ -728,41 +961,75 @@ fn zigifyFieldName(arena: Allocator, input: []const u8) ![]const u8 {
         prev_upper = is_upper;
     }
 
+    if (std.zig.Token.keywords.has(buffer.items)) {
+        try buffer.insertSlice(0, "@\"");
+        try buffer.append('"');
+    }
     return try buffer.toOwnedSlice();
 }
 
-test "zigifyFieldName" {
+test "snakeCaseName" {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const arena_alloc = arena.allocator();
     defer arena.deinit();
 
-    try testing.expectEqualStrings(
-        "foo_bar",
-        try zigifyFieldName(arena.allocator(), "foo_bar"),
-    );
-    try testing.expectEqualStrings(
-        "foo_bar",
-        try zigifyFieldName(arena.allocator(), "fooBar"),
-    );
-    try testing.expectEqualStrings(
-        "foo_bar",
-        try zigifyFieldName(arena.allocator(), "FooBar"),
-    );
-    try testing.expectEqualStrings(
-        "foo_bar",
-        try zigifyFieldName(arena.allocator(), "FOO_BAR"),
-    );
+    try testing.expectEqualStrings("foo_bar", try snakeCaseName(arena_alloc, "foo_bar"));
+    try testing.expectEqualStrings("foo_bar", try snakeCaseName(arena_alloc, "fooBar"));
+    try testing.expectEqualStrings("foo_bar", try snakeCaseName(arena_alloc, "FooBar"));
+    try testing.expectEqualStrings("foo_bar", try snakeCaseName(arena_alloc, "FOO_BAR"));
+    try testing.expectEqualStrings("@\"error\"", try snakeCaseName(arena_alloc, "error"));
 }
 
-const TEST_OPTIONS = Options{
-    .script_hook = testScriptHook,
-    .shape_error_hook = testShapeErrorHook,
+fn camelCaseName(arena: Allocator, input: []const u8) ![]const u8 {
+    var buffer = try std.ArrayList(u8).initCapacity(arena, input.len);
+    errdefer buffer.deinit();
+
+    var prev_lower = false;
+    var pending_upper = false;
+    for (input) |c| {
+        if (c == '_') {
+            pending_upper = true;
+        } else if (pending_upper) {
+            pending_upper = false;
+            prev_lower = false;
+            try buffer.append(std.ascii.toUpper(c));
+        } else {
+            const is_upper = std.ascii.isUpper(c);
+            try buffer.append(if (is_upper and !prev_lower) std.ascii.toLower(c) else c);
+            prev_lower = !is_upper;
+        }
+    }
+
+    if (std.zig.Token.keywords.has(buffer.items)) {
+        try buffer.insertSlice(0, "@\"");
+        try buffer.append('"');
+    }
+    return try buffer.toOwnedSlice();
+}
+
+test "camelCaseName" {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const arena_alloc = arena.allocator();
+    defer arena.deinit();
+
+    try testing.expectEqualStrings("fooBar", try camelCaseName(arena_alloc, "foo_bar"));
+    try testing.expectEqualStrings("fooBar", try camelCaseName(arena_alloc, "fooBar"));
+    try testing.expectEqualStrings("fooBar", try camelCaseName(arena_alloc, "FooBar"));
+    try testing.expectEqualStrings("fooBar", try camelCaseName(arena_alloc, "FOO_BAR"));
+    try testing.expectEqualStrings("@\"error\"", try camelCaseName(arena_alloc, "error"));
+}
+
+const TEST_HOOKS = Hooks{
+    .scriptHead = hookScriptHead,
+    .shapeError = hookShapeError,
+    .shapeOperationBody = hookShapeOperationBody,
 };
 
-fn testScriptHook(script: *Script) !void {
+fn hookScriptHead(script: *Script) !void {
     _ = try script.import("std");
 }
 
-fn testShapeErrorHook(script: *Script, _: *const SmithyModel, shape: Options.ErrorShape) !void {
+fn hookShapeError(script: *Script, _: *const SmithyModel, shape: Hooks.ErrorShape) !void {
     _ = try script.variable(.{ .is_public = true }, .{
         .identifier = .{ .name = "source" },
         .type = .{ .raw = "ErrorSource" },
@@ -776,6 +1043,10 @@ fn testShapeErrorHook(script: *Script, _: *const SmithyModel, shape: Options.Err
     _ = try script.variable(.{ .is_public = true }, .{
         .identifier = .{ .name = "retryable" },
     }, Script.Expr.val(shape.retryable));
+}
+
+fn hookShapeOperationBody(body: *Script.Scope, _: *const SmithyModel, _: Hooks.OperationShape) !void {
+    try body.prefix(.ret).expr(.{ .raw = "undefined" });
 }
 
 const ScriptTester = struct {

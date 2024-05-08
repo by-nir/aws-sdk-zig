@@ -300,9 +300,9 @@ fn putTraits(self: *Self, id: SmithyId, traits: []const syb_id.SmithyTaggedValue
 }
 
 fn parseShape(self: *Self, shape_name: []const u8, _: Context) !void {
-    const shape_id = SmithyId.of(shape_name);
     try self.reader.nextObjectBegin();
     try self.reader.nextStringEql("type");
+    const shape_id = SmithyId.of(shape_name);
     const typ = SmithyId.of(try self.reader.nextString());
     const target: Context.Target = switch (typ) {
         .apply => {
@@ -403,15 +403,22 @@ fn putShape(self: *Self, id: SmithyId, type_id: SmithyId, name: []const u8, targ
             else => return error.InvalidMemberTarget,
         },
         .operation => switch (target) {
-            .operation => |val| .{ .operation = val },
+            .operation => |val| blk: {
+                is_named = true;
+                break :blk .{ .operation = val };
+            },
             else => return error.InvalidMemberTarget,
         },
         .resource => switch (target) {
-            .resource => |val| .{ .resource = val },
+            .resource => |val| blk: {
+                is_named = true;
+                break :blk .{ .resource = val };
+            },
             else => return error.InvalidMemberTarget,
         },
         .service => switch (target) {
             .service => |val| blk: {
+                is_named = true;
                 self.model.service = id;
                 break :blk .{ .service = val };
             },
@@ -735,10 +742,14 @@ test "parseJson" {
     try testing.expectEqualStrings("a", try model.tryGetName(SmithyId.of("test.aggregate#Union$a")));
     try testing.expectEqualStrings("b", try model.tryGetName(SmithyId.of("test.aggregate#Union$b")));
 
+    try testing.expectEqualStrings(
+        "Operation",
+        try model.tryGetName(SmithyId.of("test.serve#Operation")),
+    );
     try testing.expectEqualDeep(SmithyType{
         .operation = &.{
-            .input = SmithyId.of("test.operation#Input"),
-            .output = SmithyId.of("test.operation#Output"),
+            .input = SmithyId.of("test.operation#OperationInput"),
+            .output = SmithyId.of("test.operation#OperationOutput"),
             .errors = &.{
                 SmithyId.of("test.error#BadRequestError"),
                 SmithyId.of("test.error#NotFoundError"),
@@ -746,6 +757,10 @@ test "parseJson" {
         },
     }, model.getShape(SmithyId.of("test.serve#Operation")));
 
+    try testing.expectEqualStrings(
+        "Resource",
+        try model.tryGetName(SmithyId.of("test.serve#Resource")),
+    );
     try testing.expectEqualDeep(SmithyType{
         .resource = &.{
             .identifiers = &.{
@@ -765,6 +780,10 @@ test "parseJson" {
         },
     }, model.getShape(SmithyId.of("test.serve#Resource")));
 
+    try testing.expectEqualStrings(
+        "Service",
+        try model.tryGetName(SmithyId.of("test.serve#Service")),
+    );
     try testing.expectEqualDeep(SmithyType{
         .service = &.{
             .version = "2017-02-11",
