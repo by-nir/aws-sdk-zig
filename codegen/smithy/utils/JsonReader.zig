@@ -45,7 +45,7 @@ pub fn initFile(arena: Allocator, file: std.fs.File) !Self {
     const source = try arena.create(Source);
     source.* = .{ .file = file.reader() };
     return .{
-        .allocator = arena,
+        .arena = arena,
         .source = source,
         .scanner = std.json.reader(arena, source.file.any()),
     };

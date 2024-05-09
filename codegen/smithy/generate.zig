@@ -1,9 +1,4 @@
 //! Produces Zig source code from a Smithy model.
-//!
-//! The following codebase is generated for a Smithy model:
-//! - `<service_name>/`
-//!   - `README.md`
-//!   - `client.zig`
 const std = @import("std");
 const fs = std.fs;
 const Allocator = std.mem.Allocator;
@@ -20,6 +15,7 @@ const trt_http = @import("prelude/http.zig");
 const trt_refine = @import("prelude/refine.zig");
 const trt_behave = @import("prelude/behavior.zig");
 const trt_constr = @import("prelude/constraint.zig");
+const names = @import("utils/names.zig");
 const StackWriter = @import("utils/StackWriter.zig");
 
 const Self = @This();
@@ -52,31 +48,6 @@ hooks: Hooks,
 model: *const SmithyModel,
 shape_queue: std.DoublyLinkedList(SmithyId) = .{},
 shape_visited: std.AutoHashMapUnmanaged(SmithyId, void) = .{},
-
-/// Must `close()` the returned directory when complete.
-pub fn getModelDir(rel_base: []const u8, rel_model: []const u8) !fs.Dir {
-    var raw_path: [128]u8 = undefined;
-    @memcpy(raw_path[0..rel_base.len], rel_base);
-    raw_path[rel_base] = '/';
-
-    @memcpy(raw_path[rel_base.len + 1 ..][0..rel_model.len], rel_model);
-    const path = raw_path[0 .. rel_base.len + 1 + rel_model.len];
-
-    return fs.cwd().openDir(path, .{}) catch |e| switch (e) {
-        error.FileNotFound => try fs.cwd().makeOpenPath(path, .{}),
-        else => return e,
-    };
-}
-
-pub fn generateModel(arena: Allocator, name: []const u8, model: *const SmithyModel, hooks: Hooks) !void {
-    const self = Self{
-        .arena = arena,
-        .hooks = hooks,
-        .model = model,
-    };
-    _ = self;
-    _ = name;
-}
 
 fn appendShape(self: *Self, id: SmithyId) !void {
     if (self.shape_visited.contains(id)) return;
@@ -112,26 +83,19 @@ test "shapes queue" {
     try testing.expectEqual(null, self.nextShape());
 }
 
-/// Optionaly add any (or none) of the ReadmeSlots to the template. Each specifier
-/// may appear more then once or not at all.
-fn writeReadme(output: std.io.AnyWriter, comptime template: []const u8, slots: ReadmeSlots) !void {
-    try output.print(template, slots);
-}
+pub fn writeScript(
+    arena: Allocator,
+    hooks: Hooks,
+    model: *const SmithyModel,
+    output: std.io.AnyWriter,
+    root: SmithyId,
+) !void {
+    var self = Self{
+        .arena = arena,
+        .hooks = hooks,
+        .model = model,
+    };
 
-test "writeReadme" {
-    var buffer = std.ArrayList(u8).init(test_alloc);
-    const buffer_writer = buffer.writer().any();
-    defer buffer.deinit();
-
-    const slots = ReadmeSlots{ .title = "Foo Bar", .slug = "foo-bar" };
-    try writeReadme(buffer_writer, @embedFile("tests/README.md.template"), slots);
-    try testing.expectEqualStrings(
-        \\# Generated Foo Bar Service
-        \\Learn more – [user guide](https://example.com/foo-bar)
-    , buffer.items);
-}
-
-fn writeScript(self: *Self, output: std.io.AnyWriter, root: SmithyId) !void {
     var writer = StackWriter.init(self.arena, output, .{});
     var script = try Script.init(&writer, null);
 
@@ -162,12 +126,13 @@ test "writeScript" {
     try test_model.setupShapeQueue(&model);
     defer model.deinit(test_alloc);
 
-    var self = Self{
-        .arena = arena.allocator(),
-        .hooks = TEST_HOOKS,
-        .model = &model,
-    };
-    try self.writeScript(buffer_writer, SmithyId.of("test#Root"));
+    try writeScript(
+        arena.allocator(),
+        TEST_HOOKS,
+        &model,
+        buffer_writer,
+        SmithyId.of("test#Root"),
+    );
     try testing.expectEqualStrings(
         \\pub const Root = []const Child;
         \\pub const Child = []const i32;
@@ -306,7 +271,7 @@ fn writeStrEnumShape(self: *Self, script: *Script, id: SmithyId, members: []cons
         const value = trt_refine.EnumValue.get(self.model, m);
         list.appendAssumeCapacity(.{
             .value = if (value) |v| v.string else name,
-            .field = try snakeCaseName(self.arena, name),
+            .field = try names.snakeCase(self.arena, name),
         });
     }
     try self.writeEnumShape(script, id, list.items);
@@ -318,7 +283,7 @@ fn writeTraitEnumShape(self: *Self, script: *Script, id: SmithyId, members: []co
     for (members) |m| {
         list.appendAssumeCapacity(.{
             .value = m.value,
-            .field = try snakeCaseName(self.arena, m.name orelse m.value),
+            .field = try names.snakeCase(self.arena, m.name orelse m.value),
         });
     }
     try self.writeEnumShape(script, id, list.items);
@@ -468,7 +433,7 @@ fn writeIntEnumShape(self: *Self, script: *Script, id: SmithyId, members: []cons
 
     for (members) |m| {
         _ = try scope.field(.{
-            .name = try snakeCaseName(self.arena, try self.model.tryGetName(m)),
+            .name = try names.snakeCase(self.arena, try self.model.tryGetName(m)),
             .type = null,
             .assign = Script.Expr.val(trt_refine.EnumValue.get(self.model, m).?.integer),
         });
@@ -546,7 +511,7 @@ fn writeUnionShape(self: *Self, script: *Script, id: SmithyId, members: []const 
     for (members) |m| {
         const shape = try self.getShapeName(m);
         _ = try scope.field(.{
-            .name = try snakeCaseName(self.arena, try self.model.tryGetName(m)),
+            .name = try names.snakeCase(self.arena, try self.model.tryGetName(m)),
             .type = if (shape.len > 0) .{ .raw = shape } else null,
         });
     }
@@ -632,7 +597,7 @@ fn writeStructShapeMember(self: *Self, script: *Script, is_input: bool, id: Smit
     };
     const type_expr = Script.Expr{ .raw = try self.getShapeName(id) };
     _ = try script.field(.{
-        .name = try snakeCaseName(self.arena, try self.model.tryGetName(id)),
+        .name = try names.snakeCase(self.arena, try self.model.tryGetName(id)),
         .type = if (optional) .{ .typ_optional = &type_expr } else type_expr,
         .assign = assign,
     });
@@ -760,7 +725,7 @@ fn writeResourceShape(self: *Self, script: *Script, id: SmithyId, common_errors:
     }
     for (resource.identifiers) |idn| {
         _ = try scope.field(.{
-            .name = try snakeCaseName(self.arena, idn.name),
+            .name = try names.snakeCase(self.arena, idn.name),
             .type = .{ .raw = try self.getShapeName(idn.shape) },
         });
     }
@@ -796,7 +761,7 @@ fn writeResourceShape(self: *Self, script: *Script, id: SmithyId, common_errors:
 
 fn writeOperationFunction(self: *Self, script: *Script, id: SmithyId, common_errors: []const SmithyId) !void {
     const operation = (try self.model.tryGetShape(id)).operation;
-    const op_name = try camelCaseName(self.arena, try self.model.tryGetName(id));
+    const op_name = try names.camelCase(self.arena, try self.model.tryGetName(id));
 
     var shape = Hooks.OperationShape{
         .id = id,
@@ -925,98 +890,6 @@ fn unwrapShapeType(self: *Self, id: SmithyId) !SmithyType {
             else => |t| t,
         },
     };
-}
-
-pub const ReadmeSlots = struct {
-    /// `{[title]s}` service title
-    title: []const u8,
-    /// `{[slug]s}` service SDK ID
-    slug: []const u8,
-};
-
-fn snakeCaseName(arena: Allocator, input: []const u8) ![]const u8 {
-    var retain = true;
-    for (input) |c| {
-        if (std.ascii.isUpper(c)) retain = false;
-    }
-    if (retain) {
-        if (std.zig.Token.keywords.has(input))
-            return std.fmt.allocPrint(arena, "@\"{s}\"", .{input})
-        else
-            return input;
-    }
-
-    var buffer = try std.ArrayList(u8).initCapacity(arena, input.len);
-    errdefer buffer.deinit();
-
-    var prev_upper = false;
-    for (input, 0..) |c, i| {
-        const is_upper = std.ascii.isUpper(c);
-        try buffer.append(if (is_upper) blk: {
-            if (!prev_upper and i > 0 and input[i - 1] != '_') {
-                try buffer.append('_');
-            }
-            break :blk std.ascii.toLower(c);
-        } else c);
-        prev_upper = is_upper;
-    }
-
-    if (std.zig.Token.keywords.has(buffer.items)) {
-        try buffer.insertSlice(0, "@\"");
-        try buffer.append('"');
-    }
-    return try buffer.toOwnedSlice();
-}
-
-test "snakeCaseName" {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    const arena_alloc = arena.allocator();
-    defer arena.deinit();
-
-    try testing.expectEqualStrings("foo_bar", try snakeCaseName(arena_alloc, "foo_bar"));
-    try testing.expectEqualStrings("foo_bar", try snakeCaseName(arena_alloc, "fooBar"));
-    try testing.expectEqualStrings("foo_bar", try snakeCaseName(arena_alloc, "FooBar"));
-    try testing.expectEqualStrings("foo_bar", try snakeCaseName(arena_alloc, "FOO_BAR"));
-    try testing.expectEqualStrings("@\"error\"", try snakeCaseName(arena_alloc, "error"));
-}
-
-fn camelCaseName(arena: Allocator, input: []const u8) ![]const u8 {
-    var buffer = try std.ArrayList(u8).initCapacity(arena, input.len);
-    errdefer buffer.deinit();
-
-    var prev_lower = false;
-    var pending_upper = false;
-    for (input) |c| {
-        if (c == '_') {
-            pending_upper = true;
-        } else if (pending_upper) {
-            pending_upper = false;
-            prev_lower = false;
-            try buffer.append(std.ascii.toUpper(c));
-        } else {
-            const is_upper = std.ascii.isUpper(c);
-            try buffer.append(if (is_upper and !prev_lower) std.ascii.toLower(c) else c);
-            prev_lower = !is_upper;
-        }
-    }
-
-    if (std.zig.Token.keywords.has(buffer.items)) {
-        try buffer.insertSlice(0, "@\"");
-        try buffer.append('"');
-    }
-    return try buffer.toOwnedSlice();
-}
-
-test "camelCaseName" {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    const arena_alloc = arena.allocator();
-    defer arena.deinit();
-
-    try testing.expectEqualStrings("fooBar", try camelCaseName(arena_alloc, "foo_bar"));
-    try testing.expectEqualStrings("fooBar", try camelCaseName(arena_alloc, "fooBar"));
-    try testing.expectEqualStrings("fooBar", try camelCaseName(arena_alloc, "FooBar"));
-    try testing.expectEqualStrings("fooBar", try camelCaseName(arena_alloc, "FOO_BAR"));
-    try testing.expectEqualStrings("@\"error\"", try camelCaseName(arena_alloc, "error"));
 }
 
 const TEST_HOOKS = Hooks{

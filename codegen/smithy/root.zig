@@ -1,31 +1,35 @@
-pub const JsonReader = @import("utils/JsonReader.zig");
+const syb_id = @import("symbols/identity.zig");
+pub usingnamespace syb_id;
 
-const prelude = @import("prelude.zig");
-const symbols_traits = @import("symbols/traits.zig");
-pub const TraitsManager = symbols_traits.TraitsManager;
-pub const registerPreludeTraits = prelude.registerTraits;
+const syb_shapes = @import("symbols/shapes.zig");
+pub usingnamespace syb_shapes;
 
-pub const IssuesBag = @import("utils/IssuesBag.zig");
+const syb_traits = @import("symbols/traits.zig");
+pub const TraitsRegistry = syb_traits.TraitsRegistry;
+
+pub const Pipeline = @import("Pipeline.zig");
 
 const parse = @import("parse.zig");
-pub const parseJson = parse.parseJson;
+pub const ParsePolicy = parse.Policy;
 
 const generate = @import("generate.zig");
-pub const Options = generate.Options;
-pub const ReadmeSlots = generate.ReadmeSlots;
-pub const getModelDir = generate.getModelDir;
-pub const generateModel = generate.generateModel;
+pub const Hooks = generate.Hooks;
+
+pub const Markdown = @import("generate/Markdown.zig");
+pub const Zig = @import("generate/Zig.zig");
 
 test {
-    _ = IssuesBag;
-    _ = JsonReader;
+    _ = @import("utils/names.zig");
+    _ = @import("utils/IssuesBag.zig");
+    _ = @import("utils/JsonReader.zig");
     _ = @import("utils/StackWriter.zig");
-    _ = @import("symbols/identity.zig");
-    _ = symbols_traits;
-    _ = @import("symbols/shapes.zig");
-    _ = prelude;
+    _ = syb_id;
+    _ = syb_traits;
+    _ = syb_shapes;
+    _ = @import("prelude.zig");
     _ = parse;
     _ = generate;
-    _ = @import("generate/Markdown.zig");
-    _ = @import("generate/Zig.zig");
+    _ = Markdown;
+    _ = Zig;
+    _ = Pipeline;
 }
