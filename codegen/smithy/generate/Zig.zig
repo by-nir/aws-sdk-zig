@@ -107,6 +107,7 @@ pub fn import(self: *Container, rel_path: []const u8) !Identifier {
     _ = std.mem.replace(u8, rel_path, "../", "xx_", output);
     std.mem.replaceScalar(u8, output, '.', '_');
     std.mem.replaceScalar(u8, output, '/', '_');
+    std.mem.replaceScalar(u8, output, '-', '_');
 
     const id = Identifier{ .name = id_name };
     if (self.imports.count() == 0) {
@@ -135,7 +136,7 @@ test "import" {
     try testing.expectEqualDeep(Identifier{ .name = "_imp_std" }, scope.import("std"));
 
     var child = try init(&writer, &scope);
-    try testing.expectEqualDeep(Identifier{ .name = "_imp_xx_baz_zig" }, child.import("../baz.zig"));
+    try testing.expectEqualDeep(Identifier{ .name = "_imp_baz_qux" }, child.import("baz-qux"));
     try testing.expectEqualDeep(Identifier{ .name = "_imp_std" }, child.import("std"));
     try child.end();
 
@@ -144,7 +145,7 @@ test "import" {
         \\{
         \\
         \\
-        \\    const _imp_xx_baz_zig = @import("../baz.zig");
+        \\    const _imp_baz_qux = @import("baz-qux");
         \\}
         \\
         \\const _imp_std = @import("std");

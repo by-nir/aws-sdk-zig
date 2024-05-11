@@ -142,7 +142,7 @@ fn isValidModelFilename(name: []const u8) bool {
 }
 
 fn processModel(self: *Self, arena: Allocator, json_name: []const u8) !void {
-    std.log.info("Start processing model `{s}`", .{json_name});
+    std.log.info("Processing model `{s}`", .{json_name});
 
     var issues = IssuesBag.init(arena);
     defer issues.deinit();

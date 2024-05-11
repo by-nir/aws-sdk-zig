@@ -346,9 +346,6 @@ fn parseShape(self: *Self, shape_name: []const u8, _: Context) !void {
     try self.putShape(shape_id, typ, shape_name, target);
 }
 
-const PRIMITIVE_BOOL = JsonReader.Value{ .boolean = false };
-const PRIMITIVE_INT = JsonReader.Value{ .integer = 0 };
-const PRIMITIVE_FLOAT = JsonReader.Value{ .float = 0.0 };
 fn putShape(self: *Self, id: SmithyId, type_id: SmithyId, name: []const u8, target: Context.Target) !void {
     var is_named = false;
     const smithy_type: SmithyType = switch (type_id) {
@@ -357,14 +354,19 @@ fn putShape(self: *Self, id: SmithyId, type_id: SmithyId, name: []const u8, targ
             else => return error.InvalidShapeTarget,
         },
         inline .boolean, .byte, .short, .integer, .long, .float, .double => |t| blk: {
+            const Primitive = struct {
+                const int = JsonReader.Value{ .integer = 0 };
+                const float = JsonReader.Value{ .float = 0.0 };
+                const boolean = JsonReader.Value{ .boolean = false };
+            };
             if (mem.startsWith(u8, name, "smithy.api#Primitive")) {
                 const traits = try self.arena.alloc(syb_id.SmithyTaggedValue, 1);
                 traits[0] = .{
                     .id = trt_refine.Default.id,
                     .value = switch (t) {
-                        .boolean => &PRIMITIVE_BOOL,
-                        .byte, .short, .integer, .long => &PRIMITIVE_INT,
-                        .float, .double => &PRIMITIVE_FLOAT,
+                        .boolean => &Primitive.boolean,
+                        .byte, .short, .integer, .long => &Primitive.int,
+                        .float, .double => &Primitive.float,
                         else => unreachable,
                     },
                 };

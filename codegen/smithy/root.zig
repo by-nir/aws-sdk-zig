@@ -13,10 +13,11 @@ const parse = @import("parse.zig");
 pub const ParsePolicy = parse.Policy;
 
 const generate = @import("generate.zig");
-pub const Hooks = generate.Hooks;
+pub const GenerateHooks = generate.Hooks;
+pub const GeneratePolicy = generate.Policy;
 
 pub const Markdown = @import("generate/Markdown.zig");
-pub const Zig = @import("generate/Zig.zig");
+pub const Script = @import("generate/Zig.zig");
 
 test {
     _ = @import("utils/names.zig");
@@ -30,6 +31,6 @@ test {
     _ = parse;
     _ = generate;
     _ = Markdown;
-    _ = Zig;
+    _ = Script;
     _ = Pipeline;
 }

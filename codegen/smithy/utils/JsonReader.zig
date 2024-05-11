@@ -210,7 +210,7 @@ pub fn nextScope(
         inline .object, .current => |s| {
             if (s == .object) try self.nextObjectBegin();
             while (try self.peek() == .string) {
-                const key = try self.nextString();
+                const key = (try self.scanner.nextAlloc(self.arena, .alloc_always)).allocated_string;
                 try if (Payload == void) itemFn(ctx, key) else itemFn(ctx, key, payload);
             }
             try self.nextObjectEnd();
