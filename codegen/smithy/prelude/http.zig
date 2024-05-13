@@ -15,7 +15,7 @@ const JsonReader = @import("../utils/JsonReader.zig");
 // TODO: Remainig traits
 pub const traits: TraitsList = &.{
     // smithy.api#http
-    .{ HttpError.id, null },
+    .{ HttpError.id, HttpError.parse },
     // smithy.api#httpHeader
     // smithy.api#httpLabel
     // smithy.api#httpPayload

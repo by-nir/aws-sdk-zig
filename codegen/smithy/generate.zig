@@ -23,12 +23,12 @@ const Self = @This();
 pub const Policy = struct {};
 
 pub const Hooks = struct {
-    scriptHead: ?*const fn (Allocator, *Script) anyerror!void = null,
-    shapeError: *const fn (Allocator, *Script, *const SmithyModel, ErrorShape) anyerror!void,
-    shapeServiceHead: ?*const fn (Allocator, *Script, *const SmithyModel, SmithyId, *const syb_shape.SmithyService) anyerror!void = null,
-    shapeResourceHead: ?*const fn (Allocator, *Script, *const SmithyModel, SmithyId, *const syb_shape.SmithyResource) anyerror!void = null,
-    shapeOperationReturn: ?*const fn (Allocator, *const SmithyModel, OperationShape) anyerror!Script.Expr = null,
-    shapeOperationBody: *const fn (Allocator, *Script.Scope, *const SmithyModel, OperationShape) anyerror!void,
+    writeScriptHead: ?*const fn (Allocator, *Script) anyerror!void = null,
+    writeErrorShape: *const fn (Allocator, *Script, *const SmithyModel, ErrorShape) anyerror!void,
+    writeServiceHead: ?*const fn (Allocator, *Script, *const SmithyModel, SmithyId, *const syb_shape.SmithyService) anyerror!void = null,
+    writeResourceHead: ?*const fn (Allocator, *Script, *const SmithyModel, SmithyId, *const syb_shape.SmithyResource) anyerror!void = null,
+    composeOperationReturn: ?*const fn (Allocator, *const SmithyModel, OperationShape) anyerror!?Script.Expr = null,
+    writeOperationBody: *const fn (Allocator, *Script.Scope, *const SmithyModel, OperationShape) anyerror!void,
 
     pub const ErrorShape = struct {
         id: SmithyId,
@@ -41,8 +41,7 @@ pub const Hooks = struct {
         id: SmithyId,
         input: ?struct { identifier: Script.Identifier, type: Script.Expr },
         output_type: ?Script.Expr,
-        errors: []const SmithyId,
-        common_errors: []const SmithyId,
+        errors_type: ?Script.Expr,
     };
 };
 
@@ -102,7 +101,7 @@ pub fn writeScript(
     var writer = StackWriter.init(self.arena, output, .{});
     var script = try Script.init(&writer, null);
 
-    if (self.hooks.scriptHead) |hook| {
+    if (self.hooks.writeScriptHead) |hook| {
         try hook(self.arena, &script);
     }
 
@@ -561,7 +560,7 @@ fn writeStructShape(self: *Self, script: *Script, id: SmithyId, members: []const
 
 fn writeStructShapeError(self: *Self, script: *Script, id: SmithyId) !void {
     const source = trt_refine.Error.get(self.model, id) orelse return;
-    _ = try self.hooks.shapeError(self.arena, script, self.model, .{
+    _ = try self.hooks.writeErrorShape(self.arena, script, self.model, .{
         .id = id,
         .source = source,
         .retryable = self.model.hasTrait(id, trt_behave.retryable_id),
@@ -697,7 +696,7 @@ fn writeServiceShape(self: *Self, script: *Script, id: SmithyId, service: *const
         .is_public = true,
         .type = .{ .Struct = null },
     });
-    if (self.hooks.shapeServiceHead) |hook| {
+    if (self.hooks.writeServiceHead) |hook| {
         try hook(self.arena, &scope, self.model, id, service);
     }
     for (service.operations) |op_id| {
@@ -723,7 +722,7 @@ fn writeResourceShape(self: *Self, script: *Script, id: SmithyId, common_errors:
         .is_public = true,
         .type = .{ .Struct = null },
     });
-    if (self.hooks.shapeResourceHead) |hook| {
+    if (self.hooks.writeResourceHead) |hook| {
         try hook(self.arena, &scope, self.model, id, resource);
     }
     for (resource.identifiers) |idn| {
@@ -762,11 +761,64 @@ fn writeResourceShape(self: *Self, script: *Script, id: SmithyId, common_errors:
     }
 }
 
+fn writeOperationErrorType(
+    self: *Self,
+    script: *Script,
+    buffer: []u8,
+    op_name: []const u8,
+    op_errors: []const SmithyId,
+    common_errors: []const SmithyId,
+) !?Script.Expr {
+    if (op_errors.len + common_errors.len == 0) return null;
+
+    const suffix = "Errors";
+    const total_len = op_name.len + suffix.len;
+    std.debug.assert(total_len <= 128);
+    @memcpy(buffer[0..op_name.len], op_name);
+    @memcpy(buffer[op_name.len..][0..suffix.len], suffix);
+    const type_name = buffer[0..total_len];
+
+    var scope = try script.declare(.{ .name = type_name }, .{
+        .is_public = true,
+        .type = .{ .TaggedUnion = null },
+    });
+    for (common_errors) |m| try self.writeOperationErrorTypeMember(&scope, m);
+    for (op_errors) |m| try self.writeOperationErrorTypeMember(&scope, m);
+    try scope.end();
+
+    return Script.Expr{ .raw = type_name };
+}
+
+fn writeOperationErrorTypeMember(self: *Self, scope: *Script, member: SmithyId) !void {
+    var name = try self.model.tryGetName(member);
+    inline for (.{ "error", "exception" }) |suffix| {
+        if (std.ascii.endsWithIgnoreCase(name, suffix)) {
+            name = name[0 .. name.len - suffix.len];
+            break;
+        }
+    }
+
+    const shape = try self.getTypeName(member);
+    _ = try scope.field(.{
+        .name = try names.snakeCase(self.arena, name),
+        .type = if (shape.len > 0) .{ .raw = shape } else null,
+    });
+}
+
 fn writeOperationFunction(self: *Self, script: *Script, id: SmithyId, common_errors: []const SmithyId) !void {
     const operation = (try self.model.tryGetShape(id)).operation;
     const op_name = try names.camelCase(self.arena, try self.model.tryGetName(id));
 
-    var shape = Hooks.OperationShape{
+    var name_buffer: [128]u8 = undefined;
+    const errors_type = try self.writeOperationErrorType(
+        script,
+        name_buffer[0..],
+        op_name,
+        operation.errors,
+        common_errors,
+    );
+
+    const shape = Hooks.OperationShape{
         .id = id,
         .input = if (operation.input) |d| .{
             .identifier = .{ .name = "input" },
@@ -776,12 +828,12 @@ fn writeOperationFunction(self: *Self, script: *Script, id: SmithyId, common_err
             Script.Expr{ .raw = try self.model.tryGetName(d) }
         else
             null,
-        .errors = operation.errors,
-        .common_errors = common_errors,
+        .errors_type = errors_type,
     };
-    if (self.hooks.shapeOperationReturn) |hook| {
-        shape.output_type = try hook(self.arena, self.model, shape);
-    }
+    const return_type = if (self.hooks.composeOperationReturn) |hook|
+        try hook(self.arena, self.model, shape)
+    else
+        shape.output_type;
 
     var block = try script.function(.{
         .is_public = true,
@@ -794,9 +846,9 @@ fn writeOperationFunction(self: *Self, script: *Script, id: SmithyId, common_err
             } }
         else
             &.{Script.param_self},
-        .return_type = shape.output_type,
+        .return_type = return_type,
     });
-    try self.hooks.shapeOperationBody(self.arena, &block, self.model, shape);
+    try self.hooks.writeOperationBody(self.arena, &block, self.model, shape);
     try block.end();
 }
 

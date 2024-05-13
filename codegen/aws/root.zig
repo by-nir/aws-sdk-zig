@@ -2,6 +2,9 @@ const std = @import("std");
 const fs = std.fs;
 const Allocator = std.mem.Allocator;
 const smithy = @import("smithy");
+const Script = smithy.Script;
+const SmithyModel = smithy.SmithyModel;
+const GenerateHooks = smithy.GenerateHooks;
 const options = @import("options");
 const whitelist: []const []const u8 = options.filter;
 const models_path: []const u8 = options.models_path;
@@ -16,7 +19,12 @@ pub fn main() !void {
         .src_dir_absolute = models_path,
         .out_dir_relative = install_path,
         .parse_policy = .{ .property = .abort, .trait = .skip },
-    }, .{}, null);
+    }, .{
+        .writeScriptHead = writeScriptHead,
+        .writeErrorShape = writeErrorShape,
+        .composeOperationReturn = composeOperationReturn,
+        .writeOperationBody = writeOperationBody,
+    }, null);
     defer pipeline.deinit();
 
     if (whitelist.len == 0) {
@@ -38,4 +46,52 @@ pub fn main() !void {
 
 fn filterSourceModel(filename: []const u8) bool {
     return !std.mem.startsWith(u8, filename, "sdk-");
+}
+
+fn writeScriptHead(arena: Allocator, script: *Script) !void {
+    _ = try script.import("std");
+
+    const types = try script.import("aws-types");
+    _ = try script.variable(.{}, .{
+        .identifier = .{ .name = "ErrorSource" },
+        .type = null,
+    }, .{ .raw = try types.child(arena, "ErrorSource") });
+    _ = try script.variable(.{}, .{
+        .identifier = .{ .name = "Failable" },
+        .type = null,
+    }, .{ .raw = try types.child(arena, "Failable") });
+}
+
+fn writeErrorShape(_: Allocator, script: *Script, _: *const SmithyModel, shape: GenerateHooks.ErrorShape) !void {
+    _ = try script.variable(.{ .is_public = true }, .{
+        .identifier = .{ .name = "source" },
+        .type = .{ .raw = "ErrorSource" },
+    }, Script.Expr.val(shape.source));
+
+    _ = try script.variable(.{ .is_public = true }, .{
+        .identifier = .{ .name = "code" },
+        .type = Script.Expr.typ(u10),
+    }, Script.Expr.val(shape.code));
+
+    _ = try script.variable(.{ .is_public = true }, .{
+        .identifier = .{ .name = "retryable" },
+    }, Script.Expr.val(shape.retryable));
+}
+
+var failable_args: [2]Script.Expr = undefined;
+fn composeOperationReturn(_: Allocator, _: *const SmithyModel, shape: GenerateHooks.OperationShape) !?Script.Expr {
+    return if (shape.errors_type) |errors| blk: {
+        failable_args[0] = shape.output_type orelse Script.Expr.typ(void);
+        failable_args[1] = errors;
+        break :blk Script.Expr.call("Failable", &failable_args);
+    } else shape.output_type;
+}
+
+fn writeOperationBody(_: Allocator, body: *Script.Scope, model: *const SmithyModel, shape: GenerateHooks.OperationShape) !void {
+    const action = try model.tryGetName(shape.id);
+    _ = action; // autofix
+
+    try body.expr(.{ .raw = "_ = self" });
+    try body.expr(.{ .raw = "_ = input" });
+    try body.prefix(.ret).expr(.{ .raw = "undefined" });
 }
