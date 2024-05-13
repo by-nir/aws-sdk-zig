@@ -21,8 +21,9 @@ pub fn main() !void {
         .parse_policy = .{ .property = .abort, .trait = .skip },
     }, .{
         .writeScriptHead = writeScriptHead,
+        .uniqueListType = uniqueListType,
         .writeErrorShape = writeErrorShape,
-        .composeOperationReturn = composeOperationReturn,
+        .operationReturnType = operationReturnType,
         .writeOperationBody = writeOperationBody,
     }, null);
     defer pipeline.deinit();
@@ -62,6 +63,12 @@ fn writeScriptHead(arena: Allocator, script: *Script) !void {
     }, .{ .raw = try types.child(arena, "Failable") });
 }
 
+fn uniqueListType(arena: Allocator, item: Script.Expr) !Script.Expr {
+    const args = try arena.alloc(Script.Expr, 1);
+    args[0] = item;
+    return Script.Expr.call("*const _aws_types.Set", &args);
+}
+
 fn writeErrorShape(_: Allocator, script: *Script, _: *const SmithyModel, shape: GenerateHooks.ErrorShape) !void {
     _ = try script.variable(.{ .is_public = true }, .{
         .identifier = .{ .name = "source" },
@@ -78,12 +85,12 @@ fn writeErrorShape(_: Allocator, script: *Script, _: *const SmithyModel, shape: 
     }, Script.Expr.val(shape.retryable));
 }
 
-var failable_args: [2]Script.Expr = undefined;
-fn composeOperationReturn(_: Allocator, _: *const SmithyModel, shape: GenerateHooks.OperationShape) !?Script.Expr {
+fn operationReturnType(arena: Allocator, _: *const SmithyModel, shape: GenerateHooks.OperationShape) !?Script.Expr {
     return if (shape.errors_type) |errors| blk: {
-        failable_args[0] = shape.output_type orelse Script.Expr.typ(void);
-        failable_args[1] = errors;
-        break :blk Script.Expr.call("Failable", &failable_args);
+        const args = try arena.alloc(Script.Expr, 2);
+        args[0] = shape.output_type orelse Script.Expr.typ(void);
+        args[1] = errors;
+        break :blk Script.Expr.call("Failable", args);
     } else shape.output_type;
 }
 

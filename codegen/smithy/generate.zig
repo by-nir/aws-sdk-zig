@@ -24,10 +24,11 @@ pub const Policy = struct {};
 
 pub const Hooks = struct {
     writeScriptHead: ?*const fn (Allocator, *Script) anyerror!void = null,
+    uniqueListType: ?*const fn (Allocator, Script.Expr) anyerror!Script.Expr = null,
     writeErrorShape: *const fn (Allocator, *Script, *const SmithyModel, ErrorShape) anyerror!void,
     writeServiceHead: ?*const fn (Allocator, *Script, *const SmithyModel, SmithyId, *const syb_shape.SmithyService) anyerror!void = null,
     writeResourceHead: ?*const fn (Allocator, *Script, *const SmithyModel, SmithyId, *const syb_shape.SmithyResource) anyerror!void = null,
-    composeOperationReturn: ?*const fn (Allocator, *const SmithyModel, OperationShape) anyerror!?Script.Expr = null,
+    operationReturnType: ?*const fn (Allocator, *const SmithyModel, OperationShape) anyerror!?Script.Expr = null,
     writeOperationBody: *const fn (Allocator, *Script.Scope, *const SmithyModel, OperationShape) anyerror!void,
 
     pub const ErrorShape = struct {
@@ -186,10 +187,13 @@ fn writeListShape(self: *Self, script: *Script, id: SmithyId, memeber: SmithyId)
     const shape_name = try self.model.tryGetName(id);
     const target_type = Script.Expr{ .raw = try self.getTypeName(memeber) };
     if (self.model.hasTrait(id, trt_constr.unique_items_id)) {
-        const target = Script.Expr.call(
-            "*const _imp_std.AutoArrayHashMapUnmanaged",
-            &.{ target_type, .{ .raw = "void" } },
-        );
+        const target = if (self.hooks.uniqueListType) |hook|
+            try hook(self.arena, target_type)
+        else
+            Script.Expr.call(
+                "*const _imp_std.AutoArrayHashMapUnmanaged",
+                &.{ target_type, .{ .raw = "void" } },
+            );
         _ = try script.variable(
             .{ .is_public = true },
             .{ .identifier = .{ .name = shape_name } },
@@ -241,10 +245,16 @@ fn writeMapShape(self: *Self, script: *Script, id: SmithyId, memeber: [2]SmithyI
     _ = try script.variable(
         .{ .is_public = true },
         .{ .identifier = .{ .name = shape_name } },
-        Script.Expr.call(
-            "*const _imp_std.AutoArrayHashMapUnmanaged",
-            &.{ .{ .raw = key_name }, value },
-        ),
+        if (std.mem.eql(u8, key_name, "[]const u8"))
+            Script.Expr.call(
+                "*const _imp_std.StringArrayHashMapUnmanaged",
+                &.{value},
+            )
+        else
+            Script.Expr.call(
+                "*const _imp_std.AutoArrayHashMapUnmanaged",
+                &.{ .{ .raw = key_name }, value },
+            ),
     );
 }
 
@@ -830,7 +840,7 @@ fn writeOperationFunction(self: *Self, script: *Script, id: SmithyId, common_err
             null,
         .errors_type = errors_type,
     };
-    const return_type = if (self.hooks.composeOperationReturn) |hook|
+    const return_type = if (self.hooks.operationReturnType) |hook|
         try hook(self.arena, self.model, shape)
     else
         shape.output_type;
