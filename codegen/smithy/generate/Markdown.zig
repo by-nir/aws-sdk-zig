@@ -1,6 +1,7 @@
 //! Generate Markdown formatted content.
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const mem = std.mem;
+const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const assert = std.debug.assert;
@@ -33,7 +34,7 @@ fn writeAll(self: *Self, text: []const u8) !void {
         self.is_empty = false;
         try self.writer.writeFmt(
             "{s}{s}",
-            .{ std.mem.trimLeft(u8, self.writer.options.line_prefix, " "), text },
+            .{ mem.trimLeft(u8, self.writer.options.line_prefix, " "), text },
         );
     } else {
         try self.writer.lineBreak(1);
@@ -340,5 +341,205 @@ test "table" {
         \\| 17 | 18 | 19 |
         \\| 27 | 28 | 29 |
         \\| 37 | 38 | 39 |
+    , buffer.items);
+}
+
+const HtmlBlock = union(enum) {
+    none,
+    paragraph,
+    list: List,
+    list_item: List,
+};
+
+const HtmlStyle = union(enum) {
+    none,
+    bold,
+    italic,
+    code,
+    anchor: []const u8,
+};
+const html_map_style = std.StaticStringMap(std.meta.Tag(HtmlStyle)).initComptime(
+    .{ .{ "b", .bold }, .{ "strong", .bold }, .{ "i", .italic }, .{ "em", .italic }, .{ "code", .code }, .{ "a", .anchor } },
+);
+
+/// Write Markdown source using an **extremely naive and partial** Markdown parser.
+pub fn writeSource(self: *Self, source: []const u8) !void {
+    var active_block: HtmlBlock = .none;
+    var active_style: HtmlStyle = .none;
+    var tokens = mem.tokenizeScalar(u8, source, '\n');
+    outer: while (tokens.next()) |token_full| {
+        var token = mem.trimLeft(u8, token_full, &std.ascii.whitespace);
+        var line_start = true;
+        if (token.len == 0) {
+            active_style = .none;
+            if (active_block != .list_item and active_block != .list) active_block = .none;
+            continue :outer;
+        }
+
+        inner: while (token.len > 0) {
+            token = mem.trim(u8, token, &std.ascii.whitespace);
+            // Process tag
+            if (token.len >= 3) if (mem.indexOfScalar(u8, token, '<')) |tag_start| {
+                const is_close = token[1] == '/';
+                const start_pad: usize = if (is_close) 2 else 1;
+                if (mem.indexOfAnyPos(u8, token, tag_start + start_pad, " />")) |tag_end| {
+                    // Emit previous text
+                    if (tag_start > 0) {
+                        try self.htmlWriteText(&active_block, &line_start, token[0..tag_start]);
+                        token = token[tag_start..token.len];
+                    }
+
+                    // Extract tag name
+                    const tag_name = token[start_pad .. tag_end - tag_start];
+                    if (tag_name.len == 0) continue :inner;
+
+                    var did_process = true;
+                    if (html_map_style.get(tag_name)) |tag| {
+                        switch (tag) {
+                            .none => unreachable,
+                            inline .italic, .bold, .code => |g| {
+                                if (is_close) {
+                                    assert(active_style == g);
+                                    active_style = .none;
+                                } else {
+                                    assert(active_style == .none);
+                                    active_style = g;
+                                }
+                                try self.writer.writeAll(switch (g) {
+                                    .italic => "_",
+                                    .bold => "**",
+                                    .code => "`",
+                                    else => unreachable,
+                                });
+                            },
+                            .anchor => {
+                                if (is_close) {
+                                    assert(active_style == .anchor);
+                                    try self.writer.writeFmt("]({s})", .{active_style.anchor});
+                                    active_style = .none;
+                                } else if (mem.indexOfPos(u8, token, 3, "href=\"")) |href_start| {
+                                    assert(active_style == .none);
+                                    if (mem.indexOfPos(u8, token, href_start + 6, "\">")) |href_end| {
+                                        try self.writer.writeAll("[");
+                                        active_style = .{ .anchor = token[href_start + 6 .. href_end] };
+                                    }
+                                } else {
+                                    did_process = false;
+                                }
+                            },
+                        }
+                    } else if (mem.eql(u8, "p", tag_name)) {
+                        if (is_close) switch (active_block) {
+                            .paragraph => active_block = .none,
+                            .list => {
+                                try active_block.list.end();
+                                active_block = .none;
+                            },
+                            else => {},
+                        };
+                    } else if (mem.eql(u8, "ul", tag_name)) {
+                        if (is_close) {
+                            try active_block.list.end();
+                            active_block = .none;
+                        } else {
+                            active_block = .{ .list = try self.list(false) };
+                        }
+                    } else if (mem.eql(u8, "ol", tag_name)) {
+                        if (is_close) {
+                            try active_block.list.end();
+                            active_block = .none;
+                        } else {
+                            active_block = .{ .list = try self.list(true) };
+                        }
+                    } else if (mem.eql(u8, "li", tag_name)) {
+                        switch (active_block) {
+                            .list => {
+                                if (is_close) {
+                                    try active_block.list.end();
+                                    active_block = .none;
+                                }
+                            },
+                            .list_item => active_block = .{ .list = active_block.list_item },
+                            else => did_process = false,
+                        }
+                    } else {
+                        did_process = false;
+                    }
+
+                    // Consume tag
+                    if (did_process) {
+                        const end_caret = tag_end - tag_start;
+                        token = if (token[end_caret] == '>')
+                            token[1 + end_caret .. token.len]
+                        else if (mem.indexOfScalarPos(u8, token, 1 + end_caret, '>')) |i|
+                            token[1 + i .. token.len]
+                        else
+                            unreachable;
+                        continue :inner;
+                    }
+                }
+            };
+
+            // Emit remaining text
+            try self.htmlWriteText(&active_block, &line_start, token);
+            token = &.{};
+        }
+    }
+}
+
+fn htmlWriteText(self: *Self, block: *HtmlBlock, line_start: *bool, value: []const u8) !void {
+    switch (block.*) {
+        .none => {
+            try self.writeAll(value);
+            block.* = .paragraph;
+            line_start.* = false;
+        },
+        .paragraph, .list_item => {
+            if (line_start.*) {
+                line_start.* = false;
+                try self.writer.writeFmt(" {s}", .{value});
+            } else {
+                try self.writer.writeAll(value);
+            }
+        },
+        .list => {
+            try block.list.item(value);
+            block.* = .{ .list_item = block.list };
+            line_start.* = false;
+        },
+    }
+}
+
+test "writeSource" {
+    var buffer = std.ArrayList(u8).init(test_alloc);
+    var writer = StackWriter.init(test_alloc, buffer.writer().any(), .{});
+    defer buffer.deinit();
+
+    var md = init(&writer);
+    try md.writeSource("    <p>Foo.</p>\n    <p>Bar baz\n    qux.</p>");
+    try md.end();
+    try testing.expectEqualStrings(
+        \\Foo.
+        \\
+        \\Bar baz qux.
+    , buffer.items);
+
+    buffer.clearRetainingCapacity();
+    md = init(&writer);
+    try md.writeSource("<p>Inline: <a href=\"#\">foo\n    106</a>, <i>bar \n    107</i>, <b>baz \n    108</b>, <code>qux \n    109</code>.</p>");
+    try md.end();
+    try testing.expectEqualStrings(
+        \\Inline: [foo 106](#), _bar 107_, **baz 108**, `qux 109`.
+    , buffer.items);
+
+    buffer.clearRetainingCapacity();
+    md = init(&writer);
+    try md.writeSource("<ul>\n<li>\nFoo 106\n</li>\n<li>Bar\n107</li>\n<li><p>Baz 108</p></li>\n<li>\n<p>\nQux\n109</p></li></ul>");
+    try md.end();
+    try testing.expectEqualStrings(
+        \\- Foo 106
+        \\- Bar 107
+        \\- Baz 108
+        \\- Qux 109
     , buffer.items);
 }
