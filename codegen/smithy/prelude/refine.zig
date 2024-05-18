@@ -80,7 +80,7 @@ pub const Default = struct {
     }
 
     pub fn get(model: *const SmithyModel, shape_id: SmithyId) ?Value {
-        return model.getTrait(shape_id, id, Value);
+        return model.getTrait(Value, shape_id, id);
     }
 };
 
@@ -122,7 +122,7 @@ pub const EnumValue = struct {
     }
 
     pub fn get(model: *const SmithyModel, shape_id: SmithyId) ?Val {
-        return model.getTrait(shape_id, id, Val);
+        return model.getTrait(Val, shape_id, id);
     }
 };
 
@@ -164,7 +164,7 @@ pub const Error = struct {
     }
 
     pub fn get(model: *const SmithyModel, shape_id: SmithyId) ?Source {
-        return model.getTrait(shape_id, id, Source);
+        return model.getTrait(Source, shape_id, id);
     }
 };
 

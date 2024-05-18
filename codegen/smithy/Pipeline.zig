@@ -15,6 +15,7 @@ const SmithyModel = @import("symbols/shapes.zig").SmithyModel;
 const IssuesBag = @import("utils/IssuesBag.zig");
 const JsonReader = @import("utils/JsonReader.zig");
 const titleCase = @import("utils/names.zig").titleCase;
+const trt_docs = @import("prelude/docs.zig");
 
 const Self = @This();
 
@@ -26,10 +27,12 @@ const Options = struct {
     parse_policy: parse.Policy,
 };
 
-const readmeFn = *const fn (std.io.AnyWriter, *const SmithyModel, Readme) anyerror!void;
-pub const Readme = struct {
-    slug: []const u8,
+const readmeFn = *const fn (std.io.AnyWriter, *const SmithyModel, ReadmeMeta) anyerror!void;
+pub const ReadmeMeta = struct {
+    /// `{[title]s}` service title
     title: []const u8,
+    /// `{[slug]s}` service SDK ID
+    slug: []const u8,
 };
 
 gpa_alloc: Allocator,
@@ -180,15 +183,16 @@ fn parseModel(self: *Self, arena: Allocator, json_name: []const u8, issues: *Iss
 }
 
 fn generateModel(self: *Self, arena: Allocator, json_name: []const u8, model: *const SmithyModel) !void {
-    const name = json_name[0 .. json_name.len - ".json".len];
-    var out_dir = self.out_dir.makeOpenPath(name, .{}) catch |e| {
+    const slug = json_name[0 .. json_name.len - ".json".len];
+    var out_dir = self.out_dir.makeOpenPath(slug, .{}) catch |e| {
         return e;
     };
-    errdefer out_dir.deleteTree(name) catch unreachable;
+    errdefer out_dir.deleteTree(slug) catch unreachable;
 
     var file = out_dir.createFile("client.zig", .{}) catch |e| {
         return e;
     };
+    errdefer file.close();
     if (generate.writeScript(
         arena,
         self.hooks,
@@ -202,18 +206,20 @@ fn generateModel(self: *Self, arena: Allocator, json_name: []const u8, model: *c
     }
 
     if (self.readme) |hook| {
-        const title = titleCase(arena, name) catch |e| {
+        const title = trt_docs.Title.get(model, model.service) orelse titleCase(arena, slug) catch |e| {
             return e;
         };
         file = out_dir.createFile("README.md", .{}) catch |e| {
             return e;
         };
-        hook(file.writer().any(), model, .{
-            .slug = name,
+        if (hook(file.writer().any(), model, ReadmeMeta{
+            .slug = slug,
             .title = title,
-        }) catch |e| {
+        })) {
+            file.close();
+        } else |e| {
             return e;
-        };
+        }
     }
 
     out_dir.close();

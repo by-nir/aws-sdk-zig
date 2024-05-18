@@ -80,7 +80,7 @@ pub fn deinit(self: *Self) void {
         if (line.bytes.ptr == LINE_BREAK.ptr) continue;
         self.allocator.free(line.bytes);
     }
-    self.deferred.clearAndFree(self.allocator);
+    self.deferred.deinit(self.allocator);
     self.deinitContext();
 }
 

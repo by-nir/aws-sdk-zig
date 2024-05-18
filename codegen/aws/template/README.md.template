@@ -1,0 +1,47 @@
+# {[title]s} SDK for Zig
+![Zig v0.13 (dev)](https://img.shields.io/badge/Zig-v0.13_(dev)-black?logo=zig&logoColor=F7A41D "Zig v0.13 – master branch")
+[![Devloper Guide](https://img.shields.io/badge/Devloper_Guide-blue?logo=readme&logoColor=white&labelColor=gray)](https://code.bynir.com/aws-sdk-zig/{[slug]s} "{[title]s} SDK for Zig: Devloper Guide")
+[![MIT License](https://img.shields.io/github/license/by-nir/aws-sdk-zig)](https://github.com/by-nir/aws-sdk-zig/LICENSE)
+
+_The {[title]s} SDK for Zig is auto-generated, **do not modify it directly!**
+To learn how to contribute see the main [AWS SDK for Zig](https://github.com/by-nir/aws-sdk-zig) repository._
+
+## Installation
+TODO
+1. Add monorepo dependency
+2. add `.module("aws-foo")` sdk libs
+
+> [!TIP]
+> New to AWS or Zig?
+> - [Learn software develpment with Zig](https://lrn.ing/coding/zig)
+> - [Developing for Amazon Web Services cloud](https://lrn.ing/cloud/aws)
+
+## Examples
+TODO
+
+For setting up and getting started guidance see the [AWS SDK for Zig](/README.md#getting-started) documentation.
+
+### SDK-specific example 1
+TBD
+
+### SDK-specific example 2
+TBD
+
+### SDK-specific example 3
+TBD
+
+## License
+
+The author and contributors are not responsible for any issues or damages caused
+by the use of this software, part of it, or its derivatives. See [LICENSE](/LICENSE)
+for the complete terms of use.
+
+> [!NOTE]
+> _AWS SDK for Zig_ is not an official _Amazon Web Services_ software, nor is it
+> affiliated with _Amazon Web Services, Inc_.
+
+The SDKs code is generated based on a dataset of _Smithy models_ created by
+_Amazon Web Services_. The models are extracted from the official [AWS SDK for Rust](https://github.com/awslabs/aws-sdk-rust)
+and [licensed](https://github.com/awslabs/aws-sdk-rust/blob/main/LICENSE) as 
+declared by Amazon Web Services, Inc. at the source repository.
+This auto-generated codebase is covered by a [standalone license](/LICENSE).

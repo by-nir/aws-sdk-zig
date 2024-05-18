@@ -238,6 +238,7 @@ pub fn setupService(model: *SmithyModel) !void {
         },
     });
 
+    try model.names.put(test_alloc, SmithyId.of("test.error#ServiceError"), "ServiceError");
     try model.shapes.put(test_alloc, SmithyId.of("test.error#ServiceError"), .{
         .structure = &.{},
     });

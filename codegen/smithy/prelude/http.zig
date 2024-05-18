@@ -29,7 +29,7 @@ pub const traits: TraitsList = &.{
 
 /// Defines an HTTP response code for an operation error.
 ///
-/// [https://smithy.io/2.0/spec/http-bindings.html#httperror-trait)
+/// [Smithy Spec](https://smithy.io/2.0/spec/http-bindings.html#httperror-trait)
 pub const HttpError = struct {
     pub const id = SmithyId.of("smithy.api#httpError");
 
@@ -40,7 +40,7 @@ pub const HttpError = struct {
     }
 
     pub fn get(model: *const SmithyModel, shape_id: SmithyId) ?u10 {
-        return model.getTrait(shape_id, id, u10);
+        return model.getTrait(u10, shape_id, id);
     }
 };
 

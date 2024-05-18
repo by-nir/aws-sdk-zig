@@ -26,7 +26,14 @@ pub const TraitsBag = struct {
         return false;
     }
 
-    pub fn get(self: TraitsBag, id: SmithyId, comptime T: type) ?TraitReturn(T) {
+    pub fn TraitReturn(comptime T: type) type {
+        return switch (@typeInfo(T)) {
+            .Bool, .Int, .Float, .Enum, .Union, .Pointer => T,
+            else => *const T,
+        };
+    }
+
+    pub fn get(self: TraitsBag, comptime T: type, id: SmithyId) ?TraitReturn(T) {
         const trait = self.getOpaque(id) orelse return null;
         const ptr: *const T = @alignCast(@ptrCast(trait));
         return switch (@typeInfo(T)) {
@@ -40,13 +47,6 @@ pub const TraitsBag = struct {
             if (trait.id == id) return trait.value;
         }
         return null;
-    }
-
-    pub fn TraitReturn(comptime T: type) type {
-        return switch (@typeInfo(T)) {
-            .Bool, .Int, .Float, .Enum, .Union, .Pointer => T,
-            else => *const T,
-        };
     }
 };
 
@@ -64,7 +64,7 @@ test "TraitsBag" {
         @intFromPtr(&int),
         @intFromPtr(traits.getOpaque(SmithyId.of("bar")).?),
     );
-    try testing.expectEqual(108, traits.get(SmithyId.of("bar"), u8));
+    try testing.expectEqual(108, traits.get(u8, SmithyId.of("bar")));
 }
 
 /// Traits are model components that can be attached to shapes to describe additional

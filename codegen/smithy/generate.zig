@@ -11,12 +11,12 @@ const SmithyType = syb_id.SmithyType;
 const syb_shape = @import("symbols/shapes.zig");
 const SmithyModel = syb_shape.SmithyModel;
 const Script = @import("generate/Zig.zig");
+const names = @import("utils/names.zig");
+const StackWriter = @import("utils/StackWriter.zig");
 const trt_http = @import("prelude/http.zig");
 const trt_refine = @import("prelude/refine.zig");
 const trt_behave = @import("prelude/behavior.zig");
 const trt_constr = @import("prelude/constraint.zig");
-const names = @import("utils/names.zig");
-const StackWriter = @import("utils/StackWriter.zig");
 
 const Self = @This();
 
@@ -521,11 +521,25 @@ fn writeUnionShape(self: *Self, script: *Script, id: SmithyId, members: []const 
         .type = .{ .TaggedUnion = null },
     });
     for (members) |m| {
-        const shape = try self.getTypeName(m);
-        _ = try scope.field(.{
-            .name = try names.snakeCase(self.arena, try self.model.tryGetName(m)),
+        const shape = self.getTypeName(m) catch |e| {
+            scope.deinit();
+            return e;
+        };
+        var name = self.model.tryGetName(m) catch |e| {
+            scope.deinit();
+            return e;
+        };
+        name = names.snakeCase(self.arena, name) catch |e| {
+            scope.deinit();
+            return e;
+        };
+        _ = scope.field(.{
+            .name = name,
             .type = if (shape.len > 0) .{ .raw = shape } else null,
-        });
+        }) catch |e| {
+            scope.deinit();
+            return e;
+        };
     }
     try scope.end();
 }
@@ -560,10 +574,19 @@ fn writeStructShape(self: *Self, script: *Script, id: SmithyId, members: []const
         .is_public = true,
         .type = .{ .Struct = null },
     });
-    try self.writeStructShapeError(&scope, id);
-    try self.writeStructShapeMixin(&scope, is_input, id);
+    self.writeStructShapeError(&scope, id) catch |e| {
+        scope.deinit();
+        return e;
+    };
+    self.writeStructShapeMixin(&scope, is_input, id) catch |e| {
+        scope.deinit();
+        return e;
+    };
     for (members) |m| {
-        try self.writeStructShapeMember(&scope, is_input, m);
+        self.writeStructShapeMember(&scope, is_input, m) catch |e| {
+            scope.deinit();
+            return e;
+        };
     }
     try scope.end();
 }
@@ -707,10 +730,16 @@ fn writeServiceShape(self: *Self, script: *Script, id: SmithyId, service: *const
         .type = .{ .Struct = null },
     });
     if (self.hooks.writeServiceHead) |hook| {
-        try hook(self.arena, &scope, self.model, id, service);
+        hook(self.arena, &scope, self.model, id, service) catch |e| {
+            scope.deinit();
+            return e;
+        };
     }
     for (service.operations) |op_id| {
-        try self.writeOperationFunction(&scope, op_id, service.errors);
+        self.writeOperationFunction(&scope, op_id, service.errors) catch |e| {
+            scope.deinit();
+            return e;
+        };
     }
     try scope.end();
 
@@ -733,25 +762,44 @@ fn writeResourceShape(self: *Self, script: *Script, id: SmithyId, common_errors:
         .type = .{ .Struct = null },
     });
     if (self.hooks.writeResourceHead) |hook| {
-        try hook(self.arena, &scope, self.model, id, resource);
+        hook(self.arena, &scope, self.model, id, resource) catch |e| {
+            scope.deinit();
+            return e;
+        };
     }
     for (resource.identifiers) |idn| {
-        _ = try scope.field(.{
-            .name = try names.snakeCase(self.arena, idn.name),
+        const name = names.snakeCase(self.arena, idn.name) catch |e| {
+            scope.deinit();
+            return e;
+        };
+        _ = scope.field(.{
+            .name = name,
             .type = .{ .raw = try self.getTypeName(idn.shape) },
-        });
+        }) catch |e| {
+            scope.deinit();
+            return e;
+        };
     }
     const lifecycle_ops = &.{ "create", "put", "read", "update", "delete", "list" };
     inline for (lifecycle_ops) |field| {
         if (@field(resource, field)) |op_id| {
-            try self.writeOperationFunction(&scope, op_id, common_errors);
+            self.writeOperationFunction(&scope, op_id, common_errors) catch |e| {
+                scope.deinit();
+                return e;
+            };
         }
     }
     for (resource.operations) |op_id| {
-        try self.writeOperationFunction(&scope, op_id, common_errors);
+        self.writeOperationFunction(&scope, op_id, common_errors) catch |e| {
+            scope.deinit();
+            return e;
+        };
     }
     for (resource.collection_ops) |op_id| {
-        try self.writeOperationFunction(&scope, op_id, common_errors);
+        self.writeOperationFunction(&scope, op_id, common_errors) catch |e| {
+            scope.deinit();
+            return e;
+        };
     }
     try scope.end();
 
@@ -792,8 +840,18 @@ fn writeOperationErrorType(
         .is_public = true,
         .type = .{ .TaggedUnion = null },
     });
-    for (common_errors) |m| try self.writeOperationErrorTypeMember(&scope, m);
-    for (op_errors) |m| try self.writeOperationErrorTypeMember(&scope, m);
+    for (common_errors) |m| {
+        self.writeOperationErrorTypeMember(&scope, m) catch |e| {
+            scope.deinit();
+            return e;
+        };
+    }
+    for (op_errors) |m| {
+        self.writeOperationErrorTypeMember(&scope, m) catch |e| {
+            scope.deinit();
+            return e;
+        };
+    }
     try scope.end();
 
     return Script.Expr{ .raw = type_name };
@@ -879,6 +937,11 @@ test "writeServiceShape" {
     try tester.expect(
         \\/// API version: 2017-02-11
         \\pub const Service = struct {
+        \\    pub const operationErrors = union(enum) {
+        \\        service: ServiceError,
+        \\        not_found: NotFound,
+        \\    };
+        \\
         \\    pub fn operation(self: @This(), input: OperationInput) OperationOutput {
         \\        return undefined;
         \\    }
@@ -894,6 +957,11 @@ test "writeServiceShape" {
         \\
         \\pub const Resource = struct {
         \\    forecast_id: []const u8,
+        \\
+        \\    pub const operationErrors = union(enum) {
+        \\        service: ServiceError,
+        \\        not_found: NotFound,
+        \\    };
         \\
         \\    pub fn operation(self: @This(), input: OperationInput) OperationOutput {
         \\        return undefined;
@@ -961,16 +1029,16 @@ fn unwrapShapeType(self: *Self, id: SmithyId) !SmithyType {
 }
 
 const TEST_HOOKS = Hooks{
-    .scriptHead = hookScriptHead,
-    .shapeError = hookShapeError,
-    .shapeOperationBody = hookShapeOperationBody,
+    .writeScriptHead = hookScriptHead,
+    .writeErrorShape = hookErrorShape,
+    .writeOperationBody = hookOperationBody,
 };
 
 fn hookScriptHead(_: Allocator, script: *Script) !void {
     _ = try script.import("std");
 }
 
-fn hookShapeError(_: Allocator, script: *Script, _: *const SmithyModel, shape: Hooks.ErrorShape) !void {
+fn hookErrorShape(_: Allocator, script: *Script, _: *const SmithyModel, shape: Hooks.ErrorShape) !void {
     _ = try script.variable(.{ .is_public = true }, .{
         .identifier = .{ .name = "source" },
         .type = .{ .raw = "ErrorSource" },
@@ -986,7 +1054,7 @@ fn hookShapeError(_: Allocator, script: *Script, _: *const SmithyModel, shape: H
     }, Script.Expr.val(shape.retryable));
 }
 
-fn hookShapeOperationBody(_: Allocator, body: *Script.Scope, _: *const SmithyModel, _: Hooks.OperationShape) !void {
+fn hookOperationBody(_: Allocator, body: *Script.Scope, _: *const SmithyModel, _: Hooks.OperationShape) !void {
     try body.prefix(.ret).expr(.{ .raw = "undefined" });
 }
 

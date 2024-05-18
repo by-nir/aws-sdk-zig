@@ -671,9 +671,9 @@ test "parseJson" {
         try model.tryGetName(SmithyId.of("test.aggregate#Structure$stringMember")),
     );
     try testing.expectEqual(108, model.getTrait(
+        i64,
         SmithyId.of("test.aggregate#Structure$stringMember"),
         SmithyId.of("test.trait#Int"),
-        i64,
     ));
 
     try testing.expectEqual(
@@ -690,45 +690,45 @@ test "parseJson" {
         try model.tryGetName(SmithyId.of("test.aggregate#Structure$numberMember")),
     );
     try testing.expectEqual(108, model.getTrait(
+        i64,
         SmithyId.of("test.aggregate#Structure$numberMember"),
         SmithyId.of("test.trait#Int"),
-        i64,
     ));
 
     try testing.expectEqualDeep(JsonReader.Value{ .boolean = false }, model.getTrait(
+        JsonReader.Value,
         SmithyId.of("test.aggregate#Structure$primitiveBool"),
         trt_refine.Default.id,
-        JsonReader.Value,
     ));
     try testing.expectEqualDeep(JsonReader.Value{ .integer = 0 }, model.getTrait(
+        JsonReader.Value,
         SmithyId.of("test.aggregate#Structure$primitiveByte"),
         trt_refine.Default.id,
-        JsonReader.Value,
     ));
     try testing.expectEqualDeep(JsonReader.Value{ .integer = 0 }, model.getTrait(
+        JsonReader.Value,
         SmithyId.of("test.aggregate#Structure$primitiveShort"),
         trt_refine.Default.id,
-        JsonReader.Value,
     ));
     try testing.expectEqualDeep(JsonReader.Value{ .integer = 0 }, model.getTrait(
+        JsonReader.Value,
         SmithyId.of("test.aggregate#Structure$primitiveInt"),
         trt_refine.Default.id,
-        JsonReader.Value,
     ));
     try testing.expectEqualDeep(JsonReader.Value{ .integer = 0 }, model.getTrait(
+        JsonReader.Value,
         SmithyId.of("test.aggregate#Structure$primitiveLong"),
         trt_refine.Default.id,
-        JsonReader.Value,
     ));
     try testing.expectEqualDeep(JsonReader.Value{ .float = 0 }, model.getTrait(
+        JsonReader.Value,
         SmithyId.of("test.aggregate#Structure$primitiveFloat"),
         trt_refine.Default.id,
-        JsonReader.Value,
     ));
     try testing.expectEqualDeep(JsonReader.Value{ .float = 0 }, model.getTrait(
+        JsonReader.Value,
         SmithyId.of("test.aggregate#Structure$primitiveDouble"),
         trt_refine.Default.id,
-        JsonReader.Value,
     ));
 
     try testing.expectEqualDeep(
@@ -800,7 +800,7 @@ test "parseJson" {
     }, model.getShape(SmithyId.of("test.serve#Service")));
     try testing.expectEqual(
         108,
-        model.getTrait(SmithyId.of("test.serve#Service"), SmithyId.of("test.trait#Int"), i64),
+        model.getTrait(i64, SmithyId.of("test.serve#Service"), SmithyId.of("test.trait#Int")),
     );
     try testing.expectEqual(SmithyId.of("test.serve#Service"), model.service);
 }

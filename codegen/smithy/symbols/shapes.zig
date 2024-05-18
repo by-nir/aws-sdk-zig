@@ -63,11 +63,11 @@ pub const SmithyModel = struct {
 
     pub fn getTrait(
         self: SmithyModel,
+        comptime T: type,
         shape_id: SmithyId,
         trait_id: SmithyId,
-        comptime T: type,
     ) ?TraitsBag.TraitReturn(T) {
-        return if (self.getTraits(shape_id)) |t| t.get(trait_id, T) else null;
+        return if (self.getTraits(shape_id)) |t| t.get(T, trait_id) else null;
     }
 };
 

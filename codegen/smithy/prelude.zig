@@ -35,7 +35,7 @@ const TraitsManager = @import("symbols/traits.zig").TraitsManager;
 const trt_auth = @import("prelude/auth.zig");
 const trt_behavior = @import("prelude/behavior.zig");
 const trt_constraint = @import("prelude/constraint.zig");
-const trt_doc = @import("prelude/doc.zig");
+const trt_docs = @import("prelude/docs.zig");
 const trt_endpoint = @import("prelude/endpoint.zig");
 const trt_http = @import("prelude/http.zig");
 const trt_protocol = @import("prelude/protocol.zig");
@@ -48,7 +48,7 @@ pub fn registerTraits(allocator: std.mem.Allocator, manager: *TraitsManager) !vo
     try manager.registerAll(allocator, trt_auth.traits);
     try manager.registerAll(allocator, trt_behavior.traits);
     try manager.registerAll(allocator, trt_constraint.traits);
-    try manager.registerAll(allocator, trt_doc.traits);
+    try manager.registerAll(allocator, trt_docs.traits);
     try manager.registerAll(allocator, trt_endpoint.traits);
     try manager.registerAll(allocator, trt_http.traits);
     try manager.registerAll(allocator, trt_protocol.traits);
@@ -62,7 +62,7 @@ test {
     _ = trt_auth;
     _ = trt_behavior;
     _ = trt_constraint;
-    _ = trt_doc;
+    _ = trt_docs;
     _ = trt_endpoint;
     _ = trt_http;
     _ = trt_protocol;

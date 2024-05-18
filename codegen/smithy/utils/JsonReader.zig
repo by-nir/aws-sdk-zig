@@ -241,7 +241,10 @@ test "nextScope" {
         }
     };
 
-    var reader = try initFixed(test_alloc,
+    var arena = std.heap.ArenaAllocator.init(test_alloc);
+    defer arena.deinit();
+
+    var reader = try initFixed(arena.allocator(),
         \\{ "a": 108, "b": 109 }
     );
     errdefer reader.deinit();

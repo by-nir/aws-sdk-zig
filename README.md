@@ -44,7 +44,7 @@ The source generation commands are available through the following CLI commands:
 - `aws` Generate the AWS SDKs source code.
     - Optionally specify one or more `-Dfilter=sdk_codename` to select specific services.
 - `test:aws` Run unit tests for the AWS SDKs generation.
-- `test:smithy` Run unit tests for the Smithy libraty.
+- `test:smithy` Run unit tests for the Smithy library.
 
 ## License
 

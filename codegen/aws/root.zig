@@ -2,6 +2,7 @@ const std = @import("std");
 const fs = std.fs;
 const Allocator = std.mem.Allocator;
 const smithy = @import("smithy");
+const Pipeline = smithy.Pipeline;
 const Script = smithy.Script;
 const SmithyModel = smithy.SmithyModel;
 const GenerateHooks = smithy.GenerateHooks;
@@ -10,12 +11,16 @@ const whitelist: []const []const u8 = options.filter;
 const models_path: []const u8 = options.models_path;
 const install_path: []const u8 = options.install_path;
 
+fn filterSourceModel(filename: []const u8) bool {
+    return !std.mem.startsWith(u8, filename, "sdk-");
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const gpa_alloc = gpa.allocator();
     defer _ = gpa.deinit();
 
-    var pipeline = try smithy.Pipeline.init(gpa_alloc, std.heap.page_allocator, .{
+    var pipeline = try Pipeline.init(gpa_alloc, std.heap.page_allocator, .{
         .src_dir_absolute = models_path,
         .out_dir_relative = install_path,
         .parse_policy = .{ .property = .abort, .trait = .skip },
@@ -25,7 +30,7 @@ pub fn main() !void {
         .writeErrorShape = writeErrorShape,
         .operationReturnType = operationReturnType,
         .writeOperationBody = writeOperationBody,
-    }, null);
+    }, writeReadme);
     defer pipeline.deinit();
 
     if (whitelist.len == 0) {
@@ -45,8 +50,9 @@ pub fn main() !void {
     }
 }
 
-fn filterSourceModel(filename: []const u8) bool {
-    return !std.mem.startsWith(u8, filename, "sdk-");
+fn writeReadme(output: std.io.AnyWriter, _: *const SmithyModel, meta: Pipeline.ReadmeMeta) !void {
+    const template = @embedFile("template/README.md.template");
+    try output.print(template, meta);
 }
 
 fn writeScriptHead(arena: Allocator, script: *Script) !void {
@@ -66,7 +72,7 @@ fn writeScriptHead(arena: Allocator, script: *Script) !void {
 fn uniqueListType(arena: Allocator, item: Script.Expr) !Script.Expr {
     const args = try arena.alloc(Script.Expr, 1);
     args[0] = item;
-    return Script.Expr.call("*const _aws_types.Set", &args);
+    return Script.Expr.call("*const _aws_types.Set", args);
 }
 
 fn writeErrorShape(_: Allocator, script: *Script, _: *const SmithyModel, shape: GenerateHooks.ErrorShape) !void {
