@@ -193,6 +193,11 @@ fn generateModel(self: *Self, arena: Allocator, json_name: []const u8, model: *c
         return e;
     };
     errdefer file.close();
+
+    const zig_head = @embedFile("template/head.zig.template") ++ "\n\n";
+    file.writer().writeAll(zig_head) catch |e| {
+        return e;
+    };
     if (generate.writeScript(
         arena,
         self.hooks,
@@ -210,6 +215,11 @@ fn generateModel(self: *Self, arena: Allocator, json_name: []const u8, model: *c
             return e;
         };
         file = out_dir.createFile("README.md", .{}) catch |e| {
+            return e;
+        };
+
+        const md_head = @embedFile("template/head.md.template") ++ "\n\n";
+        file.writer().writeAll(md_head) catch |e| {
             return e;
         };
         if (hook(file.writer().any(), model, ReadmeMeta{
