@@ -47,6 +47,7 @@ pub const ServiceOptions = struct {
     }
 };
 
+allocator: Allocator,
 service: []const u8,
 region: Region,
 scheme: Protocol,
@@ -96,6 +97,7 @@ pub fn init(allocator: Allocator, comptime service: ServiceOptions, user: UserOp
     buffer.appendSliceAssumeCapacity(domain);
 
     return .{
+        .allocator = allocator,
         .region = region,
         .service = service.name,
         .scheme = service.protocol,
@@ -104,8 +106,8 @@ pub fn init(allocator: Allocator, comptime service: ServiceOptions, user: UserOp
     };
 }
 
-pub fn deinit(self: Self, allocator: Allocator) void {
-    allocator.free(self.host);
+pub fn deinit(self: Self) void {
+    self.allocator.free(self.host);
 }
 
 pub fn uri(self: Self, path: []const u8) Uri {
@@ -126,11 +128,11 @@ test "Endpoint" {
         .region = .{ .region = .us_west_2 },
         .virtual_host = "my-bucket",
     });
-    errdefer endpoint.deinit(test_alloc);
+    errdefer endpoint.deinit();
     try testing.expectEqual("s3", endpoint.service);
     try testing.expectEqual(Region.us_west_2, endpoint.region);
     try testing.expectEqualStrings("my-bucket.s3.us-west-2.amazonaws.com", endpoint.host);
-    endpoint.deinit(test_alloc);
+    endpoint.deinit();
 
     endpoint = try Self.init(test_alloc, .{
         .name = "s3",
@@ -152,5 +154,5 @@ test "Endpoint" {
         .host = Uri.Component{ .percent_encoded = "s3-control-fips.dualstack.api.aws" },
         .path = Uri.Component{ .percent_encoded = "/foo" },
     }, endpoint.uri("/foo"));
-    endpoint.deinit(test_alloc);
+    endpoint.deinit();
 }

@@ -2,12 +2,12 @@
 ## Contributing
 
 _The {[title]s} SDK for Zig is auto-generated, **do not modify it directly!**
-To learn how to contribute see the main [AWS SDK for Zig](https://github.com/by-nir/aws-sdk-zig/#contributing) repository._
+To learn how to contribute see the main [AWS SDK for Zig](/README.md#contributing) repository._
 
 ## License
 
 The author and contributors are not responsible for any issues or damages caused
-by the use of this software, part of it, or its derivatives. See [LICENSE](https://github.com/by-nir/aws-sdk-zig/LICENSE)
+by the use of this software, part of it, or its derivatives. See [LICENSE](/LICENSE)
 for the complete terms of use.
 
 > [!NOTE]
@@ -18,4 +18,4 @@ The SDKs code is generated based on a dataset of _Smithy models_ created by
 _Amazon Web Services_. The models are extracted from the official [AWS SDK for Rust](https://github.com/awslabs/aws-sdk-rust)
 and [licensed](https://github.com/awslabs/aws-sdk-rust/blob/main/LICENSE) as 
 declared by Amazon Web Services, Inc. at the source repository.
-This auto-generated codebase is covered by a [standalone license](https://github.com/by-nir/aws-sdk-zig/LICENSE).
+This auto-generated codebase is covered by a [standalone license](/LICENSE).

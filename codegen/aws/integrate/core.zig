@@ -1,3 +1,8 @@
+//! Various AWS-specific traits are used to integrate Smithy models with other
+//! AWS products like AWS CloudFormation and tools like the AWS SDKs.
+//!
+//! [Smithy Spec](https://smithy.io/2.0/aws/aws-core.html#aws-core-specification)
+
 const std = @import("std");
 const mem = std.mem;
 const Allocator = mem.Allocator;

@@ -1,3 +1,9 @@
+//! IAM Policy Traits are used to describe the permission structure of a service
+//! in relation to AWS IAM. Services integrated with AWS IAM define resource types,
+//! actions, and condition keys that IAM users can use to construct IAM policies.
+//!
+//! [Smithy Spec](https://smithy.io/2.0/aws/aws-iam.html#aws-iam-traits)
+
 const smithy = @import("smithy");
 const TraitsList = smithy.TraitsRegistry;
 

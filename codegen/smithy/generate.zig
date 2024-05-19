@@ -27,7 +27,7 @@ pub const Hooks = struct {
     writeScriptHead: ?*const fn (Allocator, *Script) anyerror!void = null,
     uniqueListType: ?*const fn (Allocator, Script.Expr) anyerror!Script.Expr = null,
     writeErrorShape: *const fn (Allocator, *Script, *const SmithyModel, ErrorShape) anyerror!void,
-    writeServiceHead: ?*const fn (Allocator, *Script, *const SmithyModel, SmithyId, *const syb_shape.SmithyService) anyerror!void = null,
+    writeServiceHead: ?*const fn (Allocator, *Script, *const SmithyModel, *const syb_shape.SmithyService) anyerror!void = null,
     writeResourceHead: ?*const fn (Allocator, *Script, *const SmithyModel, SmithyId, *const syb_shape.SmithyResource) anyerror!void = null,
     operationReturnType: ?*const fn (Allocator, *const SmithyModel, OperationShape) anyerror!?Script.Expr = null,
     writeOperationBody: *const fn (Allocator, *Script.Scope, *const SmithyModel, OperationShape) anyerror!void,
@@ -742,7 +742,7 @@ fn writeServiceShape(self: *Self, script: *Script, id: SmithyId, service: *const
         .type = .{ .Struct = null },
     });
     if (self.hooks.writeServiceHead) |hook| {
-        hook(self.arena, &scope, self.model, id, service) catch |e| {
+        hook(self.arena, &scope, self.model, service) catch |e| {
             scope.deinit();
             return e;
         };
@@ -883,6 +883,7 @@ fn writeOperationErrorTypeMember(self: *Self, scope: *Script, member: SmithyId) 
     }
 
     const shape = try self.getTypeName(member);
+    try self.writeDocComment(scope, member, true);
     _ = try scope.field(.{
         .name = try names.snakeCase(self.arena, name),
         .type = if (shape.len > 0) .{ .raw = shape } else null,

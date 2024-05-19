@@ -6,6 +6,7 @@ const Script = smithy.Script;
 const Pipeline = smithy.Pipeline;
 const PipelineHooks = Pipeline.Hooks;
 const SmithyModel = smithy.SmithyModel;
+const SmithyService = smithy.SmithyService;
 const GenerateHooks = smithy.GenerateHooks;
 const trt_iam = @import("integrate/iam.zig");
 const trt_auth = @import("integrate/auth.zig");
@@ -39,6 +40,7 @@ pub fn main() !void {
         .writeScriptHead = writeScriptHead,
         .uniqueListType = uniqueListType,
         .writeErrorShape = writeErrorShape,
+        .writeServiceHead = writeServiceHead,
         .operationReturnType = operationReturnType,
         .writeOperationBody = writeOperationBody,
     });
@@ -101,15 +103,29 @@ fn writeReadme(output: std.io.AnyWriter, model: *const SmithyModel, src_meta: Pi
 fn writeScriptHead(arena: Allocator, script: *Script) !void {
     _ = try script.import("std");
 
-    const types = try script.import("aws-types");
+    const aws_types = try script.import("aws-types");
     _ = try script.variable(.{}, .{
         .identifier = .{ .name = "ErrorSource" },
         .type = null,
-    }, .{ .raw = try types.child(arena, "ErrorSource") });
+    }, .{ .raw = try aws_types.child(arena, "ErrorSource") });
     _ = try script.variable(.{}, .{
         .identifier = .{ .name = "Failable" },
         .type = null,
-    }, .{ .raw = try types.child(arena, "Failable") });
+    }, .{ .raw = try aws_types.child(arena, "Failable") });
+
+    const runtime = try script.import("aws-runtime");
+    _ = try script.variable(.{}, .{
+        .identifier = .{ .name = "Runtime" },
+        .type = null,
+    }, .{ .raw = try runtime.child(arena, "Client") });
+    _ = try script.variable(.{}, .{
+        .identifier = .{ .name = "Signer" },
+        .type = null,
+    }, .{ .raw = try runtime.child(arena, "Signer") });
+    _ = try script.variable(.{}, .{
+        .identifier = .{ .name = "Endpoint" },
+        .type = null,
+    }, .{ .raw = try runtime.child(arena, "Endpoint") });
 }
 
 fn uniqueListType(arena: Allocator, item: Script.Expr) !Script.Expr {
@@ -134,6 +150,77 @@ fn writeErrorShape(_: Allocator, script: *Script, _: *const SmithyModel, shape: 
     }, Script.Expr.val(shape.retryable));
 }
 
+fn writeServiceHead(arena: Allocator, script: *Script, model: *const SmithyModel, shape: *const SmithyService) !void {
+    _ = try script.field(.{
+        .name = "runtime",
+        .type = .{ .raw = "*Runtime" },
+    });
+    _ = try script.field(.{
+        .name = "signer",
+        .type = .{ .raw = "Signer" },
+    });
+    _ = try script.field(.{
+        .name = "endpoint",
+        .type = .{ .raw = "Endpoint" },
+    });
+
+    //
+    // Init function
+    //
+
+    var block = try script.function(.{
+        .is_public = true,
+    }, .{
+        .identifier = .{ .name = "init" },
+        .parameters = &.{
+            .{
+                .identifier = .{ .name = "region" },
+                .type = null,
+            },
+            .{
+                .identifier = .{ .name = "auth" },
+                .type = null,
+            },
+        },
+        .return_type = .typ_This,
+    });
+    try block.expr(.{ .raw = "_ = region" });
+    try block.expr(.{ .raw = "_ = auth" });
+    try block.destruct(
+        &.{.{ .unmut = .{ .name = "runtime" } }},
+        .{ .raw = "Runtime.retain()" },
+    );
+    try block.destruct(
+        &.{.{ .unmut = .{ .name = "signer" } }},
+        .{ .raw = "undefined" },
+    );
+    try block.destruct(
+        &.{.{ .unmut = .{ .name = "endpoint" } }},
+        .{ .raw = "undefined" },
+    );
+    try block.prefix(.ret).expr(.{ .raw = ".{ .runtime = runtime, .signer = signer, .endpoint = endpoint }" });
+    try block.end();
+
+    //
+    // Deinit function
+    //
+
+    block = try script.function(.{
+        .is_public = true,
+    }, .{
+        .identifier = .{ .name = "deinit" },
+        .parameters = &.{Script.param_self},
+        .return_type = null,
+    });
+    try block.expr(.{ .raw = "self.runtime.release()" });
+    try block.expr(.{ .raw = "self.endpoint.deinit()" });
+    try block.end();
+
+    _ = arena; // autofix
+    _ = model; // autofix
+    _ = shape; // autofix
+}
+
 fn operationReturnType(arena: Allocator, _: *const SmithyModel, shape: GenerateHooks.OperationShape) !?Script.Expr {
     return if (shape.errors_type) |errors| blk: {
         const args = try arena.alloc(Script.Expr, 2);
@@ -143,7 +230,13 @@ fn operationReturnType(arena: Allocator, _: *const SmithyModel, shape: GenerateH
     } else shape.output_type;
 }
 
-fn writeOperationBody(_: Allocator, body: *Script.Scope, model: *const SmithyModel, shape: GenerateHooks.OperationShape) !void {
+fn writeOperationBody(
+    _: Allocator,
+    body: *Script.Scope,
+    model: *const SmithyModel,
+    shape: GenerateHooks.OperationShape,
+) !void {
+    // TODO
     const action = try model.tryGetName(shape.id);
     _ = action; // autofix
 

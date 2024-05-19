@@ -1,3 +1,8 @@
+//! Smithy can integrate with Amazon API Gateway using traits, authentication
+//! schemes, and OpenAPI specifications.
+//!
+//! [Smithy Spec](https://smithy.io/2.0/aws/amazon-apigateway.html#amazon-api-gateway-traits)
+
 const smithy = @import("smithy");
 const TraitsList = smithy.TraitsRegistry;
 

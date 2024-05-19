@@ -25,6 +25,18 @@ pub const param_self = Function.Prototype.Parameter{
     .identifier = .{ .name = "self" },
     .type = .typ_This,
 };
+pub const param_self_ref = Function.Prototype.Parameter{
+    .identifier = .{ .name = "self" },
+    .type = .{
+        .typ_pointer = .{ .type = &.typ_This },
+    },
+};
+pub const param_self_mut = Function.Prototype.Parameter{
+    .identifier = .{ .name = "self" },
+    .type = .{
+        .typ_pointer = .{ .mutable = true, .type = &.typ_This },
+    },
+};
 
 writer: *StackWriter,
 parent: ?*const Container,

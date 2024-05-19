@@ -1,3 +1,7 @@
+//! AWS Declarative Endpoint Traits
+//!
+//! [Smithy Spec](https://smithy.io/2.0/aws/aws-endpoints-region.html#aws-declarative-endpoint-traits)
+
 const smithy = @import("smithy");
 const TraitsList = smithy.TraitsRegistry;
 

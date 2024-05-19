@@ -10,7 +10,38 @@ const transmit = @import("transmit.zig");
 // TODO: Use `std.http.Client` once AWS TLS 1.3 support is complete or Zig adds TLS 1.2 support
 // https://aws.amazon.com/blogs/security/faster-aws-cloud-connections-with-tls-1-3
 // https://github.com/ziglang/zig/pull/19308
+// https://github.com/ziglang/zig/issues/17213
 const HttpClient = @import("https12");
+
+var gpa: std.heap.GeneralPurposeAllocator(.{}) = undefined;
+var shared: Self = undefined;
+var shared_count: usize = 0;
+
+pub fn retain() *Self {
+    if (shared_count == 0) {
+        const alloc = if (@import("builtin").is_test) test_alloc else blk: {
+            gpa = .{};
+            break :blk gpa.allocator();
+        };
+        shared = Self.init(alloc);
+    }
+
+    shared_count += 1;
+    return &shared;
+}
+
+pub fn release() void {
+    std.debug.assert(shared_count > 0);
+    if (shared_count > 1) {
+        shared_count -= 1;
+    } else {
+        shared_count = 0;
+        shared.deinit();
+        shared = undefined;
+        _ = gpa.deinit();
+        gpa = undefined;
+    }
+}
 
 const Self = @This();
 const AuthBuffer = [512]u8;
@@ -18,19 +49,25 @@ const HeadersBuffer = [2 * 1024]u8;
 
 http: HttpClient,
 
-pub fn init(allocator: Allocator) Self {
+fn init(allocator: Allocator) Self {
     return .{ .http = .{ .allocator = allocator } };
 }
 
-pub fn deinit(self: *Self) void {
+fn deinit(self: *Self) void {
     self.http.deinit();
     self.* = undefined;
 }
 
 /// The caller owns the returned response memory.
 ///
-/// Optionally provide an **arena allocator** instead of calling `deinit` on the response.
-fn send(self: *Self, allocator: Allocator, endpoint: Endpoint, request: *transmit.Request, signer: Signer) !transmit.Response {
+/// Optionally provide an _arena allocator_ instead of calling `deinit` on the response.
+pub fn send(
+    self: *Self,
+    allocator: Allocator,
+    endpoint: Endpoint,
+    request: *transmit.Request,
+    signer: Signer,
+) !transmit.Response {
     const time = transmit.TimeStr.initNow();
     const sign_event = Signer.Event{
         .service = endpoint.service,

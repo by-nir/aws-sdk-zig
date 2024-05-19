@@ -1,3 +1,7 @@
+//! AWS Authentication Traits
+//!
+//! [Smithy Spec](https://smithy.io/2.0/aws/aws-auth.html#aws-authentication-traits)
+
 const smithy = @import("smithy");
 const TraitsList = smithy.TraitsRegistry;
 

@@ -1,3 +1,7 @@
+//! AWS Protocols
+//!
+//! [Smithy Spec](https://smithy.io/2.0/aws/protocols/index.html#aws-protocols)
+
 const smithy = @import("smithy");
 const TraitsList = smithy.TraitsRegistry;
 

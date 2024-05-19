@@ -1,4 +1,5 @@
 const std = @import("std");
+const sdk_whitelist = [_][]const u8{"cloudcontrol"};
 
 pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
@@ -30,8 +31,6 @@ pub fn build(b: *std.Build) void {
             "filter",
             "Whitelist the resources to generate",
         );
-
-        const sdk_whitelist = [_][]const u8{"cloudcontrol"};
 
         const sdk_options = b.addOptions();
         sdk_options.addOptionPath("models_path", models.path("sdk"));
