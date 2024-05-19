@@ -10,10 +10,12 @@ const test_alloc = testing.allocator;
 const parse = @import("parse.zig");
 const prelude = @import("prelude.zig");
 const generate = @import("generate.zig");
+const Markdown = @import("generate/Markdown.zig");
 const syb_traits = @import("symbols/traits.zig");
 const SmithyModel = @import("symbols/shapes.zig").SmithyModel;
 const IssuesBag = @import("utils/IssuesBag.zig");
 const JsonReader = @import("utils/JsonReader.zig");
+const StackWriter = @import("utils/StackWriter.zig");
 const titleCase = @import("utils/names.zig").titleCase;
 const trt_docs = @import("prelude/docs.zig");
 
@@ -27,20 +29,25 @@ const Options = struct {
     parse_policy: parse.Policy,
 };
 
-const readmeFn = *const fn (std.io.AnyWriter, *const SmithyModel, ReadmeMeta) anyerror!void;
-pub const ReadmeMeta = struct {
-    /// `{[title]s}` service title
-    title: []const u8,
-    /// `{[slug]s}` service SDK ID
-    slug: []const u8,
+pub const Hooks = struct {
+    writeReadme: ?*const fn (std.io.AnyWriter, *const SmithyModel, ReadmeMeta) anyerror!void = null,
+
+    pub const ReadmeMeta = struct {
+        /// `{[title]s}` service title
+        title: []const u8,
+        /// `{[slug]s}` service SDK ID
+        slug: []const u8,
+        /// `{[intro]s}` introduction description
+        intro: ?[]const u8,
+    };
 };
 
 gpa_alloc: Allocator,
 page_alloc: Allocator,
 issues: IssuesBag,
 traits: syb_traits.TraitsManager,
-hooks: generate.Hooks,
-readme: ?readmeFn,
+pipe_hooks: Hooks,
+gen_hooks: generate.Hooks,
 src_dir: fs.Dir,
 out_dir: fs.Dir,
 parse_policy: parse.Policy,
@@ -49,15 +56,15 @@ pub fn init(
     gpa_alloc: Allocator,
     page_alloc: Allocator,
     options: Options,
-    hooks: generate.Hooks,
-    readme: ?readmeFn,
+    pipe_hooks: Hooks,
+    gen_hooks: generate.Hooks,
 ) !*Self {
     const self = try gpa_alloc.create(Self);
     self.gpa_alloc = gpa_alloc;
     self.page_alloc = page_alloc;
     self.parse_policy = options.parse_policy;
-    self.hooks = hooks;
-    self.readme = readme;
+    self.pipe_hooks = pipe_hooks;
+    self.gen_hooks = gen_hooks;
     errdefer gpa_alloc.destroy(self);
 
     self.traits = syb_traits.TraitsManager{};
@@ -200,7 +207,7 @@ fn generateModel(self: *Self, arena: Allocator, json_name: []const u8, model: *c
     };
     if (generate.writeScript(
         arena,
-        self.hooks,
+        self.gen_hooks,
         model,
         file.writer().any(),
         model.service,
@@ -210,21 +217,32 @@ fn generateModel(self: *Self, arena: Allocator, json_name: []const u8, model: *c
         return e;
     }
 
-    if (self.readme) |hook| {
+    if (self.pipe_hooks.writeReadme) |readmeHook| {
         const title = trt_docs.Title.get(model, model.service) orelse titleCase(arena, slug) catch |e| {
             return e;
         };
+        var intro: ?[]const u8 = null;
+        if (trt_docs.Documentation.get(model, model.service)) |docs| {
+            var intro_buffer = std.ArrayList(u8).init(arena);
+            errdefer intro_buffer.deinit();
+            var intro_writer = StackWriter.init(arena, intro_buffer.writer().any(), .{});
+            var md = Markdown.init(&intro_writer);
+            try md.writeSource(docs);
+            try md.end();
+            intro = try intro_buffer.toOwnedSlice();
+        }
+
         file = out_dir.createFile("README.md", .{}) catch |e| {
             return e;
         };
-
         const md_head = @embedFile("template/head.md.template") ++ "\n\n";
         file.writer().writeAll(md_head) catch |e| {
             return e;
         };
-        if (hook(file.writer().any(), model, ReadmeMeta{
+        if (readmeHook(file.writer().any(), model, Hooks.ReadmeMeta{
             .slug = slug,
             .title = title,
+            .intro = intro,
         })) {
             file.close();
         } else |e| {

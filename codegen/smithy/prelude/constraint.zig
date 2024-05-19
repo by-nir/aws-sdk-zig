@@ -5,7 +5,8 @@
 //! [Smithy Spec](https://smithy.io/2.0/spec/constraint-traits.html)
 
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const mem = std.mem;
+const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const SmithyId = @import("../symbols/identity.zig").SmithyId;
@@ -90,22 +91,22 @@ pub const Enum = struct {
     }
 
     fn parseMember(reader: *JsonReader, prop: []const u8, ctx: Context) !void {
-        if (std.mem.eql(u8, prop, "value")) {
-            ctx.member.value = try ctx.arena.dupe(u8, try reader.nextString());
-        } else if (std.mem.eql(u8, prop, "name")) {
-            ctx.member.name = try ctx.arena.dupe(u8, try reader.nextString());
-        } else if (std.mem.eql(u8, prop, "documentation")) {
-            ctx.member.documentation = try ctx.arena.dupe(u8, try reader.nextString());
-        } else if (std.mem.eql(u8, prop, "tags")) {
+        if (mem.eql(u8, prop, "value")) {
+            ctx.member.value = try reader.nextStringAlloc(ctx.arena);
+        } else if (mem.eql(u8, prop, "name")) {
+            ctx.member.name = try reader.nextStringAlloc(ctx.arena);
+        } else if (mem.eql(u8, prop, "documentation")) {
+            ctx.member.documentation = try reader.nextStringAlloc(ctx.arena);
+        } else if (mem.eql(u8, prop, "tags")) {
             var list = std.ArrayList([]const u8).init(ctx.arena);
             errdefer list.deinit();
             try reader.nextArrayBegin();
             while (try reader.peek() != .array_end) {
-                try list.append(try ctx.arena.dupe(u8, try reader.nextString()));
+                try list.append(try reader.nextStringAlloc(ctx.arena));
             }
             try reader.nextArrayEnd();
             ctx.member.tags = try list.toOwnedSlice();
-        } else if (std.mem.eql(u8, prop, "deprecated")) {
+        } else if (mem.eql(u8, prop, "deprecated")) {
             ctx.member.deprecated = try reader.nextBoolean();
         } else {
             try reader.skipValueOrScope();
@@ -130,10 +131,10 @@ pub const Enum = struct {
 
 test "Enum" {
     var arena = std.heap.ArenaAllocator.init(test_alloc);
-    const allocator = arena.allocator();
+    const arena_alloc = arena.allocator();
     defer arena.deinit();
 
-    var reader = try JsonReader.initFixed(allocator,
+    var reader = try JsonReader.initFixed(arena_alloc,
         \\[
         \\  {
         \\    "value": "FooBar",
@@ -150,7 +151,7 @@ test "Enum" {
     );
     errdefer reader.deinit();
 
-    const members = Enum.cast(try Enum.parse(allocator, &reader));
+    const members = Enum.cast(try Enum.parse(arena_alloc, &reader));
     reader.deinit();
     try testing.expectEqualDeep(Enum.Member{
         .value = "FooBar",

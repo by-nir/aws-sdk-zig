@@ -1,3 +1,5 @@
+pub const JsonReader = @import("utils/JsonReader.zig");
+
 const syb_id = @import("symbols/identity.zig");
 pub usingnamespace syb_id;
 
@@ -22,7 +24,7 @@ pub const Script = @import("generate/Zig.zig");
 test {
     _ = @import("utils/names.zig");
     _ = @import("utils/IssuesBag.zig");
-    _ = @import("utils/JsonReader.zig");
+    _ = JsonReader;
     _ = @import("utils/StackWriter.zig");
     _ = syb_id;
     _ = syb_traits;

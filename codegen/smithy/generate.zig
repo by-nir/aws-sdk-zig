@@ -115,6 +115,8 @@ pub fn writeScript(
         try self.writeScriptShape(&script, id);
     }
 
+    // End script with empty line (after imports)
+    try script.writer.deferLineBreak(.self, 1);
     try script.end();
 }
 
@@ -142,6 +144,7 @@ test "writeScript" {
         \\pub const Child = []const i32;
         \\
         \\const _imp_std = @import("std");
+        \\
     , buffer.items);
 }
 
@@ -732,12 +735,6 @@ test "writeOperationShape" {
 
 fn writeServiceShape(self: *Self, script: *Script, id: SmithyId, service: *const syb_shape.SmithyService) !void {
     try self.writeDocComment(script, id, false);
-    if (service.version) |v| {
-        var doc = try script.comment(.doc);
-        try doc.paragraphFmt("API version: {s}", .{v});
-        try doc.end();
-    }
-
     var scope = try script.declare(.{
         .name = try self.model.tryGetName(id),
     }, .{
@@ -955,7 +952,6 @@ test "writeServiceShape" {
     try self.writeScriptShape(tester.script, SmithyId.of("test.serve#Service"));
     try tester.expect(
         \\/// Some _service_...
-        \\/// API version: 2017-02-11
         \\pub const Service = struct {
         \\    pub const operationErrors = union(enum) {
         \\        service: ServiceError,

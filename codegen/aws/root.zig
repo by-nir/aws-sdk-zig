@@ -2,10 +2,19 @@ const std = @import("std");
 const fs = std.fs;
 const Allocator = std.mem.Allocator;
 const smithy = @import("smithy");
-const Pipeline = smithy.Pipeline;
 const Script = smithy.Script;
+const Pipeline = smithy.Pipeline;
+const PipelineHooks = Pipeline.Hooks;
 const SmithyModel = smithy.SmithyModel;
 const GenerateHooks = smithy.GenerateHooks;
+const trt_iam = @import("integrate/iam.zig");
+const trt_auth = @import("integrate/auth.zig");
+const trt_core = @import("integrate/core.zig");
+const trt_gateway = @import("integrate/gateway.zig");
+const trt_endpoint = @import("integrate/endpoints.zig");
+const trt_protocol = @import("integrate/protocols.zig");
+const trt_cloudform = @import("integrate/cloudformation.zig");
+
 const options = @import("options");
 const whitelist: []const []const u8 = options.filter;
 const models_path: []const u8 = options.models_path;
@@ -25,13 +34,23 @@ pub fn main() !void {
         .out_dir_relative = install_path,
         .parse_policy = .{ .property = .abort, .trait = .skip },
     }, .{
+        .writeReadme = writeReadme,
+    }, .{
         .writeScriptHead = writeScriptHead,
         .uniqueListType = uniqueListType,
         .writeErrorShape = writeErrorShape,
         .operationReturnType = operationReturnType,
         .writeOperationBody = writeOperationBody,
-    }, writeReadme);
+    });
     defer pipeline.deinit();
+
+    try pipeline.registerTraits(trt_auth.traits);
+    try pipeline.registerTraits(trt_cloudform.traits);
+    try pipeline.registerTraits(trt_core.traits);
+    try pipeline.registerTraits(trt_endpoint.traits);
+    try pipeline.registerTraits(trt_gateway.traits);
+    try pipeline.registerTraits(trt_iam.traits);
+    try pipeline.registerTraits(trt_protocol.traits);
 
     if (whitelist.len == 0) {
         _ = try pipeline.processAll(filterSourceModel);
@@ -50,9 +69,33 @@ pub fn main() !void {
     }
 }
 
-fn writeReadme(output: std.io.AnyWriter, _: *const SmithyModel, meta: Pipeline.ReadmeMeta) !void {
-    const template = @embedFile("template/README.md.template");
-    try output.print(template, meta);
+fn writeReadme(output: std.io.AnyWriter, model: *const SmithyModel, src_meta: PipelineHooks.ReadmeMeta) !void {
+    var meta = src_meta;
+    var title_buff: [128]u8 = undefined;
+    if (trt_core.Service.get(model, model.service)) |service| {
+        if (std.mem.startsWith(u8, service.sdk_id, "AWS")) {
+            meta.title = service.sdk_id;
+        } else {
+            const title_len = service.sdk_id.len;
+            @memcpy(title_buff[0..4], "AWS ");
+            @memcpy(title_buff[4..][0..title_len], service.sdk_id);
+            meta.title = title_buff[0 .. 4 + title_len];
+        }
+    }
+
+    try output.print(@embedFile("template/README.head.md.template"), .{
+        .title = meta.title,
+        .slug = meta.slug,
+    });
+    if (src_meta.intro) |intro| {
+        try output.writeByte('\n');
+        try output.writeAll(intro);
+        try output.writeByte('\n');
+    }
+    try output.print(@embedFile("template/README.install.md.template"), .{});
+    try output.print(@embedFile("template/README.footer.md.template"), .{
+        .title = meta.title,
+    });
 }
 
 fn writeScriptHead(arena: Allocator, script: *Script) !void {
@@ -107,4 +150,14 @@ fn writeOperationBody(_: Allocator, body: *Script.Scope, model: *const SmithyMod
     try body.expr(.{ .raw = "_ = self" });
     try body.expr(.{ .raw = "_ = input" });
     try body.prefix(.ret).expr(.{ .raw = "undefined" });
+}
+
+test {
+    _ = trt_auth;
+    _ = trt_cloudform;
+    _ = trt_core;
+    _ = trt_endpoint;
+    _ = trt_gateway;
+    _ = trt_iam;
+    _ = trt_protocol;
 }
