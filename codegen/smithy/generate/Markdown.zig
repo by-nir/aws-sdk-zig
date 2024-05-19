@@ -351,33 +351,33 @@ const HtmlBlock = union(enum) {
     list_item: List,
 };
 
-const HtmlStyle = union(enum) {
+const HtmlMark = union(enum) {
     none,
     bold,
     italic,
     code,
     anchor: []const u8,
 };
-const html_map_style = std.StaticStringMap(std.meta.Tag(HtmlStyle)).initComptime(
+const html_marks_map = std.StaticStringMap(std.meta.Tag(HtmlMark)).initComptime(
     .{ .{ "b", .bold }, .{ "strong", .bold }, .{ "i", .italic }, .{ "em", .italic }, .{ "code", .code }, .{ "a", .anchor } },
 );
 
 /// Write Markdown source using an **extremely naive and partial** Markdown parser.
 pub fn writeSource(self: *Self, source: []const u8) !void {
     var active_block: HtmlBlock = .none;
-    var active_style: HtmlStyle = .none;
+    var active_mark: HtmlMark = .none;
     var tokens = mem.tokenizeScalar(u8, source, '\n');
     outer: while (tokens.next()) |token_full| {
         var token = mem.trimLeft(u8, token_full, &std.ascii.whitespace);
         var line_start = true;
         if (token.len == 0) {
-            active_style = .none;
+            active_mark = .none;
             if (active_block != .list_item and active_block != .list) active_block = .none;
             continue :outer;
         }
 
         inner: while (token.len > 0) {
-            token = mem.trim(u8, token, &std.ascii.whitespace);
+            token = mem.trimRight(u8, token, &std.ascii.whitespace);
             // Process tag
             if (token.len >= 3) if (mem.indexOfScalar(u8, token, '<')) |tag_start| {
                 const is_close = token[1] == '/';
@@ -394,18 +394,11 @@ pub fn writeSource(self: *Self, source: []const u8) !void {
                     if (tag_name.len == 0) continue :inner;
 
                     var did_process = true;
-                    if (html_map_style.get(tag_name)) |tag| {
+                    if (html_marks_map.get(tag_name)) |tag| {
                         switch (tag) {
                             .none => unreachable,
                             inline .italic, .bold, .code => |g| {
-                                if (is_close) {
-                                    assert(active_style == g);
-                                    active_style = .none;
-                                } else {
-                                    assert(active_style == .none);
-                                    active_style = g;
-                                }
-                                try self.writer.writeAll(switch (g) {
+                                try self.htmlWriteText(&active_block, &line_start, switch (g) {
                                     .italic => "_",
                                     .bold => "**",
                                     .code => "`",
@@ -414,14 +407,14 @@ pub fn writeSource(self: *Self, source: []const u8) !void {
                             },
                             .anchor => {
                                 if (is_close) {
-                                    assert(active_style == .anchor);
-                                    try self.writer.writeFmt("]({s})", .{active_style.anchor});
-                                    active_style = .none;
+                                    assert(active_mark == .anchor);
+                                    try self.writer.writeFmt("]({s})", .{active_mark.anchor});
+                                    active_mark = .none;
                                 } else if (mem.indexOfPos(u8, token, 3, "href=\"")) |href_start| {
-                                    assert(active_style == .none);
+                                    assert(active_mark == .none);
                                     if (mem.indexOfPos(u8, token, href_start + 6, "\">")) |href_end| {
-                                        try self.writer.writeAll("[");
-                                        active_style = .{ .anchor = token[href_start + 6 .. href_end] };
+                                        try self.htmlWriteText(&active_block, &line_start, "[");
+                                        active_mark = .{ .anchor = token[href_start + 6 .. href_end] };
                                     }
                                 } else {
                                     did_process = false;

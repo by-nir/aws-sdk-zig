@@ -87,18 +87,28 @@ pub fn setupEnum(model: *SmithyModel) !void {
     }});
 }
 
-const INT_ENUM = &.{ SmithyId.of("test#IntEnum$FOO_BAR"), SmithyId.of("test#IntEnum$BAZ_QUX") };
 pub fn setupIntEnum(model: *SmithyModel) !void {
+    const Static = struct {
+        const shape = &.{ SmithyId.of("test#IntEnum$FOO_BAR"), SmithyId.of("test#IntEnum$BAZ_QUX") };
+        const doc: []const u8 = "An <b>integer-based</b> enumeration.";
+        const traits = &.{.{
+            .id = SmithyId.of("smithy.api#documentation"),
+            .value = @as(*const anyopaque, @ptrCast(&doc)),
+        }};
+    };
     try model.names.put(test_alloc, SmithyId.of("test#IntEnum"), "IntEnum");
     try model.shapes.put(test_alloc, SmithyId.of("test#IntEnum"), .{
-        .int_enum = INT_ENUM,
+        .int_enum = Static.shape,
     });
+    try model.traits.put(test_alloc, SmithyId.of("test#IntEnum"), Static.traits);
+
     try model.names.put(test_alloc, SmithyId.of("test#IntEnum$FOO_BAR"), "FOO_BAR");
     try model.shapes.put(test_alloc, SmithyId.of("test#IntEnum$FOO_BAR"), .unit);
     try model.traits.put(test_alloc, SmithyId.of("test#IntEnum$FOO_BAR"), &.{.{
         .id = trt_refine.EnumValue.id,
         .value = &trt_refine.EnumValue.Val{ .integer = 8 },
     }});
+
     try model.names.put(test_alloc, SmithyId.of("test#IntEnum$BAZ_QUX"), "BAZ_QUX");
     try model.shapes.put(test_alloc, SmithyId.of("test#IntEnum$BAZ_QUX"), .unit);
     try model.traits.put(test_alloc, SmithyId.of("test#IntEnum$BAZ_QUX"), &.{.{
@@ -125,22 +135,31 @@ pub fn setupUnion(model: *SmithyModel) !void {
     try model.shapes.put(test_alloc, SmithyId.of("test#Union$BAZ"), .string);
 }
 
-const STRUCUT = &.{ SmithyId.of("test#Struct$fooBar"), SmithyId.of("test#Struct$bazQux") };
-const STRUCUT_MIXINS = &.{SmithyId.of("test#Mixin")};
-const STRUCUT_MIXED = &.{SmithyId.of("test#Mixin$mixed")};
 pub fn setupStruct(model: *SmithyModel) !void {
+    const Static = struct {
+        const structure = &.{ SmithyId.of("test#Struct$fooBar"), SmithyId.of("test#Struct$bazQux") };
+        const mixins = &.{SmithyId.of("test#Mixin")};
+        const mixed = &.{SmithyId.of("test#Mixin$mixed")};
+        const member_doc: []const u8 = "A <b>struct</b> member.";
+        const member_traits = .{
+            .{ .id = trt_refine.required_id, .value = null },
+            .{
+                .id = SmithyId.of("smithy.api#documentation"),
+                .value = @as(*const anyopaque, @ptrCast(&member_doc)),
+            },
+        };
+    };
+
     try setupIntEnum(model);
 
     try model.names.put(test_alloc, SmithyId.of("test#Struct"), "Struct");
     try model.shapes.put(test_alloc, SmithyId.of("test#Struct"), .{
-        .structure = STRUCUT,
+        .structure = Static.structure,
     });
-    try model.mixins.put(test_alloc, SmithyId.of("test#Struct"), STRUCUT_MIXINS);
+    try model.mixins.put(test_alloc, SmithyId.of("test#Struct"), Static.mixins);
     try model.names.put(test_alloc, SmithyId.of("test#Struct$fooBar"), "fooBar");
     try model.shapes.put(test_alloc, SmithyId.of("test#Struct$fooBar"), .integer);
-    try model.traits.put(test_alloc, SmithyId.of("test#Struct$fooBar"), &.{
-        .{ .id = trt_refine.required_id, .value = null },
-    });
+    try model.traits.put(test_alloc, SmithyId.of("test#Struct$fooBar"), &Static.member_traits);
     try model.names.put(test_alloc, SmithyId.of("test#Struct$bazQux"), "bazQux");
     try model.shapes.put(test_alloc, SmithyId.of("test#Struct$bazQux"), .{
         .target = SmithyId.of("test#IntEnum"),
@@ -152,7 +171,7 @@ pub fn setupStruct(model: *SmithyModel) !void {
 
     try model.names.put(test_alloc, SmithyId.of("test#Mixin"), "Mixin");
     try model.shapes.put(test_alloc, SmithyId.of("test#Mixin"), .{
-        .structure = STRUCUT_MIXED,
+        .structure = Static.mixed,
     });
     try model.traits.put(test_alloc, SmithyId.of("test#Mixin"), &.{
         .{ .id = trt_refine.mixin_id, .value = null },
@@ -223,6 +242,11 @@ pub fn setupService(model: *SmithyModel) !void {
             .operations = &.{SmithyId.of("test.serve#Operation")},
             .resources = &.{},
         };
+        const shape_doc: []const u8 = "Some <i>service</i>...";
+        const traits = &.{.{
+            .id = SmithyId.of("smithy.api#documentation"),
+            .value = @as(*const anyopaque, @ptrCast(&shape_doc)),
+        }};
     };
 
     try setupOperation(model);
@@ -231,12 +255,7 @@ pub fn setupService(model: *SmithyModel) !void {
     try model.shapes.put(test_alloc, SmithyId.of("test.serve#Service"), .{
         .service = &Static.service,
     });
-    try model.traits.put(test_alloc, SmithyId.of("test.serve#Service"), &.{
-        .{
-            .id = SmithyId.of("smithy.api#documentation"),
-            .value = "Foo bar baz.",
-        },
-    });
+    try model.traits.put(test_alloc, SmithyId.of("test.serve#Service"), Static.traits);
 
     try model.names.put(test_alloc, SmithyId.of("test.error#ServiceError"), "ServiceError");
     try model.shapes.put(test_alloc, SmithyId.of("test.error#ServiceError"), .{
