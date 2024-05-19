@@ -377,7 +377,7 @@ pub fn writeSource(self: *Self, source: []const u8) !void {
         }
 
         inner: while (token.len > 0) {
-            token = mem.trim(u8, token, &std.ascii.whitespace);
+            token = mem.trimRight(u8, token, &std.ascii.whitespace);
             // Process tag
             if (token.len >= 3) if (mem.indexOfScalar(u8, token, '<')) |tag_start| {
                 const is_close = token[1] == '/';

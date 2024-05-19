@@ -14,6 +14,7 @@ const Script = @import("generate/Zig.zig");
 const names = @import("utils/names.zig");
 const StackWriter = @import("utils/StackWriter.zig");
 const trt_http = @import("prelude/http.zig");
+const trt_docs = @import("prelude/docs.zig");
 const trt_refine = @import("prelude/refine.zig");
 const trt_behave = @import("prelude/behavior.zig");
 const trt_constr = @import("prelude/constraint.zig");
@@ -186,6 +187,7 @@ test "writeScriptShape" {
 fn writeListShape(self: *Self, script: *Script, id: SmithyId, memeber: SmithyId) !void {
     const shape_name = try self.model.tryGetName(id);
     const target_type = Script.Expr{ .raw = try self.getTypeName(memeber) };
+    try self.writeDocComment(script, id, false);
     if (self.model.hasTrait(id, trt_constr.unique_items_id)) {
         const target = if (self.hooks.uniqueListType) |hook|
             try hook(self.arena, target_type)
@@ -242,6 +244,7 @@ fn writeMapShape(self: *Self, script: *Script, id: SmithyId, memeber: [2]SmithyI
     else
         .{ .raw = val_type };
 
+    try self.writeDocComment(script, id, false);
     _ = try script.variable(
         .{ .is_public = true },
         .{ .identifier = .{ .name = shape_name } },
@@ -312,6 +315,7 @@ const StrEnumMember = struct {
 
 fn writeEnumShape(self: *Self, script: *Script, id: SmithyId, members: []const StrEnumMember) !void {
     const shape_name = try self.model.tryGetName(id);
+    try self.writeDocComment(script, id, false);
     var scope = try script.declare(.{ .name = shape_name }, .{
         .is_public = true,
         .type = .{ .TaggedUnion = null },
@@ -438,6 +442,7 @@ test "writeEnumShape" {
 
 fn writeIntEnumShape(self: *Self, script: *Script, id: SmithyId, members: []const SmithyId) !void {
     const shape_name = try self.model.tryGetName(id);
+    try self.writeDocComment(script, id, false);
     var scope = try script.declare(.{ .name = shape_name }, .{
         .is_public = true,
         .type = .{ .Enum = .{ .raw = "i32" } },
@@ -496,6 +501,7 @@ test "writeIntEnumShape" {
     };
     try self.writeScriptShape(tester.script, SmithyId.of("test#IntEnum"));
     try tester.expect(
+        \\/// An **integer-based** enumeration.
         \\pub const IntEnum = enum(i32) {
         \\    foo_bar = 8,
         \\    baz_qux = 9,
@@ -516,6 +522,7 @@ test "writeIntEnumShape" {
 
 fn writeUnionShape(self: *Self, script: *Script, id: SmithyId, members: []const SmithyId) !void {
     const shape_name = try self.model.tryGetName(id);
+    try self.writeDocComment(script, id, false);
     var scope = try script.declare(.{ .name = shape_name }, .{
         .is_public = true,
         .type = .{ .TaggedUnion = null },
@@ -570,6 +577,7 @@ test "writeUnionShape" {
 fn writeStructShape(self: *Self, script: *Script, id: SmithyId, members: []const SmithyId) !void {
     const shape_name = try self.model.tryGetName(id);
     const is_input = self.model.hasTrait(id, trt_refine.input_id);
+    try self.writeDocComment(script, id, false);
     var scope = try script.declare(.{ .name = shape_name }, .{
         .is_public = true,
         .type = .{ .Struct = null },
@@ -630,6 +638,8 @@ fn writeStructShapeMember(self: *Self, script: *Script, is_input: bool, id: Smit
         else
             null;
     };
+
+    try self.writeDocComment(script, id, true);
     const type_expr = Script.Expr{ .raw = try self.getTypeName(id) };
     _ = try script.field(.{
         .name = try names.snakeCase(self.arena, try self.model.tryGetName(id)),
@@ -657,7 +667,11 @@ test "writeStructShape" {
     try tester.expect(
         \\pub const Struct = struct {
         \\    mixed: ?bool = null,
+        \\
+        \\    /// A **struct** member.
         \\    foo_bar: i32,
+        \\
+        \\    /// An **integer-based** enumeration.
         \\    baz_qux: IntEnum = @enumFromInt(8),
         \\};
         \\
@@ -717,6 +731,7 @@ test "writeOperationShape" {
 }
 
 fn writeServiceShape(self: *Self, script: *Script, id: SmithyId, service: *const syb_shape.SmithyService) !void {
+    try self.writeDocComment(script, id, false);
     if (service.version) |v| {
         var doc = try script.comment(.doc);
         try doc.paragraphFmt("API version: {s}", .{v});
@@ -768,6 +783,10 @@ fn writeResourceShape(self: *Self, script: *Script, id: SmithyId, common_errors:
         };
     }
     for (resource.identifiers) |idn| {
+        self.writeDocComment(script, id, true) catch |e| {
+            scope.deinit();
+            return e;
+        };
         const name = names.snakeCase(self.arena, idn.name) catch |e| {
             scope.deinit();
             return e;
@@ -935,6 +954,7 @@ test "writeServiceShape" {
     };
     try self.writeScriptShape(tester.script, SmithyId.of("test.serve#Service"));
     try tester.expect(
+        \\/// Some _service_...
         \\/// API version: 2017-02-11
         \\pub const Service = struct {
         \\    pub const operationErrors = union(enum) {
@@ -980,6 +1000,21 @@ test "writeServiceShape" {
     var it = self.shape_visited.iterator();
     try testing.expectEqual(SmithyId.of("test.error#NotFound"), it.next().?.key_ptr.*);
     try testing.expectEqual(SmithyId.of("test.error#ServiceError"), it.next().?.key_ptr.*);
+}
+
+fn writeDocComment(self: *Self, script: *Script, id: SmithyId, target_fallback: bool) !void {
+    var raw_doc = trt_docs.Documentation.get(self.model, id);
+    if (target_fallback and raw_doc == null) if (self.model.getShape(id)) |shape| {
+        switch (shape) {
+            .target => |t| raw_doc = trt_docs.Documentation.get(self.model, t),
+            else => {},
+        }
+    };
+    if (raw_doc) |doc| {
+        var md = try script.comment(.doc);
+        try md.writeSource(doc);
+        try md.end();
+    }
 }
 
 fn getTypeName(self: *Self, id: SmithyId) ![]const u8 {
