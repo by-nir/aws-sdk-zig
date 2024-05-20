@@ -79,6 +79,7 @@ fn writeReadme(output: std.io.AnyWriter, model: *const SmithyModel, src_meta: Pi
             meta.title = service.sdk_id;
         } else {
             const title_len = service.sdk_id.len;
+            std.debug.assert(title_len + 4 < 128);
             @memcpy(title_buff[0..4], "AWS ");
             @memcpy(title_buff[4..][0..title_len], service.sdk_id);
             meta.title = title_buff[0 .. 4 + title_len];

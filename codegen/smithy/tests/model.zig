@@ -194,14 +194,49 @@ pub fn setupError(model: *SmithyModel) !void {
     });
 }
 
-pub fn setupOperation(model: *SmithyModel) !void {
+pub fn setupServiceShapes(model: *SmithyModel) !void {
     const Static = struct {
+        const service = SmithyService{
+            .version = "2017-02-11",
+            .operations = &.{SmithyId.of("test.serve#Operation")},
+            .resources = &.{SmithyId.of("test.serve#Resource")},
+            .errors = &.{SmithyId.of("test.error#ServiceError")},
+        };
+        const service_doc: []const u8 = "Some <i>service</i>...";
+        const service_traits = &.{.{
+            .id = SmithyId.of("smithy.api#documentation"),
+            .value = @as(*const anyopaque, @ptrCast(&service_doc)),
+        }};
+        const resource = SmithyResource{
+            .identifiers = &.{
+                .{ .name = "forecastId", .shape = SmithyId.of("smithy.api#String") },
+            },
+            .operations = &.{SmithyId.of("test.serve#Operation")},
+            .resources = &.{},
+        };
         const operation = SmithyOperation{
             .input = SmithyId.of("test.serve#OperationInput"),
             .output = SmithyId.of("test.serve#OperationOutput"),
             .errors = &.{SmithyId.of("test.error#NotFound")},
         };
     };
+
+    model.service = SmithyId.of("test.serve#Service");
+    try model.names.put(test_alloc, SmithyId.of("test.serve#Service"), "Service");
+    try model.shapes.put(test_alloc, SmithyId.of("test.serve#Service"), .{
+        .service = &Static.service,
+    });
+    try model.traits.put(test_alloc, SmithyId.of("test.serve#Service"), Static.service_traits);
+
+    try model.names.put(test_alloc, SmithyId.of("test.error#ServiceError"), "ServiceError");
+    try model.shapes.put(test_alloc, SmithyId.of("test.error#ServiceError"), .{
+        .structure = &.{},
+    });
+
+    try model.names.put(test_alloc, SmithyId.of("test.serve#Resource"), "Resource");
+    try model.shapes.put(test_alloc, SmithyId.of("test.serve#Resource"), .{
+        .resource = &Static.resource,
+    });
 
     try model.names.put(test_alloc, SmithyId.of("test.serve#Operation"), "Operation");
     try model.shapes.put(test_alloc, SmithyId.of("test.serve#Operation"), .{
@@ -224,46 +259,5 @@ pub fn setupOperation(model: *SmithyModel) !void {
     });
     try model.traits.put(test_alloc, SmithyId.of("test.error#NotFound"), &.{
         .{ .id = SmithyId.of("smithy.api#error"), .value = "client" },
-    });
-}
-
-pub fn setupService(model: *SmithyModel) !void {
-    const Static = struct {
-        const service = SmithyService{
-            .version = "2017-02-11",
-            .operations = &.{SmithyId.of("test.serve#Operation")},
-            .resources = &.{SmithyId.of("test.serve#Resource")},
-            .errors = &.{SmithyId.of("test.error#ServiceError")},
-        };
-        const resource = SmithyResource{
-            .identifiers = &.{
-                .{ .name = "forecastId", .shape = SmithyId.of("smithy.api#String") },
-            },
-            .operations = &.{SmithyId.of("test.serve#Operation")},
-            .resources = &.{},
-        };
-        const shape_doc: []const u8 = "Some <i>service</i>...";
-        const traits = &.{.{
-            .id = SmithyId.of("smithy.api#documentation"),
-            .value = @as(*const anyopaque, @ptrCast(&shape_doc)),
-        }};
-    };
-
-    try setupOperation(model);
-
-    try model.names.put(test_alloc, SmithyId.of("test.serve#Service"), "Service");
-    try model.shapes.put(test_alloc, SmithyId.of("test.serve#Service"), .{
-        .service = &Static.service,
-    });
-    try model.traits.put(test_alloc, SmithyId.of("test.serve#Service"), Static.traits);
-
-    try model.names.put(test_alloc, SmithyId.of("test.error#ServiceError"), "ServiceError");
-    try model.shapes.put(test_alloc, SmithyId.of("test.error#ServiceError"), .{
-        .structure = &.{},
-    });
-
-    try model.names.put(test_alloc, SmithyId.of("test.serve#Resource"), "Resource");
-    try model.shapes.put(test_alloc, SmithyId.of("test.serve#Resource"), .{
-        .resource = &Static.resource,
     });
 }

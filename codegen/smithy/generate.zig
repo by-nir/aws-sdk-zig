@@ -2,6 +2,7 @@
 const std = @import("std");
 const fs = std.fs;
 const Allocator = std.mem.Allocator;
+const assert = std.debug.assert;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const test_model = @import("tests/model.zig");
@@ -50,42 +51,9 @@ pub const Hooks = struct {
 arena: Allocator,
 hooks: Hooks,
 model: *const SmithyModel,
+service_errors: ?[]const SmithyId = null,
 shape_queue: std.DoublyLinkedList(SmithyId) = .{},
 shape_visited: std.AutoHashMapUnmanaged(SmithyId, void) = .{},
-
-fn appendShape(self: *Self, id: SmithyId) !void {
-    if (self.shape_visited.contains(id)) return;
-    try self.shape_visited.put(self.arena, id, void{});
-    const node = try self.arena.create(std.DoublyLinkedList(SmithyId).Node);
-    node.data = id;
-    self.shape_queue.append(node);
-}
-
-fn nextShape(self: *Self) ?SmithyId {
-    const node = self.shape_queue.popFirst() orelse return null;
-    const shape = node.data;
-    self.arena.destroy(node);
-    return shape;
-}
-
-test "shapes queue" {
-    var self = Self{
-        .arena = test_alloc,
-        .hooks = TEST_HOOKS,
-        .model = undefined,
-    };
-    defer self.shape_visited.deinit(test_alloc);
-
-    try self.appendShape(SmithyId.of("A"));
-    try testing.expectEqualDeep(SmithyId.of("A"), self.nextShape());
-    try self.appendShape(SmithyId.of("A"));
-    try testing.expectEqual(null, self.nextShape());
-    try self.appendShape(SmithyId.of("B"));
-    try self.appendShape(SmithyId.of("C"));
-    try testing.expectEqualDeep(SmithyId.of("B"), self.nextShape());
-    try testing.expectEqualDeep(SmithyId.of("C"), self.nextShape());
-    try testing.expectEqual(null, self.nextShape());
-}
 
 pub fn writeScript(
     arena: Allocator,
@@ -108,10 +76,10 @@ pub fn writeScript(
     }
 
     const imp_std = try script.import("std");
-    std.debug.assert(std.mem.eql(u8, imp_std.name, "_imp_std"));
+    assert(std.mem.eql(u8, imp_std.name, "_imp_std"));
 
-    try self.appendShape(root);
-    while (self.nextShape()) |id| {
+    try self.enqueueShape(root);
+    while (self.dequeueShape()) |id| {
         try self.writeScriptShape(&script, id);
     }
 
@@ -149,7 +117,8 @@ test "writeScript" {
 }
 
 fn writeScriptShape(self: *Self, script: *Script, id: SmithyId) !void {
-    switch (try self.model.tryGetShape(id)) {
+    const shape = try self.model.tryGetShape(id);
+    switch (shape) {
         .list => |m| try self.writeListShape(script, id, m),
         .map => |m| try self.writeMapShape(script, id, m),
         .str_enum => |m| try self.writeStrEnumShape(script, id, m),
@@ -157,6 +126,7 @@ fn writeScriptShape(self: *Self, script: *Script, id: SmithyId) !void {
         .tagged_uinon => |m| try self.writeUnionShape(script, id, m),
         .structure => |m| try self.writeStructShape(script, id, m),
         .service => |t| try self.writeServiceShape(script, id, t),
+        .resource => |t| try self.writeResourceShape(script, id, t),
         .string => {
             return if (trt_constr.Enum.get(self.model, id)) |members|
                 self.writeTraitEnumShape(script, id, members)
@@ -189,7 +159,7 @@ test "writeScriptShape" {
 
 fn writeListShape(self: *Self, script: *Script, id: SmithyId, memeber: SmithyId) !void {
     const shape_name = try self.model.tryGetName(id);
-    const target_type = Script.Expr{ .raw = try self.getTypeName(memeber) };
+    const target_type = Script.Expr{ .raw = try self.unwrapShapeName(memeber) };
     try self.writeDocComment(script, id, false);
     if (self.model.hasTrait(id, trt_constr.unique_items_id)) {
         const target = if (self.hooks.uniqueListType) |hook|
@@ -240,8 +210,8 @@ test "writeListShape" {
 
 fn writeMapShape(self: *Self, script: *Script, id: SmithyId, memeber: [2]SmithyId) !void {
     const shape_name = try self.model.tryGetName(id);
-    const key_name = try self.getTypeName(memeber[0]);
-    const val_type = try self.getTypeName(memeber[1]);
+    const key_name = try self.unwrapShapeName(memeber[0]);
+    const val_type = try self.unwrapShapeName(memeber[1]);
     const value: Script.Expr = if (self.model.hasTrait(id, trt_refine.sparse_id))
         .{ .raw_seq = &.{ "?", val_type } }
     else
@@ -531,7 +501,7 @@ fn writeUnionShape(self: *Self, script: *Script, id: SmithyId, members: []const 
         .type = .{ .TaggedUnion = null },
     });
     for (members) |m| {
-        const shape = self.getTypeName(m) catch |e| {
+        const shape = self.unwrapShapeName(m) catch |e| {
             scope.deinit();
             return e;
         };
@@ -643,7 +613,7 @@ fn writeStructShapeMember(self: *Self, script: *Script, is_input: bool, id: Smit
     };
 
     try self.writeDocComment(script, id, true);
-    const type_expr = Script.Expr{ .raw = try self.getTypeName(id) };
+    const type_expr = Script.Expr{ .raw = try self.unwrapShapeName(id) };
     _ = try script.field(.{
         .name = try names.snakeCase(self.arena, try self.model.tryGetName(id)),
         .type = if (optional) .{ .typ_optional = &type_expr } else type_expr,
@@ -686,7 +656,7 @@ test "writeStructShape" {
     );
 }
 
-fn writeOperationShape(self: *Self, script: *Script, id: SmithyId) !void {
+fn writeOperationShapes(self: *Self, script: *Script, id: SmithyId) !void {
     const operation = (try self.model.tryGetShape(id)).operation;
 
     if (operation.input) |in_id| {
@@ -701,16 +671,16 @@ fn writeOperationShape(self: *Self, script: *Script, id: SmithyId) !void {
 
     for (operation.errors) |err_id| {
         // We don't write directly since an error may be used by multiple operations.
-        try self.appendShape(err_id);
+        try self.enqueueShape(err_id);
     }
 }
 
-test "writeOperationShape" {
+test "writeOperationShapes" {
     var tester = try ScriptTester.init();
     defer tester.deinit();
 
     var model = SmithyModel{};
-    try test_model.setupOperation(&model);
+    try test_model.setupServiceShapes(&model);
     defer model.deinit(test_alloc);
 
     var self = Self{
@@ -718,7 +688,7 @@ test "writeOperationShape" {
         .hooks = TEST_HOOKS,
         .model = &model,
     };
-    try self.writeOperationShape(tester.script, SmithyId.of("test.serve#Operation"));
+    try self.writeOperationShapes(tester.script, SmithyId.of("test.serve#Operation"));
     try tester.expect(
         \\pub const OperationInput = struct {
         \\
@@ -733,169 +703,13 @@ test "writeOperationShape" {
     try testing.expectEqual(SmithyId.of("test.error#NotFound"), node.data);
 }
 
-fn writeServiceShape(self: *Self, script: *Script, id: SmithyId, service: *const syb_shape.SmithyService) !void {
-    try self.writeDocComment(script, id, false);
-    var scope = try script.declare(.{
-        .name = try self.model.tryGetName(id),
-    }, .{
-        .is_public = true,
-        .type = .{ .Struct = null },
-    });
-    if (self.hooks.writeServiceHead) |hook| {
-        hook(self.arena, &scope, self.model, service) catch |e| {
-            scope.deinit();
-            return e;
-        };
-    }
-    for (service.operations) |op_id| {
-        self.writeOperationFunction(&scope, op_id, service.errors) catch |e| {
-            scope.deinit();
-            return e;
-        };
-    }
-    try scope.end();
-
-    for (service.operations) |op_id| {
-        try self.writeOperationShape(script, op_id);
-    }
-    for (service.resources) |rsc_id| {
-        try self.writeResourceShape(script, rsc_id, service.errors);
-    }
-    for (service.errors) |err_id| {
-        try self.appendShape(err_id);
-    }
-}
-
-fn writeResourceShape(self: *Self, script: *Script, id: SmithyId, common_errors: []const SmithyId) !void {
-    const resource = (try self.model.tryGetShape(id)).resource;
-    const resource_name = try self.model.tryGetName(id);
-    var scope = try script.declare(.{ .name = resource_name }, .{
-        .is_public = true,
-        .type = .{ .Struct = null },
-    });
-    if (self.hooks.writeResourceHead) |hook| {
-        hook(self.arena, &scope, self.model, id, resource) catch |e| {
-            scope.deinit();
-            return e;
-        };
-    }
-    for (resource.identifiers) |idn| {
-        self.writeDocComment(script, id, true) catch |e| {
-            scope.deinit();
-            return e;
-        };
-        const name = names.snakeCase(self.arena, idn.name) catch |e| {
-            scope.deinit();
-            return e;
-        };
-        _ = scope.field(.{
-            .name = name,
-            .type = .{ .raw = try self.getTypeName(idn.shape) },
-        }) catch |e| {
-            scope.deinit();
-            return e;
-        };
-    }
-    const lifecycle_ops = &.{ "create", "put", "read", "update", "delete", "list" };
-    inline for (lifecycle_ops) |field| {
-        if (@field(resource, field)) |op_id| {
-            self.writeOperationFunction(&scope, op_id, common_errors) catch |e| {
-                scope.deinit();
-                return e;
-            };
-        }
-    }
-    for (resource.operations) |op_id| {
-        self.writeOperationFunction(&scope, op_id, common_errors) catch |e| {
-            scope.deinit();
-            return e;
-        };
-    }
-    for (resource.collection_ops) |op_id| {
-        self.writeOperationFunction(&scope, op_id, common_errors) catch |e| {
-            scope.deinit();
-            return e;
-        };
-    }
-    try scope.end();
-
-    inline for (lifecycle_ops) |field| {
-        if (@field(resource, field)) |op_id| {
-            try self.writeOperationShape(script, op_id);
-        }
-    }
-    for (resource.operations) |op_id| {
-        try self.writeOperationShape(script, op_id);
-    }
-    for (resource.collection_ops) |op_id| {
-        try self.writeOperationShape(script, op_id);
-    }
-    for (resource.resources) |rsc_id| {
-        try self.writeResourceShape(script, rsc_id, common_errors);
-    }
-}
-
-fn writeOperationErrorType(
-    self: *Self,
-    script: *Script,
-    buffer: []u8,
-    op_name: []const u8,
-    op_errors: []const SmithyId,
-    common_errors: []const SmithyId,
-) !?Script.Expr {
-    if (op_errors.len + common_errors.len == 0) return null;
-
-    const suffix = "Errors";
-    const total_len = op_name.len + suffix.len;
-    std.debug.assert(total_len <= 128);
-    @memcpy(buffer[0..op_name.len], op_name);
-    @memcpy(buffer[op_name.len..][0..suffix.len], suffix);
-    const type_name = buffer[0..total_len];
-
-    var scope = try script.declare(.{ .name = type_name }, .{
-        .is_public = true,
-        .type = .{ .TaggedUnion = null },
-    });
-    for (common_errors) |m| {
-        self.writeOperationErrorTypeMember(&scope, m) catch |e| {
-            scope.deinit();
-            return e;
-        };
-    }
-    for (op_errors) |m| {
-        self.writeOperationErrorTypeMember(&scope, m) catch |e| {
-            scope.deinit();
-            return e;
-        };
-    }
-    try scope.end();
-
-    return Script.Expr{ .raw = type_name };
-}
-
-fn writeOperationErrorTypeMember(self: *Self, scope: *Script, member: SmithyId) !void {
-    var name = try self.model.tryGetName(member);
-    inline for (.{ "error", "exception" }) |suffix| {
-        if (std.ascii.endsWithIgnoreCase(name, suffix)) {
-            name = name[0 .. name.len - suffix.len];
-            break;
-        }
-    }
-
-    const shape = try self.getTypeName(member);
-    try self.writeDocComment(scope, member, true);
-    _ = try scope.field(.{
-        .name = try names.snakeCase(self.arena, name),
-        .type = if (shape.len > 0) .{ .raw = shape } else null,
-    });
-}
-
-fn writeOperationFunction(self: *Self, script: *Script, id: SmithyId, common_errors: []const SmithyId) !void {
+fn writeOperationFunc(self: *Self, script: *Script, id: SmithyId) !void {
+    const common_errors = try self.getServiceErrors();
     const operation = (try self.model.tryGetShape(id)).operation;
     const op_name = try names.camelCase(self.arena, try self.model.tryGetName(id));
 
     var name_buffer: [128]u8 = undefined;
-    const errors_type = try self.writeOperationErrorType(
+    const errors_type = try self.writeOperationFuncError(
         script,
         name_buffer[0..],
         op_name,
@@ -937,12 +751,233 @@ fn writeOperationFunction(self: *Self, script: *Script, id: SmithyId, common_err
     try block.end();
 }
 
+fn writeOperationFuncError(
+    self: *Self,
+    script: *Script,
+    buffer: []u8,
+    op_name: []const u8,
+    op_errors: []const SmithyId,
+    common_errors: []const SmithyId,
+) !?Script.Expr {
+    if (op_errors.len + common_errors.len == 0) return null;
+
+    const suffix = "Errors";
+    const total_len = op_name.len + suffix.len;
+    assert(total_len <= 128);
+    @memcpy(buffer[0..op_name.len], op_name);
+    @memcpy(buffer[op_name.len..][0..suffix.len], suffix);
+    const type_name = buffer[0..total_len];
+
+    var scope = try script.declare(.{ .name = type_name }, .{
+        .is_public = true,
+        .type = .{ .TaggedUnion = null },
+    });
+    for (common_errors) |m| {
+        self.writeOperationFuncErrorMember(&scope, m) catch |e| {
+            scope.deinit();
+            return e;
+        };
+    }
+    for (op_errors) |m| {
+        self.writeOperationFuncErrorMember(&scope, m) catch |e| {
+            scope.deinit();
+            return e;
+        };
+    }
+    try scope.end();
+
+    return Script.Expr{ .raw = type_name };
+}
+
+fn writeOperationFuncErrorMember(self: *Self, scope: *Script, member: SmithyId) !void {
+    var name = try self.model.tryGetName(member);
+    inline for (.{ "error", "exception" }) |suffix| {
+        if (std.ascii.endsWithIgnoreCase(name, suffix)) {
+            name = name[0 .. name.len - suffix.len];
+            break;
+        }
+    }
+
+    const shape = try self.unwrapShapeName(member);
+    try self.writeDocComment(scope, member, true);
+    _ = try scope.field(.{
+        .name = try names.snakeCase(self.arena, name),
+        .type = if (shape.len > 0) .{ .raw = shape } else null,
+    });
+}
+
+test "writeOperationFunc" {
+    var tester = try ScriptTester.init();
+    defer tester.deinit();
+
+    var model = SmithyModel{};
+    try test_model.setupServiceShapes(&model);
+    defer model.deinit(test_alloc);
+
+    var self = Self{
+        .arena = tester.arena.allocator(),
+        .hooks = TEST_HOOKS,
+        .model = &model,
+    };
+    try self.writeOperationFunc(tester.script, SmithyId.of("test.serve#Operation"));
+    try tester.expect(
+        \\pub const operationErrors = union(enum) {
+        \\    service: ServiceError,
+        \\    not_found: NotFound,
+        \\};
+        \\
+        \\pub fn operation(self: @This(), input: OperationInput) OperationOutput {
+        \\    return undefined;
+        \\}
+    );
+}
+
+fn writeResourceShape(self: *Self, script: *Script, id: SmithyId, resource: *const syb_shape.SmithyResource) !void {
+    const resource_name = try self.model.tryGetName(id);
+    var scope = try script.declare(.{ .name = resource_name }, .{
+        .is_public = true,
+        .type = .{ .Struct = null },
+    });
+    if (self.hooks.writeResourceHead) |hook| {
+        hook(self.arena, &scope, self.model, id, resource) catch |e| {
+            scope.deinit();
+            return e;
+        };
+    }
+    for (resource.identifiers) |idn| {
+        self.writeDocComment(script, id, true) catch |e| {
+            scope.deinit();
+            return e;
+        };
+        const name = names.snakeCase(self.arena, idn.name) catch |e| {
+            scope.deinit();
+            return e;
+        };
+        _ = scope.field(.{
+            .name = name,
+            .type = .{ .raw = try self.unwrapShapeName(idn.shape) },
+        }) catch |e| {
+            scope.deinit();
+            return e;
+        };
+    }
+    const lifecycle_ops = &.{ "create", "put", "read", "update", "delete", "list" };
+    inline for (lifecycle_ops) |field| {
+        if (@field(resource, field)) |op_id| {
+            self.writeOperationFunc(&scope, op_id) catch |e| {
+                scope.deinit();
+                return e;
+            };
+        }
+    }
+    for (resource.operations) |op_id| {
+        self.writeOperationFunc(&scope, op_id) catch |e| {
+            scope.deinit();
+            return e;
+        };
+    }
+    for (resource.collection_ops) |op_id| {
+        self.writeOperationFunc(&scope, op_id) catch |e| {
+            scope.deinit();
+            return e;
+        };
+    }
+    try scope.end();
+
+    inline for (lifecycle_ops) |field| {
+        if (@field(resource, field)) |op_id| {
+            try self.writeOperationShapes(script, op_id);
+        }
+    }
+    for (resource.operations) |op_id| {
+        try self.writeOperationShapes(script, op_id);
+    }
+    for (resource.collection_ops) |op_id| {
+        try self.writeOperationShapes(script, op_id);
+    }
+
+    for (resource.resources) |rsc_id| try self.enqueueShape(rsc_id);
+}
+
+test "writeResourceShape" {
+    var tester = try ScriptTester.init();
+    defer tester.deinit();
+
+    var model = SmithyModel{};
+    try test_model.setupServiceShapes(&model);
+    defer model.deinit(test_alloc);
+
+    var self = Self{
+        .arena = tester.arena.allocator(),
+        .hooks = TEST_HOOKS,
+        .model = &model,
+    };
+    try self.writeScriptShape(tester.script, SmithyId.of("test.serve#Resource"));
+    try tester.expect(
+        \\pub const Resource = struct {
+        \\    forecast_id: []const u8,
+        \\
+        \\    pub const operationErrors = union(enum) {
+        \\        service: ServiceError,
+        \\        not_found: NotFound,
+        \\    };
+        \\
+        \\    pub fn operation(self: @This(), input: OperationInput) OperationOutput {
+        \\        return undefined;
+        \\    }
+        \\};
+        \\
+        \\pub const OperationInput = struct {
+        \\
+        \\};
+        \\
+        \\pub const OperationOutput = struct {
+        \\
+        \\};
+    );
+}
+
+fn writeServiceShape(self: *Self, script: *Script, id: SmithyId, service: *const syb_shape.SmithyService) !void {
+    // Cache errors
+    if (self.service_errors == null) self.service_errors = service.errors;
+
+    const service_name = try self.model.tryGetName(id);
+    try self.writeDocComment(script, id, false);
+    var scope = try script.declare(.{ .name = service_name }, .{
+        .is_public = true,
+        .type = .{ .Struct = null },
+    });
+    if (self.hooks.writeServiceHead) |hook| {
+        hook(self.arena, &scope, self.model, service) catch |e| {
+            scope.deinit();
+            return e;
+        };
+    }
+    for (service.operations) |op_id| {
+        self.writeOperationFunc(&scope, op_id) catch |e| {
+            scope.deinit();
+            return e;
+        };
+    }
+    try scope.end();
+
+    for (service.operations) |op_id| {
+        self.writeOperationShapes(script, op_id) catch |e| {
+            scope.deinit();
+            return e;
+        };
+    }
+
+    for (service.resources) |rsc_id| try self.enqueueShape(rsc_id);
+    for (service.errors) |err_id| try self.enqueueShape(err_id);
+}
+
 test "writeServiceShape" {
     var tester = try ScriptTester.init();
     defer tester.deinit();
 
     var model = SmithyModel{};
-    try test_model.setupService(&model);
+    try test_model.setupServiceShapes(&model);
     defer model.deinit(test_alloc);
 
     var self = Self{
@@ -971,32 +1006,14 @@ test "writeServiceShape" {
         \\pub const OperationOutput = struct {
         \\
         \\};
-        \\
-        \\pub const Resource = struct {
-        \\    forecast_id: []const u8,
-        \\
-        \\    pub const operationErrors = union(enum) {
-        \\        service: ServiceError,
-        \\        not_found: NotFound,
-        \\    };
-        \\
-        \\    pub fn operation(self: @This(), input: OperationInput) OperationOutput {
-        \\        return undefined;
-        \\    }
-        \\};
-        \\
-        \\pub const OperationInput = struct {
-        \\
-        \\};
-        \\
-        \\pub const OperationOutput = struct {
-        \\
-        \\};
     );
 
-    var it = self.shape_visited.iterator();
-    try testing.expectEqual(SmithyId.of("test.error#NotFound"), it.next().?.key_ptr.*);
-    try testing.expectEqual(SmithyId.of("test.error#ServiceError"), it.next().?.key_ptr.*);
+    try testing.expectEqual(3, self.shape_visited.count());
+    try testing.expect(self.shape_visited.contains(SmithyId.of("test.serve#Resource")));
+    try testing.expect(self.shape_visited.contains(SmithyId.of("test.error#NotFound")));
+    try testing.expect(self.shape_visited.contains(SmithyId.of("test.error#ServiceError")));
+
+    try testing.expectEqualDeep(&.{SmithyId.of("test.error#ServiceError")}, self.service_errors);
 }
 
 fn writeDocComment(self: *Self, script: *Script, id: SmithyId, target_fallback: bool) !void {
@@ -1014,7 +1031,7 @@ fn writeDocComment(self: *Self, script: *Script, id: SmithyId, target_fallback: 
     }
 }
 
-fn getTypeName(self: *Self, id: SmithyId) ![]const u8 {
+fn unwrapShapeName(self: *Self, id: SmithyId) ![]const u8 {
     return switch (id) {
         .unit => "",
         .boolean => "bool",
@@ -1031,14 +1048,14 @@ fn getTypeName(self: *Self, id: SmithyId) ![]const u8 {
         _ => |t| blk: {
             const shape = try self.model.tryGetShape(t);
             break :blk switch (shape) {
-                .target => |target| self.getTypeName(target),
+                .target => |target| self.unwrapShapeName(target),
                 // zig fmt: off
                 inline .unit, .blob, .boolean, .string, .byte, .short, .integer, .long,
                 .float, .double, .big_integer, .big_decimal, .timestamp, .document =>
-                    |_, g| self.getTypeName(std.enums.nameCast(SmithyId, g)),
+                    |_, g| self.unwrapShapeName(std.enums.nameCast(SmithyId, g)),
                 // zig fmt: on
                 else => {
-                    try self.appendShape(t);
+                    try self.enqueueShape(t);
                     break :blk self.model.tryGetName(t);
                 },
             };
@@ -1058,6 +1075,68 @@ fn unwrapShapeType(self: *Self, id: SmithyId) !SmithyType {
             else => |t| t,
         },
     };
+}
+
+fn getServiceErrors(self: *Self) ![]const SmithyId {
+    if (self.service_errors) |e| {
+        return e;
+    } else {
+        const shape = try self.model.tryGetShape(self.model.service);
+        const errors = shape.service.errors;
+        self.service_errors = errors;
+        return errors;
+    }
+}
+
+test "getServiceErrors" {
+    var model = SmithyModel{};
+    try test_model.setupServiceShapes(&model);
+    defer model.deinit(test_alloc);
+
+    var self = Self{
+        .arena = test_alloc,
+        .hooks = TEST_HOOKS,
+        .model = &model,
+    };
+    defer self.shape_visited.deinit(test_alloc);
+
+    const expected = .{SmithyId.of("test.error#ServiceError")};
+    try testing.expectEqualDeep(&expected, try self.getServiceErrors());
+    try testing.expectEqualDeep(&expected, self.service_errors);
+}
+
+fn enqueueShape(self: *Self, id: SmithyId) !void {
+    if (self.shape_visited.contains(id)) return;
+    try self.shape_visited.put(self.arena, id, void{});
+    const node = try self.arena.create(std.DoublyLinkedList(SmithyId).Node);
+    node.data = id;
+    self.shape_queue.append(node);
+}
+
+fn dequeueShape(self: *Self) ?SmithyId {
+    const node = self.shape_queue.popFirst() orelse return null;
+    const shape = node.data;
+    self.arena.destroy(node);
+    return shape;
+}
+
+test "shapes queue" {
+    var self = Self{
+        .arena = test_alloc,
+        .hooks = TEST_HOOKS,
+        .model = undefined,
+    };
+    defer self.shape_visited.deinit(test_alloc);
+
+    try self.enqueueShape(SmithyId.of("A"));
+    try testing.expectEqualDeep(SmithyId.of("A"), self.dequeueShape());
+    try self.enqueueShape(SmithyId.of("A"));
+    try testing.expectEqual(null, self.dequeueShape());
+    try self.enqueueShape(SmithyId.of("B"));
+    try self.enqueueShape(SmithyId.of("C"));
+    try testing.expectEqualDeep(SmithyId.of("B"), self.dequeueShape());
+    try testing.expectEqualDeep(SmithyId.of("C"), self.dequeueShape());
+    try testing.expectEqual(null, self.dequeueShape());
 }
 
 const TEST_HOOKS = Hooks{
@@ -1130,7 +1209,7 @@ const ScriptTester = struct {
         errdefer script.deinit();
 
         const imp_std = try script.import("std");
-        std.debug.assert(std.mem.eql(u8, imp_std.name, "_imp_std"));
+        assert(std.mem.eql(u8, imp_std.name, "_imp_std"));
 
         return .{
             .arena = arena,

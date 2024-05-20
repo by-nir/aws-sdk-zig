@@ -1,4 +1,14 @@
-pub const JsonReader = @import("utils/JsonReader.zig");
+pub const Pipeline = @import("Pipeline.zig");
+
+const parse = @import("parse.zig");
+pub const ParsePolicy = parse.Policy;
+
+const generate = @import("generate.zig");
+pub const GenerateHooks = generate.Hooks;
+pub const GeneratePolicy = generate.Policy;
+
+pub const Script = @import("generate/Zig.zig");
+pub const Markdown = @import("generate/Markdown.zig");
 
 const syb_id = @import("symbols/identity.zig");
 pub usingnamespace syb_id;
@@ -9,17 +19,7 @@ pub usingnamespace syb_shapes;
 const syb_traits = @import("symbols/traits.zig");
 pub const TraitsRegistry = syb_traits.TraitsRegistry;
 
-pub const Pipeline = @import("Pipeline.zig");
-
-const parse = @import("parse.zig");
-pub const ParsePolicy = parse.Policy;
-
-const generate = @import("generate.zig");
-pub const GenerateHooks = generate.Hooks;
-pub const GeneratePolicy = generate.Policy;
-
-pub const Markdown = @import("generate/Markdown.zig");
-pub const Script = @import("generate/Zig.zig");
+pub const JsonReader = @import("utils/JsonReader.zig");
 
 test {
     _ = @import("utils/names.zig");
