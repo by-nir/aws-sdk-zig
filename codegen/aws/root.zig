@@ -39,6 +39,7 @@ pub fn main() !void {
             .invalid_root = .abort,
             .shape_codegen_fail = .abort,
         },
+        .process_policy = .{ .model = .skip },
     }, .{
         .writeReadme = writeReadme,
     }, .{

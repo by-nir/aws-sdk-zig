@@ -16,6 +16,7 @@ pub const Issue = union(enum) {
     codegen_unknown_shape: Id,
     codegen_invalid_root: NameOrId,
     codegen_shape_fail: NamedError,
+    process_error: anyerror,
 
     pub const Id = u32;
 
@@ -43,6 +44,7 @@ pub const Stats = struct {
     codegen_unknown_shape: u16 = 0,
     codegen_invalid_root: u16 = 0,
     codegen_shape_fail: u16 = 0,
+    process_error: u16 = 0,
 
     pub fn parseCount(self: Stats) usize {
         return self.parse_error + self.parse_unexpected_prop + self.parse_unknown_trait;
@@ -156,8 +158,9 @@ test "IssuesBag" {
         .err = error.ShapeError,
         .item = .{ .name = "bar" },
     } });
+    try bag.add(.{ .process_error = error.ProcessError });
 
-    try testing.expectEqual(7, bag.count());
+    try testing.expectEqual(8, bag.count());
     try testing.expectEqual(3, bag.stats.parseCount());
     try testing.expectEqual(1, bag.stats.parse_error);
     try testing.expectEqual(1, bag.stats.parse_unexpected_prop);
@@ -167,6 +170,7 @@ test "IssuesBag" {
     try testing.expectEqual(1, bag.stats.codegen_unknown_shape);
     try testing.expectEqual(1, bag.stats.codegen_invalid_root);
     try testing.expectEqual(1, bag.stats.codegen_shape_fail);
+    try testing.expectEqual(1, bag.stats.process_error);
 
     try testing.expectEqualDeep(&[_]Issue{
         .{ .parse_error = error.ParseError },
@@ -179,5 +183,6 @@ test "IssuesBag" {
             .err = error.ShapeError,
             .item = .{ .name = "bar" },
         } },
+        .{ .process_error = error.ProcessError },
     }, bag.all());
 }

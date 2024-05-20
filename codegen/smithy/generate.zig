@@ -154,50 +154,48 @@ fn writeShape(self: *Self, script: *Script, id: SmithyId) !void {
         .service => |t| self.writeServiceShape(script, id, t),
         .resource => |t| self.writeResourceShape(script, id, t),
         .string => if (trt_constr.Enum.get(self.model, id)) |members|
-            self.writeTraitEnumShape(script, id, members),
-        else => {},
+            self.writeTraitEnumShape(script, id, members)
+        else
+            error.InvalidRootShape,
+        else => error.InvalidRootShape,
     }) catch |e| {
         const shape_name = self.model.getName(id);
-        switch (self.policy.shape_codegen_fail) {
-            .skip => {
-                try self.issues.add(.{ .codegen_shape_fail = .{
-                    .err = e,
-                    .item = if (shape_name) |n|
-                        .{ .name = n }
+        const name_id: IssuesBag.Issue.NameOrId = if (shape_name) |n|
+            .{ .name = n }
+        else
+            .{ .id = @intFromEnum(id) };
+        switch (e) {
+            error.InvalidRootShape => switch (self.policy.invalid_root) {
+                .skip => {
+                    try self.issues.add(.{ .codegen_invalid_root = name_id });
+                    return;
+                },
+                .abort => {
+                    if (shape_name) |n|
+                        std.log.err("Invalid root shape: `{s}`.", .{n})
                     else
-                        .{ .id = @intFromEnum(id) },
-                } });
-                return;
+                        std.log.err("Invalid root shape: `{}`.", .{id});
+                    return IssuesBag.PolicyAbortError;
+                },
             },
-            .abort => {
-                if (shape_name) |n|
-                    std.log.err("Shape `{s}` codegen failed: `{s}`.", .{ n, @errorName(e) })
-                else
-                    std.log.err("Shape `{}` codegen failed: `{s}`.", .{ id, @errorName(e) });
-                return IssuesBag.PolicyAbortError;
+            else => switch (self.policy.shape_codegen_fail) {
+                .skip => {
+                    try self.issues.add(.{ .codegen_shape_fail = .{
+                        .err = e,
+                        .item = name_id,
+                    } });
+                    return;
+                },
+                .abort => {
+                    if (shape_name) |n|
+                        std.log.err("Shape `{s}` codegen failed: `{s}`.", .{ n, @errorName(e) })
+                    else
+                        std.log.err("Shape `{}` codegen failed: `{s}`.", .{ id, @errorName(e) });
+                    return IssuesBag.PolicyAbortError;
+                },
             },
         }
     };
-
-    const shape_name = self.model.getName(id);
-    switch (self.policy.invalid_root) {
-        .skip => {
-            try self.issues.add(.{
-                .codegen_invalid_root = if (shape_name) |n|
-                    .{ .name = n }
-                else
-                    .{ .id = @intFromEnum(id) },
-            });
-            return;
-        },
-        .abort => {
-            if (shape_name) |n|
-                std.log.err("Invalid root shape: `{s}`.", .{n})
-            else
-                std.log.err("Invalid root shape: `{}`.", .{id});
-            return IssuesBag.PolicyAbortError;
-        },
-    }
 }
 
 test "writeShape" {
@@ -218,7 +216,7 @@ test "writeShape" {
     try self.writeShape(tester.script, SmithyId.of("test#Unit"));
     try testing.expectEqualDeep(&.{
         IssuesBag.Issue{ .codegen_invalid_root = .{ .id = @intFromEnum(SmithyId.of("test#Unit")) } },
-    }, tester.issues.list.items);
+    }, tester.issues.all());
     try tester.expect("");
 }
 

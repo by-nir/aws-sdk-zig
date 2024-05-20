@@ -4,6 +4,7 @@
 //!   - `client.zig`
 const std = @import("std");
 const fs = std.fs;
+const Timer = std.time.Timer;
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
@@ -28,6 +29,11 @@ const Options = struct {
     out_dir_relative: []const u8,
     parse_policy: parse.Policy,
     codegen_policy: generate.Policy,
+    process_policy: Policy,
+};
+
+pub const Policy = struct {
+    model: IssuesBag.PolicyResolution,
 };
 
 pub const Hooks = struct {
@@ -53,6 +59,7 @@ src_dir: fs.Dir,
 out_dir: fs.Dir,
 parse_policy: parse.Policy,
 codegen_policy: generate.Policy,
+process_policy: Policy,
 
 pub fn init(
     gpa_alloc: Allocator,
@@ -68,6 +75,7 @@ pub fn init(
     self.codegen_hooks = codegen_hooks;
     self.parse_policy = options.parse_policy;
     self.codegen_policy = options.codegen_policy;
+    self.process_policy = options.process_policy;
     errdefer gpa_alloc.destroy(self);
 
     self.traits = syb_traits.TraitsManager{};
@@ -101,22 +109,16 @@ pub fn registerTraits(self: *Self, traits: syb_traits.TraitsRegistry) !void {
 /// A `filename` is the model’s file name ending with `.json` extension.
 pub fn processFiles(self: *Self, filenames: []const []const u8) !Report {
     var arena = std.heap.ArenaAllocator.init(self.page_alloc);
+    const arena_alloc = arena.allocator();
     defer arena.deinit();
 
-    const report = Report{};
-    var timer = std.time.Timer.start() catch unreachable;
+    var report = Report{};
+    var timer = try Timer.start();
 
     for (filenames) |filename| {
         if (!isValidModelFilename(filename)) continue;
         defer _ = arena.reset(.retain_capacity);
-
-        if (self.processModel(arena.allocator(), filename)) |issues| {
-            _ = timer.lap();
-            issues.deinit();
-        } else |e| {
-            _ = timer.lap();
-            return e;
-        }
+        try processModelAndReport(self, arena_alloc, &report, &timer, filename);
     }
 
     return report;
@@ -126,10 +128,11 @@ pub fn processFiles(self: *Self, filenames: []const []const u8) !Report {
 /// process **all** models.
 pub fn processAll(self: *Self, filter: ?*const fn (filename: []const u8) bool) !Report {
     var arena = std.heap.ArenaAllocator.init(self.page_alloc);
+    const arena_alloc = arena.allocator();
     defer arena.deinit();
 
-    const report = Report{};
-    var timer = std.time.Timer.start() catch unreachable;
+    var report = Report{};
+    var timer = try Timer.start();
 
     var it = self.src_dir.iterate();
     while (try it.next()) |entry| {
@@ -139,14 +142,7 @@ pub fn processAll(self: *Self, filter: ?*const fn (filename: []const u8) bool) !
             continue;
         };
         defer _ = arena.reset(.retain_capacity);
-
-        if (self.processModel(arena.allocator(), entry.name)) |issues| {
-            _ = timer.lap();
-            issues.deinit();
-        } else |e| {
-            _ = timer.lap();
-            return e;
-        }
+        try processModelAndReport(self, arena_alloc, &report, &timer, entry.name);
     }
 
     return report;
@@ -156,67 +152,80 @@ fn isValidModelFilename(name: []const u8) bool {
     return name.len > 5 and std.mem.endsWith(u8, name, ".json");
 }
 
-fn processModel(self: *Self, arena: Allocator, json_name: []const u8) !IssuesBag {
-    std.log.info("Processing model `{s}`", .{json_name});
-
+fn processModelAndReport(self: *Self, arena: Allocator, report: *Report, timer: *Timer, json_name: []const u8) !void {
     var issues = IssuesBag.init(arena);
-    errdefer issues.deinit();
+    defer issues.deinit();
 
-    const model = self.parseModel(arena, json_name, &issues) catch |e| {
-        switch (e) {
+    std.log.debug("Processing model `{s}`", .{json_name});
+    const success = self.processModel(arena, &issues, json_name);
+    const duration = timer.lap();
+    _ = duration; // autofix
+
+    if (success) {
+        _ = report; // autofix
+    } else |err| switch (self.process_policy.model) {
+        .abort => return err,
+        .skip => {
+            _ = report; // autofix
+
+            switch (err) {
+                error.SkipModel, IssuesBag.PolicyAbortError => {},
+                else => issues.add(.{ .process_error = err }) catch |add_err| {
+                    std.log.err("Process error: {s}", .{@errorName(err)});
+                    return add_err;
+                },
+            }
+        },
+    }
+}
+
+fn processModel(self: *Self, arena: Allocator, issues: *IssuesBag, json_name: []const u8) !void {
+    const model = self.parseModel(arena, json_name, issues) catch |err| {
+        switch (err) {
             IssuesBag.PolicyAbortError => {},
-            else => issues.add(.{ .parse_error = e }) catch unreachable,
+            else => issues.add(.{ .parse_error = err }) catch |add_err| {
+                std.log.err("Parse error: {s}", .{@errorName(err)});
+                return add_err;
+            },
         }
-        return e;
-    };
-    try self.generateModel(arena, json_name, &model, &issues) catch |e| {
-        switch (e) {
-            IssuesBag.PolicyAbortError => {},
-            else => issues.add(.{ .codegen_error = e }) catch unreachable,
-        }
-        return e;
+        return error.SkipModel;
     };
 
-    return issues;
+    const slug = json_name[0 .. json_name.len - ".json".len];
+    var out_dir = try self.out_dir.makeOpenPath(slug, .{});
+    errdefer out_dir.deleteTree(slug) catch unreachable;
+    defer out_dir.close();
+
+    self.generateScript(arena, &model, out_dir, issues) catch |err| {
+        switch (err) {
+            IssuesBag.PolicyAbortError => {},
+            else => issues.add(.{ .codegen_error = err }) catch |add_err| {
+                std.log.err("Codegen error: {s}", .{@errorName(err)});
+                return add_err;
+            },
+        }
+        return error.SkipModel;
+    };
+    try self.generateReadme(arena, &model, out_dir, slug);
 }
 
 fn parseModel(self: *Self, arena: Allocator, json_name: []const u8, issues: *IssuesBag) !SmithyModel {
-    var json_file = self.src_dir.openFile(json_name, .{}) catch |e| {
-        return e;
-    };
+    var json_file = try self.src_dir.openFile(json_name, .{});
     defer json_file.close();
 
-    var json = JsonReader.initFile(arena, json_file) catch |e| {
-        return e;
-    };
-    defer json.deinit();
+    var reader = try JsonReader.initFile(arena, json_file);
+    defer reader.deinit();
 
-    return parse.parseJson(arena, self.traits, self.parse_policy, issues, &json);
+    return parse.parseJson(arena, self.traits, self.parse_policy, issues, &reader);
 }
 
-fn generateModel(
-    self: *Self,
-    arena: Allocator,
-    json_name: []const u8,
-    model: *const SmithyModel,
-    issues: *IssuesBag,
-) !void {
-    const slug = json_name[0 .. json_name.len - ".json".len];
-    var out_dir = self.out_dir.makeOpenPath(slug, .{}) catch |e| {
-        return e;
-    };
-    errdefer out_dir.deleteTree(slug) catch unreachable;
-
-    var file = out_dir.createFile("client.zig", .{}) catch |e| {
-        return e;
-    };
-    errdefer file.close();
+fn generateScript(self: *Self, arena: Allocator, model: *const SmithyModel, dir: fs.Dir, issues: *IssuesBag) !void {
+    var file = try dir.createFile("client.zig", .{});
+    defer file.close();
 
     const zig_head = @embedFile("template/head.zig.template") ++ "\n\n";
-    file.writer().writeAll(zig_head) catch |e| {
-        return e;
-    };
-    if (generate.writeScript(
+    try file.writer().writeAll(zig_head);
+    try generate.writeScript(
         arena,
         file.writer().any(),
         self.codegen_hooks,
@@ -224,46 +233,35 @@ fn generateModel(
         issues,
         model,
         model.service,
-    )) {
-        file.close();
-    } else |e| {
-        return e;
+    );
+}
+
+fn generateReadme(self: *Self, arena: Allocator, model: *const SmithyModel, dir: fs.Dir, slug: []const u8) !void {
+    const hook = self.process_hooks.writeReadme orelse return;
+    const title =
+        trt_docs.Title.get(model, model.service) orelse
+        try titleCase(arena, slug);
+    var intro: ?[]const u8 = null;
+    if (trt_docs.Documentation.get(model, model.service)) |docs| {
+        var intro_buffer = std.ArrayList(u8).init(arena);
+        errdefer intro_buffer.deinit();
+        var intro_writer = StackWriter.init(arena, intro_buffer.writer().any(), .{});
+        var md = Markdown.init(&intro_writer);
+        try md.writeSource(docs);
+        try md.end();
+        intro = try intro_buffer.toOwnedSlice();
     }
 
-    if (self.process_hooks.writeReadme) |readmeHook| {
-        const title = trt_docs.Title.get(model, model.service) orelse titleCase(arena, slug) catch |e| {
-            return e;
-        };
-        var intro: ?[]const u8 = null;
-        if (trt_docs.Documentation.get(model, model.service)) |docs| {
-            var intro_buffer = std.ArrayList(u8).init(arena);
-            errdefer intro_buffer.deinit();
-            var intro_writer = StackWriter.init(arena, intro_buffer.writer().any(), .{});
-            var md = Markdown.init(&intro_writer);
-            try md.writeSource(docs);
-            try md.end();
-            intro = try intro_buffer.toOwnedSlice();
-        }
+    var file = try dir.createFile("README.md", .{});
+    defer file.close();
 
-        file = out_dir.createFile("README.md", .{}) catch |e| {
-            return e;
-        };
-        const md_head = @embedFile("template/head.md.template") ++ "\n\n";
-        file.writer().writeAll(md_head) catch |e| {
-            return e;
-        };
-        if (readmeHook(file.writer().any(), model, Hooks.ReadmeMeta{
-            .slug = slug,
-            .title = title,
-            .intro = intro,
-        })) {
-            file.close();
-        } else |e| {
-            return e;
-        }
-    }
-
-    out_dir.close();
+    const md_head = @embedFile("template/head.md.template") ++ "\n\n";
+    try file.writer().writeAll(md_head);
+    try hook(file.writer().any(), model, Hooks.ReadmeMeta{
+        .slug = slug,
+        .title = title,
+        .intro = intro,
+    });
 }
 
 pub const Report = struct {
