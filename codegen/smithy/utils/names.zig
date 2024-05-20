@@ -93,7 +93,6 @@ pub fn titleCase(arena: Allocator, input: []const u8) ![]const u8 {
     var buffer = try std.ArrayList(u8).initCapacity(arena, input.len);
     errdefer buffer.deinit();
 
-    // TODO
     var prev_upper = true;
     var pending_upper = true;
     for (input) |c| {

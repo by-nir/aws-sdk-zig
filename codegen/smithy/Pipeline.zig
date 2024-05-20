@@ -27,6 +27,7 @@ const Options = struct {
     /// Relative to the working directory.
     out_dir_relative: []const u8,
     parse_policy: parse.Policy,
+    codegen_policy: generate.Policy,
 };
 
 pub const Hooks = struct {
@@ -46,25 +47,27 @@ gpa_alloc: Allocator,
 page_alloc: Allocator,
 issues: IssuesBag,
 traits: syb_traits.TraitsManager,
-pipe_hooks: Hooks,
-gen_hooks: generate.Hooks,
+process_hooks: Hooks,
+codegen_hooks: generate.Hooks,
 src_dir: fs.Dir,
 out_dir: fs.Dir,
 parse_policy: parse.Policy,
+codegen_policy: generate.Policy,
 
 pub fn init(
     gpa_alloc: Allocator,
     page_alloc: Allocator,
     options: Options,
-    pipe_hooks: Hooks,
-    gen_hooks: generate.Hooks,
+    process_hooks: Hooks,
+    codegen_hooks: generate.Hooks,
 ) !*Self {
     const self = try gpa_alloc.create(Self);
     self.gpa_alloc = gpa_alloc;
     self.page_alloc = page_alloc;
+    self.process_hooks = process_hooks;
+    self.codegen_hooks = codegen_hooks;
     self.parse_policy = options.parse_policy;
-    self.pipe_hooks = pipe_hooks;
-    self.gen_hooks = gen_hooks;
+    self.codegen_policy = options.codegen_policy;
     errdefer gpa_alloc.destroy(self);
 
     self.traits = syb_traits.TraitsManager{};
@@ -107,8 +110,9 @@ pub fn processFiles(self: *Self, filenames: []const []const u8) !Report {
         if (!isValidModelFilename(filename)) continue;
         defer _ = arena.reset(.retain_capacity);
 
-        if (self.processModel(arena.allocator(), filename)) {
+        if (self.processModel(arena.allocator(), filename)) |issues| {
             _ = timer.lap();
+            issues.deinit();
         } else |e| {
             _ = timer.lap();
             return e;
@@ -136,8 +140,9 @@ pub fn processAll(self: *Self, filter: ?*const fn (filename: []const u8) bool) !
         };
         defer _ = arena.reset(.retain_capacity);
 
-        if (self.processModel(arena.allocator(), entry.name)) {
+        if (self.processModel(arena.allocator(), entry.name)) |issues| {
             _ = timer.lap();
+            issues.deinit();
         } else |e| {
             _ = timer.lap();
             return e;
@@ -151,14 +156,28 @@ fn isValidModelFilename(name: []const u8) bool {
     return name.len > 5 and std.mem.endsWith(u8, name, ".json");
 }
 
-fn processModel(self: *Self, arena: Allocator, json_name: []const u8) !void {
+fn processModel(self: *Self, arena: Allocator, json_name: []const u8) !IssuesBag {
     std.log.info("Processing model `{s}`", .{json_name});
 
     var issues = IssuesBag.init(arena);
-    defer issues.deinit();
+    errdefer issues.deinit();
 
-    const model = try self.parseModel(arena, json_name, &issues);
-    try self.generateModel(arena, json_name, &model);
+    const model = self.parseModel(arena, json_name, &issues) catch |e| {
+        switch (e) {
+            IssuesBag.PolicyAbortError => {},
+            else => issues.add(.{ .parse_error = e }) catch unreachable,
+        }
+        return e;
+    };
+    try self.generateModel(arena, json_name, &model, &issues) catch |e| {
+        switch (e) {
+            IssuesBag.PolicyAbortError => {},
+            else => issues.add(.{ .codegen_error = e }) catch unreachable,
+        }
+        return e;
+    };
+
+    return issues;
 }
 
 fn parseModel(self: *Self, arena: Allocator, json_name: []const u8, issues: *IssuesBag) !SmithyModel {
@@ -172,24 +191,16 @@ fn parseModel(self: *Self, arena: Allocator, json_name: []const u8, issues: *Iss
     };
     defer json.deinit();
 
-    if (parse.parseJson(
-        arena,
-        self.traits,
-        self.parse_policy,
-        issues,
-        &json,
-    )) |model| {
-        return model;
-    } else |e| {
-        switch (e) {
-            error.AbortPolicy => {},
-            else => |err| issues.add(.{ .parse_model_error = @errorName(err) }) catch unreachable,
-        }
-        return e;
-    }
+    return parse.parseJson(arena, self.traits, self.parse_policy, issues, &json);
 }
 
-fn generateModel(self: *Self, arena: Allocator, json_name: []const u8, model: *const SmithyModel) !void {
+fn generateModel(
+    self: *Self,
+    arena: Allocator,
+    json_name: []const u8,
+    model: *const SmithyModel,
+    issues: *IssuesBag,
+) !void {
     const slug = json_name[0 .. json_name.len - ".json".len];
     var out_dir = self.out_dir.makeOpenPath(slug, .{}) catch |e| {
         return e;
@@ -207,9 +218,11 @@ fn generateModel(self: *Self, arena: Allocator, json_name: []const u8, model: *c
     };
     if (generate.writeScript(
         arena,
-        self.gen_hooks,
-        model,
         file.writer().any(),
+        self.codegen_hooks,
+        self.codegen_policy,
+        issues,
+        model,
         model.service,
     )) {
         file.close();
@@ -217,7 +230,7 @@ fn generateModel(self: *Self, arena: Allocator, json_name: []const u8, model: *c
         return e;
     }
 
-    if (self.pipe_hooks.writeReadme) |readmeHook| {
+    if (self.process_hooks.writeReadme) |readmeHook| {
         const title = trt_docs.Title.get(model, model.service) orelse titleCase(arena, slug) catch |e| {
             return e;
         };

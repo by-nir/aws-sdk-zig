@@ -18,10 +18,8 @@ const trt_refine = @import("prelude/refine.zig");
 const Self = @This();
 
 pub const Policy = struct {
-    property: Resolution,
-    trait: Resolution,
-
-    pub const Resolution = enum { skip, abort };
+    property: IssuesBag.PolicyResolution,
+    trait: IssuesBag.PolicyResolution,
 };
 
 const Context = struct {
@@ -143,13 +141,13 @@ fn parseProp(self: *Self, prop_name: []const u8, ctx: Context) !void {
             .skip => {
                 try self.issues.add(.{ .parse_unexpected_prop = .{
                     .context = ctx.name.?,
-                    .name = prop_name,
+                    .item = prop_name,
                 } });
                 try self.reader.skipValueOrScope();
             },
             .abort => {
                 std.log.err("Unexpected property: `{s}${s}`.", .{ ctx.name.?, prop_name });
-                return error.AbortPolicy;
+                return IssuesBag.PolicyAbortError;
             },
         },
     }
@@ -256,13 +254,13 @@ fn parseTraits(self: *Self, parent_name: []const u8, parent_id: SmithyId) !void 
                 .skip => {
                     try self.issues.add(.{ .parse_unknown_trait = .{
                         .context = parent_name,
-                        .name = trait_name,
+                        .item = trait_name,
                     } });
                     try self.reader.skipValueOrScope();
                 },
                 .abort => {
                     std.log.err("Unknown trait: {s} ({s}).", .{ trait_name, parent_name });
-                    return error.AbortPolicy;
+                    return IssuesBag.PolicyAbortError;
                 },
             },
             else => return e,
@@ -546,11 +544,11 @@ test "parseJson" {
     try testing.expectEqualDeep(&[_]IssuesBag.Issue{
         .{ .parse_unknown_trait = .{
             .context = "test.aggregate#Structure$numberMember",
-            .name = "test.trait#Unknown",
+            .item = "test.trait#Unknown",
         } },
         .{ .parse_unexpected_prop = .{
             .context = "test.aggregate#Structure",
-            .name = "unexpected",
+            .item = "unexpected",
         } },
     }, issues.all());
 

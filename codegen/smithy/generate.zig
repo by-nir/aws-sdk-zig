@@ -13,6 +13,7 @@ const syb_shape = @import("symbols/shapes.zig");
 const SmithyModel = syb_shape.SmithyModel;
 const Script = @import("generate/Zig.zig");
 const names = @import("utils/names.zig");
+const IssuesBag = @import("utils/IssuesBag.zig");
 const StackWriter = @import("utils/StackWriter.zig");
 const trt_http = @import("prelude/http.zig");
 const trt_docs = @import("prelude/docs.zig");
@@ -22,7 +23,11 @@ const trt_constr = @import("prelude/constraint.zig");
 
 const Self = @This();
 
-pub const Policy = struct {};
+pub const Policy = struct {
+    unknown_shape: IssuesBag.PolicyResolution,
+    invalid_root: IssuesBag.PolicyResolution,
+    shape_codegen_fail: IssuesBag.PolicyResolution,
+};
 
 pub const Hooks = struct {
     writeScriptHead: ?*const fn (Allocator, *Script) anyerror!void = null,
@@ -50,6 +55,8 @@ pub const Hooks = struct {
 
 arena: Allocator,
 hooks: Hooks,
+policy: Policy,
+issues: *IssuesBag,
 model: *const SmithyModel,
 service_errors: ?[]const SmithyId = null,
 shape_queue: std.DoublyLinkedList(SmithyId) = .{},
@@ -57,14 +64,18 @@ shape_visited: std.AutoHashMapUnmanaged(SmithyId, void) = .{},
 
 pub fn writeScript(
     arena: Allocator,
-    hooks: Hooks,
-    model: *const SmithyModel,
     output: std.io.AnyWriter,
+    hooks: Hooks,
+    policy: Policy,
+    issues: *IssuesBag,
+    model: *const SmithyModel,
     root: SmithyId,
 ) !void {
     var self = Self{
         .arena = arena,
         .hooks = hooks,
+        .policy = policy,
+        .issues = issues,
         .model = model,
     };
 
@@ -80,7 +91,7 @@ pub fn writeScript(
 
     try self.enqueueShape(root);
     while (self.dequeueShape()) |id| {
-        try self.writeScriptShape(&script, id);
+        try self.writeShape(&script, id);
     }
 
     // End script with empty line (after imports)
@@ -100,11 +111,16 @@ test "writeScript" {
     try test_model.setupShapeQueue(&model);
     defer model.deinit(test_alloc);
 
+    var issues = IssuesBag.init(test_alloc);
+    defer issues.deinit();
+
     try writeScript(
         arena.allocator(),
-        TEST_HOOKS,
-        &model,
         buffer_writer,
+        TEST_HOOKS,
+        TEST_POLICY,
+        &issues,
+        &model,
         SmithyId.of("test#Root"),
     );
     try testing.expectEqualStrings(
@@ -116,28 +132,75 @@ test "writeScript" {
     , buffer.items);
 }
 
-fn writeScriptShape(self: *Self, script: *Script, id: SmithyId) !void {
-    const shape = try self.model.tryGetShape(id);
-    switch (shape) {
-        .list => |m| try self.writeListShape(script, id, m),
-        .map => |m| try self.writeMapShape(script, id, m),
-        .str_enum => |m| try self.writeStrEnumShape(script, id, m),
-        .int_enum => |m| try self.writeIntEnumShape(script, id, m),
-        .tagged_uinon => |m| try self.writeUnionShape(script, id, m),
-        .structure => |m| try self.writeStructShape(script, id, m),
-        .service => |t| try self.writeServiceShape(script, id, t),
-        .resource => |t| try self.writeResourceShape(script, id, t),
-        .string => {
-            return if (trt_constr.Enum.get(self.model, id)) |members|
-                self.writeTraitEnumShape(script, id, members)
-            else
-                error.InvalidRootShape;
+fn writeShape(self: *Self, script: *Script, id: SmithyId) !void {
+    const shape = self.model.getShape(id) orelse switch (self.policy.unknown_shape) {
+        .skip => {
+            try self.issues.add(.{ .codegen_unknown_shape = @intFromEnum(id) });
+            return;
         },
-        else => return error.InvalidRootShape,
+        .abort => {
+            std.log.err("Unknown shape: `{}`.", .{id});
+            return IssuesBag.PolicyAbortError;
+        },
+    };
+
+    (switch (shape) {
+        .list => |m| self.writeListShape(script, id, m),
+        .map => |m| self.writeMapShape(script, id, m),
+        .str_enum => |m| self.writeStrEnumShape(script, id, m),
+        .int_enum => |m| self.writeIntEnumShape(script, id, m),
+        .tagged_uinon => |m| self.writeUnionShape(script, id, m),
+        .structure => |m| self.writeStructShape(script, id, m),
+        .service => |t| self.writeServiceShape(script, id, t),
+        .resource => |t| self.writeResourceShape(script, id, t),
+        .string => if (trt_constr.Enum.get(self.model, id)) |members|
+            self.writeTraitEnumShape(script, id, members),
+        else => {},
+    }) catch |e| {
+        const shape_name = self.model.getName(id);
+        switch (self.policy.shape_codegen_fail) {
+            .skip => {
+                try self.issues.add(.{ .codegen_shape_fail = .{
+                    .err = e,
+                    .item = if (shape_name) |n|
+                        .{ .name = n }
+                    else
+                        .{ .id = @intFromEnum(id) },
+                } });
+                return;
+            },
+            .abort => {
+                if (shape_name) |n|
+                    std.log.err("Shape `{s}` codegen failed: `{s}`.", .{ n, @errorName(e) })
+                else
+                    std.log.err("Shape `{}` codegen failed: `{s}`.", .{ id, @errorName(e) });
+                return IssuesBag.PolicyAbortError;
+            },
+        }
+    };
+
+    const shape_name = self.model.getName(id);
+    switch (self.policy.invalid_root) {
+        .skip => {
+            try self.issues.add(.{
+                .codegen_invalid_root = if (shape_name) |n|
+                    .{ .name = n }
+                else
+                    .{ .id = @intFromEnum(id) },
+            });
+            return;
+        },
+        .abort => {
+            if (shape_name) |n|
+                std.log.err("Invalid root shape: `{s}`.", .{n})
+            else
+                std.log.err("Invalid root shape: `{}`.", .{id});
+            return IssuesBag.PolicyAbortError;
+        },
     }
 }
 
-test "writeScriptShape" {
+test "writeShape" {
     var tester = try ScriptTester.init();
     defer tester.deinit();
 
@@ -146,14 +209,16 @@ test "writeScriptShape" {
     defer model.deinit(test_alloc);
 
     var self = Self{
-        .arena = tester.arena.allocator(),
+        .arena = tester.allocator(),
         .hooks = TEST_HOOKS,
+        .policy = TEST_POLICY,
         .model = &model,
+        .issues = tester.issues,
     };
-    try testing.expectError(
-        error.InvalidRootShape,
-        self.writeScriptShape(tester.script, SmithyId.of("test#Unit")),
-    );
+    try self.writeShape(tester.script, SmithyId.of("test#Unit"));
+    try testing.expectEqualDeep(&.{
+        IssuesBag.Issue{ .codegen_invalid_root = .{ .id = @intFromEnum(SmithyId.of("test#Unit")) } },
+    }, tester.issues.list.items);
     try tester.expect("");
 }
 
@@ -196,12 +261,14 @@ test "writeListShape" {
     defer model.deinit(test_alloc);
 
     var self = Self{
-        .arena = tester.arena.allocator(),
+        .arena = tester.allocator(),
         .hooks = TEST_HOOKS,
+        .policy = TEST_POLICY,
         .model = &model,
+        .issues = tester.issues,
     };
-    try self.writeScriptShape(tester.script, SmithyId.of("test#List"));
-    try self.writeScriptShape(tester.script, SmithyId.of("test#Set"));
+    try self.writeShape(tester.script, SmithyId.of("test#List"));
+    try self.writeShape(tester.script, SmithyId.of("test#Set"));
     try tester.expect(
         \\pub const List = []const ?i32;
         \\pub const Set = *const _imp_std.AutoArrayHashMapUnmanaged(i32, void);
@@ -243,11 +310,13 @@ test "writeMapShape" {
     defer model.deinit(test_alloc);
 
     var self = Self{
-        .arena = tester.arena.allocator(),
+        .arena = tester.allocator(),
         .hooks = TEST_HOOKS,
+        .policy = TEST_POLICY,
         .model = &model,
+        .issues = tester.issues,
     };
-    try self.writeScriptShape(tester.script, SmithyId.of("test#Map"));
+    try self.writeShape(tester.script, SmithyId.of("test#Map"));
     try tester.expect("pub const Map = *const _imp_std.AutoArrayHashMapUnmanaged(i32, ?i32);");
 }
 
@@ -376,12 +445,14 @@ test "writeEnumShape" {
     defer model.deinit(test_alloc);
 
     var self = Self{
-        .arena = tester.arena.allocator(),
+        .arena = tester.allocator(),
         .hooks = TEST_HOOKS,
+        .policy = TEST_POLICY,
         .model = &model,
+        .issues = tester.issues,
     };
-    try self.writeScriptShape(tester.script, SmithyId.of("test#Enum"));
-    try self.writeScriptShape(tester.script, SmithyId.of("test#EnumTrt"));
+    try self.writeShape(tester.script, SmithyId.of("test#Enum"));
+    try self.writeShape(tester.script, SmithyId.of("test#EnumTrt"));
 
     const BODY =
         \\    /// Used for backwards compatibility when adding new values.
@@ -468,11 +539,13 @@ test "writeIntEnumShape" {
     defer model.deinit(test_alloc);
 
     var self = Self{
-        .arena = tester.arena.allocator(),
+        .arena = tester.allocator(),
         .hooks = TEST_HOOKS,
+        .policy = TEST_POLICY,
         .model = &model,
+        .issues = tester.issues,
     };
-    try self.writeScriptShape(tester.script, SmithyId.of("test#IntEnum"));
+    try self.writeShape(tester.script, SmithyId.of("test#IntEnum"));
     try tester.expect(
         \\/// An **integer-based** enumeration.
         \\pub const IntEnum = enum(i32) {
@@ -533,11 +606,13 @@ test "writeUnionShape" {
     defer model.deinit(test_alloc);
 
     var self = Self{
-        .arena = tester.arena.allocator(),
+        .arena = tester.allocator(),
         .hooks = TEST_HOOKS,
+        .policy = TEST_POLICY,
         .model = &model,
+        .issues = tester.issues,
     };
-    try self.writeScriptShape(tester.script, SmithyId.of("test#Union"));
+    try self.writeShape(tester.script, SmithyId.of("test#Union"));
     try tester.expect(
         \\pub const Union = union(enum) {
         \\    foo,
@@ -631,12 +706,14 @@ test "writeStructShape" {
     defer model.deinit(test_alloc);
 
     var self = Self{
-        .arena = tester.arena.allocator(),
+        .arena = tester.allocator(),
         .hooks = TEST_HOOKS,
+        .policy = TEST_POLICY,
         .model = &model,
+        .issues = tester.issues,
     };
-    try self.writeScriptShape(tester.script, SmithyId.of("test#Struct"));
-    try self.writeScriptShape(tester.script, SmithyId.of("test#Error"));
+    try self.writeShape(tester.script, SmithyId.of("test#Struct"));
+    try self.writeShape(tester.script, SmithyId.of("test#Error"));
     try tester.expect(
         \\pub const Struct = struct {
         \\    mixed: ?bool = null,
@@ -684,9 +761,11 @@ test "writeOperationShapes" {
     defer model.deinit(test_alloc);
 
     var self = Self{
-        .arena = tester.arena.allocator(),
+        .arena = tester.allocator(),
         .hooks = TEST_HOOKS,
+        .policy = TEST_POLICY,
         .model = &model,
+        .issues = tester.issues,
     };
     try self.writeOperationShapes(tester.script, SmithyId.of("test.serve#Operation"));
     try tester.expect(
@@ -815,9 +894,11 @@ test "writeOperationFunc" {
     defer model.deinit(test_alloc);
 
     var self = Self{
-        .arena = tester.arena.allocator(),
+        .arena = tester.allocator(),
         .hooks = TEST_HOOKS,
+        .policy = TEST_POLICY,
         .model = &model,
+        .issues = tester.issues,
     };
     try self.writeOperationFunc(tester.script, SmithyId.of("test.serve#Operation"));
     try tester.expect(
@@ -908,11 +989,13 @@ test "writeResourceShape" {
     defer model.deinit(test_alloc);
 
     var self = Self{
-        .arena = tester.arena.allocator(),
+        .arena = tester.allocator(),
         .hooks = TEST_HOOKS,
+        .policy = TEST_POLICY,
         .model = &model,
+        .issues = tester.issues,
     };
-    try self.writeScriptShape(tester.script, SmithyId.of("test.serve#Resource"));
+    try self.writeShape(tester.script, SmithyId.of("test.serve#Resource"));
     try tester.expect(
         \\pub const Resource = struct {
         \\    forecast_id: []const u8,
@@ -981,11 +1064,13 @@ test "writeServiceShape" {
     defer model.deinit(test_alloc);
 
     var self = Self{
-        .arena = tester.arena.allocator(),
+        .arena = tester.allocator(),
         .hooks = TEST_HOOKS,
+        .policy = TEST_POLICY,
         .model = &model,
+        .issues = tester.issues,
     };
-    try self.writeScriptShape(tester.script, SmithyId.of("test.serve#Service"));
+    try self.writeShape(tester.script, SmithyId.of("test.serve#Service"));
     try tester.expect(
         \\/// Some _service_...
         \\pub const Service = struct {
@@ -1096,7 +1181,9 @@ test "getServiceErrors" {
     var self = Self{
         .arena = test_alloc,
         .hooks = TEST_HOOKS,
+        .policy = TEST_POLICY,
         .model = &model,
+        .issues = undefined,
     };
     defer self.shape_visited.deinit(test_alloc);
 
@@ -1124,7 +1211,9 @@ test "shapes queue" {
     var self = Self{
         .arena = test_alloc,
         .hooks = TEST_HOOKS,
+        .policy = TEST_POLICY,
         .model = undefined,
+        .issues = undefined,
     };
     defer self.shape_visited.deinit(test_alloc);
 
@@ -1138,6 +1227,12 @@ test "shapes queue" {
     try testing.expectEqualDeep(SmithyId.of("C"), self.dequeueShape());
     try testing.expectEqual(null, self.dequeueShape());
 }
+
+const TEST_POLICY = Policy{
+    .unknown_shape = .skip,
+    .invalid_root = .skip,
+    .shape_codegen_fail = .skip,
+};
 
 const TEST_HOOKS = Hooks{
     .writeScriptHead = hookScriptHead,
@@ -1176,6 +1271,7 @@ const ScriptTester = struct {
     buffer_writer: *std.ArrayList(u8).Writer,
     writer: *StackWriter,
     script: *Script,
+    issues: *IssuesBag,
 
     pub fn init() !ScriptTester {
         const arena = try test_alloc.create(std.heap.ArenaAllocator);
@@ -1211,12 +1307,17 @@ const ScriptTester = struct {
         const imp_std = try script.import("std");
         assert(std.mem.eql(u8, imp_std.name, "_imp_std"));
 
+        const issues = try test_alloc.create(IssuesBag);
+        errdefer test_alloc.destroy(script);
+        issues.* = IssuesBag.init(test_alloc);
+
         return .{
             .arena = arena,
             .buffer = buffer,
             .buffer_writer = buffer_writer,
             .writer = writer,
             .script = script,
+            .issues = issues,
         };
     }
 
@@ -1232,6 +1333,13 @@ const ScriptTester = struct {
 
         self.arena.deinit();
         test_alloc.destroy(self.arena);
+
+        self.issues.deinit();
+        test_alloc.destroy(self.issues);
+    }
+
+    pub fn allocator(self: *ScriptTester) Allocator {
+        return self.arena.allocator();
     }
 
     pub fn expect(self: *ScriptTester, comptime expected: []const u8) !void {

@@ -19,11 +19,14 @@ pub usingnamespace syb_shapes;
 const syb_traits = @import("symbols/traits.zig");
 pub const TraitsRegistry = syb_traits.TraitsRegistry;
 
+const IssuesBag = @import("utils/IssuesBag.zig");
+pub const PolicyResolution = IssuesBag.PolicyResolution;
+
 pub const JsonReader = @import("utils/JsonReader.zig");
 
 test {
     _ = @import("utils/names.zig");
-    _ = @import("utils/IssuesBag.zig");
+    _ = IssuesBag;
     _ = JsonReader;
     _ = @import("utils/StackWriter.zig");
     _ = syb_id;

@@ -34,6 +34,11 @@ pub fn main() !void {
         .src_dir_absolute = models_path,
         .out_dir_relative = install_path,
         .parse_policy = .{ .property = .abort, .trait = .skip },
+        .codegen_policy = .{
+            .unknown_shape = .abort,
+            .invalid_root = .abort,
+            .shape_codegen_fail = .abort,
+        },
     }, .{
         .writeReadme = writeReadme,
     }, .{
