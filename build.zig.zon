@@ -5,9 +5,8 @@
     //.minimum_zig_version = "0.13.0",
 
     .dependencies = .{
-        .https12 = .{
-            .url = "git+https://github.com/melonedo/zig-tls12.git#f7d30b2367186bb7ac51cc55e25968626a9f39a4",
-            .hash = "1220bb536438e7f0f6b5bdb86039b7de33116ea52198eff0f1ac9f39ab10e487fbf6",
+        .@"aws-zig" = .{
+            .path = "aws",
         },
         .@"aws-models" = .{
             .url = "git+https://github.com/by-nir/aws-models.git#acfff38d7ad9067e3cc8f88f35c5277eaffbfc1c",
@@ -18,10 +17,11 @@
 
     .paths = .{
         "build.zig",
+        "build.codegen.zig",
         "build.zig.zon",
-        "codegen",
-        "src",
+        "aws",
         "sdk",
+        "smithy",
         "LICENSE",
         "README.md",
     },

@@ -26,24 +26,20 @@ increased **platform portability**.
 
 Parts of this codebase are auto-generated, **do not modify them directly!**
 
-| 📁 | 👁️[^1] | 🏭[^2] | Description |
-|:-|:-:|:-:|:-|
-| [sdk](sdk) | 👁️ | 🏭 | AWS SDKs for Zig |
-| [src/types](src/types) | 👁️ | | Common types shared by all modules |
-| [src/runtime](src/runtime) | | | Shared client for interacting with _AWS_ services |
-| [codegen/aws](codegen) | | | SDKs source generation pipeline |
-| [codegen/smithy](codegen/smithy) | | | [Smithy 2.0](https://smithy.io/2.0) client generator |
-
-[^1]: Module exposed publicly
-[^2]: Source auto-generated _(do not modify manyally)_
+| 📁 | Generated | Description |
+|:-|:-:|:-|
+| [sdk](sdk) | 🏭 | AWS SDKs for Zig |
+| [aws/types](aws/types) | | Common types shared by all _AWS modules_ |
+| [aws/client](aws/client) | | Base client runtime for _AWS SDKs_ |
+| [aws/codegen](aws/codegen) | | SDKs source generation pipeline |
+| [smithy/client](smithy/client) | |[Smithy 2.0](https://smithy.io/2.0) client runtime |
+| [smithy/codegen](smithy/codegen) | | [Smithy 2.0](https://smithy.io/2.0) code generator |
 
 ### CLI Commands
 
-- `zig build codegen` Generate the AWS SDKs source code.
+- `zig build --build-file build.codegen.zig` Generate the AWS SDKs source code.
     - Optionally specify one or more `-Dfilter=sdk_codename` to select specific services.
-- `zig build test:codegen` Run codegen’s unit tests.
-- `zig build test:runtime` Run runtime’s unit tests.
-- `zig build test:sdk:<service>` Run generated SDK service’s unit tests.
+- `zig build test:<service>` Run generated SDK service’s unit tests.
 
 ## License
 
