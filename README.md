@@ -39,13 +39,11 @@ Parts of this codebase are auto-generated, **do not modify them directly!**
 
 ### CLI Commands
 
-The source generation commands are available through the following CLI commands:
-```zig build --build-file build.codegen.zig <command>```
-
-- `aws` Generate the AWS SDKs source code.
+- `zig build codegen` Generate the AWS SDKs source code.
     - Optionally specify one or more `-Dfilter=sdk_codename` to select specific services.
-- `test:aws` Run unit tests for the AWS SDKs generation.
-- `test:smithy` Run unit tests for the Smithy library.
+- `zig build test:codegen` Run codegen’s unit tests.
+- `zig build test:runtime` Run runtime’s unit tests.
+- `zig build test:sdk:<service>` Run generated SDK service’s unit tests.
 
 ## License
 

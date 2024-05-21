@@ -1,6 +1,7 @@
 //! Produces Zig source code from a Smithy model.
 const std = @import("std");
 const fs = std.fs;
+const log = std.log;
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const testing = std.testing;
@@ -139,7 +140,7 @@ fn writeShape(self: *Self, script: *Script, id: SmithyId) !void {
             return;
         },
         .abort => {
-            std.log.err("Unknown shape: `{}`.", .{id});
+            log.err("Unknown shape: `{}`.", .{id});
             return IssuesBag.PolicyAbortError;
         },
     };
@@ -172,9 +173,9 @@ fn writeShape(self: *Self, script: *Script, id: SmithyId) !void {
                 },
                 .abort => {
                     if (shape_name) |n|
-                        std.log.err("Invalid root shape: `{s}`.", .{n})
+                        log.err("Invalid root shape: `{s}`.", .{n})
                     else
-                        std.log.err("Invalid root shape: `{}`.", .{id});
+                        log.err("Invalid root shape: `{}`.", .{id});
                     return IssuesBag.PolicyAbortError;
                 },
             },
@@ -188,9 +189,9 @@ fn writeShape(self: *Self, script: *Script, id: SmithyId) !void {
                 },
                 .abort => {
                     if (shape_name) |n|
-                        std.log.err("Shape `{s}` codegen failed: `{s}`.", .{ n, @errorName(e) })
+                        log.err("Shape `{s}` codegen failed: `{s}`.", .{ n, @errorName(e) })
                     else
-                        std.log.err("Shape `{}` codegen failed: `{s}`.", .{ id, @errorName(e) });
+                        log.err("Shape `{}` codegen failed: `{s}`.", .{ id, @errorName(e) });
                     return IssuesBag.PolicyAbortError;
                 },
             },

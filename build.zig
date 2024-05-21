@@ -28,10 +28,43 @@ pub fn build(b: *std.Build) void {
     });
 
     //
+    // Codegen
+    //
+
+    const codegen_step = b.step("codegen", "Generate AWS SDKs");
+    const codegen_filter = b.option(
+        []const []const u8,
+        "filter",
+        "Whitelist the resources to generate",
+    );
+    const codegen_args = [_][]const u8{ "zig", "build", "--build-file", "build.codegen.zig" };
+    codegen_step.dependOn(&b.addSystemCommand(
+        if (codegen_filter) |filters| blk: {
+            var args = std.ArrayList([]const u8)
+                .initCapacity(b.allocator, codegen_args.len + filters.len) catch break :blk &.{};
+
+            args.appendSliceAssumeCapacity(&codegen_args);
+            for (filters) |filter| {
+                args.appendAssumeCapacity(b.fmt("-Dfilter={s}", .{filter}));
+            }
+
+            break :blk args.toOwnedSlice() catch cth: {
+                args.deinit();
+                break :cth &.{};
+            };
+        } else &codegen_args,
+    ).step);
+
+    const test_codegen_step = b.step("test:codegen", "Run codegen unit tests");
+    test_codegen_step.dependOn(&b.addSystemCommand(
+        &.{ "zig", "build", "--build-file", "build.codegen.zig", "test" },
+    ).step);
+
+    //
     // Tests
     //
 
-    const test_step = b.step("test", "Run core unit tests");
+    const test_step = b.step("test:runtime", "Run runtime’s unit tests");
 
     const types_unit_tests = b.addTest(.{
         .target = target,
@@ -50,19 +83,19 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(runtime_unit_tests).step);
 
     //
-    // Generated modules
+    // Services
     //
 
-    const generated = AddGenerated.init(b, .{
+    const generated = Services.init(b, .{
         .target = target,
         .optimize = optimize,
     });
     generated.sdks("sdk", aws_types, runtime) catch |e| {
-        std.debug.print("Failed adding generated SDKs modules: {}\n", .{e});
+        std.log.err("Failed adding generated SDKs modules: {}\n", .{e});
     };
 }
 
-const AddGenerated = struct {
+const Services = struct {
     pub const Options = struct {
         target: Build.ResolvedTarget,
         optimize: std.builtin.OptimizeMode,
@@ -71,11 +104,11 @@ const AddGenerated = struct {
     b: *Build,
     options: Options,
 
-    pub fn init(b: *std.Build, options: Options) AddGenerated {
+    pub fn init(b: *std.Build, options: Options) Services {
         return .{ .b = b, .options = options };
     }
 
-    pub fn sdks(self: AddGenerated, install_path: []const u8, aws_types: *Build.Module, runtime: *Build.Module) !void {
+    pub fn sdks(self: Services, install_path: []const u8, aws_types: *Build.Module, runtime: *Build.Module) !void {
         const root = self.b.pathFromRoot(install_path);
         var dir = try std.fs.openDirAbsolute(root, .{ .iterate = true });
         defer dir.close();
@@ -88,7 +121,7 @@ const AddGenerated = struct {
     }
 
     pub fn sdk(
-        self: AddGenerated,
+        self: Services,
         install_path: []const u8,
         name: []const u8,
         aws_types: *Build.Module,
@@ -109,8 +142,8 @@ const AddGenerated = struct {
         );
 
         const test_step = self.b.step(
-            self.b.fmt("test:{s}", .{name}),
-            self.b.fmt("Run `{s}` SDK tests", .{name}),
+            self.b.fmt("test:sdk:{s}", .{name}),
+            self.b.fmt("Run `{s}` SDK unit tests", .{name}),
         );
         const unit_tests = self.b.addTest(.{
             .target = self.options.target,

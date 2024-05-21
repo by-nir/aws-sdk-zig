@@ -16,30 +16,28 @@ const trt_endpoint = @import("integrate/endpoints.zig");
 const trt_protocol = @import("integrate/protocols.zig");
 const trt_cloudform = @import("integrate/cloudformation.zig");
 
-const options = @import("options");
-const whitelist: []const []const u8 = options.filter;
-const models_path: []const u8 = options.models_path;
-const install_path: []const u8 = options.install_path;
-
-fn filterSourceModel(filename: []const u8) bool {
-    return !std.mem.startsWith(u8, filename, "sdk-");
-}
-
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const gpa_alloc = gpa.allocator();
     defer _ = gpa.deinit();
 
+    const args = try std.process.argsAlloc(gpa_alloc);
+    defer std.process.argsFree(gpa_alloc, args);
+    if (args.len != 3) return error.MissingPathsArgs;
+
     var pipeline = try Pipeline.init(gpa_alloc, std.heap.page_allocator, .{
-        .src_dir_absolute = models_path,
-        .out_dir_relative = install_path,
+        .src_dir_absolute = args[1],
+        .out_dir_relative = args[2],
         .parse_policy = .{ .property = .abort, .trait = .skip },
         .codegen_policy = .{
             .unknown_shape = .abort,
             .invalid_root = .abort,
             .shape_codegen_fail = .abort,
         },
-        .process_policy = .{ .model = .skip },
+        .process_policy = .{
+            .model = .skip,
+            .readme = .abort,
+        },
     }, .{
         .writeReadme = writeReadme,
     }, .{
@@ -60,6 +58,7 @@ pub fn main() !void {
     try pipeline.registerTraits(trt_iam.traits);
     try pipeline.registerTraits(trt_protocol.traits);
 
+    const whitelist: []const []const u8 = @import("aws-config").filter;
     if (whitelist.len == 0) {
         _ = try pipeline.processAll(filterSourceModel);
     } else {
@@ -75,6 +74,10 @@ pub fn main() !void {
         }
         _ = try pipeline.processFiles(files.items);
     }
+}
+
+fn filterSourceModel(filename: []const u8) bool {
+    return !std.mem.startsWith(u8, filename, "sdk-");
 }
 
 fn writeReadme(output: std.io.AnyWriter, model: *const SmithyModel, src_meta: PipelineHooks.ReadmeMeta) !void {

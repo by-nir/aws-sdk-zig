@@ -3,6 +3,7 @@ const sdk_whitelist = [_][]const u8{"cloudcontrol"};
 
 pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
+    const tests_step = b.step("test", "Run codegen unit tests");
 
     //
     // Smithy
@@ -13,47 +14,55 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("codegen/smithy/root.zig"),
     });
 
-    // Tests
-    const smithy_unit_tests = b.addTest(.{
+    const smithy_test_step = b.addTest(.{
+        .name = "smithy",
         .optimize = optimize,
         .root_source_file = b.path("codegen/smithy/root.zig"),
     });
-    const smithy_unit_tests_step = b.step("test:smithy", "Run Smithy unit tests");
-    smithy_unit_tests_step.dependOn(&b.addRunArtifact(smithy_unit_tests).step);
+    tests_step.dependOn(&b.addRunArtifact(smithy_test_step).step);
 
     //
     // AWS
     //
 
     if (b.lazyDependency("aws-models", .{})) |models| {
-        const filter = b.option(
+        const aws_filter = b.option(
             []const []const u8,
             "filter",
             "Whitelist the resources to generate",
         );
 
-        const sdk_options = b.addOptions();
-        sdk_options.addOptionPath("models_path", models.path("sdk"));
-        sdk_options.addOption([]const u8, "install_path", b.pathFromRoot("sdk"));
-        sdk_options.addOption([]const []const u8, "filter", filter orelse &sdk_whitelist);
+        const aws_config = b.addOptions();
+        aws_config.addOption([]const []const u8, "filter", aws_filter orelse &sdk_whitelist);
 
-        const codegen_sdk_steps = b.step("aws", "Generate SDKs source code");
-        const codegen_sdk = b.addExecutable(.{
+        const aws_codegen = b.addExecutable(.{
             .name = "codegen-sdk",
             .target = b.host,
             .root_source_file = b.path("codegen/aws/root.zig"),
         });
-        codegen_sdk.root_module.addOptions("options", sdk_options);
-        codegen_sdk.root_module.addImport("smithy", smithy);
-        codegen_sdk_steps.dependOn(&b.addRunArtifact(codegen_sdk).step);
+        aws_codegen.root_module.addImport("smithy", smithy);
+        aws_codegen.root_module.addOptions("aws-config", aws_config);
+        const aws_codegen_run = b.addRunArtifact(aws_codegen);
+        aws_codegen_run.addDirectoryArg(models.path("sdk"));
+        const aws_out_dir = aws_codegen_run.addOutputDirectoryArg("sdk");
+        b.getInstallStep().dependOn(&aws_codegen_run.step);
+
+        const aws_install = b.addInstallDirectory(.{
+            .source_dir = aws_out_dir,
+            .install_dir = .prefix,
+            .install_subdir = "../sdk",
+        });
+        b.getInstallStep().dependOn(&aws_install.step);
+
+        const aws_fmt = b.addFmt(.{ .paths = &.{"sdk"} });
+        b.getInstallStep().dependOn(&aws_fmt.step);
     }
 
-    // Tests
-    const codegen_sdk_tests = b.addTest(.{
+    const aws_test_step = b.addTest(.{
+        .name = "aws",
         .optimize = optimize,
         .root_source_file = b.path("codegen/aws/root.zig"),
     });
-    codegen_sdk_tests.root_module.addImport("smithy", smithy);
-    const acodegen_sdk_tests_step = b.step("test:aws", "Run AWS source generation unit tests");
-    acodegen_sdk_tests_step.dependOn(&b.addRunArtifact(codegen_sdk_tests).step);
+    aws_test_step.root_module.addImport("smithy", smithy);
+    tests_step.dependOn(&b.addRunArtifact(aws_test_step).step);
 }

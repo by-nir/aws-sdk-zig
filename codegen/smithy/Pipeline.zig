@@ -4,6 +4,7 @@
 //!   - `client.zig`
 const std = @import("std");
 const fs = std.fs;
+const log = std.log;
 const Timer = std.time.Timer;
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
@@ -34,6 +35,7 @@ const Options = struct {
 
 pub const Policy = struct {
     model: IssuesBag.PolicyResolution,
+    readme: IssuesBag.PolicyResolution,
 };
 
 pub const Hooks = struct {
@@ -89,7 +91,7 @@ pub fn init(
         .iterate = true,
     });
     errdefer self.src_dir.close();
-    self.out_dir = try fs.cwd().openDir(options.out_dir_relative, .{});
+    self.out_dir = try fs.cwd().makeOpenPath(options.out_dir_relative, .{});
 
     return self;
 }
@@ -113,12 +115,14 @@ pub fn processFiles(self: *Self, filenames: []const []const u8) !Report {
     defer arena.deinit();
 
     var report = Report{};
-    var timer = try Timer.start();
 
     for (filenames) |filename| {
         if (!isValidModelFilename(filename)) continue;
         defer _ = arena.reset(.retain_capacity);
-        try processModelAndReport(self, arena_alloc, &report, &timer, filename);
+        processModel(self, arena_alloc, &report, filename) catch |err| {
+            log.err("Process error: {s}", .{@errorName(err)});
+            return err;
+        };
     }
 
     return report;
@@ -132,17 +136,20 @@ pub fn processAll(self: *Self, filter: ?*const fn (filename: []const u8) bool) !
     defer arena.deinit();
 
     var report = Report{};
-    var timer = try Timer.start();
 
     var it = self.src_dir.iterate();
     while (try it.next()) |entry| {
         if (entry.kind != .file or !isValidModelFilename(entry.name)) continue;
         if (filter) |f| if (!f(entry.name)) {
-            std.log.debug("[Filter] Skipping model `{s}`", .{entry.name});
+            log.debug("[Filter] Skipping model `{s}`", .{entry.name});
             continue;
         };
         defer _ = arena.reset(.retain_capacity);
-        try processModelAndReport(self, arena_alloc, &report, &timer, entry.name);
+
+        processModel(self, arena_alloc, &report, entry.name) catch |err| {
+            log.err("Process failed: {s}", .{@errorName(err)});
+            return err;
+        };
     }
 
     return report;
@@ -152,61 +159,66 @@ fn isValidModelFilename(name: []const u8) bool {
     return name.len > 5 and std.mem.endsWith(u8, name, ".json");
 }
 
-fn processModelAndReport(self: *Self, arena: Allocator, report: *Report, timer: *Timer, json_name: []const u8) !void {
+fn processModel(self: *Self, arena: Allocator, report: *Report, json_name: []const u8) !void {
+    var timer = try Timer.start();
     var issues = IssuesBag.init(arena);
     defer issues.deinit();
 
-    std.log.debug("Processing model `{s}`", .{json_name});
-    const success = self.processModel(arena, &issues, json_name);
-    const duration = timer.lap();
-    _ = duration; // autofix
+    log.info("Processing model `{s}`", .{json_name});
+    _ = &timer; // autofix
+    _ = report; // autofix
 
-    if (success) {
-        _ = report; // autofix
-    } else |err| switch (self.process_policy.model) {
-        .abort => return err,
-        .skip => {
-            _ = report; // autofix
-
-            switch (err) {
-                error.SkipModel, IssuesBag.PolicyAbortError => {},
-                else => issues.add(.{ .process_error = err }) catch |add_err| {
-                    std.log.err("Process error: {s}", .{@errorName(err)});
-                    return add_err;
-                },
-            }
-        },
-    }
-}
-
-fn processModel(self: *Self, arena: Allocator, issues: *IssuesBag, json_name: []const u8) !void {
-    const model = self.parseModel(arena, json_name, issues) catch |err| {
+    const model = self.parseModel(arena, json_name, &issues) catch |err| {
         switch (err) {
-            IssuesBag.PolicyAbortError => {},
-            else => issues.add(.{ .parse_error = err }) catch |add_err| {
-                std.log.err("Parse error: {s}", .{@errorName(err)});
-                return add_err;
+            IssuesBag.PolicyAbortError => return err,
+            else => switch (self.process_policy.model) {
+                .abort => {
+                    log.err("Parse failed: {s}", .{@errorName(err)});
+                    return err;
+                },
+                .skip => {
+                    try issues.add(.{ .process_error = err });
+                    return;
+                },
             },
         }
-        return error.SkipModel;
     };
 
     const slug = json_name[0 .. json_name.len - ".json".len];
     var out_dir = try self.out_dir.makeOpenPath(slug, .{});
-    errdefer out_dir.deleteTree(slug) catch unreachable;
+    errdefer out_dir.deleteTree(slug) catch |err| {
+        log.err("Deleting model’s output dir failed: {s}", .{@errorName(err)});
+    };
     defer out_dir.close();
 
-    self.generateScript(arena, &model, out_dir, issues) catch |err| {
+    self.generateScript(arena, &model, out_dir, &issues) catch |err| {
         switch (err) {
-            IssuesBag.PolicyAbortError => {},
-            else => issues.add(.{ .codegen_error = err }) catch |add_err| {
-                std.log.err("Codegen error: {s}", .{@errorName(err)});
-                return add_err;
+            IssuesBag.PolicyAbortError => return err,
+            else => switch (self.process_policy.model) {
+                .abort => {
+                    log.err("Codegen failed: {s}", .{@errorName(err)});
+                    return err;
+                },
+                .skip => {
+                    try issues.add(.{ .codegen_error = err });
+                    return;
+                },
             },
         }
-        return error.SkipModel;
     };
-    try self.generateReadme(arena, &model, out_dir, slug);
+
+    self.generateReadme(arena, &model, out_dir, slug) catch |err| {
+        switch (self.process_policy.readme) {
+            .abort => {
+                log.err("Readme failed: {s}", .{@errorName(err)});
+                return err;
+            },
+            .skip => {
+                try issues.add(.{ .readme_error = err });
+                return;
+            },
+        }
+    };
 }
 
 fn parseModel(self: *Self, arena: Allocator, json_name: []const u8, issues: *IssuesBag) !SmithyModel {
