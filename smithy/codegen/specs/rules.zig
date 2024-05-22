@@ -9,10 +9,12 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const SmithyId = @import("../symbols/identity.zig").SmithyId;
-const TraitsList = @import("../symbols/traits.zig").TraitsRegistry;
-const SmithyModel = @import("../symbols/shapes.zig").SmithyModel;
 const JsonReader = @import("../utils/JsonReader.zig");
+const SmithyModel = @import("../symbols/shapes.zig").SmithyModel;
+const TraitsList = @import("../symbols/traits.zig").TraitsRegistry;
+const syb_id = @import("../symbols/identity.zig");
+const SmithyId = syb_id.SmithyId;
+const idHash = syb_id.idHash;
 
 // TODO: Remainig traits
 pub const traits: TraitsList = &.{
@@ -40,6 +42,52 @@ pub const Public = struct {
         pub const StringValue = Self.EndpointRuleSet.StringValue;
     };
 };
+
+const RulesBuiltInId = enum(syb_id.IdHashInt) {
+    pub const NULL: RulesBuiltInId = @enumFromInt(0);
+
+    endpoint = idHash("SDK::Endpoint"),
+    _,
+
+    pub fn of(name: []const u8) RulesBuiltInId {
+        return @enumFromInt(idHash(name));
+    }
+};
+
+test "RulesBuiltInId" {
+    try testing.expectEqual(.endpoint, RulesBuiltInId.of("SDK::Endpoint"));
+    try testing.expectEqual(
+        @as(RulesBuiltInId, @enumFromInt(0x472ff9ea)),
+        RulesBuiltInId.of("FOO::Example"),
+    );
+}
+
+const RulesFunctionId = enum(syb_id.IdHashInt) {
+    pub const NULL: RulesFunctionId = @enumFromInt(0);
+
+    boolean_equals = idHash("booleanEquals"),
+    get_attr = idHash("getAttr"),
+    is_set = idHash("isSet"),
+    is_valid_host_label = idHash("isValidHostLabel"),
+    not = idHash("not"),
+    parse_url = idHash("parseURL"),
+    string_equals = idHash("stringEquals"),
+    substring = idHash("substring"),
+    uri_encode = idHash("uriEncode"),
+    _,
+
+    pub fn of(name: []const u8) RulesFunctionId {
+        return @enumFromInt(idHash(name));
+    }
+};
+
+test "RulesFunctionId" {
+    try testing.expectEqual(.boolean_equals, RulesFunctionId.of("booleanEquals"));
+    try testing.expectEqual(
+        @as(RulesFunctionId, @enumFromInt(0x88c533f)),
+        RulesFunctionId.of("FOO::example"),
+    );
+}
 
 pub fn StringKV(comptime T: type) type {
     return struct {
@@ -106,11 +154,14 @@ pub const EndpointRuleSet = struct {
                 if (did_set_type) {
                     try reader.skipValueOrScope();
                 } else {
-                    kv.value.type = if (mem.eql(u8, prop, "String"))
+                    if (prop.len > 32) return error.UnexpectedType;
+                    var prop_buff: [32]u8 = undefined;
+                    const low_prop = std.ascii.lowerString(&prop_buff, prop);
+                    kv.value.type = if (mem.eql(u8, low_prop, "string"))
                         .{ .string = null }
-                    else if (mem.eql(u8, prop, "Boolean"))
+                    else if (mem.eql(u8, low_prop, "boolean"))
                         .{ .boolean = null }
-                    else if (mem.eql(u8, prop, "StringArray"))
+                    else if (mem.eql(u8, low_prop, "stringarray"))
                         .{ .string_array = null }
                     else
                         return error.UnexpectedType;
@@ -157,7 +208,7 @@ pub const EndpointRuleSet = struct {
             } else if (mem.eql(u8, prop, "documentation")) {
                 kv.value.documentation = try reader.nextStringAlloc(arena);
             } else if (mem.eql(u8, prop, "builtIn")) {
-                kv.value.built_in = try reader.nextStringAlloc(arena);
+                kv.value.built_in = RulesBuiltInId.of(try reader.nextStringAlloc(arena));
             } else if (mem.eql(u8, prop, "required")) {
                 kv.value.required = try reader.nextBoolean();
             } else if (mem.eql(u8, prop, "deprecated")) {
@@ -282,7 +333,7 @@ pub const EndpointRuleSet = struct {
                 try reader.nextObjectEnd();
                 return value;
             } else if (mem.eql(u8, prop, "fn")) {
-                func.name = try reader.nextStringAlloc(arena);
+                func.name = RulesFunctionId.of(try reader.nextStringAlloc(arena));
             } else if (mem.eql(u8, prop, "argv")) {
                 func.args = try parseFunctionArgs(arena, reader);
             } else {
@@ -507,7 +558,7 @@ pub const EndpointRuleSet = struct {
         type: Value,
         /// Specifies a named built-in value that is sourced and provided to the
         /// endpoint provider by a caller.
-        built_in: ?[]const u8 = null,
+        built_in: ?RulesBuiltInId = null,
         /// Specifies that the parameter is required to be provided to the endpoint
         /// provider.
         required: ?bool = null,
@@ -604,7 +655,7 @@ pub const EndpointRuleSet = struct {
     /// [Smithy Spec](https://smithy.io/2.0/additional-specs/rules-engine/specification.html#function-object)
     pub const Function = struct {
         /// The name of the function to be executed.
-        name: []const u8 = "",
+        name: RulesFunctionId = RulesFunctionId.NULL,
         /// The arguments for the function.
         args: []const Arg = &.{},
 
@@ -682,7 +733,7 @@ test "EndpointRuleSet" {
                 .key = "Foo",
                 .value = EndpointRuleSet.Parameter{
                     .type = .{ .string = "Bar" },
-                    .built_in = "Foo",
+                    .built_in = RulesBuiltInId.of("Foo"),
                     .required = true,
                     .documentation = "Foo docs...",
                     .deprecated = .{
@@ -705,7 +756,7 @@ test "EndpointRuleSet" {
                             .{ .array = &.{} },
                             .{ .reference = "qux" },
                             .{ .function = EndpointRuleSet.Function{
-                                .name = "Bar",
+                                .name = RulesFunctionId.of("Bar"),
                                 .args = &.{},
                             } },
                         },

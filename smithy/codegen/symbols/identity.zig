@@ -3,6 +3,9 @@ const testing = std.testing;
 const prelude = @import("../prelude.zig");
 const shapes = @import("shapes.zig");
 
+pub const IdHashInt = u32;
+pub const idHash = std.hash.CityHash32.hash;
+
 pub const SmithyTaggedValue = struct {
     id: SmithyId,
     value: ?*const anyopaque,
@@ -25,52 +28,52 @@ pub const SmithyRefMapValue = struct {
 /// └─────────────────────┬──────────────────────┘
 ///               Absolute shape ID
 /// ```
-pub const SmithyId = enum(u32) {
+pub const SmithyId = enum(IdHashInt) {
     pub const NULL: SmithyId = @enumFromInt(0);
 
-    unit = hash32("unitType"),
-    blob = hash32("blob"),
-    boolean = hash32("boolean"),
-    string = hash32("string"),
-    str_enum = hash32("enum"),
-    byte = hash32("byte"),
-    short = hash32("short"),
-    integer = hash32("integer"),
-    int_enum = hash32("intEnum"),
-    long = hash32("long"),
-    float = hash32("float"),
-    double = hash32("double"),
-    big_integer = hash32("bigInteger"),
-    big_decimal = hash32("bigDecimal"),
-    timestamp = hash32("timestamp"),
-    document = hash32("document"),
-    list = hash32("list"),
-    map = hash32("map"),
-    structure = hash32("structure"),
-    tagged_uinon = hash32("union"),
-    operation = hash32("operation"),
-    resource = hash32("resource"),
-    service = hash32("service"),
-    apply = hash32("apply"),
+    unit = idHash("unitType"),
+    blob = idHash("blob"),
+    boolean = idHash("boolean"),
+    string = idHash("string"),
+    str_enum = idHash("enum"),
+    byte = idHash("byte"),
+    short = idHash("short"),
+    integer = idHash("integer"),
+    int_enum = idHash("intEnum"),
+    long = idHash("long"),
+    float = idHash("float"),
+    double = idHash("double"),
+    big_integer = idHash("bigInteger"),
+    big_decimal = idHash("bigDecimal"),
+    timestamp = idHash("timestamp"),
+    document = idHash("document"),
+    list = idHash("list"),
+    map = idHash("map"),
+    structure = idHash("structure"),
+    tagged_uinon = idHash("union"),
+    operation = idHash("operation"),
+    resource = idHash("resource"),
+    service = idHash("service"),
+    apply = idHash("apply"),
     _,
 
     /// Type name or absalute shape id.
     pub fn of(shape_id: []const u8) SmithyId {
-        return switch (hash32(shape_id)) {
-            hash32(prelude.TYPE_UNIT) => .unit,
-            hash32(prelude.TYPE_BLOB) => .blob,
-            hash32(prelude.TYPE_STRING) => .string,
-            hash32(prelude.TYPE_BOOL), hash32(prelude.PRIMITIVE_BOOL) => .boolean,
-            hash32(prelude.TYPE_BYTE), hash32(prelude.PRIMITIVE_BYTE) => .byte,
-            hash32(prelude.TYPE_SHORT), hash32(prelude.PRIMITIVE_SHORT) => .short,
-            hash32(prelude.TYPE_INT), hash32(prelude.PRIMITIVE_INT) => .integer,
-            hash32(prelude.TYPE_LONG), hash32(prelude.PRIMITIVE_LONG) => .long,
-            hash32(prelude.TYPE_FLOAT), hash32(prelude.PRIMITIVE_FLOAT) => .float,
-            hash32(prelude.TYPE_DOUBLE), hash32(prelude.PRIMITIVE_DOUBLE) => .double,
-            hash32(prelude.TYPE_BIGINT) => .big_integer,
-            hash32(prelude.TYPE_BIGDEC) => .big_decimal,
-            hash32(prelude.TYPE_TIMESTAMP) => .timestamp,
-            hash32(prelude.TYPE_DOCUMENT) => .document,
+        return switch (idHash(shape_id)) {
+            idHash(prelude.TYPE_UNIT) => .unit,
+            idHash(prelude.TYPE_BLOB) => .blob,
+            idHash(prelude.TYPE_STRING) => .string,
+            idHash(prelude.TYPE_BOOL), idHash(prelude.PRIMITIVE_BOOL) => .boolean,
+            idHash(prelude.TYPE_BYTE), idHash(prelude.PRIMITIVE_BYTE) => .byte,
+            idHash(prelude.TYPE_SHORT), idHash(prelude.PRIMITIVE_SHORT) => .short,
+            idHash(prelude.TYPE_INT), idHash(prelude.PRIMITIVE_INT) => .integer,
+            idHash(prelude.TYPE_LONG), idHash(prelude.PRIMITIVE_LONG) => .long,
+            idHash(prelude.TYPE_FLOAT), idHash(prelude.PRIMITIVE_FLOAT) => .float,
+            idHash(prelude.TYPE_DOUBLE), idHash(prelude.PRIMITIVE_DOUBLE) => .double,
+            idHash(prelude.TYPE_BIGINT) => .big_integer,
+            idHash(prelude.TYPE_BIGDEC) => .big_decimal,
+            idHash(prelude.TYPE_TIMESTAMP) => .timestamp,
+            idHash(prelude.TYPE_DOCUMENT) => .document,
             else => |h| @enumFromInt(h),
         };
     }
@@ -83,20 +86,7 @@ pub const SmithyId = enum(u32) {
         @memcpy(buffer[0..shape.len], shape);
         buffer[shape.len] = '$';
         @memcpy(buffer[shape.len + 1 ..][0..member.len], member);
-        return @enumFromInt(hash32(buffer[0..len]));
-    }
-
-    fn hash32(value: []const u8) u32 {
-        return std.hash.CityHash32.hash(value);
-    }
-
-    pub fn isEmpty(self: SmithyId) bool {
-        return @intFromEnum(self) == 0;
-    }
-
-    test "isEmpty" {
-        try testing.expectEqual(true, SmithyId.NULL.isEmpty());
-        try testing.expectEqual(false, SmithyId.blob.isEmpty());
+        return @enumFromInt(idHash(buffer[0..len]));
     }
 };
 
