@@ -108,6 +108,7 @@ pub const Enum = struct {
         } else if (mem.eql(u8, prop, "deprecated")) {
             ctx.member.deprecated = try reader.nextBoolean();
         } else {
+            std.log.warn("Unknown enum member property `{s}`", .{prop});
             try reader.skipValueOrScope();
         }
     }

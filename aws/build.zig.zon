@@ -9,8 +9,8 @@
             .path = "../smithy",
         },
         .https12 = .{
-            .url = "git+https://github.com/melonedo/zig-tls12.git#f7d30b2367186bb7ac51cc55e25968626a9f39a4",
-            .hash = "1220bb536438e7f0f6b5bdb86039b7de33116ea52198eff0f1ac9f39ab10e487fbf6",
+            .url = "git+https://github.com/melonedo/zig-tls12.git#f2cbb846f8a98cb5e19c8476a8e6cf3b9bbcdb0c",
+            .hash = "12202bb2c3824deecd4ccd666ca3dcb9c92c2c68698afdb92b382c0f5cb1b86da8bc",
         },
     },
 

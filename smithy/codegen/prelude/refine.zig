@@ -85,11 +85,11 @@ pub const Default = struct {
 
 test "Default" {
     var arena = std.heap.ArenaAllocator.init(test_alloc);
-    const allocator = arena.allocator();
+    const arena_alloc = arena.allocator();
     defer arena.deinit();
 
-    var reader = try JsonReader.initFixed(allocator, "null");
-    const val: *const Default.Value = @alignCast(@ptrCast(Default.parse(allocator, &reader) catch |e| {
+    var reader = try JsonReader.initFixed(arena_alloc, "null");
+    const val: *const Default.Value = @alignCast(@ptrCast(Default.parse(arena_alloc, &reader) catch |e| {
         reader.deinit();
         return e;
     }));
@@ -127,19 +127,19 @@ pub const EnumValue = struct {
 
 test "EnumValue" {
     var arena = std.heap.ArenaAllocator.init(test_alloc);
-    const allocator = arena.allocator();
+    const arena_alloc = arena.allocator();
     defer arena.deinit();
 
-    var reader = try JsonReader.initFixed(allocator, "108");
-    const val_int: *const EnumValue.Val = @alignCast(@ptrCast(EnumValue.parse(allocator, &reader) catch |e| {
+    var reader = try JsonReader.initFixed(arena_alloc, "108");
+    const val_int: *const EnumValue.Val = @alignCast(@ptrCast(EnumValue.parse(arena_alloc, &reader) catch |e| {
         reader.deinit();
         return e;
     }));
     reader.deinit();
     try testing.expectEqualDeep(&EnumValue.Val{ .integer = 108 }, val_int);
 
-    reader = try JsonReader.initFixed(allocator, "\"foo\"");
-    const val_str: *const EnumValue.Val = @alignCast(@ptrCast(EnumValue.parse(allocator, &reader) catch |e| {
+    reader = try JsonReader.initFixed(arena_alloc, "\"foo\"");
+    const val_str: *const EnumValue.Val = @alignCast(@ptrCast(EnumValue.parse(arena_alloc, &reader) catch |e| {
         reader.deinit();
         return e;
     }));
@@ -169,19 +169,19 @@ pub const Error = struct {
 
 test "Error" {
     var arena = std.heap.ArenaAllocator.init(test_alloc);
-    const allocator = arena.allocator();
+    const arena_alloc = arena.allocator();
     defer arena.deinit();
 
-    var reader = try JsonReader.initFixed(allocator, "\"client\"");
-    const val_int: *const Error.Source = @alignCast(@ptrCast(Error.parse(allocator, &reader) catch |e| {
+    var reader = try JsonReader.initFixed(arena_alloc, "\"client\"");
+    const val_int: *const Error.Source = @alignCast(@ptrCast(Error.parse(arena_alloc, &reader) catch |e| {
         reader.deinit();
         return e;
     }));
     reader.deinit();
     try testing.expectEqualDeep(&Error.Source.client, val_int);
 
-    reader = try JsonReader.initFixed(allocator, "\"server\"");
-    const val_str: *const Error.Source = @alignCast(@ptrCast(Error.parse(allocator, &reader) catch |e| {
+    reader = try JsonReader.initFixed(arena_alloc, "\"server\"");
+    const val_str: *const Error.Source = @alignCast(@ptrCast(Error.parse(arena_alloc, &reader) catch |e| {
         reader.deinit();
         return e;
     }));

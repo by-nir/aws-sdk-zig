@@ -24,6 +24,9 @@ pub const PolicyResolution = IssuesBag.PolicyResolution;
 
 pub const JsonReader = @import("utils/JsonReader.zig");
 
+const specs = @import("specs.zig");
+pub const RulesEngine = specs.RulesEngine;
+
 test {
     _ = @import("utils/names.zig");
     _ = IssuesBag;
@@ -33,7 +36,7 @@ test {
     _ = syb_traits;
     _ = syb_shapes;
     _ = @import("prelude.zig");
-    _ = @import("specs.zig");
+    _ = specs;
     _ = parse;
     _ = generate;
     _ = Markdown;

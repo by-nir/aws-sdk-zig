@@ -4,6 +4,7 @@ const Allocator = std.mem.Allocator;
 const allocPrint = std.fmt.allocPrint;
 const smithy = @import("smithy");
 const Script = smithy.Script;
+const Expr = Script.Expr;
 const Pipeline = smithy.Pipeline;
 const PipelineHooks = Pipeline.Hooks;
 const SmithyModel = smithy.SmithyModel;
@@ -145,7 +146,7 @@ fn writeScriptHead(arena: Allocator, script: *Script, model: *const SmithyModel)
     _ = try script.variable(.{}, .{
         .identifier = .{ .name = "endpoint_config" },
         .type = null,
-    }, Script.Expr.structLiteral(".", &.{
+    }, Expr.structLiteral(".", &.{
         .{ .raw = try allocPrint(arena, ".name = \"{s}\"", .{service_endpoint}) },
     }));
 }
@@ -221,12 +222,12 @@ fn writeServiceHead(arena: Allocator, script: *Script, model: *const SmithyModel
     _ = shape; // autofix
 }
 
-fn operationReturnType(arena: Allocator, _: *const SmithyModel, shape: GenerateHooks.OperationShape) !?Script.Expr {
+fn operationReturnType(arena: Allocator, _: *const SmithyModel, shape: GenerateHooks.OperationShape) !?Expr {
     return if (shape.errors_type) |errors| blk: {
-        const args = try arena.alloc(Script.Expr, 2);
-        args[0] = shape.output_type orelse Script.Expr.typ(void);
+        const args = try arena.alloc(Expr, 2);
+        args[0] = shape.output_type orelse Expr.typ(void);
         args[1] = errors;
-        break :blk Script.Expr.call("Failable", args);
+        break :blk Expr.call("Failable", args);
     } else shape.output_type;
 }
 
@@ -248,22 +249,22 @@ fn writeErrorShape(_: Allocator, script: *Script, _: *const SmithyModel, shape: 
     _ = try script.variable(.{ .is_public = true }, .{
         .identifier = .{ .name = "source" },
         .type = .{ .raw = "ErrorSource" },
-    }, Script.Expr.val(shape.source));
+    }, Expr.val(shape.source));
 
     _ = try script.variable(.{ .is_public = true }, .{
         .identifier = .{ .name = "code" },
-        .type = Script.Expr.typ(u10),
-    }, Script.Expr.val(shape.code));
+        .type = Expr.typ(u10),
+    }, Expr.val(shape.code));
 
     _ = try script.variable(.{ .is_public = true }, .{
         .identifier = .{ .name = "retryable" },
-    }, Script.Expr.val(shape.retryable));
+    }, Expr.val(shape.retryable));
 }
 
-fn uniqueListType(arena: Allocator, item: Script.Expr) !Script.Expr {
-    const args = try arena.alloc(Script.Expr, 1);
+fn uniqueListType(arena: Allocator, item: Expr) !Expr {
+    const args = try arena.alloc(Expr, 1);
     args[0] = item;
-    return Script.Expr.call("*const _aws_types.Set", args);
+    return Expr.call("*const _aws_types.Set", args);
 }
 
 test {
