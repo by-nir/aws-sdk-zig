@@ -10,17 +10,16 @@ const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const parse = @import("parse.zig");
-const specs = @import("specs.zig");
 const prelude = @import("prelude.zig");
-const generate = @import("generate.zig");
-const Markdown = @import("generate/Markdown.zig");
+const generate = @import("codegen.zig");
+const Markdown = @import("codegen/Markdown.zig");
+const StackWriter = @import("codegen/StackWriter.zig");
 const syb_traits = @import("symbols/traits.zig");
 const SmithyModel = @import("symbols/shapes.zig").SmithyModel;
 const IssuesBag = @import("utils/IssuesBag.zig");
 const JsonReader = @import("utils/JsonReader.zig");
-const StackWriter = @import("utils/StackWriter.zig");
 const titleCase = @import("utils/names.zig").titleCase;
-const trt_docs = @import("prelude/docs.zig");
+const trt_docs = @import("traits/docs.zig");
 
 const Self = @This();
 
@@ -84,7 +83,6 @@ pub fn init(
     self.traits = syb_traits.TraitsManager{};
     errdefer self.traits.deinit(gpa_alloc);
     try prelude.registerTraits(gpa_alloc, &self.traits);
-    try specs.registerTraits(gpa_alloc, &self.traits);
 
     self.issues = IssuesBag.init(gpa_alloc);
     errdefer self.issues.deinit();
@@ -237,7 +235,7 @@ fn generateScript(self: *Self, arena: Allocator, model: *const SmithyModel, dir:
     var file = try dir.createFile("client.zig", .{});
     defer file.close();
 
-    const zig_head = @embedFile("template/head.zig.template") ++ "\n\n";
+    const zig_head = @embedFile("codegen/template/head.zig.template") ++ "\n\n";
     try file.writer().writeAll(zig_head);
     try generate.writeScript(
         arena,
@@ -269,7 +267,7 @@ fn generateReadme(self: *Self, arena: Allocator, model: *const SmithyModel, dir:
     var file = try dir.createFile("README.md", .{});
     defer file.close();
 
-    const md_head = @embedFile("template/head.md.template") ++ "\n\n";
+    const md_head = @embedFile("codegen/template/head.md.template") ++ "\n\n";
     try file.writer().writeAll(md_head);
     try hook(arena, file.writer().any(), model, Hooks.ReadmeMeta{
         .slug = slug,

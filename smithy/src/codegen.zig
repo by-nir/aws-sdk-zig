@@ -12,15 +12,15 @@ const SmithyId = syb_id.SmithyId;
 const SmithyType = syb_id.SmithyType;
 const syb_shape = @import("symbols/shapes.zig");
 const SmithyModel = syb_shape.SmithyModel;
-const Script = @import("generate/Zig.zig");
 const names = @import("utils/names.zig");
 const IssuesBag = @import("utils/IssuesBag.zig");
-const StackWriter = @import("utils/StackWriter.zig");
-const trt_http = @import("prelude/http.zig");
-const trt_docs = @import("prelude/docs.zig");
-const trt_refine = @import("prelude/refine.zig");
-const trt_behave = @import("prelude/behavior.zig");
-const trt_constr = @import("prelude/constraint.zig");
+const trt_http = @import("traits/http.zig");
+const trt_docs = @import("traits/docs.zig");
+const trt_refine = @import("traits/refine.zig");
+const trt_behave = @import("traits/behavior.zig");
+const trt_constr = @import("traits/constraint.zig");
+const Script = @import("codegen/Zig.zig");
+const StackWriter = @import("codegen/StackWriter.zig");
 
 const Self = @This();
 
@@ -1118,6 +1118,10 @@ fn writeDocComment(self: *Self, script: *Script, id: SmithyId, target_fallback: 
 
 fn unwrapShapeName(self: *Self, id: SmithyId) ![]const u8 {
     return switch (id) {
+        .str_enum, .int_enum, .list, .map, .structure, .tagged_uinon, .operation, .resource, .service, .apply => unreachable,
+        // By this point a document should have been parsed into a meaningful type:
+        .document => error.UnexpectedDocumentShape,
+        // Union shape generator assumes a unit is an empty string:
         .unit => "",
         .boolean => "bool",
         .byte => "i8",
@@ -1126,10 +1130,9 @@ fn unwrapShapeName(self: *Self, id: SmithyId) ![]const u8 {
         .long => "i64",
         .float => "f32",
         .double => "f64",
-        .string, .blob, .document => "[]const u8",
-        .big_integer, .big_decimal => "[]const u8",
         .timestamp => "u64",
-        .str_enum, .int_enum, .list, .map, .structure, .tagged_uinon, .operation, .resource, .service, .apply => unreachable,
+        .string, .blob => "[]const u8",
+        .big_integer, .big_decimal => "[]const u8",
         _ => |t| blk: {
             const shape = try self.model.tryGetShape(t);
             break :blk switch (shape) {

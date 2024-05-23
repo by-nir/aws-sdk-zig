@@ -5,15 +5,23 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    //
+    // Dependencies
+    //
+
     const smithy = b.dependency("smithy-zig", .{
         .target = target,
         .optimize = optimize,
-    });
+    }).module("smithy");
 
     const https12 = b.dependency("https12", .{
         .target = target,
         .optimize = optimize,
     });
+
+    //
+    // Modules
+    //
 
     const types_mdl = b.addModule("types", .{
         .target = target,
@@ -27,10 +35,13 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("client/root.zig"),
         .imports = &.{
             .{ .name = "aws-types", .module = types_mdl },
-            .{ .name = "smithy", .module = smithy.module("client") },
             .{ .name = "https12", .module = https12.module("zig-tls12") },
         },
     });
+
+    //
+    // Artifacts
+    //
 
     const codegen_exe = b.addExecutable(.{
         .name = "codegen-sdk",
@@ -38,7 +49,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .root_source_file = b.path("codegen/client.zig"),
     });
-    codegen_exe.root_module.addImport("smithy", smithy.module("codegen"));
+    codegen_exe.root_module.addImport("smithy", smithy);
     b.installArtifact(codegen_exe);
 
     //
@@ -58,7 +69,6 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("client/root.zig"),
     });
     test_client_mdl.root_module.addImport("aws-types", types_mdl);
-    test_client_mdl.root_module.addImport("smithy", smithy.module("client"));
     test_client_mdl.root_module.addImport("https12", https12.module("zig-tls12"));
     test_runtime_step.dependOn(&b.addRunArtifact(test_client_mdl).step);
 
@@ -68,6 +78,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .root_source_file = b.path("codegen/client.zig"),
     });
-    test_codegen_exe.root_module.addImport("smithy", smithy.module("codegen"));
+    test_codegen_exe.root_module.addImport("smithy", smithy);
     test_codegen_step.dependOn(&b.addRunArtifact(test_codegen_exe).step);
 }

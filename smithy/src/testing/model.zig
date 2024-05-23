@@ -10,10 +10,10 @@ const SmithyModel = syb_shapes.SmithyModel;
 const SmithyService = syb_shapes.SmithyService;
 const SmithyOperation = syb_shapes.SmithyOperation;
 const SmithyResource = syb_shapes.SmithyResource;
-const trt_behave = @import("../prelude/behavior.zig");
-const trt_constr = @import("../prelude/constraint.zig");
-const trt_http = @import("../prelude/http.zig");
-const trt_refine = @import("../prelude/refine.zig");
+const trt_behave = @import("../traits/behavior.zig");
+const trt_constr = @import("../traits/constraint.zig");
+const trt_http = @import("../traits/http.zig");
+const trt_refine = @import("../traits/refine.zig");
 
 pub fn setupUnit(model: *SmithyModel) !void {
     try model.shapes.put(test_alloc, SmithyId.of("test#Unit"), .unit);

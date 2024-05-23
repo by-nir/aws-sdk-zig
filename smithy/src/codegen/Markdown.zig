@@ -5,9 +5,9 @@ const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const assert = std.debug.assert;
-const StackWriter = @import("../utils/StackWriter.zig");
 const WriterList = StackWriter.List;
 const Zig = @import("Zig.zig");
+const StackWriter = @import("StackWriter.zig");
 
 // TODO: Inline text styling & links
 // TODO: Respect soft-/hard-guidelines

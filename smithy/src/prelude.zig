@@ -8,17 +8,22 @@
 //! [Smithy Spec](https://smithy.io/2.0/spec/model.html#prelude)
 const std = @import("std");
 const TraitsManager = @import("symbols/traits.zig").TraitsManager;
-const trt_auth = @import("prelude/auth.zig");
-const trt_behavior = @import("prelude/behavior.zig");
-const trt_constraint = @import("prelude/constraint.zig");
-const trt_docs = @import("prelude/docs.zig");
-const trt_endpoint = @import("prelude/endpoint.zig");
-const trt_http = @import("prelude/http.zig");
-const trt_protocol = @import("prelude/protocol.zig");
-const trt_refine = @import("prelude/refine.zig");
-const trt_resource = @import("prelude/resource.zig");
-const trt_stream = @import("prelude/stream.zig");
-const trt_validate = @import("prelude/validate.zig");
+const trt_auth = @import("traits/auth.zig");
+const trt_behavior = @import("traits/behavior.zig");
+const trt_constraint = @import("traits/constraint.zig");
+const trt_docs = @import("traits/docs.zig");
+const trt_endpoint = @import("traits/endpoint.zig");
+const trt_http = @import("traits/http.zig");
+const trt_protocol = @import("traits/protocol.zig");
+const trt_refine = @import("traits/refine.zig");
+const trt_resource = @import("traits/resource.zig");
+const trt_stream = @import("traits/stream.zig");
+const trt_validate = @import("traits/validate.zig");
+const sys_compliance = @import("systems/compliance.zig");
+const sys_smoke = @import("systems/smoke.zig");
+const sys_waiters = @import("systems/waiters.zig");
+const sys_mqtt = @import("systems/mqtt.zig");
+const sys_rules = @import("systems/rules.zig");
 
 pub const TYPE_UNIT = "smithy.api#Unit";
 pub const TYPE_BLOB = "smithy.api#Blob";
@@ -55,6 +60,11 @@ pub fn registerTraits(allocator: std.mem.Allocator, manager: *TraitsManager) !vo
     try manager.registerAll(allocator, trt_resource.traits);
     try manager.registerAll(allocator, trt_stream.traits);
     try manager.registerAll(allocator, trt_validate.traits);
+    try manager.registerAll(allocator, sys_compliance.traits);
+    try manager.registerAll(allocator, sys_smoke.traits);
+    try manager.registerAll(allocator, sys_waiters.traits);
+    try manager.registerAll(allocator, sys_mqtt.traits);
+    try manager.registerAll(allocator, sys_rules.traits);
 }
 
 test {
@@ -69,4 +79,9 @@ test {
     _ = trt_resource;
     _ = trt_stream;
     _ = trt_validate;
+    _ = sys_compliance;
+    _ = sys_smoke;
+    _ = sys_waiters;
+    _ = sys_mqtt;
+    _ = sys_rules;
 }

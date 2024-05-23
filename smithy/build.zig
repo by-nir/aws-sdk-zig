@@ -5,35 +5,17 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    _ = b.addModule("client", .{
+    _ = b.addModule("smithy", .{
         .target = target,
         .optimize = optimize,
-        .root_source_file = b.path("client/root.zig"),
+        .root_source_file = b.path("src/root.zig"),
     });
-
-    _ = b.addModule("codegen", .{
-        .target = target,
-        .optimize = optimize,
-        .root_source_file = b.path("codegen/root.zig"),
-    });
-
-    //
-    // Tests
-    //
 
     const tests_step = b.step("test", "Run unit tests");
-
-    const test_client_mdl = b.addTest(.{
+    const unit_tests = b.addTest(.{
         .target = target,
         .optimize = optimize,
-        .root_source_file = b.path("client/root.zig"),
+        .root_source_file = b.path("src/root.zig"),
     });
-    tests_step.dependOn(&b.addRunArtifact(test_client_mdl).step);
-
-    const test_codegen_mdl = b.addTest(.{
-        .target = target,
-        .optimize = optimize,
-        .root_source_file = b.path("codegen/root.zig"),
-    });
-    tests_step.dependOn(&b.addRunArtifact(test_codegen_mdl).step);
+    tests_step.dependOn(&b.addRunArtifact(unit_tests).step);
 }

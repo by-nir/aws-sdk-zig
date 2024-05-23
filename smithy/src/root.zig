@@ -3,12 +3,11 @@ pub const Pipeline = @import("Pipeline.zig");
 const parse = @import("parse.zig");
 pub const ParsePolicy = parse.Policy;
 
-const generate = @import("generate.zig");
-pub const GenerateHooks = generate.Hooks;
-pub const GeneratePolicy = generate.Policy;
-
-pub const Script = @import("generate/Zig.zig");
-pub const Markdown = @import("generate/Markdown.zig");
+const codegen = @import("codegen.zig");
+pub const GenerateHooks = codegen.Hooks;
+pub const GeneratePolicy = codegen.Policy;
+pub const Script = @import("codegen/Zig.zig");
+pub const Markdown = @import("codegen/Markdown.zig");
 
 const syb_id = @import("symbols/identity.zig");
 pub usingnamespace syb_id;
@@ -24,22 +23,27 @@ pub const PolicyResolution = IssuesBag.PolicyResolution;
 
 pub const JsonReader = @import("utils/JsonReader.zig");
 
-const specs = @import("specs.zig");
-pub const RulesEngine = specs.RulesEngine;
-
 test {
+    // Utils
     _ = @import("utils/names.zig");
     _ = IssuesBag;
     _ = JsonReader;
-    _ = @import("utils/StackWriter.zig");
+
+    // Systems
     _ = syb_id;
     _ = syb_traits;
     _ = syb_shapes;
     _ = @import("prelude.zig");
-    _ = specs;
+
+    // Parse
     _ = parse;
-    _ = generate;
+
+    // Codegen
+    _ = @import("codegen/StackWriter.zig");
     _ = Markdown;
     _ = Script;
+    _ = codegen;
+
+    // Pipeline
     _ = Pipeline;
 }

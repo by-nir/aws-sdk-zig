@@ -13,7 +13,7 @@ const syb_shape = @import("symbols/shapes.zig");
 const SmithyMeta = syb_shape.SmithyMeta;
 const SmithyModel = syb_shape.SmithyModel;
 const TraitsManager = @import("symbols/traits.zig").TraitsManager;
-const trt_refine = @import("prelude/refine.zig");
+const trt_refine = @import("traits/refine.zig");
 
 const Self = @This();
 

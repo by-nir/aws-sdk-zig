@@ -4,13 +4,13 @@ const fmt = std.fmt;
 const builtin = std.builtin;
 const ZigType = builtin.Type;
 const Allocator = std.mem.Allocator;
-const assert = std.debug.assert;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const StackWriter = @import("../utils/StackWriter.zig");
+const assert = std.debug.assert;
 const List = StackWriter.List;
 const JsonValue = @import("../utils/JsonReader.zig").Value;
 const Markdown = @import("Markdown.zig");
+const StackWriter = @import("StackWriter.zig");
 
 // In general, a better approach would be to incorporate more of the Zig’s AST
 // capabilities directly; but it seems to have expectaions and assumptions for
