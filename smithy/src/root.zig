@@ -26,6 +26,7 @@ pub const JsonReader = @import("utils/JsonReader.zig");
 test {
     // Utils
     _ = @import("utils/names.zig");
+    _ = @import("utils/declarative.zig");
     _ = IssuesBag;
     _ = JsonReader;
 
