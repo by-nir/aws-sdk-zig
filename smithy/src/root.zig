@@ -40,6 +40,7 @@ test {
     _ = parse;
 
     // Codegen
+    _ = @import("codegen/CodegenWriter.zig");
     _ = @import("codegen/StackWriter.zig");
     _ = Markdown;
     _ = Script;
