@@ -1,10 +1,20 @@
 const std = @import("std");
 const fmt = std.fmt;
-const Allocator = std.mem.Allocator;
+const mem = std.mem;
+const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 
 const Self = @This();
+
+pub const ListOptions = struct {
+    delimiter: []const u8 = "",
+    line: Line = .none,
+    field: ?[]const u8 = null,
+    format: []const u8 = "",
+
+    pub const Line = union(enum) { none, linebreak, indent: []const u8 };
+};
 
 allocator: Allocator,
 output: std.io.AnyWriter,
@@ -35,12 +45,12 @@ pub fn deinit(self: *Self) void {
     self.* = undefined;
 }
 
-pub fn indent(self: *Self, segment: []const u8) !void {
+pub fn indentPush(self: *Self, segment: []const u8) !void {
     try self.prefix_segments.append(self.allocator, self.prefix);
     self.prefix = try fmt.allocPrint(self.allocator, "{s}{s}", .{ self.prefix, segment });
 }
 
-pub fn popIndent(self: *Self) void {
+pub fn indentPop(self: *Self) void {
     self.allocator.free(self.prefix);
     self.prefix = self.prefix_segments.pop();
 }
@@ -49,13 +59,13 @@ test "indent" {
     var writer = init(test_alloc, undefined);
     defer writer.deinit();
 
-    try writer.indent("Foo");
+    try writer.indentPush("Foo");
     try testing.expectEqualStrings("Foo", writer.prefix);
-    try writer.indent("Bar");
+    try writer.indentPush("Bar");
     try testing.expectEqualStrings("FooBar", writer.prefix);
-    writer.popIndent();
+    writer.indentPop();
     try testing.expectEqualStrings("Foo", writer.prefix);
-    writer.popIndent();
+    writer.indentPop();
     try testing.expectEqualStrings("", writer.prefix);
 }
 
@@ -66,7 +76,7 @@ pub fn appendChar(self: *Self, char: u8) !void {
 test "appendChar" {
     var buffer: [32]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buffer);
-    var writer = try initPrefix(test_alloc, stream.writer().any(), ">> ");
+    var writer = init(test_alloc, stream.writer().any());
     defer writer.deinit();
 
     try writer.appendChar('a');
@@ -74,18 +84,18 @@ test "appendChar" {
     try testing.expectEqualStrings("ab", stream.getWritten());
 }
 
-pub fn appendStr(self: *Self, str: []const u8) !void {
+pub fn appendString(self: *Self, str: []const u8) !void {
     try self.output.writeAll(str);
 }
 
-test "appendStr" {
+test "appendString" {
     var buffer: [32]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buffer);
-    var writer = try initPrefix(test_alloc, stream.writer().any(), ">> ");
+    var writer = init(test_alloc, stream.writer().any());
     defer writer.deinit();
 
-    try writer.appendStr("Foo");
-    try writer.appendStr("Bar");
+    try writer.appendString("Foo");
+    try writer.appendString("Bar");
     try testing.expectEqualStrings("FooBar", stream.getWritten());
 }
 
@@ -96,12 +106,67 @@ pub fn appendRepeatStr(self: *Self, n: usize, str: []const u8) !void {
 test "appendRepeatStr" {
     var buffer: [32]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buffer);
-    var writer = try initPrefix(test_alloc, stream.writer().any(), ">> ");
+    var writer = init(test_alloc, stream.writer().any());
     defer writer.deinit();
 
     try writer.appendRepeatStr(2, "Foo");
     try writer.appendRepeatStr(2, "Bar");
     try testing.expectEqualStrings("FooFooBarBar", stream.getWritten());
+}
+
+pub fn appendList(self: *Self, comptime T: type, items: []const T, comptime options: ListOptions) !void {
+    const deli: []const u8, const linebreak: bool = switch (options.line) {
+        .none => .{ options.delimiter, false },
+        .linebreak => .{ mem.trimRight(u8, options.delimiter, &std.ascii.whitespace), true },
+        .indent => |str| blk: {
+            try self.indentPush(str);
+            break :blk .{ mem.trimRight(u8, options.delimiter, &std.ascii.whitespace), true };
+        },
+    };
+
+    for (items, 0..) |item, i| {
+        if (i > 0) {
+            try self.output.writeAll(deli);
+            if (linebreak) try self.output.print("\n{s}", .{self.prefix});
+        }
+        const value = if (options.field) |f| @field(item, f) else item;
+        try self.writeValue(value, "{" ++ options.format ++ "}");
+    }
+
+    if (options.line == .indent) {
+        self.indentPop();
+    }
+}
+
+test "appendList" {
+    var buffer: [64]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buffer);
+    var writer = try initPrefix(test_alloc, stream.writer().any(), ">> ");
+    defer writer.deinit();
+
+    const items = &.{ TestWrite{ .value = "Foo" }, TestWrite{ .value = "Bar" } };
+    try writer.appendList(TestWrite, items, .{
+        .delimiter = ", ",
+    });
+    try writer.appendList(TestWrite, items, .{
+        .delimiter = ", ",
+        .line = .linebreak,
+    });
+    try writer.appendList(TestWrite, items, .{
+        .delimiter = ", ",
+        .line = .{ .indent = "++ " },
+    });
+
+    const items_deep = &.{
+        TestList{ .item = .{ .value = "Foo" } },
+        TestList{ .item = .{ .value = "Bar" } },
+    };
+    try writer.appendList(TestList, items_deep, .{
+        .delimiter = ", ",
+        .field = "item",
+    });
+
+    try testing.expectEqualStrings("Foo, BarFoo,\n>> BarFoo,\n>> ++ BarFoo, Bar", stream.getWritten());
 }
 
 pub fn appendPrefix(self: *Self) !void {
@@ -122,13 +187,13 @@ test "appendPrefix" {
 /// Expects a container type with method:
 /// `pub fn write(self: T, writer: *CodegenWriter) !void`
 pub fn appendValue(self: *Self, t: anytype) !void {
-    try self.formatValue(t, "");
+    try self.writeValue(t, "");
 }
 
 test "appendValue" {
     var buffer: [32]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buffer);
-    var writer = try initPrefix(test_alloc, stream.writer().any(), ">> ");
+    var writer = init(test_alloc, stream.writer().any());
     defer writer.deinit();
 
     try writer.appendValue(TestWrite{ .value = "Foo" });
@@ -138,13 +203,13 @@ test "appendValue" {
 
 /// The format string behaves similarly to `std.fmt`.
 pub fn appendFmt(self: *Self, comptime format: []const u8, args: anytype) !void {
-    try self.formatTemplate(format, args);
+    try self.writeFormat(format, args);
 }
 
 test "appendFmt" {
     var buffer: [32]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buffer);
-    var writer = try initPrefix(test_alloc, stream.writer().any(), ">> ");
+    var writer = init(test_alloc, stream.writer().any());
     defer writer.deinit();
 
     try writer.appendFmt("1{}2{}3{s}", .{ TestWrite{ .value = "Foo" }, true, "Bar" });
@@ -166,18 +231,18 @@ test "breakChar" {
     try testing.expectEqualStrings("\n>> a\n>> b", stream.getWritten());
 }
 
-pub fn breakStr(self: *Self, str: []const u8) !void {
+pub fn breakString(self: *Self, str: []const u8) !void {
     try self.output.print("\n{s}{s}", .{ self.prefix, str });
 }
 
-test "breakStr" {
+test "breakString" {
     var buffer: [32]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buffer);
     var writer = try initPrefix(test_alloc, stream.writer().any(), ">> ");
     defer writer.deinit();
 
-    try writer.breakStr("Foo");
-    try writer.breakStr("Bar");
+    try writer.breakString("Foo");
+    try writer.breakString("Bar");
     try testing.expectEqualStrings("\n>> Foo\n>> Bar", stream.getWritten());
 }
 
@@ -197,8 +262,64 @@ test "breakRepeatStr" {
     try testing.expectEqualStrings("\n>> FooFoo\n>> BarBar", stream.getWritten());
 }
 
+pub fn breakList(self: *Self, comptime T: type, items: []const T, comptime options: ListOptions) !void {
+    const deli: []const u8, const linebreak: bool = switch (options.line) {
+        .none => .{ options.delimiter, false },
+        .linebreak => .{ mem.trimRight(u8, options.delimiter, &std.ascii.whitespace), true },
+        .indent => |str| blk: {
+            try self.indentPush(str);
+            break :blk .{ mem.trimRight(u8, options.delimiter, &std.ascii.whitespace), true };
+        },
+    };
+
+    for (items, 0..) |item, i| {
+        if (i > 0) try self.output.writeAll(deli);
+        if (i == 0 or linebreak) try self.output.print("\n{s}", .{self.prefix});
+        const value = if (options.field) |f| @field(item, f) else item;
+        try self.writeValue(value, "{" ++ options.format ++ "}");
+    }
+
+    if (options.line == .indent) {
+        self.indentPop();
+    }
+}
+
+test "breakList" {
+    var buffer: [64]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buffer);
+    var writer = try initPrefix(test_alloc, stream.writer().any(), ">> ");
+    defer writer.deinit();
+
+    const items = &.{ TestWrite{ .value = "Foo" }, TestWrite{ .value = "Bar" } };
+    try writer.breakList(TestWrite, items, .{
+        .delimiter = ", ",
+    });
+    try writer.breakList(TestWrite, items, .{
+        .delimiter = ", ",
+        .line = .linebreak,
+    });
+    try writer.breakList(TestWrite, items, .{
+        .delimiter = ", ",
+        .line = .{ .indent = "++ " },
+    });
+
+    const items_deep = &.{
+        TestList{ .item = .{ .value = "Foo" } },
+        TestList{ .item = .{ .value = "Bar" } },
+    };
+    try writer.breakList(TestList, items_deep, .{
+        .delimiter = ", ",
+        .field = "item",
+    });
+
+    try testing.expectEqualStrings(
+        "\n>> Foo, Bar\n>> Foo,\n>> Bar\n>> ++ Foo,\n>> ++ Bar\n>> Foo, Bar",
+        stream.getWritten(),
+    );
+}
+
 pub fn breakEmpty(self: *Self, n: usize) !void {
-    const prefix = std.mem.trimRight(u8, self.prefix, &std.ascii.whitespace);
+    const prefix = mem.trimRight(u8, self.prefix, &std.ascii.whitespace);
     for (0..n) |_| {
         try self.output.print("\n{s}", .{prefix});
     }
@@ -218,7 +339,7 @@ test "breakEmpty" {
 /// `pub fn write(self: T, writer: *CodegenWriter) !void`
 pub fn breakValue(self: *Self, t: anytype) !void {
     try self.output.print("\n{s}", .{self.prefix});
-    try self.formatValue(t, "");
+    try self.writeValue(t, "");
 }
 
 test "breakValue" {
@@ -235,7 +356,7 @@ test "breakValue" {
 /// The format string behaves similarly to `std.fmt`.
 pub fn breakFmt(self: *Self, comptime format: []const u8, args: anytype) !void {
     try self.output.print("\n{s}", .{self.prefix});
-    try self.formatTemplate(format, args);
+    try self.writeFormat(format, args);
 }
 
 test "breakFmt" {
@@ -249,10 +370,10 @@ test "breakFmt" {
 }
 
 const MAX_DEPTH = std.options.fmt_max_depth;
-fn formatValue(self: *Self, t: anytype, comptime format: []const u8) !void {
+fn writeValue(self: *Self, t: anytype, comptime format: []const u8) !void {
     const T = @TypeOf(t);
-    if (std.meta.hasMethod(T, "write")) {
-        try t.write(self);
+    if (std.meta.hasMethod(T, "__write")) {
+        try t.__write(self);
     } else if (format.len == 0) {
         try fmt.formatType(t, format, .{}, self.output, MAX_DEPTH);
     } else {
@@ -261,7 +382,7 @@ fn formatValue(self: *Self, t: anytype, comptime format: []const u8) !void {
 }
 
 // Based on std.fmt.format
-fn formatTemplate(self: *Self, comptime format: []const u8, args: anytype) !void {
+fn writeFormat(self: *Self, comptime format: []const u8, args: anytype) !void {
     const Args = @TypeOf(args);
     const args_meta = @typeInfo(Args);
     if (args_meta != .Struct) {
@@ -334,7 +455,7 @@ fn formatTemplate(self: *Self, comptime format: []const u8, args: anytype) !void
         }
 
         const value = @field(args, fields[arg_index].name);
-        try self.formatValue(value, format[fmt_begin..fmt_end]);
+        try self.writeValue(value, format[fmt_begin..fmt_end]);
 
         arg_index += 1;
     }
@@ -352,7 +473,7 @@ fn formatTemplate(self: *Self, comptime format: []const u8, args: anytype) !void
 }
 
 pub fn expect(expected: []const u8, t: anytype) !void {
-    if (!std.meta.hasMethod(@TypeOf(t), "write")) {
+    if (!std.meta.hasMethod(@TypeOf(t), "__write")) {
         return error.MissingWriteMethod;
     }
 
@@ -362,7 +483,7 @@ pub fn expect(expected: []const u8, t: anytype) !void {
     var writer = init(test_alloc, list.writer().any());
     defer writer.deinit();
 
-    try writer.formatValue(t, "");
+    try writer.writeValue(t, "");
     try testing.expectEqualStrings(expected, list.items);
 }
 
@@ -374,10 +495,14 @@ test "expect" {
     );
 }
 
+const TestList = struct {
+    item: TestWrite,
+};
+
 const TestWrite = struct {
     value: []const u8,
 
-    pub fn write(self: TestWrite, writer: *Self) !void {
-        try writer.appendStr(self.value);
+    pub fn __write(self: TestWrite, writer: *Self) !void {
+        try writer.appendString(self.value);
     }
 };

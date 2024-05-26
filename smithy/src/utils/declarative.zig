@@ -4,43 +4,58 @@ const testing = std.testing;
 /// A simple linked list for active stack scoped without heap allocations.
 /// As long as all the relevant scopes are not dismissed the whole chain is accessible.
 pub fn StackChain(comptime T: type) type {
-    return switch (@typeInfo(T)) {
-        .Optional => |t| struct {
-            const Self = @This();
+    const is_optional = @typeInfo(T) == .Optional;
+    const Value = if (is_optional) @typeInfo(T).Optional.child else T;
 
-            value: T = null,
-            prev: ?*const Self = null,
+    return struct {
+        const Self = @This();
 
-            pub fn start(value: t.child) Self {
-                return .{ .value = value };
+        value: T = if (is_optional) null else undefined,
+        prev: ?*const Self = null,
+
+        pub fn start(value: Value) Self {
+            return .{ .value = value };
+        }
+
+        pub fn append(self: *const Self, value: Value) Self {
+            return .{
+                .value = value,
+                .prev = if (is_optional and self.value == null) self.prev else self,
+            };
+        }
+
+        pub fn isEmpty(self: *const Self) bool {
+            if (is_optional) {
+                return self.value == null and self.prev == null;
+            } else {
+                return false;
+            }
+        }
+
+        pub fn unwrap(self: *const Self, buffer: []Value) ![]const Value {
+            if (is_optional and self.value == null) return &.{};
+
+            var count: usize = 1;
+            var current = self.prev;
+            while (current) |c| : (count += 1) {
+                current = c.prev;
             }
 
-            pub fn append(self: *const Self, value: t.child) Self {
-                // If we don't have a value, we set the current value instead of
-                // appending a new one.
-                return .{
-                    .value = value,
-                    .prev = if (self.value == null) self.prev else self,
-                };
-            }
-        },
-        else => struct {
-            const Self = @This();
-
-            value: T,
-            prev: ?*const @This() = null,
-
-            pub fn start(value: T) @This() {
-                return .{ .value = value };
+            if (count > buffer.len) {
+                return error.InsufficientBufferSize;
             }
 
-            pub fn append(self: *const @This(), value: T) @This() {
-                return .{
-                    .value = value,
-                    .prev = self,
-                };
+            var i = count;
+            current = self;
+            while (i > 0) {
+                i -= 1;
+                const value = current.?.value;
+                buffer[i] = if (is_optional) value.? else value;
+                current = current.?.prev;
             }
-        },
+
+            return buffer[0..count];
+        }
     };
 }
 
@@ -84,4 +99,40 @@ test "StackChain: optional override" {
     try testing.expectEqualDeep("bar", chain.value);
     try testing.expectEqualDeep("foo", chain.prev.?.value);
     try testing.expectEqual(null, chain.prev.?.prev);
+}
+
+test "StackChain.unwrap" {
+    const chain = StackChain([]const u8).start("foo").append("bar").append("baz");
+
+    var buffer_small: [2][]const u8 = undefined;
+    try testing.expectError(
+        error.InsufficientBufferSize,
+        chain.unwrap(&buffer_small),
+    );
+
+    var buffer: [4][]const u8 = undefined;
+    try testing.expectEqualDeep(
+        &[_][]const u8{ "foo", "bar", "baz" },
+        try chain.unwrap(&buffer),
+    );
+}
+
+test "StackChain.unwrap optional" {
+    var chain = StackChain(?[]const u8){};
+    try testing.expect(chain.isEmpty());
+
+    chain = chain.append("foo").append("bar").append("baz");
+    try testing.expectEqual(false, chain.isEmpty());
+
+    var buffer_small: [2][]const u8 = undefined;
+    try testing.expectError(
+        error.InsufficientBufferSize,
+        chain.unwrap(&buffer_small),
+    );
+
+    var buffer: [4][]const u8 = undefined;
+    try testing.expectEqualDeep(
+        &[_][]const u8{ "foo", "bar", "baz" },
+        try chain.unwrap(&buffer),
+    );
 }
