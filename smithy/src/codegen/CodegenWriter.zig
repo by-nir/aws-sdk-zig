@@ -12,8 +12,32 @@ pub const ListOptions = struct {
     line: Line = .none,
     field: ?[]const u8 = null,
     format: []const u8 = "",
+    process: ?Processor = null,
 
     pub const Line = union(enum) { none, linebreak, indent: []const u8 };
+};
+
+pub const Processor = struct {
+    type: type,
+    func: *const anyopaque,
+
+    pub fn from(func: anytype) Processor {
+        const T = @TypeOf(func);
+        return .{
+            .type = switch (@typeInfo(T)) {
+                .Fn => *const T,
+                .Pointer => |p| blk: {
+                    if (p.size != .One or @typeInfo(@TypeOf(func)) != .Fn) {
+                        @compileError("Expected function type.");
+                    } else {
+                        break :blk T;
+                    }
+                },
+                else => @compileError("Expected function type."),
+            },
+            .func = func,
+        };
+    }
 };
 
 allocator: Allocator,
@@ -124,18 +148,22 @@ pub fn appendList(self: *Self, comptime T: type, items: []const T, comptime opti
         },
     };
 
+    const format = "{" ++ options.format ++ "}";
     for (items, 0..) |item, i| {
         if (i > 0) {
             try self.output.writeAll(deli);
             if (linebreak) try self.output.print("\n{s}", .{self.prefix});
         }
         const value = if (options.field) |f| @field(item, f) else item;
-        try self.writeValue(value, "{" ++ options.format ++ "}");
+        if (options.process) |proc| {
+            const func: proc.type = @alignCast(@ptrCast(proc.func));
+            try self.writeValue(func(value), format);
+        } else {
+            try self.writeValue(value, format);
+        }
     }
 
-    if (options.line == .indent) {
-        self.indentPop();
-    }
+    if (options.line == .indent) self.indentPop();
 }
 
 test "appendList" {
@@ -272,16 +300,20 @@ pub fn breakList(self: *Self, comptime T: type, items: []const T, comptime optio
         },
     };
 
+    const format = "{" ++ options.format ++ "}";
     for (items, 0..) |item, i| {
         if (i > 0) try self.output.writeAll(deli);
         if (i == 0 or linebreak) try self.output.print("\n{s}", .{self.prefix});
         const value = if (options.field) |f| @field(item, f) else item;
-        try self.writeValue(value, "{" ++ options.format ++ "}");
+        if (options.process) |proc| {
+            const func: proc.type = @alignCast(@ptrCast(proc.func));
+            try self.writeValue(func(value), format);
+        } else {
+            try self.writeValue(value, format);
+        }
     }
 
-    if (options.line == .indent) {
-        self.indentPop();
-    }
+    if (options.line == .indent) self.indentPop();
 }
 
 test "breakList" {
