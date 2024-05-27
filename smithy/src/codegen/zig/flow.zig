@@ -4,8 +4,9 @@ const assert = std.debug.assert;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const StackChain = @import("../../utils/declarative.zig").StackChain;
-const CodegenWriter = @import("../CodegenWriter.zig");
+const Writer = @import("../CodegenWriter.zig");
 const Expr = @import("Expr.zig");
+const scope = @import("scope.zig");
 
 const ConditionBranch = struct {
     condition: ?Expr = null,
@@ -14,11 +15,13 @@ const ConditionBranch = struct {
 };
 
 pub const If = struct {
+    delegate: scope.Delegate(If),
     branches: StackChain(ConditionBranch),
     did_end: bool = false,
 
-    pub fn new(condition: Expr) If {
+    pub fn new(delegate: scope.Delegate(If), condition: Expr) If {
         return .{
+            .delegate = delegate,
             .branches = StackChain(ConditionBranch).start(.{
                 .condition = condition,
             }),
@@ -28,18 +31,20 @@ pub const If = struct {
     pub fn elseIf(self: *const If, condition: Expr) If {
         assert(!self.did_end);
         assert(self.branches.value.body != null);
-        return .{ .branches = self.branches.append(.{
+        var dupe = self.*;
+        dupe.branches = self.branches.append(.{
             .condition = condition,
-        }) };
+        });
+        return dupe;
     }
 
     pub fn @"else"(self: *const If) If {
         assert(!self.did_end);
         assert(self.branches.value.body != null);
-        return .{
-            .branches = self.branches.append(.{}),
-            .did_end = true,
-        };
+        var dupe = self.*;
+        dupe.branches = self.branches.append(.{});
+        dupe.did_end = true;
+        return dupe;
     }
 
     pub fn capture(self: *const If, payload: []const u8) If {
@@ -57,7 +62,11 @@ pub const If = struct {
         return dupe;
     }
 
-    pub fn __write(self: If, writer: *CodegenWriter) !void {
+    pub fn end(self: *const If) !void {
+        try self.delegate.end(self);
+    }
+
+    pub fn __write(self: If, writer: *Writer) !void {
         var branch_buff: [16]ConditionBranch = undefined;
         const branches = try self.branches.unwrap(&branch_buff);
 
@@ -70,33 +79,36 @@ pub const If = struct {
                 try writer.appendString(" else ");
             }
 
-            if (branch.payload) |p| try writer.appendFmt("|{s}| ", .{p});
+            if (branch.payload) |p| try writer.appendFmt("|{_}| ", .{std.zig.fmtId(p)});
             try writer.appendValue(branch.body.?);
         }
     }
 };
 
 test "If" {
-    try CodegenWriter.expect(
-        "if (foo) bar",
-        If.new(Expr.raw("foo")).body(Expr.raw("bar")),
-    );
+    var tester = scope.Delegate(If).WriteTester{
+        .expected = "if (foo) bar",
+    };
+    try If.new(tester.dlg(), Expr.raw("foo"))
+        .body(Expr.raw("bar"))
+        .end();
 
-    try CodegenWriter.expect(
-        "if (foo) |bar| baz else qux",
-        If.new(Expr.raw("foo")).capture("bar").body(Expr.raw("baz"))
-            .@"else"().body(Expr.raw("qux")),
-    );
+    tester.expected = "if (foo) |bar| baz else qux";
+    try If.new(tester.dlg(), Expr.raw("foo"))
+        .capture("bar").body(Expr.raw("baz"))
+        .@"else"().body(Expr.raw("qux"))
+        .end();
 
-    try CodegenWriter.expect(
-        "if (foo) bar else if (baz) qux else quxx",
-        If.new(Expr.raw("foo")).body(Expr.raw("bar"))
-            .elseIf(Expr.raw("baz")).body(Expr.raw("qux"))
-            .@"else"().body(Expr.raw("quxx")),
-    );
+    tester.expected = "if (foo) bar else if (baz) qux else quxx";
+    try If.new(tester.dlg(), Expr.raw("foo"))
+        .body(Expr.raw("bar"))
+        .elseIf(Expr.raw("baz")).body(Expr.raw("qux"))
+        .@"else"().body(Expr.raw("quxx"))
+        .end();
 }
 
 pub const For = struct {
+    delegate: scope.Delegate(For),
     iterables: StackChain(?Iterable) = .{},
     branches: StackChain(ConditionBranch) = StackChain(ConditionBranch).start(.{}),
     did_loop: bool = false,
@@ -107,12 +119,18 @@ pub const For = struct {
         payload: []const u8,
     };
 
+    pub fn new(delegate: scope.Delegate(For)) For {
+        return .{ .delegate = delegate };
+    }
+
     pub fn iter(self: *const For, expr: Expr, payload: []const u8) For {
         assert(!self.did_loop);
-        return .{ .iterables = self.iterables.append(.{
+        var dupe = self.*;
+        dupe.iterables = self.iterables.append(.{
             .expr = expr,
             .payload = payload,
-        }) };
+        });
+        return dupe;
     }
 
     pub fn elseIf(self: *const For, condition: Expr) For {
@@ -151,7 +169,11 @@ pub const For = struct {
         return dupe;
     }
 
-    pub fn __write(self: For, writer: *CodegenWriter) !void {
+    pub fn end(self: *const For) !void {
+        try self.delegate.end(self);
+    }
+
+    pub fn __write(self: For, writer: *Writer) !void {
         var branch_buff: [4]ConditionBranch = undefined;
         const branches = try self.branches.unwrap(&branch_buff);
 
@@ -169,7 +191,8 @@ pub const For = struct {
             try writer.appendList(Iterable, iterables, .{
                 .delimiter = ", ",
                 .field = "payload",
-                .format = "s",
+                .format = "_",
+                .process = Writer.Processor.from(std.zig.fmtId),
             });
             try writer.appendFmt("| {}", .{branch.body.?});
         }
@@ -181,44 +204,48 @@ pub const For = struct {
                 try writer.appendString(" else ");
             }
 
-            if (branch.payload) |p| try writer.appendFmt("|{s}| ", .{p});
+            if (branch.payload) |p| try writer.appendFmt("|{_}| ", .{std.zig.fmtId(p)});
             try writer.appendValue(branch.body.?);
         }
     }
 };
 
 test "For" {
-    try CodegenWriter.expect(
-        "for (foo) |bar| baz",
-        (For{}).iter(Expr.raw("foo"), "bar")
-            .body(Expr.raw("baz")),
-    );
+    var tester = scope.Delegate(For).WriteTester{
+        .expected = "for (foo) |bar| baz",
+    };
+    try For.new(tester.dlg()).iter(Expr.raw("foo"), "bar")
+        .body(Expr.raw("baz"))
+        .end();
 
-    try CodegenWriter.expect(
-        "for (foo, bar) |baz, _| qux",
-        (For{}).iter(Expr.raw("foo"), "baz").iter(Expr.raw("bar"), "_")
-            .body(Expr.raw("qux")),
-    );
+    tester.expected = "for (foo, bar) |baz, _| qux";
+    try For.new(tester.dlg())
+        .iter(Expr.raw("foo"), "baz").iter(Expr.raw("bar"), "_")
+        .body(Expr.raw("qux"))
+        .end();
 
-    try CodegenWriter.expect(
-        "for (foo) |_| bar else baz",
-        (For{}).iter(Expr.raw("foo"), "_")
-            .body(Expr.raw("bar"))
-            .@"else"().body(Expr.raw("baz")),
-    );
+    tester.expected = "for (foo) |_| bar else baz";
+    try For.new(tester.dlg()).iter(Expr.raw("foo"), "_")
+        .body(Expr.raw("bar"))
+        .@"else"().body(Expr.raw("baz"))
+        .end();
 }
 
 pub const While = struct {
+    delegate: scope.Delegate(While),
     branches: StackChain(ConditionBranch),
     continue_expr: ?Expr = null,
     did_loop: bool = false,
     did_end: bool = false,
 
-    pub fn new(condition: Expr) While {
-        return .{ .branches = StackChain(ConditionBranch).start(.{
-            .condition = condition,
-            .body = undefined,
-        }) };
+    pub fn new(delegate: scope.Delegate(While), condition: Expr) While {
+        return .{
+            .delegate = delegate,
+            .branches = StackChain(ConditionBranch).start(.{
+                .condition = condition,
+                .body = undefined,
+            }),
+        };
     }
 
     pub fn continueExpr(self: *const While, expr: Expr) While {
@@ -260,7 +287,11 @@ pub const While = struct {
         return dupe;
     }
 
-    pub fn __write(self: While, writer: *CodegenWriter) !void {
+    pub fn end(self: *const While) !void {
+        try self.delegate.end(self);
+    }
+
+    pub fn __write(self: While, writer: *Writer) !void {
         var branch_buff: [4]ConditionBranch = undefined;
         const branches = try self.branches.unwrap(&branch_buff);
 
@@ -273,7 +304,7 @@ pub const While = struct {
                 try writer.appendString(" else ");
             }
 
-            if (branch.payload) |p| try writer.appendFmt("|{s}| ", .{p});
+            if (branch.payload) |p| try writer.appendFmt("|{_}| ", .{std.zig.fmtId(p)});
             if (i == 0) if (self.continue_expr) |expr| try writer.appendFmt(": ({}) ", .{expr});
             try writer.appendValue(branch.body.?);
         }
@@ -281,23 +312,23 @@ pub const While = struct {
 };
 
 test "While" {
-    try CodegenWriter.expect(
-        "while (foo) bar",
-        While.new(Expr.raw("foo")).body(Expr.raw("bar")),
-    );
+    var tester = scope.Delegate(While).WriteTester{
+        .expected = "while (foo) bar",
+    };
+    try While.new(tester.dlg(), Expr.raw("foo"))
+        .body(Expr.raw("bar"))
+        .end();
 
-    try CodegenWriter.expect(
-        "while (foo) : (bar) baz",
-        While.new(Expr.raw("foo")).continueExpr(Expr.raw("bar"))
-            .body(Expr.raw("baz")),
-    );
+    tester.expected = "while (foo) : (bar) baz";
+    try While.new(tester.dlg(), Expr.raw("foo"))
+        .continueExpr(Expr.raw("bar")).body(Expr.raw("baz"))
+        .end();
 
-    try CodegenWriter.expect(
-        "while (foo) |_| : (bar) baz else qux",
-        While.new(Expr.raw("foo")).capture("_").continueExpr(Expr.raw("bar"))
-            .body(Expr.raw("baz"))
-            .@"else"().body(Expr.raw("qux")),
-    );
+    tester.expected = "while (foo) |_| : (bar) baz else qux";
+    try While.new(tester.dlg(), Expr.raw("foo"))
+        .capture("_").continueExpr(Expr.raw("bar")).body(Expr.raw("baz"))
+        .@"else"().body(Expr.raw("qux"))
+        .end();
 }
 
 pub const Switch = struct {
@@ -305,7 +336,7 @@ pub const Switch = struct {
     statements: std.ArrayList(Statement),
     state: State = .idle,
 
-    const State = enum { idle, inlined, complete };
+    const State = enum { idle, inlined, end_inlined, end };
 
     pub fn init(allocator: Allocator, value: Expr) Switch {
         return .{
@@ -325,12 +356,16 @@ pub const Switch = struct {
     }
 
     pub fn branch(self: *Switch) Prong {
-        assert(self.state != .complete);
+        assert(self.state == .idle or self.state == .inlined);
         return .{ .parent = self };
     }
 
     pub fn @"else"(self: *Switch) Prong {
-        assert(self.state != .complete);
+        self.state = switch (self.state) {
+            .idle => .end,
+            .inlined => .end_inlined,
+            else => unreachable,
+        };
         return .{
             .parent = self,
             .cases = StackChain(?Case).start(.{ .single = Expr.raw("else") }),
@@ -339,7 +374,11 @@ pub const Switch = struct {
     }
 
     pub fn nonExhaustive(self: *Switch) Prong {
-        assert(self.state != .complete);
+        self.state = switch (self.state) {
+            .idle => .end,
+            .inlined => .end_inlined,
+            else => unreachable,
+        };
         return .{
             .parent = self,
             .cases = StackChain(?Case).start(.{ .single = Expr.raw("_") }),
@@ -347,7 +386,7 @@ pub const Switch = struct {
         };
     }
 
-    fn completeProng(
+    fn endProng(
         self: *Switch,
         cases: StackChain(?Case),
         capture: StackChain(?[]const u8),
@@ -355,10 +394,15 @@ pub const Switch = struct {
     ) !void {
         try self.statements.append(.{
             .prong = .{
-                .is_inline = if (self.state == .inlined) blk: {
-                    self.state = .idle;
-                    break :blk true;
-                } else false,
+                .is_inline = switch (self.state) {
+                    .idle => false,
+                    .inlined => blk: {
+                        self.state = .idle;
+                        break :blk true;
+                    },
+                    .end_inlined => true,
+                    else => unreachable,
+                },
                 .cases = cases,
                 .capture = capture,
                 .body = body,
@@ -395,16 +439,20 @@ pub const Switch = struct {
 
         pub fn body(self: *const Prong, expr: Expr) !void {
             assert(!self.cases.isEmpty());
-            try self.parent.completeProng(self.cases, self.payload, expr);
+            try self.parent.endProng(self.cases, self.payload, expr);
         }
     };
 
-    pub fn __write(self: Switch, writer: *CodegenWriter) !void {
-        try writer.appendFmt("switch ({}) {{", .{self.value});
-        try writer.breakList(Statement, self.statements.items, .{
-            .line = .{ .indent = "    " },
-        });
-        try writer.breakChar('}');
+    pub fn __write(self: Switch, writer: *Writer) !void {
+        if (self.statements.items.len == 0) {
+            try writer.appendFmt("switch ({}) {{}}", .{self.value});
+        } else {
+            try writer.appendFmt("switch ({}) {{", .{self.value});
+            try writer.breakList(Statement, self.statements.items, .{
+                .line = .{ .indent = scope.ZIG_INDENT },
+            });
+            try writer.breakChar('}');
+        }
     }
 
     const Statement = union(enum) {
@@ -415,7 +463,7 @@ pub const Switch = struct {
             body: Expr,
         },
 
-        pub fn __write(self: Statement, writer: *CodegenWriter) !void {
+        pub fn __write(self: Statement, writer: *Writer) !void {
             switch (self) {
                 .prong => |prong| {
                     var buffer: [32]Case = undefined;
@@ -432,7 +480,8 @@ pub const Switch = struct {
                         try writer.appendString(" => |");
                         try writer.appendList([]const u8, captures, .{
                             .delimiter = ", ",
-                            .format = "s",
+                            .format = "_",
+                            .process = Writer.Processor.from(std.zig.fmtId),
                         });
                         try writer.appendChar('|');
                     }
@@ -446,7 +495,7 @@ pub const Switch = struct {
         single: Expr,
         range: [2]Expr,
 
-        pub fn __write(self: Case, writer: *CodegenWriter) !void {
+        pub fn __write(self: Case, writer: *Writer) !void {
             switch (self) {
                 .single => |expr| try writer.appendValue(expr),
                 .range => |range| try writer.appendFmt("{}...{}", .{ range[0], range[1] }),
@@ -467,11 +516,49 @@ test "Switch" {
         .body(Expr.raw("unreachable"));
     try builder.inlined().@"else"().body(Expr.raw("unreachable"));
 
-    try CodegenWriter.expect(
+    try Writer.expect(
         \\switch (foo) {
         \\    bar, baz => |val, tag| qux,
         \\    18...108 => unreachable,
         \\    inline else => unreachable,
         \\}
     , builder);
+}
+
+pub const ErrDefer = struct {
+    delegate: scope.Delegate(ErrDefer),
+    expr: ?Expr = null,
+    payload: ?[]const u8 = null,
+
+    pub fn new(delegate: scope.Delegate(ErrDefer)) ErrDefer {
+        return .{ .delegate = delegate };
+    }
+
+    pub fn capture(self: *const ErrDefer, payload: []const u8) ErrDefer {
+        assert(self.expr == null);
+        assert(self.payload == null);
+        var dupe = self.*;
+        dupe.payload = payload;
+        return dupe;
+    }
+
+    pub fn body(self: *const ErrDefer, expr: Expr) !void {
+        assert(self.expr == null);
+        var dupe = self.*;
+        dupe.expr = expr;
+        try self.delegate.end(&dupe);
+    }
+
+    pub fn __write(self: ErrDefer, writer: *Writer) !void {
+        try writer.appendString("errdefer ");
+        if (self.payload) |p| try writer.appendFmt("|{_}| ", .{std.zig.fmtId(p)});
+        try writer.appendValue(self.expr.?);
+    }
+};
+
+test "ErrDefer" {
+    var tester = scope.Delegate(ErrDefer).WriteTester{
+        .expected = "errdefer |foo| bar",
+    };
+    try ErrDefer.new(tester.dlg()).capture("foo").body(Expr.raw("bar"));
 }
