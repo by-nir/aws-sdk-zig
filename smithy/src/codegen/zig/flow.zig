@@ -7,6 +7,7 @@ const StackChain = @import("../../utils/declarative.zig").StackChain;
 const Writer = @import("../CodegenWriter.zig");
 const Expr = @import("Expr.zig");
 const scope = @import("scope.zig");
+const Delegate = scope.Delegate;
 
 pub const If = struct {
     branches: StackChain(ElseBranch),
@@ -26,10 +27,10 @@ pub const If = struct {
     }
 
     pub const Build = struct {
-        delegate: scope.Delegate(If),
+        delegate: Delegate(If),
         condition: Expr,
 
-        pub fn new(delegate: scope.Delegate(If), condition: Expr) Build {
+        pub fn new(delegate: Delegate(If), condition: Expr) Build {
             return .{
                 .delegate = delegate,
                 .condition = condition,
@@ -46,13 +47,13 @@ pub const If = struct {
 
         fn callback(ctx: *const anyopaque, branches: StackChain(ElseBranch)) !void {
             const self: *const Build = @alignCast(@ptrCast(ctx));
-            try self.delegate.end(&.{ .branches = branches });
+            try self.delegate.end(.{ .branches = branches });
         }
     };
 };
 
 test "If" {
-    var tester = scope.Delegate(If).WriteTester{
+    var tester = Delegate(If).Tester{
         .expected = "if (foo) bar",
     };
     try If.Build.new(tester.dlg(), Expr.raw("foo"))
@@ -111,10 +112,10 @@ pub const For = struct {
     }
 
     pub const Build = struct {
-        delegate: scope.Delegate(For),
+        delegate: Delegate(For),
         iterables: StackChain(?Iterable) = .{},
 
-        pub fn new(delegate: scope.Delegate(For)) Build {
+        pub fn new(delegate: Delegate(For)) Build {
             return .{ .delegate = delegate };
         }
 
@@ -133,7 +134,7 @@ pub const For = struct {
 
         fn callback(ctx: *const anyopaque, branches: StackChain(ElseBranch)) !void {
             const self: *const Build = @alignCast(@ptrCast(ctx));
-            try self.delegate.end(&.{
+            try self.delegate.end(.{
                 .iterables = self.iterables,
                 .branches = branches,
             });
@@ -142,7 +143,7 @@ pub const For = struct {
 };
 
 test "For" {
-    var tester = scope.Delegate(For).WriteTester{
+    var tester = Delegate(For).Tester{
         .expected = "for (foo) |bar| baz",
     };
     try For.Build.new(tester.dlg()).iter(Expr.raw("foo"), "bar")
@@ -183,12 +184,12 @@ pub const While = struct {
     }
 
     pub const Build = struct {
-        delegate: scope.Delegate(While),
+        delegate: Delegate(While),
         condition: Expr,
         payload: ?[]const u8 = null,
         continue_expr: ?Expr = null,
 
-        pub fn new(delegate: scope.Delegate(While), condition: Expr) Build {
+        pub fn new(delegate: Delegate(While), condition: Expr) Build {
             return .{
                 .delegate = delegate,
                 .condition = condition,
@@ -214,7 +215,7 @@ pub const While = struct {
 
         fn callback(ctx: *const anyopaque, branches: StackChain(ElseBranch)) !void {
             const self: *const Build = @alignCast(@ptrCast(ctx));
-            try self.delegate.end(&.{
+            try self.delegate.end(.{
                 .branches = branches,
                 .continue_expr = self.continue_expr,
             });
@@ -223,7 +224,7 @@ pub const While = struct {
 };
 
 test "While" {
-    var tester = scope.Delegate(While).WriteTester{
+    var tester = Delegate(While).Tester{
         .expected = "while (foo) bar",
     };
     try While.Build.new(tester.dlg(), Expr.raw("foo"))
@@ -253,7 +254,6 @@ pub const ElseBranch = struct {
         } else {
             try writer.appendString(" else ");
         }
-
         try self.writeBody(writer);
     }
 
@@ -594,21 +594,33 @@ test "Switch" {
     , data);
 }
 
-pub const ErrDefer = struct {
+pub const Defer = struct {
+    body: Expr,
+
+    pub fn __write(self: Defer, writer: *Writer) !void {
+        try writer.appendFmt("defer {}", .{self.body});
+    }
+};
+
+test "Defer" {
+    try Writer.expect("defer foo", Defer{ .body = Expr.raw("foo") });
+}
+
+pub const ErrorDefer = struct {
     payload: ?[]const u8 = null,
     body: Expr,
 
-    pub fn __write(self: ErrDefer, writer: *Writer) !void {
+    pub fn __write(self: ErrorDefer, writer: *Writer) !void {
         try writer.appendString("errdefer ");
         if (self.payload) |p| try writer.appendFmt("|{_}| ", .{std.zig.fmtId(p)});
         try writer.appendValue(self.body);
     }
 
     pub const Build = struct {
-        delegate: scope.Delegate(ErrDefer),
+        delegate: Delegate(ErrorDefer),
         payload: ?[]const u8 = null,
 
-        pub fn new(delegate: scope.Delegate(ErrDefer)) Build {
+        pub fn new(delegate: Delegate(ErrorDefer)) Build {
             return .{ .delegate = delegate };
         }
 
@@ -620,7 +632,7 @@ pub const ErrDefer = struct {
         }
 
         pub fn body(self: Build, expr: Expr) !void {
-            try self.delegate.end(&.{
+            try self.delegate.end(.{
                 .payload = self.payload,
                 .body = expr,
             });
@@ -628,9 +640,9 @@ pub const ErrDefer = struct {
     };
 };
 
-test "ErrDefer" {
-    var tester = scope.Delegate(ErrDefer).WriteTester{
+test "ErrorDefer" {
+    var tester = Delegate(ErrorDefer).Tester{
         .expected = "errdefer |foo| bar",
     };
-    try ErrDefer.Build.new(tester.dlg()).capture("foo").body(Expr.raw("bar"));
+    try ErrorDefer.Build.new(tester.dlg()).capture("foo").body(Expr.raw("bar"));
 }
