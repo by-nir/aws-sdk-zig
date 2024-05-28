@@ -6,7 +6,7 @@ const test_alloc = testing.allocator;
 const decl = @import("../../utils/declarative.zig");
 const StackChain = decl.StackChain;
 const Writer = @import("../CodegenWriter.zig");
-const scope = @import("scope.zig");
+const Block = @import("Block.zig");
 const Expr = @import("expr.zig").Expr;
 const x = Expr.new;
 
@@ -40,23 +40,24 @@ pub const If = struct {
 
     pub fn Build(comptime Fn: type) type {
         const Callback = decl.InferCallback(Fn);
-        const BranchBuild = ElseBranch.Build(Callback.Return);
         return struct {
             const Self = @This();
+            const BranchBuild = ElseBranch.Build(*const Self, Callback.Return);
 
             callback: Callback,
             condition: Expr,
 
             pub fn capture(self: *const Self, payload: []const u8) BranchBuild {
-                return BranchBuild.newPartial(self, end, self.condition, payload, null);
+                const cb = decl.callback(self, end);
+                return BranchBuild.newPartial(cb, self.condition, payload, null);
             }
 
             pub fn body(self: *const Self, expr: Expr) BranchBuild {
-                return BranchBuild.newPartial(self, end, self.condition, null, expr);
+                const cb = decl.callback(self, end);
+                return BranchBuild.newPartial(cb, self.condition, null, expr);
             }
 
-            fn end(ctx: *const anyopaque, branches: StackChain(?ElseBranch)) Callback.Return {
-                const self: *const Self = @alignCast(@ptrCast(ctx));
+            fn end(self: *const Self, branches: StackChain(?ElseBranch)) Callback.Return {
                 return self.callback.invoke(.{ .branches = branches });
             }
         };
@@ -130,9 +131,9 @@ pub const For = struct {
 
     pub fn Build(comptime Fn: type) type {
         const Callback = decl.InferCallback(Fn);
-        const BranchBuild = ElseBranch.Build(Callback.Return);
         return struct {
             const Self = @This();
+            const BranchBuild = ElseBranch.Build(*const Self, Callback.Return);
 
             callback: Callback,
             iterables: StackChain(?Iterable) = .{},
@@ -147,11 +148,11 @@ pub const For = struct {
             }
 
             pub fn body(self: *const Self, expr: Expr) BranchBuild {
-                return BranchBuild.newAppend(self, end, null, null, expr);
+                const cb = decl.callback(self, end);
+                return BranchBuild.newAppend(cb, null, null, expr);
             }
 
-            fn end(ctx: *const anyopaque, branches: StackChain(?ElseBranch)) Callback.Return {
-                const self: *const Self = @alignCast(@ptrCast(ctx));
+            fn end(self: *const Self, branches: StackChain(?ElseBranch)) Callback.Return {
                 return self.callback.invoke(.{
                     .iterables = self.iterables,
                     .branches = branches,
@@ -212,9 +213,9 @@ pub const While = struct {
 
     pub fn Build(comptime Fn: type) type {
         const Callback = decl.InferCallback(Fn);
-        const BranchBuild = ElseBranch.Build(Callback.Return);
         return struct {
             const Self = @This();
+            const BranchBuild = ElseBranch.Build(*const Self, Callback.Return);
 
             callback: Callback,
             condition: Expr,
@@ -235,11 +236,11 @@ pub const While = struct {
             }
 
             pub fn body(self: *const Self, expr: Expr) BranchBuild {
-                return BranchBuild.newPartial(self, end, self.condition, self.payload, expr);
+                const cb = decl.callback(self, end);
+                return BranchBuild.newPartial(cb, self.condition, self.payload, expr);
             }
 
-            fn end(ctx: *const anyopaque, branches: StackChain(?ElseBranch)) Callback.Return {
-                const self: *const Self = @alignCast(@ptrCast(ctx));
+            fn end(self: *const Self, branches: StackChain(?ElseBranch)) Callback.Return {
                 return self.callback.invoke(.{
                     .branches = branches,
                     .continue_expr = self.continue_expr,
@@ -287,27 +288,19 @@ pub const ElseBranch = struct {
         try writer.appendValue(self.body);
     }
 
-    pub fn Build(comptime Return: type) type {
-        const Callback = *const fn (*const anyopaque, StackChain(?ElseBranch)) Return;
+    pub fn Build(comptime Context: type, comptime Return: type) type {
+        const Callback = decl.Callback(Context, StackChain(?ElseBranch), Return);
         return struct {
             const Self = @This();
 
-            ctx: *const anyopaque,
             callback: Callback,
             branches: StackChain(?ElseBranch) = .{},
             condition: ?Expr = null,
             payload: ?[]const u8 = null,
             expr: ?Expr = null,
 
-            pub fn newAppend(
-                ctx: *const anyopaque,
-                callback: Callback,
-                condition: ?Expr,
-                payload: ?[]const u8,
-                expr: Expr,
-            ) Self {
+            pub fn newAppend(callback: Callback, condition: ?Expr, payload: ?[]const u8, expr: Expr) Self {
                 return .{
-                    .ctx = ctx,
                     .callback = callback,
                     .branches = StackChain(?ElseBranch).start(.{
                         .condition = condition,
@@ -317,15 +310,8 @@ pub const ElseBranch = struct {
                 };
             }
 
-            pub fn newPartial(
-                ctx: *const anyopaque,
-                callback: Callback,
-                condition: ?Expr,
-                payload: ?[]const u8,
-                expr: ?Expr,
-            ) Self {
+            pub fn newPartial(callback: Callback, condition: ?Expr, payload: ?[]const u8, expr: ?Expr) Self {
                 return .{
-                    .ctx = ctx,
                     .callback = callback,
                     .condition = condition,
                     .payload = payload,
@@ -357,7 +343,7 @@ pub const ElseBranch = struct {
             }
 
             pub fn end(self: *const Self) Return {
-                return self.callback(self.ctx, self.flushChain());
+                return self.callback.invoke(self.flushChain());
             }
 
             fn flushAndReset(self: *const Self, conditing: ?Expr) Self {
@@ -406,7 +392,7 @@ pub const Switch = struct {
         } else {
             try writer.appendFmt("switch ({}) {{", .{self.value});
             try writer.breakList(Statement, self.statements, .{
-                .line = .{ .indent = scope.ZIG_INDENT },
+                .line = .{ .indent = Block.ZIG_INDENT },
             });
             try writer.breakChar('}');
         }
