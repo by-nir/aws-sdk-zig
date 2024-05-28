@@ -17,7 +17,6 @@ fn FnReturn(comptime T: type) type {
 
 pub fn Closure(comptime Context: type, comptime Fn: type) type {
     var meta = fnMeta(Fn);
-
     if (Context == void) {
         return *const @Type(.{ .Fn = meta });
     } else {
@@ -75,7 +74,7 @@ fn ClosureMergeArgs(
     return Static.merge;
 }
 
-fn ClosureCtxArgs(Context: type, Args: type) type {
+fn ClosureCtxArgs(comptime Context: type, comptime Args: type) type {
     const origin = @typeInfo(Args).Struct.fields;
     var target: [origin.len + 1]TypeMeta.StructField = undefined;
     target[0] = .{
@@ -112,6 +111,66 @@ test "callClosure" {
     try testing.expectEqual(108, callClosure(100, Test.ctx, .{8}));
 }
 
+pub fn Callback(comptime Ctx: type, comptime Val: type, comptime Rtrn: type) type {
+    return struct {
+        const Self = @This();
+        pub const Context = Ctx;
+        pub const Value = Val;
+        pub const Return = Rtrn;
+        pub const Fn = *const fn (ctx: Ctx, val: Val) Rtrn;
+
+        ctx: Context,
+        func: Fn,
+
+        pub fn invoke(self: @This(), value: Value) Return {
+            return self.func(self.ctx, value);
+        }
+    };
+}
+
+test "Callback" {
+    const Cb = Callback(u8, u8, u8);
+    const cb = Cb{
+        .ctx = 100,
+        .func = CallbackTest.cb,
+    };
+    try testing.expectEqual(108, cb.invoke(8));
+}
+
+pub fn callback(ctx: anytype, func: anytype) InferCallback(@TypeOf(func)) {
+    return .{
+        .ctx = ctx,
+        .func = func,
+    };
+}
+
+test "callback" {
+    const cb = callback(100, CallbackTest.cb);
+    try testing.expectEqual(108, cb.invoke(8));
+}
+
+pub fn InferCallback(comptime Fn: type) type {
+    const meta = fnMeta(Fn);
+    if (meta.params.len != 2) {
+        @compileError("A callback function must have exactly 2 parameters: context and value.");
+    } else if (meta.is_generic) {
+        @compileError("A callback can’t be generic.");
+    } else if (meta.is_var_args) {
+        @compileError("A callback use variadic args.");
+    }
+    return Callback(
+        meta.params[0].type.?,
+        meta.params[1].type.?,
+        meta.return_type.?,
+    );
+}
+
+const CallbackTest = struct {
+    fn cb(ctx: u8, arg: u8) u8 {
+        return ctx + arg;
+    }
+};
+
 /// A simple linked list for active stack scoped without heap allocations.
 /// As long as all the relevant scopes are not dismissed the whole chain is accessible.
 pub fn StackChain(comptime T: type) type {
@@ -123,16 +182,23 @@ pub fn StackChain(comptime T: type) type {
 
         value: T = if (is_optional) null else undefined,
         prev: ?*const Self = null,
+        prev_len: u8 = 0,
 
         pub fn start(value: Value) Self {
             return .{ .value = value };
         }
 
         pub fn append(self: *const Self, value: Value) Self {
+            const no_value = is_optional and self.value == null;
             return .{
                 .value = value,
-                .prev = if (is_optional and self.value == null) self.prev else self,
+                .prev = if (no_value) self.prev else self,
+                .prev_len = if (no_value) self.prev_len else self.prev_len + 1,
             };
+        }
+
+        pub fn count(self: Self) usize {
+            return if (self.isEmpty()) 0 else 1 + self.prev_len;
         }
 
         pub fn isEmpty(self: Self) bool {
@@ -144,28 +210,22 @@ pub fn StackChain(comptime T: type) type {
         }
 
         pub fn unwrap(self: Self, buffer: []Value) ![]const Value {
-            if (self.isEmpty()) return &.{};
-
-            var count: usize = 1;
-            var current = self.prev;
-            while (current) |c| : (count += 1) {
-                current = c.prev;
-            }
-
-            if (count > buffer.len) {
+            const len = self.count();
+            if (len == 0) {
+                return &.{};
+            } else if (len > buffer.len) {
                 return error.InsufficientBufferSize;
             }
 
-            var i = count;
-            current = &self;
-            while (i > 0) {
+            var i = len;
+            var current = &self;
+            while (i > 0) : (current = current.prev orelse undefined) {
                 i -= 1;
-                const value = current.?.value;
+                const value = current.value;
                 buffer[i] = if (is_optional) value.? else value;
-                current = current.?.prev;
             }
 
-            return buffer[0..count];
+            return buffer[0..len];
         }
     };
 }
@@ -193,7 +253,8 @@ test "StackChain: cross-scope behavior" {
     // Fails when some of the scopes are dismissed:
     const chain = try Scope.extend(Chain.start("foo"), "baz");
     try testing.expectEqualStrings("baz", chain.value);
-    try testing.expect("bar".ptr != chain.prev.?.value.ptr);
+    try testing.expectEqualStrings("bar", chain.prev.?.value);
+    try testing.expect("foo".ptr != chain.prev.?.prev.?.value.ptr);
 }
 
 test "StackChain: optional append" {

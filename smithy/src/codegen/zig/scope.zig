@@ -7,8 +7,9 @@ const declarative = @import("../../utils/declarative.zig");
 const Closure = declarative.Closure;
 const callClosure = declarative.callClosure;
 const Writer = @import("../CodegenWriter.zig");
-const Expr = @import("Expr.zig");
 const flow = @import("flow.zig");
+const Expr = @import("expr.zig").Expr;
+const x = Expr.new;
 
 pub const ZIG_INDENT = "    ";
 
@@ -38,13 +39,6 @@ pub const Scope = struct {
         self.statements.deinit(self.allocator);
     }
 
-    fn delegate(self: *Scope, comptime T: type, endFn: Delegate(T).EndFn) Delegate(T) {
-        return .{
-            .ctx = self,
-            .didEndFn = endFn,
-        };
-    }
-
     fn castCtx(ctx: *anyopaque) *Scope {
         return @alignCast(@ptrCast(ctx));
     }
@@ -60,19 +54,19 @@ pub const Scope = struct {
     // Control Flow
     //
 
-    pub fn @"if"(self: *Scope, condition: Expr) flow.If.Build {
-        return flow.If.Build.new(self.delegate(flow.If, endIf), condition);
+    pub fn @"if"(self: *Scope, condition: Expr) flow.If.BuildType(endIf) {
+        return flow.If.build(endIf, self, condition);
     }
 
-    fn endIf(ctx: *anyopaque, t: flow.If) !void {
-        try castCtx(ctx).appendStatement("if", t);
+    fn endIf(self: *Scope, value: flow.If) !void {
+        try self.appendStatement("if", value);
     }
 
     test "if" {
         var self = init(test_alloc);
         defer self.deinit();
 
-        try self.@"if"(Expr.raw("foo")).body(Expr.raw("bar")).end();
+        try self.@"if"(x.raw("foo")).body(x.raw("bar")).end();
         try Writer.expect(
             \\{
             \\    if (foo) bar;
@@ -80,19 +74,19 @@ pub const Scope = struct {
         , self);
     }
 
-    pub fn @"for"(self: *Scope) flow.For.Build {
-        return flow.For.Build.new(self.delegate(flow.For, endFor));
+    pub fn @"for"(self: *Scope) flow.For.BuildType(endFor) {
+        return flow.For.build(endFor, self);
     }
 
-    fn endFor(ctx: *anyopaque, t: flow.For) !void {
-        try castCtx(ctx).appendStatement("for", t);
+    fn endFor(self: *Scope, t: flow.For) !void {
+        try self.appendStatement("for", t);
     }
 
     test "for" {
         var self = init(test_alloc);
         defer self.deinit();
 
-        try self.@"for"().iter(Expr.raw("foo"), "_").body(Expr.raw("bar")).end();
+        try self.@"for"().iter(x.raw("foo"), "_").body(x.raw("bar")).end();
         try Writer.expect(
             \\{
             \\    for (foo) |_| bar;
@@ -100,19 +94,19 @@ pub const Scope = struct {
         , self);
     }
 
-    pub fn @"while"(self: *Scope, condition: Expr) flow.While.Build {
-        return flow.While.Build.new(self.delegate(flow.While, endWhile), condition);
+    pub fn @"while"(self: *Scope, condition: Expr) flow.While.BuildType(endWhile) {
+        return flow.While.build(endWhile, self, condition);
     }
 
-    fn endWhile(ctx: *anyopaque, t: flow.While) !void {
-        try castCtx(ctx).appendStatement("while", t);
+    fn endWhile(self: *Scope, t: flow.While) !void {
+        try self.appendStatement("while", t);
     }
 
     test "while" {
         var self = init(test_alloc);
         defer self.deinit();
 
-        try self.@"while"(Expr.raw("foo")).body(Expr.raw("bar")).end();
+        try self.@"while"(x.raw("foo")).body(x.raw("bar")).end();
         try Writer.expect(
             \\{
             \\    while (foo) bar;
@@ -120,9 +114,7 @@ pub const Scope = struct {
         , self);
     }
 
-    const SwitchFn = *const fn (*flow.Switch.Build) anyerror!void;
-
-    pub fn @"switch"(self: *Scope, value: Expr, build: SwitchFn) !void {
+    pub fn @"switch"(self: *Scope, value: Expr, build: flow.SwitchFn) !void {
         try self.switchWith(value, {}, build);
     }
 
@@ -130,7 +122,7 @@ pub const Scope = struct {
         self: *Scope,
         value: Expr,
         ctx: anytype,
-        build: Closure(@TypeOf(ctx), SwitchFn),
+        build: Closure(@TypeOf(ctx), flow.SwitchFn),
     ) !void {
         var builder = flow.Switch.Build.init(self.allocator, value);
         callClosure(ctx, build, .{&builder}) catch |err| {
@@ -147,15 +139,15 @@ pub const Scope = struct {
         var self = init(test_alloc);
         defer self.deinit();
 
-        try self.@"switch"(Expr.raw("foo"), struct {
+        try self.@"switch"(x.raw("foo"), struct {
             fn f(_: *flow.Switch.Build) !void {}
         }.f);
 
         var tag: []const u8 = "bar";
         _ = &tag;
-        try self.switchWith(Expr.raw("foo"), tag, struct {
+        try self.switchWith(x.raw("foo"), tag, struct {
             fn f(ctx: []const u8, build: *flow.Switch.Build) !void {
-                try build.branch().case(Expr.raw(ctx)).body(Expr.raw("baz"));
+                try build.branch().case(x.raw(ctx)).body(x.raw("baz"));
             }
         }.f);
 
@@ -178,7 +170,7 @@ pub const Scope = struct {
         var self = init(test_alloc);
         defer self.deinit();
 
-        try self.@"defer"(Expr.raw("foo"));
+        try self.@"defer"(x.raw("foo"));
         try Writer.expect(
             \\{
             \\    defer foo;
@@ -186,19 +178,19 @@ pub const Scope = struct {
         , self);
     }
 
-    pub fn errorDefer(self: *Scope) flow.ErrorDefer.Build {
-        return flow.ErrorDefer.Build.new(self.delegate(flow.ErrorDefer, endErrorDefer));
+    pub fn errorDefer(self: *Scope) flow.ErrorDefer.BuildType(endErrorDefer) {
+        return flow.ErrorDefer.build(endErrorDefer, self);
     }
 
-    fn endErrorDefer(ctx: *anyopaque, t: flow.ErrorDefer) !void {
-        try castCtx(ctx).appendStatement("errdefer", t);
+    fn endErrorDefer(self: *Scope, t: flow.ErrorDefer) !void {
+        try self.appendStatement("errdefer", t);
     }
 
     test "errorDefer" {
         var self = init(test_alloc);
         defer self.deinit();
 
-        try self.errorDefer().body(Expr.raw("foo"));
+        try self.errorDefer().body(x.raw("foo"));
         try Writer.expect(
             \\{
             \\    errdefer foo;
@@ -222,43 +214,6 @@ pub const Scope = struct {
         try writer.breakChar('}');
     }
 };
-
-pub fn Delegate(comptime T: type) type {
-    return struct {
-        const Self = @This();
-        pub const EndFn = *const fn (ctx: *anyopaque, t: T) anyerror!void;
-
-        ctx: *anyopaque,
-        didEndFn: EndFn,
-
-        pub fn new(self: *anyopaque, didEndFn: EndFn) Self {
-            return .{
-                .ctx = self,
-                .didEndFn = didEndFn,
-            };
-        }
-
-        pub fn end(self: Self, t: T) !void {
-            try self.didEndFn(self.ctx, t);
-        }
-
-        pub const Tester = struct {
-            expected: []const u8 = "",
-
-            pub fn dlg(self: *@This()) Self {
-                return .{
-                    .ctx = self,
-                    .didEndFn = Tester.end,
-                };
-            }
-
-            fn end(ctx: *anyopaque, t: T) !void {
-                const self = @as(*Tester, @alignCast(@ptrCast(ctx)));
-                try Writer.expect(self.expected, t);
-            }
-        };
-    };
-}
 
 test {
     _ = Scope;
