@@ -1,5 +1,116 @@
 const std = @import("std");
+const TypeMeta = std.builtin.Type;
 const testing = std.testing;
+
+fn fnMeta(comptime T: type) TypeMeta.Fn {
+    return switch (@typeInfo(T)) {
+        .Fn => |f| f,
+        .Pointer => |p| @typeInfo(p.child).Fn,
+        else => unreachable,
+    };
+}
+
+fn FnReturn(comptime T: type) type {
+    const meta = fnMeta(T);
+    return meta.return_type.?;
+}
+
+pub fn Closure(comptime Context: type, comptime Fn: type) type {
+    var meta = fnMeta(Fn);
+
+    if (Context == void) {
+        return *const @Type(.{ .Fn = meta });
+    } else {
+        var params: [meta.params.len + 1]TypeMeta.Fn.Param = undefined;
+        params[0] = .{
+            .is_generic = false,
+            .is_noalias = false,
+            .type = Context,
+        };
+        @memcpy(params[1..], meta.params);
+
+        meta.params = &params;
+        return *const @Type(.{ .Fn = meta });
+    }
+}
+
+test "Closure" {
+    try testing.expectEqual(
+        *const fn (bool) anyerror!u8,
+        Closure(void, fn (_: bool) anyerror!u8),
+    );
+    try testing.expectEqual(
+        *const fn (usize, bool) anyerror!u8,
+        Closure(usize, fn (_: bool) anyerror!u8),
+    );
+}
+
+pub fn callClosure(ctx: anytype, closure: anytype, args: anytype) FnReturn(@TypeOf(closure)) {
+    const Context = @TypeOf(ctx);
+    const Arga = @TypeOf(args);
+    const args_meta = @typeInfo(Arga).Struct;
+    if (!args_meta.is_tuple) {
+        @compileError("Function callClosure expects `args` type of tuple.");
+    } else {
+        const a = if (Context == void) args else ClosureMergeArgs(Context, Arga)(ctx, args);
+        return @call(.auto, closure, a);
+    }
+}
+
+fn ClosureMergeArgs(
+    comptime Context: type,
+    comptime Args: type,
+) fn (Context, Args) ClosureCtxArgs(Context, Args) {
+    const CtxArgs = ClosureCtxArgs(Context, Args);
+    const Static = struct {
+        fn merge(_ctx: Context, _args: Args) CtxArgs {
+            var combo: CtxArgs = undefined;
+            combo[0] = _ctx;
+            inline for (0.._args.len) |i| {
+                combo[i + 1] = @field(_args, std.fmt.comptimePrint("{d}", .{i}));
+            }
+            return combo;
+        }
+    };
+    return Static.merge;
+}
+
+fn ClosureCtxArgs(Context: type, Args: type) type {
+    const origin = @typeInfo(Args).Struct.fields;
+    var target: [origin.len + 1]TypeMeta.StructField = undefined;
+    target[0] = .{
+        .name = "0",
+        .type = Context,
+        .default_value = null,
+        .is_comptime = false,
+        .alignment = @alignOf(Context),
+    };
+    for (origin, 1..) |field, i| {
+        target[i] = field;
+        target[i].name = std.fmt.comptimePrint("{d}", .{i});
+    }
+    return @Type(.{ .Struct = .{
+        .layout = .auto,
+        .fields = &target,
+        .decls = &.{},
+        .is_tuple = true,
+    } });
+}
+
+test "callClosure" {
+    const Test = struct {
+        fn plain(add: u8) u8 {
+            return 100 + add;
+        }
+
+        fn ctx(a: u8, b: u8) u8 {
+            return a + b;
+        }
+    };
+
+    try testing.expectEqual(108, callClosure({}, Test.plain, .{8}));
+    try testing.expectEqual(108, callClosure(100, Test.ctx, .{8}));
+}
 
 /// A simple linked list for active stack scoped without heap allocations.
 /// As long as all the relevant scopes are not dismissed the whole chain is accessible.
@@ -24,7 +135,7 @@ pub fn StackChain(comptime T: type) type {
             };
         }
 
-        pub fn isEmpty(self: *const Self) bool {
+        pub fn isEmpty(self: Self) bool {
             if (is_optional) {
                 return self.value == null and self.prev == null;
             } else {
@@ -32,8 +143,8 @@ pub fn StackChain(comptime T: type) type {
             }
         }
 
-        pub fn unwrap(self: *const Self, buffer: []Value) ![]const Value {
-            if (is_optional and self.value == null) return &.{};
+        pub fn unwrap(self: Self, buffer: []Value) ![]const Value {
+            if (self.isEmpty()) return &.{};
 
             var count: usize = 1;
             var current = self.prev;
@@ -46,7 +157,7 @@ pub fn StackChain(comptime T: type) type {
             }
 
             var i = count;
-            current = self;
+            current = &self;
             while (i > 0) {
                 i -= 1;
                 const value = current.?.value;
