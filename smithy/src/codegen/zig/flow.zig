@@ -3,14 +3,15 @@ const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const StackChain = @import("../../utils/declarative.zig").StackChain;
+const decl = @import("../../utils/declarative.zig");
+const StackChain = decl.StackChain;
 const Writer = @import("../CodegenWriter.zig");
-const Expr = @import("Expr.zig");
 const scope = @import("scope.zig");
-const Delegate = scope.Delegate;
+const Expr = @import("expr.zig").Expr;
+const x = Expr.new;
 
 pub const If = struct {
-    branches: StackChain(ElseBranch),
+    branches: StackChain(?ElseBranch),
 
     pub fn __write(self: If, writer: *Writer) !void {
         var branch_buff: [16]ElseBranch = undefined;
@@ -26,57 +27,65 @@ pub const If = struct {
         }
     }
 
-    pub const Build = struct {
-        delegate: Delegate(If),
-        condition: Expr,
+    pub fn build(callback: anytype, ctx: anytype, condition: Expr) BuildType(callback) {
+        return .{
+            .callback = decl.callback(ctx, callback),
+            .condition = condition,
+        };
+    }
 
-        pub fn new(delegate: Delegate(If), condition: Expr) Build {
-            return .{
-                .delegate = delegate,
-                .condition = condition,
-            };
-        }
+    pub fn BuildType(callback: anytype) type {
+        return Build(@TypeOf(callback));
+    }
 
-        pub fn capture(self: *const Build, payload: []const u8) ElseBranch.Build {
-            return ElseBranch.Build.newPartial(self, callback, self.condition, payload, null);
-        }
+    pub fn Build(comptime Fn: type) type {
+        const Callback = decl.InferCallback(Fn);
+        const BranchBuild = ElseBranch.Build(Callback.Return);
+        return struct {
+            const Self = @This();
 
-        pub fn body(self: *const Build, expr: Expr) ElseBranch.Build {
-            return ElseBranch.Build.newPartial(self, callback, self.condition, null, expr);
-        }
+            callback: Callback,
+            condition: Expr,
 
-        fn callback(ctx: *const anyopaque, branches: StackChain(ElseBranch)) !void {
-            const self: *const Build = @alignCast(@ptrCast(ctx));
-            try self.delegate.end(.{ .branches = branches });
-        }
-    };
+            pub fn capture(self: *const Self, payload: []const u8) BranchBuild {
+                return BranchBuild.newPartial(self, end, self.condition, payload, null);
+            }
+
+            pub fn body(self: *const Self, expr: Expr) BranchBuild {
+                return BranchBuild.newPartial(self, end, self.condition, null, expr);
+            }
+
+            fn end(ctx: *const anyopaque, branches: StackChain(?ElseBranch)) Callback.Return {
+                const self: *const Self = @alignCast(@ptrCast(ctx));
+                return self.callback.invoke(.{ .branches = branches });
+            }
+        };
+    }
 };
 
 test "If" {
-    var tester = Delegate(If).Tester{
+    const Test = Tester(If);
+    var tester = Test{
         .expected = "if (foo) bar",
     };
-    try If.Build.new(tester.dlg(), Expr.raw("foo"))
-        .body(Expr.raw("bar"))
-        .end();
+    try If.build(Test.callback, &tester, x.raw("foo"))
+        .body(x.raw("bar")).end();
 
     tester.expected = "if (foo) |bar| baz else qux";
-    try If.Build.new(tester.dlg(), Expr.raw("foo"))
-        .capture("bar").body(Expr.raw("baz"))
-        .@"else"().body(Expr.raw("qux"))
-        .end();
+    try If.build(Test.callback, &tester, x.raw("foo"))
+        .capture("bar").body(x.raw("baz"))
+        .@"else"().body(x.raw("qux")).end();
 
     tester.expected = "if (foo) bar else if (baz) qux else quxx";
-    try If.Build.new(tester.dlg(), Expr.raw("foo"))
-        .body(Expr.raw("bar"))
-        .elseIf(Expr.raw("baz")).body(Expr.raw("qux"))
-        .@"else"().body(Expr.raw("quxx"))
-        .end();
+    try If.build(Test.callback, &tester, x.raw("foo"))
+        .body(x.raw("bar"))
+        .elseIf(x.raw("baz")).body(x.raw("qux"))
+        .@"else"().body(x.raw("quxx")).end();
 }
 
 pub const For = struct {
     iterables: StackChain(?Iterable),
-    branches: StackChain(ElseBranch),
+    branches: StackChain(?ElseBranch),
 
     const Iterable = struct {
         expr: Expr,
@@ -111,60 +120,67 @@ pub const For = struct {
         }
     }
 
-    pub const Build = struct {
-        delegate: Delegate(For),
-        iterables: StackChain(?Iterable) = .{},
+    pub fn build(callback: anytype, ctx: anytype) BuildType(callback) {
+        return .{ .callback = decl.callback(ctx, callback) };
+    }
 
-        pub fn new(delegate: Delegate(For)) Build {
-            return .{ .delegate = delegate };
-        }
+    pub fn BuildType(callback: anytype) type {
+        return Build(@TypeOf(callback));
+    }
 
-        pub fn iter(self: *const Build, expr: Expr, payload: []const u8) Build {
-            var dupe = self.*;
-            dupe.iterables = self.iterables.append(.{
-                .expr = expr,
-                .payload = payload,
-            });
-            return dupe;
-        }
+    pub fn Build(comptime Fn: type) type {
+        const Callback = decl.InferCallback(Fn);
+        const BranchBuild = ElseBranch.Build(Callback.Return);
+        return struct {
+            const Self = @This();
 
-        pub fn body(self: *const Build, expr: Expr) ElseBranch.Build {
-            return ElseBranch.Build.newAppend(self, callback, null, null, expr);
-        }
+            callback: Callback,
+            iterables: StackChain(?Iterable) = .{},
 
-        fn callback(ctx: *const anyopaque, branches: StackChain(ElseBranch)) !void {
-            const self: *const Build = @alignCast(@ptrCast(ctx));
-            try self.delegate.end(.{
-                .iterables = self.iterables,
-                .branches = branches,
-            });
-        }
-    };
+            pub fn iter(self: *const Self, expr: Expr, payload: []const u8) Self {
+                var dupe = self.*;
+                dupe.iterables = self.iterables.append(.{
+                    .expr = expr,
+                    .payload = payload,
+                });
+                return dupe;
+            }
+
+            pub fn body(self: *const Self, expr: Expr) BranchBuild {
+                return BranchBuild.newAppend(self, end, null, null, expr);
+            }
+
+            fn end(ctx: *const anyopaque, branches: StackChain(?ElseBranch)) Callback.Return {
+                const self: *const Self = @alignCast(@ptrCast(ctx));
+                return self.callback.invoke(.{
+                    .iterables = self.iterables,
+                    .branches = branches,
+                });
+            }
+        };
+    }
 };
 
 test "For" {
-    var tester = Delegate(For).Tester{
+    const Test = Tester(For);
+    var tester = Test{
         .expected = "for (foo) |bar| baz",
     };
-    try For.Build.new(tester.dlg()).iter(Expr.raw("foo"), "bar")
-        .body(Expr.raw("baz"))
-        .end();
+    try For.build(Test.callback, &tester).iter(x.raw("foo"), "bar")
+        .body(x.raw("baz")).end();
 
     tester.expected = "for (foo, bar) |baz, _| qux";
-    try For.Build.new(tester.dlg())
-        .iter(Expr.raw("foo"), "baz").iter(Expr.raw("bar"), "_")
-        .body(Expr.raw("qux"))
-        .end();
+    try For.build(Test.callback, &tester).iter(x.raw("foo"), "baz").iter(x.raw("bar"), "_")
+        .body(x.raw("qux")).end();
 
     tester.expected = "for (foo) |_| bar else baz";
-    try For.Build.new(tester.dlg()).iter(Expr.raw("foo"), "_")
-        .body(Expr.raw("bar"))
-        .@"else"().body(Expr.raw("baz"))
-        .end();
+    try For.build(Test.callback, &tester).iter(x.raw("foo"), "_")
+        .body(x.raw("bar"))
+        .@"else"().body(x.raw("baz")).end();
 }
 
 pub const While = struct {
-    branches: StackChain(ElseBranch),
+    branches: StackChain(?ElseBranch),
     continue_expr: ?Expr,
 
     pub fn __write(self: While, writer: *Writer) !void {
@@ -183,64 +199,73 @@ pub const While = struct {
         }
     }
 
-    pub const Build = struct {
-        delegate: Delegate(While),
-        condition: Expr,
-        payload: ?[]const u8 = null,
-        continue_expr: ?Expr = null,
+    pub fn build(callback: anytype, ctx: anytype, condition: Expr) BuildType(callback) {
+        return .{
+            .callback = decl.callback(ctx, callback),
+            .condition = condition,
+        };
+    }
 
-        pub fn new(delegate: Delegate(While), condition: Expr) Build {
-            return .{
-                .delegate = delegate,
-                .condition = condition,
-            };
-        }
+    pub fn BuildType(callback: anytype) type {
+        return Build(@TypeOf(callback));
+    }
 
-        pub fn capture(self: Build, payload: []const u8) Build {
-            assert(self.payload == null);
-            var dupe = self;
-            dupe.payload = payload;
-            return dupe;
-        }
+    pub fn Build(comptime Fn: type) type {
+        const Callback = decl.InferCallback(Fn);
+        const BranchBuild = ElseBranch.Build(Callback.Return);
+        return struct {
+            const Self = @This();
 
-        pub fn onContinue(self: Build, expr: Expr) Build {
-            var dupe = self;
-            dupe.continue_expr = expr;
-            return dupe;
-        }
+            callback: Callback,
+            condition: Expr,
+            payload: ?[]const u8 = null,
+            continue_expr: ?Expr = null,
 
-        pub fn body(self: *const Build, expr: Expr) ElseBranch.Build {
-            return ElseBranch.Build.newAppend(self, callback, self.condition, self.payload, expr);
-        }
+            pub fn capture(self: Self, payload: []const u8) Self {
+                assert(self.payload == null);
+                var dupe = self;
+                dupe.payload = payload;
+                return dupe;
+            }
 
-        fn callback(ctx: *const anyopaque, branches: StackChain(ElseBranch)) !void {
-            const self: *const Build = @alignCast(@ptrCast(ctx));
-            try self.delegate.end(.{
-                .branches = branches,
-                .continue_expr = self.continue_expr,
-            });
-        }
-    };
+            pub fn onContinue(self: Self, expr: Expr) Self {
+                var dupe = self;
+                dupe.continue_expr = expr;
+                return dupe;
+            }
+
+            pub fn body(self: *const Self, expr: Expr) BranchBuild {
+                return BranchBuild.newPartial(self, end, self.condition, self.payload, expr);
+            }
+
+            fn end(ctx: *const anyopaque, branches: StackChain(?ElseBranch)) Callback.Return {
+                const self: *const Self = @alignCast(@ptrCast(ctx));
+                return self.callback.invoke(.{
+                    .branches = branches,
+                    .continue_expr = self.continue_expr,
+                });
+            }
+        };
+    }
 };
 
 test "While" {
-    var tester = Delegate(While).Tester{
+    const Test = Tester(While);
+    var tester = Test{
         .expected = "while (foo) bar",
     };
-    try While.Build.new(tester.dlg(), Expr.raw("foo"))
-        .body(Expr.raw("bar"))
-        .end();
+    try While.build(Test.callback, &tester, x.raw("foo"))
+        .body(x.raw("bar")).end();
 
     tester.expected = "while (foo) : (bar) baz";
-    try While.Build.new(tester.dlg(), Expr.raw("foo"))
-        .onContinue(Expr.raw("bar")).body(Expr.raw("baz"))
-        .end();
+    try While.build(Test.callback, &tester, x.raw("foo"))
+        .onContinue(x.raw("bar"))
+        .body(x.raw("baz")).end();
 
     tester.expected = "while (foo) |_| : (bar) baz else qux";
-    try While.Build.new(tester.dlg(), Expr.raw("foo"))
-        .capture("_").onContinue(Expr.raw("bar")).body(Expr.raw("baz"))
-        .@"else"().body(Expr.raw("qux"))
-        .end();
+    try While.build(Test.callback, &tester, x.raw("foo"))
+        .capture("_").onContinue(x.raw("bar")).body(x.raw("baz"))
+        .@"else"().body(x.raw("qux")).end();
 }
 
 pub const ElseBranch = struct {
@@ -262,119 +287,110 @@ pub const ElseBranch = struct {
         try writer.appendValue(self.body);
     }
 
-    pub const Build = struct {
-        ctx: *const anyopaque,
-        callback: Callback,
-        has_branches: bool,
-        branches: StackChain(ElseBranch),
-        condition: ?Expr = null,
-        payload: ?[]const u8 = null,
-        expr: ?Expr = null,
+    pub fn Build(comptime Return: type) type {
+        const Callback = *const fn (*const anyopaque, StackChain(?ElseBranch)) Return;
+        return struct {
+            const Self = @This();
 
-        pub const Callback = *const fn (*const anyopaque, StackChain(ElseBranch)) anyerror!void;
-
-        pub fn newAppend(
             ctx: *const anyopaque,
             callback: Callback,
-            condition: ?Expr,
-            payload: ?[]const u8,
-            expr: Expr,
-        ) Build {
-            return .{
-                .ctx = ctx,
-                .callback = callback,
-                .branches = StackChain(ElseBranch).start(.{
+            branches: StackChain(?ElseBranch) = .{},
+            condition: ?Expr = null,
+            payload: ?[]const u8 = null,
+            expr: ?Expr = null,
+
+            pub fn newAppend(
+                ctx: *const anyopaque,
+                callback: Callback,
+                condition: ?Expr,
+                payload: ?[]const u8,
+                expr: Expr,
+            ) Self {
+                return .{
+                    .ctx = ctx,
+                    .callback = callback,
+                    .branches = StackChain(?ElseBranch).start(.{
+                        .condition = condition,
+                        .payload = payload,
+                        .body = expr,
+                    }),
+                };
+            }
+
+            pub fn newPartial(
+                ctx: *const anyopaque,
+                callback: Callback,
+                condition: ?Expr,
+                payload: ?[]const u8,
+                expr: ?Expr,
+            ) Self {
+                return .{
+                    .ctx = ctx,
+                    .callback = callback,
                     .condition = condition,
                     .payload = payload,
-                    .body = expr,
-                }),
-                .has_branches = true,
-            };
-        }
-
-        pub fn newPartial(
-            ctx: *const anyopaque,
-            callback: Callback,
-            condition: ?Expr,
-            payload: ?[]const u8,
-            expr: ?Expr,
-        ) Build {
-            return .{
-                .ctx = ctx,
-                .callback = callback,
-                .branches = undefined,
-                .has_branches = false,
-                .condition = condition,
-                .payload = payload,
-                .expr = expr,
-            };
-        }
-
-        pub fn capture(self: Build, payload: []const u8) Build {
-            assert(self.expr == null);
-            assert(self.payload == null);
-            var dupe = self;
-            dupe.payload = payload;
-            return dupe;
-        }
-
-        pub fn body(self: Build, expr: Expr) Build {
-            assert(self.expr == null);
-            var dupe = self;
-            dupe.expr = expr;
-            return dupe;
-        }
-
-        pub fn elseIf(self: *const Build, condition: Expr) Build {
-            return self.flushAndReset(condition);
-        }
-
-        pub fn @"else"(self: *const Build) Build {
-            return self.flushAndReset(null);
-        }
-
-        pub fn end(self: *const Build) !void {
-            const has_parts = self.hasParts();
-            if ((has_parts and self.expr == null) or !(self.has_branches or has_parts)) {
-                return error.MissingBody;
-            } else {
-                try self.callback(self.ctx, self.getChain(has_parts));
-            }
-        }
-
-        fn hasParts(self: *const Build) bool {
-            return self.expr != null or self.condition != null or self.payload != null;
-        }
-
-        fn flushAndReset(self: *const Build, conditing: ?Expr) Build {
-            var dupe = self.*;
-
-            // Flush
-            dupe.branches = self.getChain(!self.has_branches or self.hasParts());
-            dupe.has_branches = true;
-
-            // Reset
-            dupe.condition = conditing;
-            dupe.payload = null;
-            dupe.expr = null;
-
-            return dupe;
-        }
-
-        fn getChain(self: *const Build, flush: bool) StackChain(ElseBranch) {
-            if (flush) {
-                const branch = ElseBranch{
-                    .condition = self.condition,
-                    .payload = self.payload,
-                    .body = self.expr.?,
+                    .expr = expr,
                 };
-                return if (self.has_branches) self.branches.append(branch) else StackChain(ElseBranch).start(branch);
-            } else {
-                return self.branches;
             }
-        }
-    };
+
+            pub fn capture(self: Self, payload: []const u8) Self {
+                assert(self.expr == null);
+                assert(self.payload == null);
+                var dupe = self;
+                dupe.payload = payload;
+                return dupe;
+            }
+
+            pub fn body(self: Self, expr: Expr) Self {
+                assert(self.expr == null);
+                var dupe = self;
+                dupe.expr = expr;
+                return dupe;
+            }
+
+            pub fn elseIf(self: *const Self, condition: Expr) Self {
+                return self.flushAndReset(condition);
+            }
+
+            pub fn @"else"(self: *const Self) Self {
+                return self.flushAndReset(null);
+            }
+
+            pub fn end(self: *const Self) Return {
+                return self.callback(self.ctx, self.flushChain());
+            }
+
+            fn flushAndReset(self: *const Self, conditing: ?Expr) Self {
+                var dupe = self.*;
+                dupe.branches = self.flushChain();
+                dupe.condition = conditing;
+                dupe.payload = null;
+                dupe.expr = null;
+                return dupe;
+            }
+
+            fn flushChain(self: *const Self) StackChain(?ElseBranch) {
+                const has_parts = self.hasParts();
+                if (self.branches.isEmpty() or has_parts) {
+                    const branch = ElseBranch{
+                        .condition = self.condition,
+                        .payload = self.payload,
+                        .body = self.expr.?,
+                    };
+                    return self.branches.append(branch);
+                } else {
+                    return self.branches;
+                }
+            }
+
+            fn hasParts(self: *const Self) bool {
+                return self.expr != null or self.condition != null or self.payload != null;
+            }
+        };
+    }
 };
+
+pub const SwitchFn = *const fn (*Switch.Build) anyerror!void;
 
 pub const Switch = struct {
     value: Expr,
@@ -491,7 +507,7 @@ pub const Switch = struct {
             };
             return .{
                 .parent = self,
-                .cases = StackChain(?Case).start(.{ .single = Expr.raw("else") }),
+                .cases = StackChain(?Case).start(.{ .single = x.raw("else") }),
                 .allow_case = false,
             };
         }
@@ -504,7 +520,7 @@ pub const Switch = struct {
             };
             return .{
                 .parent = self,
-                .cases = StackChain(?Case).start(.{ .single = Expr.raw("_") }),
+                .cases = StackChain(?Case).start(.{ .single = x.raw("_") }),
                 .allow_case = false,
             };
         }
@@ -572,16 +588,14 @@ pub const Switch = struct {
 };
 
 test "Switch" {
-    var build = Switch.Build.init(test_alloc, Expr.raw("foo"));
+    var build = Switch.Build.init(test_alloc, x.raw("foo"));
     errdefer build.deinit();
 
-    try build.branch().case(Expr.raw("bar")).case(Expr.raw("baz"))
-        .capture("val").capture("tag")
-        .body(Expr.raw("qux"));
-    try build.branch()
-        .caseRange(Expr.raw("18"), Expr.raw("108"))
-        .body(Expr.raw("unreachable"));
-    try build.inlined().@"else"().body(Expr.raw("unreachable"));
+    try build.branch().case(x.raw("bar")).case(x.raw("baz"))
+        .capture("val").capture("tag").body(x.raw("qux"));
+    try build.branch().caseRange(x.raw("18"), x.raw("108"))
+        .body(x.raw("unreachable"));
+    try build.inlined().@"else"().body(x.raw("unreachable"));
 
     const data = try build.consume();
     defer data.deinit(test_alloc);
@@ -603,7 +617,7 @@ pub const Defer = struct {
 };
 
 test "Defer" {
-    try Writer.expect("defer foo", Defer{ .body = Expr.raw("foo") });
+    try Writer.expect("defer foo", Defer{ .body = x.raw("foo") });
 }
 
 pub const ErrorDefer = struct {
@@ -616,33 +630,52 @@ pub const ErrorDefer = struct {
         try writer.appendValue(self.body);
     }
 
-    pub const Build = struct {
-        delegate: Delegate(ErrorDefer),
-        payload: ?[]const u8 = null,
+    pub fn build(callback: anytype, ctx: anytype) BuildType(callback) {
+        return .{ .callback = decl.callback(ctx, callback) };
+    }
 
-        pub fn new(delegate: Delegate(ErrorDefer)) Build {
-            return .{ .delegate = delegate };
-        }
+    pub fn BuildType(callback: anytype) type {
+        return Build(@TypeOf(callback));
+    }
 
-        pub fn capture(self: Build, payload: []const u8) Build {
-            assert(self.payload == null);
-            var dupe = self;
-            dupe.payload = payload;
-            return dupe;
-        }
+    pub fn Build(comptime Fn: type) type {
+        const Callback = decl.InferCallback(Fn);
+        return struct {
+            const Self = @This();
 
-        pub fn body(self: Build, expr: Expr) !void {
-            try self.delegate.end(.{
-                .payload = self.payload,
-                .body = expr,
-            });
-        }
-    };
+            callback: Callback,
+            payload: ?[]const u8 = null,
+
+            pub fn capture(self: Self, payload: []const u8) Self {
+                assert(self.payload == null);
+                var dupe = self;
+                dupe.payload = payload;
+                return dupe;
+            }
+
+            pub fn body(self: Self, expr: Expr) Callback.Return {
+                return self.callback.invoke(.{
+                    .payload = self.payload,
+                    .body = expr,
+                });
+            }
+        };
+    }
 };
 
 test "ErrorDefer" {
-    var tester = Delegate(ErrorDefer).Tester{
+    var tester = Tester(ErrorDefer){
         .expected = "errdefer |foo| bar",
     };
-    try ErrorDefer.Build.new(tester.dlg()).capture("foo").body(Expr.raw("bar"));
+    try ErrorDefer.build(Tester(ErrorDefer).callback, &tester).capture("foo").body(x.raw("bar"));
+}
+
+pub fn Tester(comptime T: type) type {
+    return struct {
+        expected: []const u8 = "",
+
+        pub fn callback(self: *@This(), value: T) !void {
+            try Writer.expect(self.expected, value);
+        }
+    };
 }
