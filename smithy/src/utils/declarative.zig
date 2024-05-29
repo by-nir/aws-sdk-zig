@@ -1,6 +1,8 @@
 const std = @import("std");
 const TypeMeta = std.builtin.Type;
+const Allocator = std.mem.Allocator;
 const testing = std.testing;
+const test_alloc = testing.allocator;
 
 fn fnMeta(comptime T: type) TypeMeta.Fn {
     return switch (@typeInfo(T)) {
@@ -112,18 +114,36 @@ test "callClosure" {
 }
 
 pub fn Callback(comptime Ctx: type, comptime Val: type, comptime Rtrn: type) type {
+    comptime var can_return_error = false;
+    const ExpandReturn = switch (@typeInfo(Rtrn)) {
+        .ErrorUnion => |t| blk: {
+            can_return_error = true;
+            break :blk anyerror!t.payload;
+        },
+        else => Rtrn,
+    };
     return struct {
         const Self = @This();
         pub const Context = Ctx;
         pub const Value = Val;
-        pub const Return = Rtrn;
-        pub const Fn = *const fn (ctx: Ctx, val: Val) Rtrn;
+        pub const Return = ExpandReturn;
+        pub const Fn = *const fn (ctx: Context, value: Value) Return;
 
         ctx: Context,
         func: Fn,
 
         pub fn invoke(self: @This(), value: Value) Return {
             return self.func(self.ctx, value);
+        }
+
+        pub fn fail(self: @This(), err: anyerror) Return {
+            if (can_return_error) {
+                return err;
+            } else if (@typeInfo(Value) == .ErrorUnion) {
+                return self.invoke(err);
+            } else {
+                @panic("Unhandled callback error.");
+            }
         }
     };
 }
@@ -181,8 +201,8 @@ pub fn StackChain(comptime T: type) type {
         const Self = @This();
 
         value: T = if (is_optional) null else undefined,
+        len: usize = 1,
         prev: ?*const Self = null,
-        prev_len: u8 = 0,
 
         pub fn start(value: Value) Self {
             return .{ .value = value };
@@ -192,40 +212,51 @@ pub fn StackChain(comptime T: type) type {
             const no_value = is_optional and self.value == null;
             return .{
                 .value = value,
+                .len = if (no_value) self.len else self.len + 1,
                 .prev = if (no_value) self.prev else self,
-                .prev_len = if (no_value) self.prev_len else self.prev_len + 1,
             };
         }
 
         pub fn count(self: Self) usize {
-            return if (self.isEmpty()) 0 else 1 + self.prev_len;
+            return if (self.isEmpty()) 0 else self.len;
         }
 
         pub fn isEmpty(self: Self) bool {
-            if (is_optional) {
-                return self.value == null and self.prev == null;
-            } else {
-                return false;
-            }
+            const has_items = !is_optional or self.value != null or self.prev != null;
+            return !has_items;
         }
 
         pub fn unwrap(self: Self, buffer: []Value) ![]const Value {
-            const len = self.count();
-            if (len == 0) {
+            if (self.isEmpty()) {
                 return &.{};
-            } else if (len > buffer.len) {
+            } else if (self.len > buffer.len) {
                 return error.InsufficientBufferSize;
             }
 
-            var i = len;
+            var i = self.len;
             var current = &self;
             while (i > 0) : (current = current.prev orelse undefined) {
                 i -= 1;
-                const value = current.value;
-                buffer[i] = if (is_optional) value.? else value;
+                buffer[i] = if (is_optional) current.value.? else current.value;
             }
 
-            return buffer[0..len];
+            return buffer[0..self.len];
+        }
+
+        pub fn unwrapAlloc(self: Self, allocator: Allocator) ![]const Value {
+            if (self.isEmpty()) return &.{};
+
+            const buffer = try allocator.alloc(Value, self.len);
+            errdefer allocator.free(buffer);
+
+            var i = self.len;
+            var current = &self;
+            while (i > 0) : (current = current.prev orelse undefined) {
+                i -= 1;
+                buffer[i] = if (is_optional) current.value.? else current.value;
+            }
+
+            return buffer;
         }
     };
 }
@@ -240,25 +271,38 @@ test "StackChain: same scope linking" {
 test "StackChain: cross-scope behavior" {
     const Chain = StackChain([]const u8);
     const Scope = struct {
+        var ptr_bar: usize = undefined;
+        var ptr_foo: usize = undefined;
+
         fn extend(prev: Chain, append: []const u8) !Chain {
-            // Works while all relevant scope are still on the stack:
             const chain = prev.append("bar").append(append);
+            ptr_bar = @intFromPtr(chain.prev.?);
+            ptr_foo = @intFromPtr(chain.prev.?.prev.?);
+
+            // Works while all relevant scope are still on the stack:
             try testing.expectEqualStrings("baz", chain.value);
             try testing.expectEqualStrings("bar", chain.prev.?.value);
             try testing.expectEqualStrings("foo", chain.prev.?.prev.?.value);
+
             return chain;
         }
     };
 
+    const foo = Chain.start("foo");
+    const chain = try Scope.extend(foo, "baz");
+
     // Fails when some of the scopes are dismissed:
-    const chain = try Scope.extend(Chain.start("foo"), "baz");
     try testing.expectEqualStrings("baz", chain.value);
-    try testing.expectEqualStrings("bar", chain.prev.?.value);
-    try testing.expect("foo".ptr != chain.prev.?.prev.?.value.ptr);
+    try testing.expectEqual(Scope.ptr_bar, @intFromPtr(chain.prev.?));
+    try testing.expect(Scope.ptr_foo != @intFromPtr(chain.prev.?.prev.?));
 }
 
 test "StackChain: optional append" {
-    const chain = StackChain(?[]const u8).start("foo").append("bar").append("baz");
+    var chain = StackChain(?[]const u8){};
+    try testing.expect(chain.isEmpty());
+
+    chain = chain.append("foo").append("bar").append("baz");
+    try testing.expectEqual(false, chain.isEmpty());
     try testing.expectEqualDeep("baz", chain.value);
     try testing.expectEqualDeep("bar", chain.prev.?.value);
     try testing.expectEqualDeep("foo", chain.prev.?.prev.?.value);
@@ -290,11 +334,7 @@ test "StackChain.unwrap" {
 }
 
 test "StackChain.unwrap optional" {
-    var chain = StackChain(?[]const u8){};
-    try testing.expect(chain.isEmpty());
-
-    chain = chain.append("foo").append("bar").append("baz");
-    try testing.expectEqual(false, chain.isEmpty());
+    const chain = StackChain(?[]const u8).start("foo").append("bar").append("baz");
 
     var buffer_small: [2][]const u8 = undefined;
     try testing.expectError(
@@ -307,4 +347,18 @@ test "StackChain.unwrap optional" {
         &[_][]const u8{ "foo", "bar", "baz" },
         try chain.unwrap(&buffer),
     );
+}
+
+test "StackChain.unwrapAlloc" {
+    const chain = StackChain([]const u8).start("foo").append("bar").append("baz");
+    const items = try chain.unwrapAlloc(test_alloc);
+    defer test_alloc.free(items);
+    try testing.expectEqualDeep(&[_][]const u8{ "foo", "bar", "baz" }, items);
+}
+
+test "StackChain.unwrapAlloc optional" {
+    const chain = StackChain(?[]const u8).start("foo").append("bar").append("baz");
+    const items = try chain.unwrapAlloc(test_alloc);
+    defer test_alloc.free(items);
+    try testing.expectEqualDeep(&[_][]const u8{ "foo", "bar", "baz" }, items);
 }
