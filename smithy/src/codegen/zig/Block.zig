@@ -8,8 +8,10 @@ const Closure = decl.Closure;
 const callClosure = decl.callClosure;
 const Writer = @import("../CodegenWriter.zig");
 const flow = @import("flow.zig");
-const Expr = @import("expr.zig").Expr;
-const x = Expr.new;
+const exp = @import("expr.zig");
+const Expr = exp.Expr;
+const ExprBuild = exp.ExprBuild;
+const _xpr = exp._tst;
 
 pub const ZIG_INDENT = " " ** 4;
 
@@ -20,7 +22,7 @@ const Statement = union(enum) {
     @"while": flow.While,
     @"switch": flow.Switch,
     @"defer": flow.Defer,
-    @"errdefer": flow.ErrorDefer,
+    @"errdefer": flow.Errdefer,
 };
 
 allocator: Allocator,
@@ -32,8 +34,7 @@ pub fn init(allocator: Allocator) Self {
 
 pub fn deinit(self: *Self) void {
     for (self.statements.items) |s| switch (s) {
-        inline .@"if", .@"for", .@"switch", .@"while" => |t| t.deinit(self.allocator),
-        else => {},
+        inline else => |t| t.deinit(self.allocator),
     };
     self.statements.deinit(self.allocator);
 }
@@ -53,7 +54,7 @@ fn appendStatement(self: *Self, comptime tag: []const u8, t: anytype) !void {
 // Control Flow
 //
 
-pub fn @"if"(self: *Self, condition: Expr) flow.If.Build(@TypeOf(endIf)) {
+pub fn @"if"(self: *Self, condition: ExprBuild) flow.If.Build(@TypeOf(endIf)) {
     return flow.If.build(self.allocator, endIf, self, condition);
 }
 
@@ -65,7 +66,7 @@ test "if" {
     var self = init(test_alloc);
     defer self.deinit();
 
-    try self.@"if"(x._raw("foo")).body(x._raw("bar")).end();
+    try self.@"if"(_xpr("foo")).body(_xpr("bar")).end();
     try Writer.expect(
         \\{
         \\    if (foo) bar;
@@ -85,7 +86,7 @@ test "for" {
     var self = init(test_alloc);
     defer self.deinit();
 
-    try self.@"for"().iter(x._raw("foo"), "_").body(x._raw("bar")).end();
+    try self.@"for"().iter(_xpr("foo"), "_").body(_xpr("bar")).end();
     try Writer.expect(
         \\{
         \\    for (foo) |_| bar;
@@ -93,7 +94,7 @@ test "for" {
     , self);
 }
 
-pub fn @"while"(self: *Self, condition: Expr) flow.While.Build(@TypeOf(endWhile)) {
+pub fn @"while"(self: *Self, condition: ExprBuild) flow.While.Build(@TypeOf(endWhile)) {
     return flow.While.build(self.allocator, endWhile, self, condition);
 }
 
@@ -105,7 +106,7 @@ test "while" {
     var self = init(test_alloc);
     defer self.deinit();
 
-    try self.@"while"(x._raw("foo")).body(x._raw("bar")).end();
+    try self.@"while"(_xpr("foo")).body(_xpr("bar")).end();
     try Writer.expect(
         \\{
         \\    while (foo) bar;
@@ -113,17 +114,17 @@ test "while" {
     , self);
 }
 
-pub fn @"switch"(self: *Self, value: Expr, build: flow.SwitchFn) !void {
+pub fn @"switch"(self: *Self, value: ExprBuild, build: flow.SwitchFn) !void {
     try self.switchWith(value, {}, build);
 }
 
 pub fn switchWith(
     self: *Self,
-    value: Expr,
+    value: ExprBuild,
     ctx: anytype,
     build: Closure(@TypeOf(ctx), flow.SwitchFn),
 ) !void {
-    var builder = flow.Switch.Build.init(self.allocator, value);
+    var builder = flow.Switch.build(self.allocator, value);
     callClosure(ctx, build, .{&builder}) catch |err| {
         builder.deinit();
         return err;
@@ -138,15 +139,15 @@ test "switch" {
     var self = init(test_alloc);
     defer self.deinit();
 
-    try self.@"switch"(x._raw("foo"), struct {
+    try self.@"switch"(_xpr("foo"), struct {
         fn f(_: *flow.Switch.Build) !void {}
     }.f);
 
     var tag: []const u8 = "bar";
     _ = &tag;
-    try self.switchWith(x._raw("foo"), tag, struct {
+    try self.switchWith(_xpr("foo"), tag, struct {
         fn f(ctx: []const u8, build: *flow.Switch.Build) !void {
-            try build.branch().case(x._raw(ctx)).body(x._raw("baz"));
+            try build.branch().case(_xpr(ctx)).body(_xpr("baz"));
         }
     }.f);
 
@@ -161,15 +162,17 @@ test "switch" {
     , self);
 }
 
-pub fn @"defer"(self: *Self, expr: Expr) !void {
-    try self.appendStatement("defer", flow.Defer{ .body = expr });
+pub fn @"defer"(self: *Self, expr: ExprBuild) !void {
+    try self.appendStatement("defer", flow.Defer{
+        .body = try expr.consume(),
+    });
 }
 
 test "defer" {
     var self = init(test_alloc);
     defer self.deinit();
 
-    try self.@"defer"(x._raw("foo"));
+    try self.@"defer"(_xpr("foo"));
     try Writer.expect(
         \\{
         \\    defer foo;
@@ -177,19 +180,19 @@ test "defer" {
     , self);
 }
 
-pub fn errorDefer(self: *Self) flow.ErrorDefer.Build(@TypeOf(endErrorDefer)) {
-    return flow.ErrorDefer.build(endErrorDefer, self);
+pub fn @"errdefer"(self: *Self) flow.Errdefer.Build(@TypeOf(endErrdefer)) {
+    return flow.Errdefer.build(endErrdefer, self);
 }
 
-fn endErrorDefer(self: *Self, t: flow.ErrorDefer) !void {
+fn endErrdefer(self: *Self, t: flow.Errdefer) !void {
     try self.appendStatement("errdefer", t);
 }
 
-test "errorDefer" {
+test "errdefer" {
     var self = init(test_alloc);
     defer self.deinit();
 
-    try self.errorDefer().body(x._raw("foo"));
+    try self.@"errdefer"().body(_xpr("foo"));
     try Writer.expect(
         \\{
         \\    errdefer foo;

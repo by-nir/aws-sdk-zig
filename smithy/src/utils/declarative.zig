@@ -226,38 +226,57 @@ pub fn StackChain(comptime T: type) type {
             return !has_items;
         }
 
-        pub fn unwrap(self: Self, buffer: []Value) ![]const Value {
+        pub fn unwrapIntro(self: *const Self, buffer: []Value) ![]const Value {
             if (self.isEmpty()) {
                 return &.{};
             } else if (self.len > buffer.len) {
                 return error.InsufficientBufferSize;
             }
 
-            var i = self.len;
-            var current = &self;
-            while (i > 0) : (current = current.prev orelse undefined) {
-                i -= 1;
-                buffer[i] = if (is_optional) current.value.? else current.value;
+            var i = self.len - 1;
+            var it = self.iterateReversed();
+            while (it.next()) |val| : (i -%= 1) {
+                buffer[i] = val;
             }
 
             return buffer[0..self.len];
         }
 
-        pub fn unwrapAlloc(self: Self, allocator: Allocator) ![]const Value {
+        pub fn unwrapAlloc(self: *const Self, allocator: Allocator) ![]const Value {
             if (self.isEmpty()) return &.{};
 
             const buffer = try allocator.alloc(Value, self.len);
             errdefer allocator.free(buffer);
 
-            var i = self.len;
-            var current = &self;
-            while (i > 0) : (current = current.prev orelse undefined) {
-                i -= 1;
-                buffer[i] = if (is_optional) current.value.? else current.value;
+            var i = self.len - 1;
+            var it = self.iterateReversed();
+            while (it.next()) |val| : (i -%= 1) {
+                buffer[i] = val;
             }
 
             return buffer;
         }
+
+        /// Iterates the chain from last item to the first.
+        pub fn iterateReversed(self: *const Self) Iterator {
+            return Iterator{ .current = self };
+        }
+
+        pub const Iterator = struct {
+            current: ?*const Self,
+
+            pub fn next(it: *Iterator) if (is_optional) T else ?T {
+                if (it.current == null) {
+                    return null;
+                } else if (is_optional and it.current.?.value == null) {
+                    it.current = null;
+                    return null;
+                }
+
+                defer it.current = it.current.?.prev;
+                return it.current.?.value;
+            }
+        };
     };
 }
 
@@ -323,13 +342,13 @@ test "StackChain.unwrap" {
     var buffer_small: [2][]const u8 = undefined;
     try testing.expectError(
         error.InsufficientBufferSize,
-        chain.unwrap(&buffer_small),
+        chain.unwrapIntro(&buffer_small),
     );
 
     var buffer: [4][]const u8 = undefined;
     try testing.expectEqualDeep(
         &[_][]const u8{ "foo", "bar", "baz" },
-        try chain.unwrap(&buffer),
+        try chain.unwrapIntro(&buffer),
     );
 }
 
@@ -339,13 +358,13 @@ test "StackChain.unwrap optional" {
     var buffer_small: [2][]const u8 = undefined;
     try testing.expectError(
         error.InsufficientBufferSize,
-        chain.unwrap(&buffer_small),
+        chain.unwrapIntro(&buffer_small),
     );
 
     var buffer: [4][]const u8 = undefined;
     try testing.expectEqualDeep(
         &[_][]const u8{ "foo", "bar", "baz" },
-        try chain.unwrap(&buffer),
+        try chain.unwrapIntro(&buffer),
     );
 }
 
@@ -361,4 +380,13 @@ test "StackChain.unwrapAlloc optional" {
     const items = try chain.unwrapAlloc(test_alloc);
     defer test_alloc.free(items);
     try testing.expectEqualDeep(&[_][]const u8{ "foo", "bar", "baz" }, items);
+}
+
+test "StackChain.iterateReversed" {
+    const chain = StackChain([]const u8).start("foo").append("bar").append("baz");
+    var it = chain.iterateReversed();
+    try testing.expectEqualStrings("baz", it.next().?);
+    try testing.expectEqualStrings("bar", it.next().?);
+    try testing.expectEqualStrings("foo", it.next().?);
+    try testing.expectEqual(null, it.next());
 }
