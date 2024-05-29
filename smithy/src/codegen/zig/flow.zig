@@ -11,13 +11,14 @@ const Expr = @import("expr.zig").Expr;
 const x = Expr.new;
 
 pub const If = struct {
-    branches: StackChain(?ElseBranch),
+    branches: []const ElseBranch,
+
+    pub fn deinit(self: If, allocator: Allocator) void {
+        allocator.free(self.branches);
+    }
 
     pub fn __write(self: If, writer: *Writer) !void {
-        var branch_buff: [16]ElseBranch = undefined;
-        const branches = try self.branches.unwrap(&branch_buff);
-
-        for (branches, 0..) |branch, i| {
+        for (self.branches, 0..) |branch, i| {
             if (i == 0) {
                 try writer.appendFmt("if ({}) ", .{branch.condition.?});
                 try branch.writeBody(writer);
@@ -27,15 +28,12 @@ pub const If = struct {
         }
     }
 
-    pub fn build(callback: anytype, ctx: anytype, condition: Expr) BuildType(callback) {
+    pub fn build(allocator: Allocator, callback: anytype, ctx: anytype, condition: Expr) Build(@TypeOf(callback)) {
         return .{
+            .allocator = allocator,
             .callback = decl.callback(ctx, callback),
             .condition = condition,
         };
-    }
-
-    pub fn BuildType(callback: anytype) type {
-        return Build(@TypeOf(callback));
     }
 
     pub fn Build(comptime Fn: type) type {
@@ -44,6 +42,7 @@ pub const If = struct {
             const Self = @This();
             const BranchBuild = ElseBranch.Build(*const Self, Callback.Return);
 
+            allocator: Allocator,
             callback: Callback,
             condition: Expr,
 
@@ -58,57 +57,58 @@ pub const If = struct {
             }
 
             fn end(self: *const Self, branches: StackChain(?ElseBranch)) Callback.Return {
-                return self.callback.invoke(.{ .branches = branches });
+                return self.callback.invoke(.{
+                    .branches = branches.unwrapAlloc(self.allocator) catch |err| {
+                        return self.callback.fail(err);
+                    },
+                });
             }
         };
     }
 };
 
 test "If" {
-    const Test = Tester(If);
-    var tester = Test{
-        .expected = "if (foo) bar",
-    };
-    try If.build(Test.callback, &tester, x.raw("foo"))
-        .body(x.raw("bar")).end();
+    const Test = Tester(If, true);
+    var tester = Test{ .expected = "if (foo) bar" };
+    try If.build(test_alloc, Test.callback, &tester, x._raw("foo"))
+        .body(x._raw("bar")).end();
 
     tester.expected = "if (foo) |bar| baz else qux";
-    try If.build(Test.callback, &tester, x.raw("foo"))
-        .capture("bar").body(x.raw("baz"))
-        .@"else"().body(x.raw("qux")).end();
+    try If.build(test_alloc, Test.callback, &tester, x._raw("foo"))
+        .capture("bar").body(x._raw("baz"))
+        .@"else"().body(x._raw("qux")).end();
 
     tester.expected = "if (foo) bar else if (baz) qux else quxx";
-    try If.build(Test.callback, &tester, x.raw("foo"))
-        .body(x.raw("bar"))
-        .elseIf(x.raw("baz")).body(x.raw("qux"))
-        .@"else"().body(x.raw("quxx")).end();
+    try If.build(test_alloc, Test.callback, &tester, x._raw("foo"))
+        .body(x._raw("bar"))
+        .elseIf(x._raw("baz")).body(x._raw("qux"))
+        .@"else"().body(x._raw("quxx")).end();
 }
 
 pub const For = struct {
-    iterables: StackChain(?Iterable),
-    branches: StackChain(?ElseBranch),
+    iterables: []const Iterable,
+    branches: []const ElseBranch,
 
     const Iterable = struct {
         expr: Expr,
         payload: []const u8,
     };
 
+    pub fn deinit(self: For, allocator: Allocator) void {
+        allocator.free(self.iterables);
+        allocator.free(self.branches);
+    }
+
     pub fn __write(self: For, writer: *Writer) !void {
-        var branch_buff: [4]ElseBranch = undefined;
-        const branches = try self.branches.unwrap(&branch_buff);
-
-        for (branches, 0..) |branch, i| {
+        for (self.branches, 0..) |branch, i| {
             if (i == 0) {
-                var iter_buff: [8]Iterable = undefined;
-                const iterables = try self.iterables.unwrap(&iter_buff);
-
                 try writer.appendString("for (");
-                try writer.appendList(Iterable, iterables, .{
+                try writer.appendList(Iterable, self.iterables, .{
                     .delimiter = ", ",
                     .field = "expr",
                 });
                 try writer.appendString(") |");
-                try writer.appendList(Iterable, iterables, .{
+                try writer.appendList(Iterable, self.iterables, .{
                     .delimiter = ", ",
                     .field = "payload",
                     .format = "_",
@@ -121,12 +121,11 @@ pub const For = struct {
         }
     }
 
-    pub fn build(callback: anytype, ctx: anytype) BuildType(callback) {
-        return .{ .callback = decl.callback(ctx, callback) };
-    }
-
-    pub fn BuildType(callback: anytype) type {
-        return Build(@TypeOf(callback));
+    pub fn build(allocator: Allocator, callback: anytype, ctx: anytype) Build(@TypeOf(callback)) {
+        return .{
+            .allocator = allocator,
+            .callback = decl.callback(ctx, callback),
+        };
     }
 
     pub fn Build(comptime Fn: type) type {
@@ -135,6 +134,7 @@ pub const For = struct {
             const Self = @This();
             const BranchBuild = ElseBranch.Build(*const Self, Callback.Return);
 
+            allocator: Allocator,
             callback: Callback,
             iterables: StackChain(?Iterable) = .{},
 
@@ -153,9 +153,15 @@ pub const For = struct {
             }
 
             fn end(self: *const Self, branches: StackChain(?ElseBranch)) Callback.Return {
+                const iterables = self.iterables.unwrapAlloc(self.allocator) catch |err| {
+                    return self.callback.fail(err);
+                };
                 return self.callback.invoke(.{
-                    .iterables = self.iterables,
-                    .branches = branches,
+                    .iterables = iterables,
+                    .branches = branches.unwrapAlloc(self.allocator) catch |err| {
+                        self.allocator.free(iterables);
+                        return self.callback.fail(err);
+                    },
                 });
             }
         };
@@ -163,32 +169,32 @@ pub const For = struct {
 };
 
 test "For" {
-    const Test = Tester(For);
-    var tester = Test{
-        .expected = "for (foo) |bar| baz",
-    };
-    try For.build(Test.callback, &tester).iter(x.raw("foo"), "bar")
-        .body(x.raw("baz")).end();
+    const Test = Tester(For, true);
+    var tester = Test{ .expected = "for (foo) |bar| baz" };
+    try For.build(test_alloc, Test.callback, &tester).iter(x._raw("foo"), "bar")
+        .body(x._raw("baz")).end();
 
     tester.expected = "for (foo, bar) |baz, _| qux";
-    try For.build(Test.callback, &tester).iter(x.raw("foo"), "baz").iter(x.raw("bar"), "_")
-        .body(x.raw("qux")).end();
+    try For.build(test_alloc, Test.callback, &tester)
+        .iter(x._raw("foo"), "baz").iter(x._raw("bar"), "_")
+        .body(x._raw("qux")).end();
 
     tester.expected = "for (foo) |_| bar else baz";
-    try For.build(Test.callback, &tester).iter(x.raw("foo"), "_")
-        .body(x.raw("bar"))
-        .@"else"().body(x.raw("baz")).end();
+    try For.build(test_alloc, Test.callback, &tester).iter(x._raw("foo"), "_")
+        .body(x._raw("bar"))
+        .@"else"().body(x._raw("baz")).end();
 }
 
 pub const While = struct {
-    branches: StackChain(?ElseBranch),
+    branches: []const ElseBranch,
     continue_expr: ?Expr,
 
-    pub fn __write(self: While, writer: *Writer) !void {
-        var branch_buff: [4]ElseBranch = undefined;
-        const branches = try self.branches.unwrap(&branch_buff);
+    pub fn deinit(self: While, allocator: Allocator) void {
+        allocator.free(self.branches);
+    }
 
-        for (branches, 0..) |branch, i| {
+    pub fn __write(self: While, writer: *Writer) !void {
+        for (self.branches, 0..) |branch, i| {
             if (i == 0) {
                 try writer.appendFmt("while ({}) ", .{branch.condition.?});
                 if (branch.payload) |p| try writer.appendFmt("|{_}| ", .{std.zig.fmtId(p)});
@@ -200,15 +206,12 @@ pub const While = struct {
         }
     }
 
-    pub fn build(callback: anytype, ctx: anytype, condition: Expr) BuildType(callback) {
+    pub fn build(allocator: Allocator, callback: anytype, ctx: anytype, condition: Expr) Build(@TypeOf(callback)) {
         return .{
+            .allocator = allocator,
             .callback = decl.callback(ctx, callback),
             .condition = condition,
         };
-    }
-
-    pub fn BuildType(callback: anytype) type {
-        return Build(@TypeOf(callback));
     }
 
     pub fn Build(comptime Fn: type) type {
@@ -217,6 +220,7 @@ pub const While = struct {
             const Self = @This();
             const BranchBuild = ElseBranch.Build(*const Self, Callback.Return);
 
+            allocator: Allocator,
             callback: Callback,
             condition: Expr,
             payload: ?[]const u8 = null,
@@ -242,8 +246,10 @@ pub const While = struct {
 
             fn end(self: *const Self, branches: StackChain(?ElseBranch)) Callback.Return {
                 return self.callback.invoke(.{
-                    .branches = branches,
                     .continue_expr = self.continue_expr,
+                    .branches = branches.unwrapAlloc(self.allocator) catch |err| {
+                        return self.callback.fail(err);
+                    },
                 });
             }
         };
@@ -251,22 +257,20 @@ pub const While = struct {
 };
 
 test "While" {
-    const Test = Tester(While);
-    var tester = Test{
-        .expected = "while (foo) bar",
-    };
-    try While.build(Test.callback, &tester, x.raw("foo"))
-        .body(x.raw("bar")).end();
+    const Test = Tester(While, true);
+    var tester = Test{ .expected = "while (foo) bar" };
+    try While.build(test_alloc, Test.callback, &tester, x._raw("foo"))
+        .body(x._raw("bar")).end();
 
     tester.expected = "while (foo) : (bar) baz";
-    try While.build(Test.callback, &tester, x.raw("foo"))
-        .onContinue(x.raw("bar"))
-        .body(x.raw("baz")).end();
+    try While.build(test_alloc, Test.callback, &tester, x._raw("foo"))
+        .onContinue(x._raw("bar"))
+        .body(x._raw("baz")).end();
 
     tester.expected = "while (foo) |_| : (bar) baz else qux";
-    try While.build(Test.callback, &tester, x.raw("foo"))
-        .capture("_").onContinue(x.raw("bar")).body(x.raw("baz"))
-        .@"else"().body(x.raw("qux")).end();
+    try While.build(test_alloc, Test.callback, &tester, x._raw("foo"))
+        .capture("_").onContinue(x._raw("bar")).body(x._raw("baz"))
+        .@"else"().body(x._raw("qux")).end();
 }
 
 pub const ElseBranch = struct {
@@ -493,7 +497,7 @@ pub const Switch = struct {
             };
             return .{
                 .parent = self,
-                .cases = StackChain(?Case).start(.{ .single = x.raw("else") }),
+                .cases = StackChain(?Case).start(.{ .single = x._raw("else") }),
                 .allow_case = false,
             };
         }
@@ -506,7 +510,7 @@ pub const Switch = struct {
             };
             return .{
                 .parent = self,
-                .cases = StackChain(?Case).start(.{ .single = x.raw("_") }),
+                .cases = StackChain(?Case).start(.{ .single = x._raw("_") }),
                 .allow_case = false,
             };
         }
@@ -574,14 +578,14 @@ pub const Switch = struct {
 };
 
 test "Switch" {
-    var build = Switch.Build.init(test_alloc, x.raw("foo"));
+    var build = Switch.Build.init(test_alloc, x._raw("foo"));
     errdefer build.deinit();
 
-    try build.branch().case(x.raw("bar")).case(x.raw("baz"))
-        .capture("val").capture("tag").body(x.raw("qux"));
-    try build.branch().caseRange(x.raw("18"), x.raw("108"))
-        .body(x.raw("unreachable"));
-    try build.inlined().@"else"().body(x.raw("unreachable"));
+    try build.branch().case(x._raw("bar")).case(x._raw("baz"))
+        .capture("val").capture("tag").body(x._raw("qux"));
+    try build.branch().caseRange(x._raw("18"), x._raw("108"))
+        .body(x._raw("unreachable"));
+    try build.inlined().@"else"().body(x._raw("unreachable"));
 
     const data = try build.consume();
     defer data.deinit(test_alloc);
@@ -603,7 +607,7 @@ pub const Defer = struct {
 };
 
 test "Defer" {
-    try Writer.expect("defer foo", Defer{ .body = x.raw("foo") });
+    try Writer.expect("defer foo", Defer{ .body = x._raw("foo") });
 }
 
 pub const ErrorDefer = struct {
@@ -616,12 +620,8 @@ pub const ErrorDefer = struct {
         try writer.appendValue(self.body);
     }
 
-    pub fn build(callback: anytype, ctx: anytype) BuildType(callback) {
+    pub fn build(callback: anytype, ctx: anytype) Build(@TypeOf(callback)) {
         return .{ .callback = decl.callback(ctx, callback) };
-    }
-
-    pub fn BuildType(callback: anytype) type {
-        return Build(@TypeOf(callback));
     }
 
     pub fn Build(comptime Fn: type) type {
@@ -650,17 +650,19 @@ pub const ErrorDefer = struct {
 };
 
 test "ErrorDefer" {
-    var tester = Tester(ErrorDefer){
+    const Test = Tester(ErrorDefer, false);
+    var tester = Test{
         .expected = "errdefer |foo| bar",
     };
-    try ErrorDefer.build(Tester(ErrorDefer).callback, &tester).capture("foo").body(x.raw("bar"));
+    try ErrorDefer.build(Test.callback, &tester).capture("foo").body(x._raw("bar"));
 }
 
-pub fn Tester(comptime T: type) type {
+pub fn Tester(comptime T: type, deinit: bool) type {
     return struct {
         expected: []const u8 = "",
 
         pub fn callback(self: *@This(), value: T) !void {
+            defer if (deinit) value.deinit(test_alloc);
             try Writer.expect(self.expected, value);
         }
     };

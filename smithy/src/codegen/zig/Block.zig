@@ -3,9 +3,9 @@ const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const declarative = @import("../../utils/declarative.zig");
-const Closure = declarative.Closure;
-const callClosure = declarative.callClosure;
+const decl = @import("../../utils/declarative.zig");
+const Closure = decl.Closure;
+const callClosure = decl.callClosure;
 const Writer = @import("../CodegenWriter.zig");
 const flow = @import("flow.zig");
 const Expr = @import("expr.zig").Expr;
@@ -32,7 +32,7 @@ pub fn init(allocator: Allocator) Self {
 
 pub fn deinit(self: *Self) void {
     for (self.statements.items) |s| switch (s) {
-        .@"switch" => |t| t.deinit(self.allocator),
+        inline .@"if", .@"for", .@"switch", .@"while" => |t| t.deinit(self.allocator),
         else => {},
     };
     self.statements.deinit(self.allocator);
@@ -53,8 +53,8 @@ fn appendStatement(self: *Self, comptime tag: []const u8, t: anytype) !void {
 // Control Flow
 //
 
-pub fn @"if"(self: *Self, condition: Expr) flow.If.BuildType(endIf) {
-    return flow.If.build(endIf, self, condition);
+pub fn @"if"(self: *Self, condition: Expr) flow.If.Build(@TypeOf(endIf)) {
+    return flow.If.build(self.allocator, endIf, self, condition);
 }
 
 fn endIf(self: *Self, value: flow.If) !void {
@@ -65,7 +65,7 @@ test "if" {
     var self = init(test_alloc);
     defer self.deinit();
 
-    try self.@"if"(x.raw("foo")).body(x.raw("bar")).end();
+    try self.@"if"(x._raw("foo")).body(x._raw("bar")).end();
     try Writer.expect(
         \\{
         \\    if (foo) bar;
@@ -73,8 +73,8 @@ test "if" {
     , self);
 }
 
-pub fn @"for"(self: *Self) flow.For.BuildType(endFor) {
-    return flow.For.build(endFor, self);
+pub fn @"for"(self: *Self) flow.For.Build(@TypeOf(endFor)) {
+    return flow.For.build(self.allocator, endFor, self);
 }
 
 fn endFor(self: *Self, t: flow.For) !void {
@@ -85,7 +85,7 @@ test "for" {
     var self = init(test_alloc);
     defer self.deinit();
 
-    try self.@"for"().iter(x.raw("foo"), "_").body(x.raw("bar")).end();
+    try self.@"for"().iter(x._raw("foo"), "_").body(x._raw("bar")).end();
     try Writer.expect(
         \\{
         \\    for (foo) |_| bar;
@@ -93,8 +93,8 @@ test "for" {
     , self);
 }
 
-pub fn @"while"(self: *Self, condition: Expr) flow.While.BuildType(endWhile) {
-    return flow.While.build(endWhile, self, condition);
+pub fn @"while"(self: *Self, condition: Expr) flow.While.Build(@TypeOf(endWhile)) {
+    return flow.While.build(self.allocator, endWhile, self, condition);
 }
 
 fn endWhile(self: *Self, t: flow.While) !void {
@@ -105,7 +105,7 @@ test "while" {
     var self = init(test_alloc);
     defer self.deinit();
 
-    try self.@"while"(x.raw("foo")).body(x.raw("bar")).end();
+    try self.@"while"(x._raw("foo")).body(x._raw("bar")).end();
     try Writer.expect(
         \\{
         \\    while (foo) bar;
@@ -138,15 +138,15 @@ test "switch" {
     var self = init(test_alloc);
     defer self.deinit();
 
-    try self.@"switch"(x.raw("foo"), struct {
+    try self.@"switch"(x._raw("foo"), struct {
         fn f(_: *flow.Switch.Build) !void {}
     }.f);
 
     var tag: []const u8 = "bar";
     _ = &tag;
-    try self.switchWith(x.raw("foo"), tag, struct {
+    try self.switchWith(x._raw("foo"), tag, struct {
         fn f(ctx: []const u8, build: *flow.Switch.Build) !void {
-            try build.branch().case(x.raw(ctx)).body(x.raw("baz"));
+            try build.branch().case(x._raw(ctx)).body(x._raw("baz"));
         }
     }.f);
 
@@ -169,7 +169,7 @@ test "defer" {
     var self = init(test_alloc);
     defer self.deinit();
 
-    try self.@"defer"(x.raw("foo"));
+    try self.@"defer"(x._raw("foo"));
     try Writer.expect(
         \\{
         \\    defer foo;
@@ -177,7 +177,7 @@ test "defer" {
     , self);
 }
 
-pub fn errorDefer(self: *Self) flow.ErrorDefer.BuildType(endErrorDefer) {
+pub fn errorDefer(self: *Self) flow.ErrorDefer.Build(@TypeOf(endErrorDefer)) {
     return flow.ErrorDefer.build(endErrorDefer, self);
 }
 
@@ -189,7 +189,7 @@ test "errorDefer" {
     var self = init(test_alloc);
     defer self.deinit();
 
-    try self.errorDefer().body(x.raw("foo"));
+    try self.errorDefer().body(x._raw("foo"));
     try Writer.expect(
         \\{
         \\    errdefer foo;
