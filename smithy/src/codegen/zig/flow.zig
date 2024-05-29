@@ -7,13 +7,16 @@ const decl = @import("../../utils/declarative.zig");
 const StackChain = decl.StackChain;
 const Writer = @import("../CodegenWriter.zig");
 const Block = @import("Block.zig");
-const Expr = @import("expr.zig").Expr;
-const x = Expr.new;
+const exp = @import("expr.zig");
+const Expr = exp.Expr;
+const ExprBuild = exp.ExprBuild;
+const _xpr = exp._tst;
 
 pub const If = struct {
-    branches: []const ElseBranch,
+    branches: []const Branch,
 
     pub fn deinit(self: If, allocator: Allocator) void {
+        for (self.branches) |t| t.deinit(allocator);
         allocator.free(self.branches);
     }
 
@@ -28,7 +31,12 @@ pub const If = struct {
         }
     }
 
-    pub fn build(allocator: Allocator, callback: anytype, ctx: anytype, condition: Expr) Build(@TypeOf(callback)) {
+    pub fn build(
+        allocator: Allocator,
+        callback: anytype,
+        ctx: anytype,
+        condition: ExprBuild,
+    ) Build(@TypeOf(callback)) {
         return .{
             .allocator = allocator,
             .callback = decl.callback(ctx, callback),
@@ -40,27 +48,27 @@ pub const If = struct {
         const Callback = decl.InferCallback(Fn);
         return struct {
             const Self = @This();
-            const BranchBuild = ElseBranch.Build(*const Self, Callback.Return);
+            const BranchBuild = Branch.Build(*const Self, Callback.Return);
 
             allocator: Allocator,
             callback: Callback,
-            condition: Expr,
+            condition: ExprBuild,
 
             pub fn capture(self: *const Self, payload: []const u8) BranchBuild {
                 const cb = decl.callback(self, end);
-                return BranchBuild.newPartial(cb, self.condition, payload, null);
+                const partial = Branch.Partial.new(self.condition, payload, null);
+                return BranchBuild.newPartial(self.allocator, cb, partial);
             }
 
-            pub fn body(self: *const Self, expr: Expr) BranchBuild {
+            pub fn body(self: *const Self, expr: ExprBuild) BranchBuild {
                 const cb = decl.callback(self, end);
-                return BranchBuild.newPartial(cb, self.condition, null, expr);
+                const partial = Branch.Partial.new(self.condition, null, expr);
+                return BranchBuild.newPartial(self.allocator, cb, partial);
             }
 
-            fn end(self: *const Self, branches: StackChain(?ElseBranch)) Callback.Return {
+            fn end(self: *const Self, branches: anyerror![]const Branch) Callback.Return {
                 return self.callback.invoke(.{
-                    .branches = branches.unwrapAlloc(self.allocator) catch |err| {
-                        return self.callback.fail(err);
-                    },
+                    .branches = branches catch |err| return self.callback.fail(err),
                 });
             }
         };
@@ -68,34 +76,41 @@ pub const If = struct {
 };
 
 test "If" {
-    const Test = Tester(If, true);
+    const Test = Tester(If);
     var tester = Test{ .expected = "if (foo) bar" };
-    try If.build(test_alloc, Test.callback, &tester, x._raw("foo"))
-        .body(x._raw("bar")).end();
+    try If.build(test_alloc, Test.callback, &tester, _xpr("foo"))
+        .body(_xpr("bar")).end();
 
     tester.expected = "if (foo) |bar| baz else qux";
-    try If.build(test_alloc, Test.callback, &tester, x._raw("foo"))
-        .capture("bar").body(x._raw("baz"))
-        .@"else"().body(x._raw("qux")).end();
+    try If.build(test_alloc, Test.callback, &tester, _xpr("foo"))
+        .capture("bar").body(_xpr("baz"))
+        .@"else"().body(_xpr("qux")).end();
 
     tester.expected = "if (foo) bar else if (baz) qux else quxx";
-    try If.build(test_alloc, Test.callback, &tester, x._raw("foo"))
-        .body(x._raw("bar"))
-        .elseIf(x._raw("baz")).body(x._raw("qux"))
-        .@"else"().body(x._raw("quxx")).end();
+    try If.build(test_alloc, Test.callback, &tester, _xpr("foo"))
+        .body(_xpr("bar"))
+        .elseIf(_xpr("baz")).body(_xpr("qux"))
+        .@"else"().body(_xpr("quxx")).end();
 }
 
 pub const For = struct {
     iterables: []const Iterable,
-    branches: []const ElseBranch,
+    branches: []const Branch,
 
     const Iterable = struct {
         expr: Expr,
         payload: []const u8,
+
+        pub fn deinit(self: Iterable, allocator: Allocator) void {
+            self.expr.deinit(allocator);
+        }
     };
 
     pub fn deinit(self: For, allocator: Allocator) void {
+        for (self.iterables) |t| t.expr.deinit(allocator);
         allocator.free(self.iterables);
+
+        for (self.branches) |t| t.deinit(allocator);
         allocator.free(self.branches);
     }
 
@@ -128,17 +143,33 @@ pub const For = struct {
         };
     }
 
+    const IterableBuild = struct {
+        expr: ExprBuild,
+        payload: []const u8,
+
+        pub fn deinit(self: IterableBuild) void {
+            self.expr.deinit();
+        }
+
+        pub fn consume(self: IterableBuild) !Iterable {
+            return .{
+                .expr = self.expr.consume() catch |err| return err,
+                .payload = self.payload,
+            };
+        }
+    };
+
     pub fn Build(comptime Fn: type) type {
         const Callback = decl.InferCallback(Fn);
         return struct {
             const Self = @This();
-            const BranchBuild = ElseBranch.Build(*const Self, Callback.Return);
+            const BranchBuild = Branch.Build(*const Self, Callback.Return);
 
             allocator: Allocator,
             callback: Callback,
-            iterables: StackChain(?Iterable) = .{},
+            iterables: StackChain(?IterableBuild) = .{},
 
-            pub fn iter(self: *const Self, expr: Expr, payload: []const u8) Self {
+            pub fn iter(self: *const Self, expr: ExprBuild, payload: []const u8) Self {
                 var dupe = self.*;
                 dupe.iterables = self.iterables.append(.{
                     .expr = expr,
@@ -147,21 +178,25 @@ pub const For = struct {
                 return dupe;
             }
 
-            pub fn body(self: *const Self, expr: Expr) BranchBuild {
+            pub fn body(self: *const Self, expr: ExprBuild) BranchBuild {
                 const cb = decl.callback(self, end);
-                return BranchBuild.newAppend(cb, null, null, expr);
+                return BranchBuild.newAppend(self.allocator, cb, .{ .body = expr });
             }
 
-            fn end(self: *const Self, branches: StackChain(?ElseBranch)) Callback.Return {
-                const iterables = self.iterables.unwrapAlloc(self.allocator) catch |err| {
+            fn end(self: *const Self, branches: anyerror![]const Branch) Callback.Return {
+                const alloc_branch = branches catch |err| {
+                    var it = self.iterables.iterateReversed();
+                    while (it.next()) |t| t.deinit();
+                    return self.callback.fail(err);
+                };
+                const iterables = consumeChainAs(self.allocator, IterableBuild, Iterable, self.iterables) catch |err| {
+                    for (alloc_branch) |t| t.deinit(self.allocator);
+                    self.allocator.free(alloc_branch);
                     return self.callback.fail(err);
                 };
                 return self.callback.invoke(.{
                     .iterables = iterables,
-                    .branches = branches.unwrapAlloc(self.allocator) catch |err| {
-                        self.allocator.free(iterables);
-                        return self.callback.fail(err);
-                    },
+                    .branches = alloc_branch,
                 });
             }
         };
@@ -169,27 +204,29 @@ pub const For = struct {
 };
 
 test "For" {
-    const Test = Tester(For, true);
+    const Test = Tester(For);
     var tester = Test{ .expected = "for (foo) |bar| baz" };
-    try For.build(test_alloc, Test.callback, &tester).iter(x._raw("foo"), "bar")
-        .body(x._raw("baz")).end();
+    try For.build(test_alloc, Test.callback, &tester).iter(_xpr("foo"), "bar")
+        .body(_xpr("baz")).end();
 
     tester.expected = "for (foo, bar) |baz, _| qux";
     try For.build(test_alloc, Test.callback, &tester)
-        .iter(x._raw("foo"), "baz").iter(x._raw("bar"), "_")
-        .body(x._raw("qux")).end();
+        .iter(_xpr("foo"), "baz").iter(_xpr("bar"), "_")
+        .body(_xpr("qux")).end();
 
     tester.expected = "for (foo) |_| bar else baz";
-    try For.build(test_alloc, Test.callback, &tester).iter(x._raw("foo"), "_")
-        .body(x._raw("bar"))
-        .@"else"().body(x._raw("baz")).end();
+    try For.build(test_alloc, Test.callback, &tester).iter(_xpr("foo"), "_")
+        .body(_xpr("bar"))
+        .@"else"().body(_xpr("baz")).end();
 }
 
 pub const While = struct {
-    branches: []const ElseBranch,
+    branches: []const Branch,
     continue_expr: ?Expr,
 
     pub fn deinit(self: While, allocator: Allocator) void {
+        if (self.continue_expr) |cont| cont.deinit(allocator);
+        for (self.branches) |t| t.deinit(allocator);
         allocator.free(self.branches);
     }
 
@@ -197,8 +234,12 @@ pub const While = struct {
         for (self.branches, 0..) |branch, i| {
             if (i == 0) {
                 try writer.appendFmt("while ({}) ", .{branch.condition.?});
-                if (branch.payload) |p| try writer.appendFmt("|{_}| ", .{std.zig.fmtId(p)});
-                if (i == 0) if (self.continue_expr) |expr| try writer.appendFmt(": ({}) ", .{expr});
+                if (branch.payload) |p| {
+                    try writer.appendFmt("|{_}| ", .{std.zig.fmtId(p)});
+                }
+                if (i == 0) if (self.continue_expr) |expr| {
+                    try writer.appendFmt(": ({}) ", .{expr});
+                };
                 try writer.appendValue(branch.body);
             } else {
                 try writer.appendValue(branch);
@@ -206,7 +247,12 @@ pub const While = struct {
         }
     }
 
-    pub fn build(allocator: Allocator, callback: anytype, ctx: anytype, condition: Expr) Build(@TypeOf(callback)) {
+    pub fn build(
+        allocator: Allocator,
+        callback: anytype,
+        ctx: anytype,
+        condition: ExprBuild,
+    ) Build(@TypeOf(callback)) {
         return .{
             .allocator = allocator,
             .callback = decl.callback(ctx, callback),
@@ -218,13 +264,13 @@ pub const While = struct {
         const Callback = decl.InferCallback(Fn);
         return struct {
             const Self = @This();
-            const BranchBuild = ElseBranch.Build(*const Self, Callback.Return);
+            const BranchBuild = Branch.Build(*const Self, Callback.Return);
 
             allocator: Allocator,
             callback: Callback,
-            condition: Expr,
+            condition: ExprBuild,
             payload: ?[]const u8 = null,
-            continue_expr: ?Expr = null,
+            continue_expr: ?ExprBuild = null,
 
             pub fn capture(self: Self, payload: []const u8) Self {
                 assert(self.payload == null);
@@ -233,23 +279,31 @@ pub const While = struct {
                 return dupe;
             }
 
-            pub fn onContinue(self: Self, expr: Expr) Self {
+            pub fn onContinue(self: Self, expr: ExprBuild) Self {
                 var dupe = self;
                 dupe.continue_expr = expr;
                 return dupe;
             }
 
-            pub fn body(self: *const Self, expr: Expr) BranchBuild {
+            pub fn body(self: *const Self, expr: ExprBuild) BranchBuild {
                 const cb = decl.callback(self, end);
-                return BranchBuild.newPartial(cb, self.condition, self.payload, expr);
+                const partial = Branch.Partial.new(self.condition, self.payload, expr);
+                return BranchBuild.newPartial(self.allocator, cb, partial);
             }
 
-            fn end(self: *const Self, branches: StackChain(?ElseBranch)) Callback.Return {
+            fn end(self: *const Self, branches: anyerror![]const Branch) Callback.Return {
+                const alloc_branch = branches catch |err| {
+                    if (self.continue_expr) |c| c.deinit();
+                    return self.callback.fail(err);
+                };
+                const alloc_continue = if (self.continue_expr) |c| c.consume() catch |err| {
+                    for (alloc_branch) |t| t.deinit(self.allocator);
+                    self.allocator.free(alloc_branch);
+                    return self.callback.fail(err);
+                } else null;
                 return self.callback.invoke(.{
-                    .continue_expr = self.continue_expr,
-                    .branches = branches.unwrapAlloc(self.allocator) catch |err| {
-                        return self.callback.fail(err);
-                    },
+                    .branches = alloc_branch,
+                    .continue_expr = alloc_continue,
                 });
             }
         };
@@ -257,28 +311,32 @@ pub const While = struct {
 };
 
 test "While" {
-    const Test = Tester(While, true);
+    const Test = Tester(While);
     var tester = Test{ .expected = "while (foo) bar" };
-    try While.build(test_alloc, Test.callback, &tester, x._raw("foo"))
-        .body(x._raw("bar")).end();
+    try While.build(test_alloc, Test.callback, &tester, _xpr("foo"))
+        .body(_xpr("bar")).end();
 
     tester.expected = "while (foo) : (bar) baz";
-    try While.build(test_alloc, Test.callback, &tester, x._raw("foo"))
-        .onContinue(x._raw("bar"))
-        .body(x._raw("baz")).end();
+    try While.build(test_alloc, Test.callback, &tester, _xpr("foo"))
+        .onContinue(_xpr("bar")).body(_xpr("baz")).end();
 
     tester.expected = "while (foo) |_| : (bar) baz else qux";
-    try While.build(test_alloc, Test.callback, &tester, x._raw("foo"))
-        .capture("_").onContinue(x._raw("bar")).body(x._raw("baz"))
-        .@"else"().body(x._raw("qux")).end();
+    try While.build(test_alloc, Test.callback, &tester, _xpr("foo"))
+        .capture("_").onContinue(_xpr("bar")).body(_xpr("baz"))
+        .@"else"().body(_xpr("qux")).end();
 }
 
-pub const ElseBranch = struct {
+pub const Branch = struct {
     condition: ?Expr = null,
     payload: ?[]const u8 = null,
     body: Expr,
 
-    pub fn __write(self: ElseBranch, writer: *Writer) !void {
+    pub fn deinit(self: Branch, allocator: Allocator) void {
+        self.body.deinit(allocator);
+        if (self.condition) |condition| condition.deinit(allocator);
+    }
+
+    pub fn __write(self: Branch, writer: *Writer) !void {
         if (self.condition) |condition| {
             try writer.appendFmt(" else if ({}) ", .{condition});
         } else {
@@ -287,58 +345,90 @@ pub const ElseBranch = struct {
         try self.writeBody(writer);
     }
 
-    fn writeBody(self: ElseBranch, writer: *Writer) !void {
+    fn writeBody(self: Branch, writer: *Writer) !void {
         if (self.payload) |p| try writer.appendFmt("|{_}| ", .{std.zig.fmtId(p)});
         try writer.appendValue(self.body);
     }
 
+    const Partial = struct {
+        condition: ?ExprBuild = null,
+        payload: ?[]const u8 = null,
+        body: ?ExprBuild = null,
+
+        pub fn new(condition: ?ExprBuild, payload: ?[]const u8, body: ?ExprBuild) Partial {
+            return .{
+                .condition = condition,
+                .payload = payload,
+                .body = body,
+            };
+        }
+
+        pub fn deinit(self: Partial) void {
+            if (self.body) |t| t.deinit();
+            if (self.condition) |t| t.deinit();
+        }
+
+        pub fn isEmpty(self: Partial) bool {
+            return (self.condition orelse self.body) == null and self.payload == null;
+        }
+
+        pub fn consume(self: Partial) !Branch {
+            const alloc_body = try self.body.?.consume();
+            const alloc_cond = if (self.condition) |t| t.consume() catch |err| {
+                alloc_body.deinit(self.body.?.allocator);
+                return err;
+            } else null;
+            return .{
+                .condition = alloc_cond,
+                .payload = self.payload,
+                .body = alloc_body,
+            };
+        }
+    };
+
     pub fn Build(comptime Context: type, comptime Return: type) type {
-        const Callback = decl.Callback(Context, StackChain(?ElseBranch), Return);
+        const Callback = decl.Callback(Context, anyerror![]const Branch, Return);
         return struct {
             const Self = @This();
 
+            allocator: Allocator,
             callback: Callback,
-            branches: StackChain(?ElseBranch) = .{},
-            condition: ?Expr = null,
-            payload: ?[]const u8 = null,
-            expr: ?Expr = null,
+            branches: StackChain(?Partial) = .{},
+            partial: Partial = .{},
 
-            pub fn newAppend(callback: Callback, condition: ?Expr, payload: ?[]const u8, expr: Expr) Self {
+            pub fn newAppend(allocator: Allocator, callback: Callback, branch: Partial) Self {
+                assert(branch.body != null);
                 return .{
+                    .allocator = allocator,
                     .callback = callback,
-                    .branches = StackChain(?ElseBranch).start(.{
-                        .condition = condition,
-                        .payload = payload,
-                        .body = expr,
-                    }),
+                    .branches = StackChain(?Partial).start(branch),
                 };
             }
 
-            pub fn newPartial(callback: Callback, condition: ?Expr, payload: ?[]const u8, expr: ?Expr) Self {
+            pub fn newPartial(allocator: Allocator, callback: Callback, partial: Partial) Self {
                 return .{
+                    .allocator = allocator,
                     .callback = callback,
-                    .condition = condition,
-                    .payload = payload,
-                    .expr = expr,
+                    .partial = partial,
                 };
             }
 
             pub fn capture(self: Self, payload: []const u8) Self {
-                assert(self.expr == null);
-                assert(self.payload == null);
+                assert(self.partial.body == null);
+                assert(self.partial.payload == null);
                 var dupe = self;
-                dupe.payload = payload;
+                dupe.partial.payload = payload;
                 return dupe;
             }
 
-            pub fn body(self: Self, expr: Expr) Self {
-                assert(self.expr == null);
+            pub fn body(self: Self, expr: ExprBuild) Self {
+                assert(self.partial.body == null);
                 var dupe = self;
-                dupe.expr = expr;
+                dupe.partial.body = expr;
                 return dupe;
             }
 
-            pub fn elseIf(self: *const Self, condition: Expr) Self {
+            pub fn elseIf(self: *const Self, condition: ExprBuild) Self {
                 return self.flushAndReset(condition);
             }
 
@@ -347,34 +437,27 @@ pub const ElseBranch = struct {
             }
 
             pub fn end(self: *const Self) Return {
-                return self.callback.invoke(self.flushChain());
-            }
-
-            fn flushAndReset(self: *const Self, conditing: ?Expr) Self {
-                var dupe = self.*;
-                dupe.branches = self.flushChain();
-                dupe.condition = conditing;
-                dupe.payload = null;
-                dupe.expr = null;
-                return dupe;
-            }
-
-            fn flushChain(self: *const Self) StackChain(?ElseBranch) {
-                const has_parts = self.hasParts();
-                if (self.branches.isEmpty() or has_parts) {
-                    const branch = ElseBranch{
-                        .condition = self.condition,
-                        .payload = self.payload,
-                        .body = self.expr.?,
-                    };
-                    return self.branches.append(branch);
-                } else {
-                    return self.branches;
+                if (consumeChainAs(self.allocator, Partial, Branch, self.flushPartial())) |branches| {
+                    return self.callback.invoke(branches);
+                } else |err| {
+                    return self.callback.fail(err);
                 }
             }
 
-            fn hasParts(self: *const Self) bool {
-                return self.expr != null or self.condition != null or self.payload != null;
+            fn flushAndReset(self: *const Self, condition: ?ExprBuild) Self {
+                var dupe = self.*;
+                dupe.branches = self.flushPartial();
+                dupe.partial = .{ .condition = condition };
+                return dupe;
+            }
+
+            fn flushPartial(self: *const Self) StackChain(?Partial) {
+                if (self.branches.isEmpty() or !self.partial.isEmpty()) {
+                    assert(self.partial.body != null);
+                    return self.branches.append(self.partial);
+                } else {
+                    return self.branches;
+                }
             }
         };
     }
@@ -387,6 +470,7 @@ pub const Switch = struct {
     statements: []const Statement,
 
     pub fn deinit(self: Switch, allocator: Allocator) void {
+        for (self.statements) |t| t.deinit(allocator);
         allocator.free(self.statements);
     }
 
@@ -402,9 +486,23 @@ pub const Switch = struct {
         }
     }
 
+    pub fn build(allocator: Allocator, value: ExprBuild) Build {
+        return .{
+            .allocator = allocator,
+            .value = value,
+        };
+    }
+
     const Case = union(enum) {
         single: Expr,
         range: [2]Expr,
+
+        pub fn deinit(self: Case, allocator: Allocator) void {
+            switch (self) {
+                .single => |t| t.deinit(allocator),
+                .range => |r| for (r) |t| t.deinit(allocator),
+            }
+        }
 
         pub fn __write(self: Case, writer: *Writer) !void {
             switch (self) {
@@ -417,26 +515,33 @@ pub const Switch = struct {
     const Statement = union(enum) {
         prong: struct {
             is_inline: bool,
-            cases: StackChain(?Case),
-            payload: StackChain(?[]const u8),
+            cases: []const Case,
+            payload: []const []const u8,
             body: Expr,
         },
+
+        pub fn deinit(self: Statement, allocator: Allocator) void {
+            switch (self) {
+                .prong => |p| {
+                    for (p.cases) |t| t.deinit(allocator);
+                    allocator.free(p.cases);
+                    allocator.free(p.payload);
+                    p.body.deinit(allocator);
+                },
+            }
+        }
 
         pub fn __write(self: Statement, writer: *Writer) !void {
             switch (self) {
                 .prong => |prong| {
-                    var buffer: [32]Case = undefined;
-                    const cases = try prong.cases.unwrap(&buffer);
-
                     if (prong.is_inline) try writer.appendString("inline ");
-                    try writer.appendList(Case, cases, .{ .delimiter = ", " });
+                    try writer.appendList(Case, prong.cases, .{
+                        .delimiter = ", ",
+                    });
                     try writer.appendString(" =>");
-                    if (!prong.payload.isEmpty()) {
-                        var buff_capture: [2][]const u8 = undefined;
-                        const captures = try prong.payload.unwrap(&buff_capture);
-
+                    if (prong.payload.len > 0) {
                         try writer.appendString(" |");
-                        try writer.appendList([]const u8, captures, .{
+                        try writer.appendList([]const u8, prong.payload, .{
                             .delimiter = ", ",
                             .format = "_",
                             .process = Writer.Processor.from(std.zig.fmtId),
@@ -450,31 +555,34 @@ pub const Switch = struct {
     };
 
     pub const Build = struct {
-        value: Expr,
-        statements: std.ArrayList(Statement),
+        allocator: Allocator,
+        value: ExprBuild,
+        statements: std.ArrayListUnmanaged(Statement) = .{},
         state: State = .idle,
 
         const State = enum { idle, inlined, end_inlined, end };
 
-        pub fn init(allocator: Allocator, value: Expr) Build {
-            return .{
-                .value = value,
-                .statements = std.ArrayList(Statement).init(allocator),
-            };
-        }
-
         pub fn deinit(self: Build) void {
-            self.statements.deinit();
+            self.value.deinit();
+            for (self.statements.items) |t| t.deinit(self.allocator);
+            var list = self.statements;
+            list.deinit(self.allocator);
         }
 
         pub fn consume(self: *Build) !Switch {
             if (self.state == .inlined) {
                 return error.IncompleteProng;
             } else {
-                return .{
-                    .value = self.value,
-                    .statements = try self.statements.toOwnedSlice(),
+                const statements = self.statements.toOwnedSlice(self.allocator) catch |err| {
+                    self.value.deinit();
+                    return err;
                 };
+                const value = self.value.consume() catch |err| {
+                    for (statements) |t| t.deinit(self.allocator);
+                    self.allocator.free(statements);
+                    return err;
+                };
+                return .{ .value = value, .statements = statements };
             }
         }
 
@@ -484,12 +592,12 @@ pub const Switch = struct {
             return self;
         }
 
-        pub fn branch(self: *Build) BuildProng {
+        pub fn branch(self: *Build) ProngBuild {
             assert(self.state == .idle or self.state == .inlined);
             return .{ .parent = self };
         }
 
-        pub fn @"else"(self: *Build) BuildProng {
+        pub fn @"else"(self: *Build) ProngBuild {
             self.state = switch (self.state) {
                 .idle => .end,
                 .inlined => .end_inlined,
@@ -497,12 +605,12 @@ pub const Switch = struct {
             };
             return .{
                 .parent = self,
-                .cases = StackChain(?Case).start(.{ .single = x._raw("else") }),
+                .cases = StackChain(?CaseBuild).start(.{ .single = _xpr("else") }),
                 .allow_case = false,
             };
         }
 
-        pub fn nonExhaustive(self: *Build) BuildProng {
+        pub fn nonExhaustive(self: *Build) ProngBuild {
             self.state = switch (self.state) {
                 .idle => .end,
                 .inlined => .end_inlined,
@@ -510,65 +618,111 @@ pub const Switch = struct {
             };
             return .{
                 .parent = self,
-                .cases = StackChain(?Case).start(.{ .single = x._raw("_") }),
+                .cases = StackChain(?CaseBuild).start(.{ .single = _xpr("_") }),
                 .allow_case = false,
             };
         }
 
         fn prongCallback(
             self: *Build,
-            cases: StackChain(?Case),
+            cases: StackChain(?CaseBuild),
             payload: StackChain(?[]const u8),
-            body: Expr,
+            body: ExprBuild,
         ) !void {
-            try self.statements.append(.{
+            const body_expr = body.consume() catch |err| {
+                while (cases) |t| t.deinit();
+                return err;
+            };
+            errdefer body_expr.deinit(self.allocator);
+
+            const alloc_payload = payload.unwrapAlloc(self.allocator) catch |err| {
+                while (cases) |t| t.deinit();
+                return err;
+            };
+            errdefer self.allocator.free(alloc_payload);
+
+            const alloc_cases = try consumeChainAs(self.allocator, CaseBuild, Case, cases);
+
+            const is_inline = switch (self.state) {
+                .idle => false,
+                .inlined => blk: {
+                    self.state = .idle;
+                    break :blk true;
+                },
+                .end_inlined => true,
+                else => unreachable,
+            };
+
+            try self.statements.append(self.allocator, .{
                 .prong = .{
-                    .is_inline = switch (self.state) {
-                        .idle => false,
-                        .inlined => blk: {
-                            self.state = .idle;
-                            break :blk true;
-                        },
-                        .end_inlined => true,
-                        else => unreachable,
-                    },
-                    .cases = cases,
-                    .payload = payload,
-                    .body = body,
+                    .is_inline = is_inline,
+                    .cases = alloc_cases,
+                    .payload = alloc_payload,
+                    .body = body_expr,
                 },
             });
         }
     };
 
-    pub const BuildProng = struct {
+    const CaseBuild = union(enum) {
+        single: ExprBuild,
+        range: [2]ExprBuild,
+
+        pub fn deinit(self: CaseBuild) void {
+            switch (self) {
+                .single => |t| t.deinit(),
+                .range => |r| for (r) |t| t.deinit(),
+            }
+        }
+
+        pub fn consume(self: CaseBuild) !Case {
+            switch (self) {
+                .single => |c| return .{ .single = try c.consume() },
+                .range => |c| {
+                    const from = c[0].consume() catch |err| {
+                        c[1].deinit();
+                        return err;
+                    };
+                    const to = c[1].consume() catch |err| {
+                        from.deinit(c[0].allocator);
+                        return err;
+                    };
+                    return .{ .range = .{ from, to } };
+                },
+            }
+        }
+    };
+
+    pub const ProngBuild = struct {
         parent: *Build,
         allow_case: bool = true,
-        cases: StackChain(?Case) = .{},
+        cases: StackChain(?CaseBuild) = .{},
         payload: StackChain(?[]const u8) = .{},
 
-        pub fn case(self: *const BuildProng, expr: Expr) BuildProng {
+        pub fn case(self: *const ProngBuild, expr: ExprBuild) ProngBuild {
             assert(self.allow_case);
             var dupe = self.*;
             dupe.cases = self.cases.append(.{ .single = expr });
             return dupe;
         }
 
-        pub fn caseRange(self: *const BuildProng, from: Expr, to: Expr) BuildProng {
+        pub fn caseRange(self: *const ProngBuild, from: ExprBuild, to: ExprBuild) ProngBuild {
             assert(self.allow_case);
             var dupe = self.*;
             dupe.cases = self.cases.append(.{ .range = .{ from, to } });
             return dupe;
         }
 
-        pub fn capture(self: *const BuildProng, payload: []const u8) BuildProng {
+        pub fn capture(self: *const ProngBuild, payload: []const u8) ProngBuild {
             var dupe = self.*;
             dupe.payload = self.payload.append(payload);
             dupe.allow_case = false;
             return dupe;
         }
 
-        pub fn body(self: BuildProng, expr: Expr) !void {
+        pub fn body(self: ProngBuild, expr: ExprBuild) !void {
             if (self.cases.isEmpty()) {
+                expr.deinit();
                 return error.MissingCase;
             } else {
                 try self.parent.prongCallback(self.cases, self.payload, expr);
@@ -578,14 +732,14 @@ pub const Switch = struct {
 };
 
 test "Switch" {
-    var build = Switch.Build.init(test_alloc, x._raw("foo"));
+    var build = Switch.build(test_alloc, _xpr("foo"));
     errdefer build.deinit();
 
-    try build.branch().case(x._raw("bar")).case(x._raw("baz"))
-        .capture("val").capture("tag").body(x._raw("qux"));
-    try build.branch().caseRange(x._raw("18"), x._raw("108"))
-        .body(x._raw("unreachable"));
-    try build.inlined().@"else"().body(x._raw("unreachable"));
+    try build.branch().case(_xpr("bar")).case(_xpr("baz"))
+        .capture("val").capture("tag").body(_xpr("qux"));
+    try build.branch().caseRange(_xpr("18"), _xpr("108"))
+        .body(_xpr("unreachable"));
+    try build.inlined().@"else"().body(_xpr("unreachable"));
 
     const data = try build.consume();
     defer data.deinit(test_alloc);
@@ -601,22 +755,34 @@ test "Switch" {
 pub const Defer = struct {
     body: Expr,
 
+    pub fn deinit(self: Defer, allocator: Allocator) void {
+        self.body.deinit(allocator);
+    }
+
     pub fn __write(self: Defer, writer: *Writer) !void {
         try writer.appendFmt("defer {}", .{self.body});
     }
 };
 
 test "Defer" {
-    try Writer.expect("defer foo", Defer{ .body = x._raw("foo") });
+    const expr = Defer{ .body = .{ .raw = "foo" } };
+    defer expr.deinit(test_alloc);
+    try Writer.expect("defer foo", expr);
 }
 
-pub const ErrorDefer = struct {
+pub const Errdefer = struct {
     payload: ?[]const u8 = null,
     body: Expr,
 
-    pub fn __write(self: ErrorDefer, writer: *Writer) !void {
+    pub fn deinit(self: Errdefer, allocator: Allocator) void {
+        self.body.deinit(allocator);
+    }
+
+    pub fn __write(self: Errdefer, writer: *Writer) !void {
         try writer.appendString("errdefer ");
-        if (self.payload) |p| try writer.appendFmt("|{_}| ", .{std.zig.fmtId(p)});
+        if (self.payload) |p| {
+            try writer.appendFmt("|{_}| ", .{std.zig.fmtId(p)});
+        }
         try writer.appendValue(self.body);
     }
 
@@ -639,30 +805,70 @@ pub const ErrorDefer = struct {
                 return dupe;
             }
 
-            pub fn body(self: Self, expr: Expr) Callback.Return {
-                return self.callback.invoke(.{
-                    .payload = self.payload,
-                    .body = expr,
-                });
+            pub fn body(self: Self, expr: ExprBuild) Callback.Return {
+                if (expr.consume()) |data| {
+                    return self.callback.invoke(.{
+                        .payload = self.payload,
+                        .body = data,
+                    });
+                } else |err| {
+                    return self.callback.fail(err);
+                }
             }
         };
     }
 };
 
 test "ErrorDefer" {
-    const Test = Tester(ErrorDefer, false);
-    var tester = Test{
-        .expected = "errdefer |foo| bar",
-    };
-    try ErrorDefer.build(Test.callback, &tester).capture("foo").body(x._raw("bar"));
+    const Test = Tester(Errdefer);
+    var tester = Test{ .expected = "errdefer |foo| bar" };
+    try Errdefer.build(Test.callback, &tester).capture("foo").body(_xpr("bar"));
 }
 
-pub fn Tester(comptime T: type, deinit: bool) type {
+fn consumeChainAs(
+    allocator: Allocator,
+    comptime Src: type,
+    comptime Dest: type,
+    chain: StackChain(?Src),
+) ![]const Dest {
+    if (chain.isEmpty()) return &.{};
+
+    const total = chain.count();
+    var consumed: usize = 0;
+    const list = allocator.alloc(Dest, total) catch |err| {
+        var it = chain.iterateReversed();
+        while (it.next()) |t| t.deinit();
+        return err;
+    };
+    errdefer {
+        for (list[0..consumed]) |t| t.deinit(allocator);
+        allocator.free(list);
+    }
+
+    var has_error: ?anyerror = null;
+    var it = chain.iterateReversed();
+    while (it.next()) |source| {
+        if (has_error == null) {
+            const index = total - consumed - 1;
+            list[index] = source.consume() catch |err| {
+                has_error = err;
+                continue;
+            };
+            consumed += 1;
+        } else {
+            source.deinit();
+        }
+    }
+
+    return has_error orelse list;
+}
+
+fn Tester(comptime T: type) type {
     return struct {
         expected: []const u8 = "",
 
         pub fn callback(self: *@This(), value: T) !void {
-            defer if (deinit) value.deinit(test_alloc);
+            defer value.deinit(test_alloc);
             try Writer.expect(self.expected, value);
         }
     };

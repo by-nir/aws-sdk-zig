@@ -10,22 +10,22 @@ const Writer = @import("../CodegenWriter.zig");
 const flow = @import("flow.zig");
 
 pub const Expr = union(enum) {
-    const Chain = StackChain(*const Expr);
-    pub const new: Expr = Expr._empty;
-
     _empty,
     _error: anyerror,
-    _chain: Chain,
+    _chain: []const Expr,
     raw: []const u8,
     type: ExprType,
     value: ExprValue,
     flow: ExprFlow,
-    operation: ExprOp,
     keyword: ExprKeyword,
 
     pub fn deinit(self: Expr, allocator: Allocator) void {
         switch (self) {
-            .flow => |t| t.deinit(allocator),
+            ._chain => |chain| {
+                for (chain) |t| t.deinit(allocator);
+                allocator.free(chain);
+            },
+            .flow => |f| f.deinit(allocator),
             else => {},
         }
     }
@@ -43,95 +43,6 @@ pub const Expr = union(enum) {
             // else => Expr{ .chain = StackChain(Expr).start(self.*).append(ex) },
         }
     }
-
-    fn append(self: *const Expr, expr: anyerror!Expr) Expr {
-        const expr_or_err = expr catch |err| Expr{ ._error = err };
-        return switch (self.*) {
-            ._empty => expr_or_err,
-            ._chain => |t| Expr{ ._chain = t.append(&expr_or_err) },
-            else => Expr{ ._chain = Chain.start(self).append(&expr_or_err) },
-        };
-    }
-
-    pub fn _raw(self: *const Expr, value: []const u8) Expr {
-        return self.append(.{ .raw = value });
-    }
-
-    //
-    // Control Flow
-    //
-
-    pub fn @"if"(self: *const Expr, TEMP_allocator: Allocator, condition: Expr) flow.If.Build(@TypeOf(endIf)) {
-        return flow.If.build(TEMP_allocator, endIf, self, condition);
-    }
-
-    fn endIf(self: *const Expr, value: anyerror!flow.If) Expr {
-        const data = value catch |err| return self.append(err);
-        return self.append(.{ .flow = .{ .@"if" = data } });
-    }
-
-    test "if" {
-        const expr = new.@"if"(test_alloc, new._raw("foo")).body(new._raw("bar")).end();
-        defer expr.deinit(test_alloc);
-        try Writer.expect("if (foo) bar", expr);
-    }
-
-    pub fn @"for"(self: *const Expr, TEMP_allocator: Allocator) flow.For.Build(@TypeOf(endFor)) {
-        return flow.For.build(TEMP_allocator, endFor, self);
-    }
-
-    fn endFor(self: *const Expr, value: anyerror!flow.For) Expr {
-        const data = value catch |err| return self.append(err);
-        return self.append(.{ .flow = .{ .@"for" = data } });
-    }
-
-    test "for" {
-        const expr = new.@"for"(test_alloc).iter(new._raw("foo"), "_")
-            .body(new._raw("bar")).end();
-        defer expr.deinit(test_alloc);
-        try Writer.expect("for (foo) |_| bar", expr);
-    }
-    pub fn @"switch"(self: *const Expr, TEMP_allocator: Allocator, value: Expr, build: flow.SwitchFn) Expr {
-        try self.switchWith(TEMP_allocator, value, {}, build);
-    }
-
-    pub fn switchWith(
-        self: *const Expr,
-        TEMP_allocator: Allocator,
-        value: Expr,
-        ctx: anytype,
-        build: Closure(@TypeOf(ctx), flow.SwitchFn),
-    ) Expr {
-        var builder = flow.Switch.Build.init(TEMP_allocator, value);
-        callClosure(ctx, build, .{&builder}) catch |err| {
-            builder.deinit();
-            return self.append(err);
-        };
-
-        const data = TEMP_allocator.create(flow.Switch) catch |err| return self.append(err);
-        errdefer TEMP_allocator.destroy(data);
-        data.* = builder.consume() catch |err| return self.append(err);
-
-        return self.append(.{ .flow = .{ .@"switch" = data } });
-    }
-
-    test "switch" {
-        var tag: []const u8 = "bar";
-        _ = &tag;
-
-        const expr = new.switchWith(test_alloc, new._raw("foo"), tag, struct {
-            fn f(ctx: []const u8, build: *flow.Switch.Build) !void {
-                try build.branch().case(new._raw(ctx)).body(new._raw("baz"));
-            }
-        }.f);
-        defer expr.deinit(test_alloc);
-
-        try Writer.expect(
-            \\switch (foo) {
-            \\    bar => baz,
-            \\}
-        , expr);
-    }
 };
 
 const ExprType = union(enum) {
@@ -145,12 +56,15 @@ const ExprValue = union(enum) {
 const ExprFlow = union(enum) {
     @"if": flow.If,
     @"for": flow.For,
+    @"while": *const flow.While,
     @"switch": *const flow.Switch,
+    @"defer": *const flow.Defer,
+    @"errdefer": *const flow.Errdefer,
 
     pub fn deinit(self: ExprFlow, allocator: Allocator) void {
         switch (self) {
             inline .@"if", .@"for" => |t| t.deinit(allocator),
-            .@"switch" => |t| {
+            inline else => |t| {
                 t.deinit(allocator);
                 allocator.destroy(t);
             },
@@ -168,6 +82,194 @@ const ExprKeyword = union(enum) {
     PLACEHOLDER,
 };
 
-const ExprOp = union(enum) {
-    PLACEHOLDER,
+pub fn _tst(str: []const u8) ExprBuild {
+    return .{
+        .allocator = test_alloc,
+        .exprs = StackChain(?Expr).start(.{ .raw = str }),
+    };
+}
+
+pub const ExprBuild = struct {
+    allocator: Allocator,
+    exprs: StackChain(?Expr) = .{},
+
+    pub fn init(allocator: Allocator) ExprBuild {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: ExprBuild) void {
+        if (self.exprs.isEmpty()) return;
+        var current: ?*const StackChain(?Expr) = &self.exprs;
+        while (current) |t| : (current = t.prev) {
+            t.value.?.deinit(self.allocator);
+        }
+    }
+
+    pub fn consume(self: ExprBuild) !Expr {
+        if (self.exprs.isEmpty()) {
+            return ._empty;
+        } else if (self.exprs.len == 1) {
+            return self.exprs.value.?;
+        } else {
+            return .{ ._chain = try self.exprs.unwrapAlloc(self.allocator) };
+        }
+    }
+
+    fn append(self: *const ExprBuild, expr: anyerror!Expr) ExprBuild {
+        const value = expr catch |err| Expr{ ._error = err };
+        return .{
+            .allocator = self.allocator,
+            .exprs = self.exprs.append(value),
+        };
+    }
+
+    pub fn raw(self: *const ExprBuild, value: []const u8) ExprBuild {
+        return self.append(.{ .raw = value });
+    }
+
+    //
+    // Control Flow
+    //
+
+    pub fn @"if"(self: *const ExprBuild, condition: ExprBuild) flow.If.Build(@TypeOf(endIf)) {
+        return flow.If.build(self.allocator, endIf, self, condition);
+    }
+
+    fn endIf(self: *const ExprBuild, value: anyerror!flow.If) ExprBuild {
+        const data = value catch |err| return self.append(err);
+        return self.append(.{ .flow = .{ .@"if" = data } });
+    }
+
+    test "if" {
+        var build = ExprBuild.init(test_alloc);
+        const expr = try build.@"if"(_tst("foo")).body(_tst("bar")).end().consume();
+        defer expr.deinit(test_alloc);
+        try Writer.expect("if (foo) bar", expr);
+    }
+
+    pub fn @"for"(self: *const ExprBuild) flow.For.Build(@TypeOf(endFor)) {
+        return flow.For.build(self.allocator, endFor, self);
+    }
+
+    fn endFor(self: *const ExprBuild, value: anyerror!flow.For) ExprBuild {
+        const data = value catch |err| return self.append(err);
+        return self.append(.{ .flow = .{ .@"for" = data } });
+    }
+
+    test "for" {
+        var build = ExprBuild.init(test_alloc);
+        const expr = try build.@"for"().iter(_tst("foo"), "_")
+            .body(_tst("bar")).end().consume();
+        defer expr.deinit(test_alloc);
+        try Writer.expect("for (foo) |_| bar", expr);
+    }
+
+    pub fn @"while"(self: *const ExprBuild, condition: ExprBuild) flow.While.Build(@TypeOf(endWhile)) {
+        return flow.While.build(self.allocator, endWhile, self, condition);
+    }
+
+    fn endWhile(self: *const ExprBuild, value: anyerror!flow.While) ExprBuild {
+        if (value) |val| {
+            const data = self.allocator.create(flow.While) catch |err| return self.append(err);
+            data.* = val;
+            return self.append(.{ .flow = .{ .@"while" = data } });
+        } else |err| {
+            return self.append(err);
+        }
+    }
+
+    test "while" {
+        var build = ExprBuild.init(test_alloc);
+        const expr = try build.@"while"(_tst("foo"))
+            .body(_tst("bar")).end().consume();
+        defer expr.deinit(test_alloc);
+        try Writer.expect("while (foo) bar", expr);
+    }
+
+    pub fn @"switch"(self: *const ExprBuild, value: ExprBuild, build: flow.SwitchFn) ExprBuild {
+        try self.switchWith(self, value, {}, build);
+    }
+
+    pub fn switchWith(
+        self: *const ExprBuild,
+        value: ExprBuild,
+        ctx: anytype,
+        build: Closure(@TypeOf(ctx), flow.SwitchFn),
+    ) ExprBuild {
+        var builder = flow.Switch.build(self.allocator, value);
+        callClosure(ctx, build, .{&builder}) catch |err| {
+            builder.deinit();
+            return self.append(err);
+        };
+
+        const data = self.allocator.create(flow.Switch) catch |err| return self.append(err);
+        data.* = builder.consume() catch |err| {
+            self.allocator.destroy(data);
+            return self.append(err);
+        };
+        return self.append(.{ .flow = .{ .@"switch" = data } });
+    }
+
+    test "switch" {
+        var tag: []const u8 = "bar";
+        _ = &tag;
+
+        var builder = ExprBuild.init(test_alloc);
+        const expr = try builder.switchWith(_tst("foo"), tag, struct {
+            fn f(ctx: []const u8, build: *flow.Switch.Build) !void {
+                try build.branch().case(_tst(ctx)).body(_tst("baz"));
+            }
+        }.f).consume();
+        defer expr.deinit(test_alloc);
+
+        try Writer.expect(
+            \\switch (foo) {
+            \\    bar => baz,
+            \\}
+        , expr);
+    }
+
+    pub fn @"defer"(self: *const ExprBuild, condition: ExprBuild) ExprBuild {
+        const condition_alloc = condition.consume() catch |err| return self.append(err);
+        const data = self.allocator.create(flow.Defer) catch |err| {
+            condition_alloc.deinit(self.allocator);
+            return self.append(err);
+        };
+        data.* = .{ .body = condition_alloc };
+        return self.append(.{ .flow = .{ .@"defer" = data } });
+    }
+
+    test "defer" {
+        var build = ExprBuild.init(test_alloc);
+        const expr = try build.@"defer"(_tst("foo")).consume();
+        defer expr.deinit(test_alloc);
+        try Writer.expect("defer foo", expr);
+    }
+
+    pub fn @"errdefer"(self: *const ExprBuild) flow.Errdefer.Build(@TypeOf(endErrdefer)) {
+        return flow.Errdefer.build(endErrdefer, self);
+    }
+
+    fn endErrdefer(self: *const ExprBuild, value: anyerror!flow.Errdefer) ExprBuild {
+        if (value) |val| {
+            const data = self.allocator.create(flow.Errdefer) catch |err| {
+                return self.append(err);
+            };
+            data.* = val;
+            return self.append(.{ .flow = .{ .@"errdefer" = data } });
+        } else |err| {
+            return self.append(err);
+        }
+    }
+
+    test "errdefer" {
+        var build = ExprBuild.init(test_alloc);
+        const expr = try build.@"errdefer"().body(_tst("foo")).consume();
+        defer expr.deinit(test_alloc);
+        try Writer.expect("errdefer foo", expr);
+    }
 };
+
+test {
+    _ = ExprBuild;
+}
