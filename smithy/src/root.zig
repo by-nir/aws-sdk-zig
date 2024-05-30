@@ -43,7 +43,7 @@ test {
     _ = @import("codegen/CodegenWriter.zig");
     _ = @import("codegen/zig/flow.zig");
     _ = @import("codegen/zig/expr.zig");
-    _ = @import("codegen/zig/Block.zig");
+    _ = @import("codegen/zig/scope.zig");
     _ = @import("codegen/StackWriter.zig");
     _ = Markdown;
     _ = Script;

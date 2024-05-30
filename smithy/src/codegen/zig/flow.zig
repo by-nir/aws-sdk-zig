@@ -6,7 +6,7 @@ const test_alloc = testing.allocator;
 const decl = @import("../../utils/declarative.zig");
 const StackChain = decl.StackChain;
 const Writer = @import("../CodegenWriter.zig");
-const Block = @import("Block.zig");
+const scope = @import("scope.zig");
 const exp = @import("expr.zig");
 const Expr = exp.Expr;
 const ExprBuild = exp.ExprBuild;
@@ -480,7 +480,7 @@ pub const Switch = struct {
         } else {
             try writer.appendFmt("switch ({}) {{", .{self.value});
             try writer.breakList(Statement, self.statements, .{
-                .line = .{ .indent = Block.ZIG_INDENT },
+                .line = .{ .indent = scope.INDENT_STR },
             });
             try writer.breakChar('}');
         }
@@ -630,13 +630,15 @@ pub const Switch = struct {
             body: ExprBuild,
         ) !void {
             const body_expr = body.consume() catch |err| {
-                while (cases) |t| t.deinit();
+                var it = cases.iterateReversed();
+                while (it.next()) |t| t.deinit();
                 return err;
             };
             errdefer body_expr.deinit(self.allocator);
 
             const alloc_payload = payload.unwrapAlloc(self.allocator) catch |err| {
-                while (cases) |t| t.deinit();
+                var it = cases.iterateReversed();
+                while (it.next()) |t| t.deinit();
                 return err;
             };
             errdefer self.allocator.free(alloc_payload);
