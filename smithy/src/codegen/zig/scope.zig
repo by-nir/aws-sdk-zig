@@ -15,7 +15,7 @@ const _xpr = exp._tst;
 
 pub const INDENT_STR = " " ** 4;
 
-const Block = struct {
+pub const Block = struct {
     statements: []const Expr,
 
     pub fn deinit(self: Block, allocator: Allocator) void {
@@ -23,22 +23,50 @@ const Block = struct {
         allocator.free(self.statements);
     }
 
-    pub fn __write(self: Block, writer: *Writer) !void {
+    pub fn write(self: Block, writer: *Writer) !void {
         if (self.statements.len == 0) return writer.appendString("{}");
 
         try writer.appendChar('{');
         try writer.indentPush(INDENT_STR);
         for (self.statements, 0..) |statement, i| {
             if (i > 0) try writer.breakEmpty(1);
-            try writer.breakValue(statement);
-            if (true) try writer.appendChar(';');
+            try writer.breakFmt("{;}", .{statement});
         }
         writer.indentPop();
         try writer.breakChar('}');
     }
 };
 
-const BlockBuild = struct {
+test "Block" {
+    const block = Block{
+        .statements = &.{
+            Expr{ .flow = .{
+                .@"if" = flow.If{ .branches = &.{flow.Branch{
+                    .condition = .{ .raw = "foo" },
+                    .body = .{ .raw = "bar" },
+                }} },
+            } },
+            Expr{ .flow = .{
+                .@"if" = flow.If{ .branches = &.{flow.Branch{
+                    .condition = .{ .raw = "foo" },
+                    .body = Expr{ .flow = .{
+                        .block = Block{ .statements = &.{} },
+                    } },
+                }} },
+            } },
+        },
+    };
+
+    try Writer.expectValue(
+        \\{
+        \\    if (foo) bar;
+        \\
+        \\    if (foo) {}
+        \\}
+    , block);
+}
+
+pub const BlockBuild = struct {
     allocator: Allocator,
     statements: std.ArrayListUnmanaged(Expr) = .{},
     xpr: ExprBuild,
@@ -207,12 +235,15 @@ const BlockBuild = struct {
         defer data.deinit(test_alloc);
         try testing.expectEqual(expected.len, data.statements.len);
         for (expected, 0..) |string, i| {
-            try Writer.expect(string, data.statements[i]);
+            try Writer.expectValue(string, data.statements[i]);
         }
     }
 };
 
+pub fn isStatement(comptime format: []const u8) bool {
+    return comptime std.mem.eql(u8, format, ";");
+}
+
 test {
-    _ = Block;
     _ = BlockBuild;
 }

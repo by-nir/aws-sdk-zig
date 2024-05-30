@@ -20,7 +20,8 @@ pub const If = struct {
         allocator.free(self.branches);
     }
 
-    pub fn __write(self: If, writer: *Writer) !void {
+    pub fn write(self: If, writer: *Writer, comptime format: []const u8) !void {
+        assert(self.branches.len > 0);
         for (self.branches, 0..) |branch, i| {
             if (i == 0) {
                 try writer.appendFmt("if ({}) ", .{branch.condition.?});
@@ -29,6 +30,7 @@ pub const If = struct {
                 try writer.appendValue(branch);
             }
         }
+        try endStatement(writer, format, self.branches[self.branches.len - 1].body);
     }
 
     pub fn build(
@@ -76,7 +78,7 @@ pub const If = struct {
 };
 
 test "If" {
-    const Test = Tester(If);
+    const Test = TestVal(If);
     var tester = Test{ .expected = "if (foo) bar" };
     try If.build(test_alloc, Test.callback, &tester, _xpr("foo"))
         .body(_xpr("bar")).end();
@@ -91,6 +93,17 @@ test "If" {
         .body(_xpr("bar"))
         .elseIf(_xpr("baz")).body(_xpr("qux"))
         .@"else"().body(_xpr("quxx")).end();
+}
+
+test "If: statement" {
+    const Test = TestFmt(If, "{;}");
+    var tester = Test{ .expected = "if (foo) bar else baz;" };
+    try If.build(test_alloc, Test.callback, &tester, _xpr("foo"))
+        .body(_xpr("bar")).@"else"().body(_xpr("baz")).end();
+
+    tester.expected = "if (foo) bar else {}";
+    try If.build(test_alloc, Test.callback, &tester, _xpr("foo"))
+        .body(_xpr("bar")).@"else"().body(_blk).end();
 }
 
 pub const For = struct {
@@ -114,7 +127,8 @@ pub const For = struct {
         allocator.free(self.branches);
     }
 
-    pub fn __write(self: For, writer: *Writer) !void {
+    pub fn write(self: For, writer: *Writer, comptime format: []const u8) !void {
+        assert(self.branches.len > 0);
         for (self.branches, 0..) |branch, i| {
             if (i == 0) {
                 try writer.appendString("for (");
@@ -134,6 +148,7 @@ pub const For = struct {
                 try writer.appendValue(branch);
             }
         }
+        try endStatement(writer, format, self.branches[self.branches.len - 1].body);
     }
 
     pub fn build(allocator: Allocator, callback: anytype, ctx: anytype) Build(@TypeOf(callback)) {
@@ -204,7 +219,7 @@ pub const For = struct {
 };
 
 test "For" {
-    const Test = Tester(For);
+    const Test = TestVal(For);
     var tester = Test{ .expected = "for (foo) |bar| baz" };
     try For.build(test_alloc, Test.callback, &tester).iter(_xpr("foo"), "bar")
         .body(_xpr("baz")).end();
@@ -220,6 +235,17 @@ test "For" {
         .@"else"().body(_xpr("baz")).end();
 }
 
+test "For: statement" {
+    const Test = TestFmt(For, "{;}");
+    var tester = Test{ .expected = "for (foo) |_| bar else baz;" };
+    try For.build(test_alloc, Test.callback, &tester).iter(_xpr("foo"), "_")
+        .body(_xpr("bar")).@"else"().body(_xpr("baz")).end();
+
+    tester.expected = "for (foo) |_| bar else {}";
+    try For.build(test_alloc, Test.callback, &tester).iter(_xpr("foo"), "_")
+        .body(_xpr("bar")).@"else"().body(_blk).end();
+}
+
 pub const While = struct {
     branches: []const Branch,
     continue_expr: ?Expr,
@@ -230,7 +256,8 @@ pub const While = struct {
         allocator.free(self.branches);
     }
 
-    pub fn __write(self: While, writer: *Writer) !void {
+    pub fn write(self: While, writer: *Writer, comptime format: []const u8) !void {
+        assert(self.branches.len > 0);
         for (self.branches, 0..) |branch, i| {
             if (i == 0) {
                 try writer.appendFmt("while ({}) ", .{branch.condition.?});
@@ -245,6 +272,7 @@ pub const While = struct {
                 try writer.appendValue(branch);
             }
         }
+        try endStatement(writer, format, self.branches[self.branches.len - 1].body);
     }
 
     pub fn build(
@@ -311,7 +339,7 @@ pub const While = struct {
 };
 
 test "While" {
-    const Test = Tester(While);
+    const Test = TestVal(While);
     var tester = Test{ .expected = "while (foo) bar" };
     try While.build(test_alloc, Test.callback, &tester, _xpr("foo"))
         .body(_xpr("bar")).end();
@@ -326,6 +354,17 @@ test "While" {
         .@"else"().body(_xpr("qux")).end();
 }
 
+test "While: statement" {
+    const Test = TestFmt(While, "{;}");
+    var tester = Test{ .expected = "while (foo) bar else baz;" };
+    try While.build(test_alloc, Test.callback, &tester, _xpr("foo"))
+        .body(_xpr("bar")).@"else"().body(_xpr("baz")).end();
+
+    tester.expected = "while (foo) bar else {}";
+    try While.build(test_alloc, Test.callback, &tester, _xpr("foo"))
+        .body(_xpr("bar")).@"else"().body(_blk).end();
+}
+
 pub const Branch = struct {
     condition: ?Expr = null,
     payload: ?[]const u8 = null,
@@ -336,7 +375,7 @@ pub const Branch = struct {
         if (self.condition) |condition| condition.deinit(allocator);
     }
 
-    pub fn __write(self: Branch, writer: *Writer) !void {
+    pub fn write(self: Branch, writer: *Writer) !void {
         if (self.condition) |condition| {
             try writer.appendFmt(" else if ({}) ", .{condition});
         } else {
@@ -474,7 +513,7 @@ pub const Switch = struct {
         allocator.free(self.statements);
     }
 
-    pub fn __write(self: Switch, writer: *Writer) !void {
+    pub fn write(self: Switch, writer: *Writer) !void {
         if (self.statements.len == 0) {
             try writer.appendFmt("switch ({}) {{}}", .{self.value});
         } else {
@@ -504,7 +543,7 @@ pub const Switch = struct {
             }
         }
 
-        pub fn __write(self: Case, writer: *Writer) !void {
+        pub fn write(self: Case, writer: *Writer) !void {
             switch (self) {
                 .single => |expr| try writer.appendValue(expr),
                 .range => |range| try writer.appendFmt("{}...{}", .{ range[0], range[1] }),
@@ -531,9 +570,10 @@ pub const Switch = struct {
             }
         }
 
-        pub fn __write(self: Statement, writer: *Writer) !void {
+        pub fn write(self: Statement, writer: *Writer) !void {
             switch (self) {
                 .prong => |prong| {
+                    assert(prong.cases.len > 0);
                     if (prong.is_inline) try writer.appendString("inline ");
                     try writer.appendList(Case, prong.cases, .{
                         .delimiter = ", ",
@@ -745,7 +785,7 @@ test "Switch" {
 
     const data = try build.consume();
     defer data.deinit(test_alloc);
-    try Writer.expect(
+    try Writer.expectValue(
         \\switch (foo) {
         \\    bar, baz => |val, tag| qux,
         \\    18...108 => unreachable,
@@ -761,15 +801,32 @@ pub const Defer = struct {
         self.body.deinit(allocator);
     }
 
-    pub fn __write(self: Defer, writer: *Writer) !void {
+    pub fn write(self: Defer, writer: *Writer, comptime format: []const u8) !void {
         try writer.appendFmt("defer {}", .{self.body});
+        try endStatement(writer, format, self.body);
     }
 };
 
 test "Defer" {
     const expr = Defer{ .body = .{ .raw = "foo" } };
     defer expr.deinit(test_alloc);
-    try Writer.expect("defer foo", expr);
+    try Writer.expectValue("defer foo", expr);
+}
+
+test "Defer: statement" {
+    var expr = Defer{ .body = .{ .raw = "foo" } };
+    {
+        defer expr.deinit(test_alloc);
+        try Writer.expectFmt("defer foo;", "{;}", .{expr});
+    }
+
+    expr = Defer{ .body = Expr{
+        .flow = .{ .block = .{ .statements = &.{} } },
+    } };
+    {
+        defer expr.deinit(test_alloc);
+        try Writer.expectFmt("defer {}", "{;}", .{expr});
+    }
 }
 
 pub const Errdefer = struct {
@@ -780,12 +837,13 @@ pub const Errdefer = struct {
         self.body.deinit(allocator);
     }
 
-    pub fn __write(self: Errdefer, writer: *Writer) !void {
+    pub fn write(self: Errdefer, writer: *Writer, comptime format: []const u8) !void {
         try writer.appendString("errdefer ");
         if (self.payload) |p| {
             try writer.appendFmt("|{_}| ", .{std.zig.fmtId(p)});
         }
         try writer.appendValue(self.body);
+        try endStatement(writer, format, self.body);
     }
 
     pub fn build(callback: anytype, ctx: anytype) Build(@TypeOf(callback)) {
@@ -822,9 +880,21 @@ pub const Errdefer = struct {
 };
 
 test "ErrorDefer" {
-    const Test = Tester(Errdefer);
-    var tester = Test{ .expected = "errdefer |foo| bar" };
+    const Test = TestVal(Errdefer);
+    var tester = Test{ .expected = "errdefer foo" };
+    try Errdefer.build(Test.callback, &tester).body(_xpr("foo"));
+
+    tester.expected = "errdefer |foo| bar";
     try Errdefer.build(Test.callback, &tester).capture("foo").body(_xpr("bar"));
+}
+
+test "ErrorDefer: statement" {
+    const Test = TestFmt(Errdefer, "{;}");
+    var tester = Test{ .expected = "errdefer foo;" };
+    try Errdefer.build(Test.callback, &tester).body(_xpr("foo"));
+
+    tester.expected = "errdefer {}";
+    try Errdefer.build(Test.callback, &tester).body(_blk);
 }
 
 fn consumeChainAs(
@@ -865,13 +935,36 @@ fn consumeChainAs(
     return has_error orelse list;
 }
 
-fn Tester(comptime T: type) type {
+fn endStatement(writer: *Writer, comptime format: []const u8, expr: Expr) !void {
+    if (comptime !scope.isStatement(format)) return;
+    if (expr != .flow or expr.flow != .block) try writer.appendChar(';');
+}
+
+const _blk = ExprBuild{
+    .allocator = test_alloc,
+    .exprs = StackChain(?Expr).start(Expr{
+        .flow = .{ .block = .{ .statements = &.{} } },
+    }),
+};
+
+fn TestVal(comptime T: type) type {
     return struct {
         expected: []const u8 = "",
 
         pub fn callback(self: *@This(), value: T) !void {
             defer value.deinit(test_alloc);
-            try Writer.expect(self.expected, value);
+            try Writer.expectValue(self.expected, value);
+        }
+    };
+}
+
+fn TestFmt(comptime T: type, comptime format: []const u8) type {
+    return struct {
+        expected: []const u8 = "",
+
+        pub fn callback(self: *@This(), value: T) !void {
+            defer value.deinit(test_alloc);
+            try Writer.expectFmt(self.expected, format, .{value});
         }
     };
 }
