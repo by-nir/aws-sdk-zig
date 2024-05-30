@@ -16,8 +16,8 @@ pub const Expr = union(enum) {
     raw: []const u8,
     type: ExprType,
     value: ExprValue,
-    flow: ExprFlow,
     keyword: ExprKeyword,
+    flow: ExprFlow,
 
     pub fn deinit(self: Expr, allocator: Allocator) void {
         switch (self) {
@@ -123,6 +123,12 @@ pub const ExprBuild = struct {
         };
     }
 
+    fn dupeValue(self: ExprBuild, value: anytype) !*@TypeOf(value) {
+        const data = try self.allocator.create(@TypeOf(value));
+        data.* = value;
+        return data;
+    }
+
     pub fn raw(self: *const ExprBuild, value: []const u8) ExprBuild {
         return self.append(.{ .raw = value });
     }
@@ -170,9 +176,9 @@ pub const ExprBuild = struct {
 
     fn endWhile(self: *const ExprBuild, value: anyerror!flow.While) ExprBuild {
         if (value) |val| {
-            const data = self.allocator.create(flow.While) catch |err| return self.append(err);
-            data.* = val;
-            return self.append(.{ .flow = .{ .@"while" = data } });
+            return self.append(.{ .flow = .{
+                .@"while" = self.dupeValue(val) catch |err| return self.append(err),
+            } });
         } else |err| {
             return self.append(err);
         }
@@ -202,12 +208,12 @@ pub const ExprBuild = struct {
             return self.append(err);
         };
 
-        const data = self.allocator.create(flow.Switch) catch |err| return self.append(err);
-        data.* = builder.consume() catch |err| {
-            self.allocator.destroy(data);
+        const expr = builder.consume() catch |err| return self.append(err);
+        const dupe = self.dupeValue(expr) catch |err| {
+            expr.deinit(self.allocator);
             return self.append(err);
         };
-        return self.append(.{ .flow = .{ .@"switch" = data } });
+        return self.append(.{ .flow = .{ .@"switch" = dupe } });
     }
 
     test "switch" {
@@ -230,13 +236,14 @@ pub const ExprBuild = struct {
     }
 
     pub fn @"defer"(self: *const ExprBuild, condition: ExprBuild) ExprBuild {
-        const condition_alloc = condition.consume() catch |err| return self.append(err);
-        const data = self.allocator.create(flow.Defer) catch |err| {
-            condition_alloc.deinit(self.allocator);
+        const expr = flow.Defer{
+            .body = condition.consume() catch |err| return self.append(err),
+        };
+        const dupe = self.dupeValue(expr) catch |err| {
+            expr.deinit(self.allocator);
             return self.append(err);
         };
-        data.* = .{ .body = condition_alloc };
-        return self.append(.{ .flow = .{ .@"defer" = data } });
+        return self.append(.{ .flow = .{ .@"defer" = dupe } });
     }
 
     test "defer" {
@@ -252,11 +259,8 @@ pub const ExprBuild = struct {
 
     fn endErrdefer(self: *const ExprBuild, value: anyerror!flow.Errdefer) ExprBuild {
         if (value) |val| {
-            const data = self.allocator.create(flow.Errdefer) catch |err| {
-                return self.append(err);
-            };
-            data.* = val;
-            return self.append(.{ .flow = .{ .@"errdefer" = data } });
+            const expr = self.dupeValue(val) catch |err| return self.append(err);
+            return self.append(.{ .flow = .{ .@"errdefer" = expr } });
         } else |err| {
             return self.append(err);
         }
