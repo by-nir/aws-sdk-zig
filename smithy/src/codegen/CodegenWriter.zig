@@ -403,10 +403,27 @@ test "breakFmt" {
 
 const MAX_DEPTH = std.options.fmt_max_depth;
 fn writeValue(self: *Self, t: anytype, comptime format: []const u8) !void {
-    const T = @TypeOf(t);
-    if (std.meta.hasMethod(T, "__write")) {
-        try t.__write(self);
-    } else if (format.len == 0) {
+    const T = switch (@typeInfo(@TypeOf(t))) {
+        .Pointer => |p| switch (p.size) {
+            .One => p.child,
+            else => @TypeOf(t),
+        },
+        else => @TypeOf(t),
+    };
+
+    if (comptime std.meta.hasMethod(T, "write")) {
+        const meta = @typeInfo(@TypeOf(T.write)).Fn;
+        if (meta.params.len != 3) {
+            try t.write(self);
+        } else if (format.len < 3 or
+            !mem.startsWith(u8, format, "{") or
+            !mem.endsWith(u8, format, "}"))
+        {
+            try t.write(self, "");
+        } else {
+            try t.write(self, format[1 .. format.len - 1]);
+        }
+    } else if (comptime format.len == 0) {
         try fmt.formatType(t, format, .{}, self.output, MAX_DEPTH);
     } else {
         try self.output.print(format, .{t});
@@ -472,7 +489,6 @@ fn writeFormat(self: *Self, comptime format: []const u8, args: anytype) !void {
 
         // Find the closing brace
         inline while (i < format.len and format[i] != '}') : (i += 1) {}
-
         if (i >= format.len) {
             @compileError("missing closing }");
         }
@@ -481,7 +497,6 @@ fn writeFormat(self: *Self, comptime format: []const u8, args: anytype) !void {
         comptime std.debug.assert(format[i] == '}');
         i += 1;
         const fmt_end = i;
-
         if (arg_index >= fields.len) {
             @compileError("too few arguments");
         }
@@ -504,8 +519,8 @@ fn writeFormat(self: *Self, comptime format: []const u8, args: anytype) !void {
     }
 }
 
-pub fn expect(expected: []const u8, t: anytype) !void {
-    if (!std.meta.hasMethod(@TypeOf(t), "__write")) {
+pub fn expectValue(expected: []const u8, t: anytype) !void {
+    if (!std.meta.hasMethod(@TypeOf(t), "write")) {
         return error.MissingWriteMethod;
     }
 
@@ -519,12 +534,27 @@ pub fn expect(expected: []const u8, t: anytype) !void {
     try testing.expectEqualStrings(expected, list.items);
 }
 
-test "expect" {
-    try expect("Foo", TestWrite{ .value = "Foo" });
+test "expectValue" {
+    try expectValue("Foo", TestWrite{ .value = "Foo" });
     try testing.expectError(
         error.MissingWriteMethod,
-        expect("", struct {}{}),
+        expectValue("", struct {}{}),
     );
+}
+
+pub fn expectFmt(expected: []const u8, comptime format: []const u8, args: anytype) !void {
+    var list = std.ArrayList(u8).init(test_alloc);
+    defer list.deinit();
+
+    var writer = init(test_alloc, list.writer().any());
+    defer writer.deinit();
+
+    try writer.writeFormat(format, args);
+    try testing.expectEqualStrings(expected, list.items);
+}
+
+test "expectFmt" {
+    try expectFmt("Foo Bar", "{} Bar", .{TestWrite{ .value = "Foo" }});
 }
 
 const TestList = struct {
@@ -534,7 +564,7 @@ const TestList = struct {
 const TestWrite = struct {
     value: []const u8,
 
-    pub fn __write(self: TestWrite, writer: *Self) !void {
+    pub fn write(self: TestWrite, writer: *Self) !void {
         try writer.appendString(self.value);
     }
 };

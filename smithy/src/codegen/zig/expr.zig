@@ -8,6 +8,7 @@ const Closure = decl.Closure;
 const callClosure = decl.callClosure;
 const Writer = @import("../CodegenWriter.zig");
 const flow = @import("flow.zig");
+const scope = @import("scope.zig");
 
 pub const Expr = union(enum) {
     _empty,
@@ -30,30 +31,50 @@ pub const Expr = union(enum) {
         }
     }
 
-    pub fn __write(self: Expr, writer: *Writer) anyerror!void {
+    pub fn write(self: Expr, writer: *Writer, comptime format: []const u8) anyerror!void {
         switch (self) {
             ._empty => unreachable,
             ._error => |err| return err,
-            ._chain => unreachable,
+            ._chain => |chain| {
+                std.debug.assert(chain.len > 0);
+                if (comptime scope.isStatement(format)) {
+                    const last = chain.len - 1;
+                    for (chain[0..last]) |x| try x.write(writer, "");
+                    try chain[last].write(writer, format);
+                } else {
+                    for (chain) |t| try t.write(writer, format);
+                }
+            },
             .raw => |s| try writer.appendString(s),
-            .flow => |t| try t.write(writer),
-            else => unreachable,
-            // .empty => ex,
-            // .chain => |t| Expr{ .chain = t.append(ex) },
-            // else => Expr{ .chain = StackChain(Expr).start(self.*).append(ex) },
+            .flow => |t| try t.write(writer, format),
+            inline else => |t| {
+                try t.write(writer);
+                try endStatement(writer, format);
+            },
         }
     }
 };
 
 const ExprType = union(enum) {
     PLACEHOLDER,
+
+    pub fn write(self: ExprType, writer: *Writer) anyerror!void {
+        _ = self; // autofix
+        _ = writer; // autofix
+    }
 };
 
 const ExprValue = union(enum) {
     PLACEHOLDER,
+
+    pub fn write(self: ExprValue, writer: *Writer) anyerror!void {
+        _ = self; // autofix
+        _ = writer; // autofix
+    }
 };
 
 const ExprFlow = union(enum) {
+    block: scope.Block,
     @"if": flow.If,
     @"for": flow.For,
     @"while": *const flow.While,
@@ -63,7 +84,7 @@ const ExprFlow = union(enum) {
 
     pub fn deinit(self: ExprFlow, allocator: Allocator) void {
         switch (self) {
-            inline .@"if", .@"for" => |t| t.deinit(allocator),
+            inline .block, .@"if", .@"for" => |t| t.deinit(allocator),
             inline else => |t| {
                 t.deinit(allocator);
                 allocator.destroy(t);
@@ -71,15 +92,21 @@ const ExprFlow = union(enum) {
         }
     }
 
-    pub fn write(self: ExprFlow, writer: *Writer) !void {
+    pub fn write(self: ExprFlow, writer: *Writer, comptime format: []const u8) !void {
         switch (self) {
-            inline else => |t| try writer.appendValue(t),
+            inline .block, .@"switch" => |t| try t.write(writer),
+            inline else => |t| try t.write(writer, format),
         }
     }
 };
 
 const ExprKeyword = union(enum) {
     PLACEHOLDER,
+
+    pub fn write(self: ExprKeyword, writer: *Writer) anyerror!void {
+        _ = self; // autofix
+        _ = writer; // autofix
+    }
 };
 
 pub fn _tst(str: []const u8) ExprBuild {
@@ -150,7 +177,7 @@ pub const ExprBuild = struct {
         var build = ExprBuild.init(test_alloc);
         const expr = try build.@"if"(_tst("foo")).body(_tst("bar")).end().consume();
         defer expr.deinit(test_alloc);
-        try Writer.expect("if (foo) bar", expr);
+        try Writer.expectValue("if (foo) bar", expr);
     }
 
     pub fn @"for"(self: *const ExprBuild) flow.For.Build(@TypeOf(endFor)) {
@@ -167,7 +194,7 @@ pub const ExprBuild = struct {
         const expr = try build.@"for"().iter(_tst("foo"), "_")
             .body(_tst("bar")).end().consume();
         defer expr.deinit(test_alloc);
-        try Writer.expect("for (foo) |_| bar", expr);
+        try Writer.expectValue("for (foo) |_| bar", expr);
     }
 
     pub fn @"while"(self: *const ExprBuild, condition: ExprBuild) flow.While.Build(@TypeOf(endWhile)) {
@@ -189,7 +216,7 @@ pub const ExprBuild = struct {
         const expr = try build.@"while"(_tst("foo"))
             .body(_tst("bar")).end().consume();
         defer expr.deinit(test_alloc);
-        try Writer.expect("while (foo) bar", expr);
+        try Writer.expectValue("while (foo) bar", expr);
     }
 
     pub fn @"switch"(self: *const ExprBuild, value: ExprBuild, build: flow.SwitchFn) ExprBuild {
@@ -228,7 +255,7 @@ pub const ExprBuild = struct {
         }.f).consume();
         defer expr.deinit(test_alloc);
 
-        try Writer.expect(
+        try Writer.expectValue(
             \\switch (foo) {
             \\    bar => baz,
             \\}
@@ -250,7 +277,7 @@ pub const ExprBuild = struct {
         var build = ExprBuild.init(test_alloc);
         const expr = try build.@"defer"(_tst("foo")).consume();
         defer expr.deinit(test_alloc);
-        try Writer.expect("defer foo", expr);
+        try Writer.expectValue("defer foo", expr);
     }
 
     pub fn @"errdefer"(self: *const ExprBuild) flow.Errdefer.Build(@TypeOf(endErrdefer)) {
@@ -270,9 +297,13 @@ pub const ExprBuild = struct {
         var build = ExprBuild.init(test_alloc);
         const expr = try build.@"errdefer"().body(_tst("foo")).consume();
         defer expr.deinit(test_alloc);
-        try Writer.expect("errdefer foo", expr);
+        try Writer.expectValue("errdefer foo", expr);
     }
 };
+
+pub fn endStatement(writer: *Writer, comptime format: []const u8) !void {
+    if (scope.isStatement(format)) try writer.appendChar(';');
+}
 
 test {
     _ = ExprBuild;
