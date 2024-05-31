@@ -1,12 +1,16 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
-const decl = @import("../../utils/declarative.zig");
-const StackChain = decl.StackChain;
+const dcl = @import("../../utils/declarative.zig");
+const StackChain = dcl.StackChain;
+const InferCallback = dcl.InferCallback;
+const Cb = dcl.Callback;
+const createCallback = dcl.callback;
 const Writer = @import("../CodegenWriter.zig");
 const testing = @import("../testing.zig");
 const test_alloc = testing.allocator;
 const scope = @import("scope.zig");
+const declare = @import("declare.zig");
 const exp = @import("expr.zig");
 const Expr = exp.Expr;
 const ExprBuild = exp.ExprBuild;
@@ -42,13 +46,13 @@ pub const If = struct {
     ) Build(@TypeOf(callback)) {
         return .{
             .allocator = allocator,
-            .callback = decl.callback(ctx, callback),
+            .callback = createCallback(ctx, callback),
             .condition = condition,
         };
     }
 
     pub fn Build(comptime Fn: type) type {
-        const Callback = decl.InferCallback(Fn);
+        const Callback = InferCallback(Fn);
         return struct {
             const Self = @This();
             const BranchBuild = Branch.Build(*const Self, Callback.Return);
@@ -58,13 +62,13 @@ pub const If = struct {
             condition: ExprBuild,
 
             pub fn capture(self: *const Self, payload: []const u8) BranchBuild {
-                const cb = decl.callback(self, end);
+                const cb = createCallback(self, end);
                 const partial = Branch.Partial.new(self.condition, payload, null);
                 return BranchBuild.newPartial(self.allocator, cb, partial);
             }
 
             pub fn body(self: *const Self, expr: ExprBuild) BranchBuild {
-                const cb = decl.callback(self, end);
+                const cb = createCallback(self, end);
                 const partial = Branch.Partial.new(self.condition, null, expr);
                 return BranchBuild.newPartial(self.allocator, cb, partial);
             }
@@ -155,7 +159,7 @@ pub const For = struct {
     pub fn build(allocator: Allocator, callback: anytype, ctx: anytype) Build(@TypeOf(callback)) {
         return .{
             .allocator = allocator,
-            .callback = decl.callback(ctx, callback),
+            .callback = createCallback(ctx, callback),
         };
     }
 
@@ -176,7 +180,7 @@ pub const For = struct {
     };
 
     pub fn Build(comptime Fn: type) type {
-        const Callback = decl.InferCallback(Fn);
+        const Callback = InferCallback(Fn);
         return struct {
             const Self = @This();
             const BranchBuild = Branch.Build(*const Self, Callback.Return);
@@ -195,7 +199,7 @@ pub const For = struct {
             }
 
             pub fn body(self: *const Self, expr: ExprBuild) BranchBuild {
-                const cb = decl.callback(self, end);
+                const cb = createCallback(self, end);
                 return BranchBuild.newAppend(self.allocator, cb, .{ .body = expr });
             }
 
@@ -284,13 +288,13 @@ pub const While = struct {
     ) Build(@TypeOf(callback)) {
         return .{
             .allocator = allocator,
-            .callback = decl.callback(ctx, callback),
+            .callback = createCallback(ctx, callback),
             .condition = condition,
         };
     }
 
     pub fn Build(comptime Fn: type) type {
-        const Callback = decl.InferCallback(Fn);
+        const Callback = InferCallback(Fn);
         return struct {
             const Self = @This();
             const BranchBuild = Branch.Build(*const Self, Callback.Return);
@@ -315,7 +319,7 @@ pub const While = struct {
             }
 
             pub fn body(self: *const Self, expr: ExprBuild) BranchBuild {
-                const cb = decl.callback(self, end);
+                const cb = createCallback(self, end);
                 const partial = Branch.Partial.new(self.condition, self.payload, expr);
                 return BranchBuild.newPartial(self.allocator, cb, partial);
             }
@@ -427,7 +431,7 @@ pub const Branch = struct {
     };
 
     pub fn Build(comptime Context: type, comptime Return: type) type {
-        const Callback = decl.Callback(Context, anyerror![]const Branch, Return);
+        const Callback = Cb(Context, anyerror![]const Branch, Return);
         return struct {
             const Self = @This();
 
@@ -504,7 +508,6 @@ pub const Branch = struct {
 };
 
 pub const SwitchClosure = *const fn (*Switch.Build) anyerror!void;
-
 pub const Switch = struct {
     value: Expr,
     statements: []const Statement,
@@ -798,11 +801,11 @@ test "Switch" {
 }
 
 pub const WordLabel = struct {
-    tag: std.zig.Token.Tag,
+    token: std.zig.Token.Tag,
     label: ?[]const u8,
 
     pub fn write(self: WordLabel, writer: *Writer, comptime format: []const u8) !void {
-        const keyword = self.tag.lexeme().?;
+        const keyword = self.token.lexeme().?;
         const suffix: u8 = if (scope.isStatement(format)) ';' else ' ';
         if (self.label) |t| {
             try writer.appendFmt("{s} :{_}{c}", .{ keyword, std.zig.fmtId(t), suffix });
@@ -813,14 +816,14 @@ pub const WordLabel = struct {
 };
 
 test "WordLabel" {
-    var expr = WordLabel{ .tag = .keyword_return, .label = null };
+    var expr = WordLabel{ .token = .keyword_return, .label = null };
     try Writer.expectValue("return ", expr);
     try Writer.expectFmt("return;", "{;}", .{expr});
 
-    expr = WordLabel{ .tag = .keyword_break, .label = "foo" };
+    expr = WordLabel{ .token = .keyword_break, .label = "foo" };
     try Writer.expectValue("break :foo ", expr);
 
-    expr = WordLabel{ .tag = .keyword_break, .label = "test" };
+    expr = WordLabel{ .token = .keyword_break, .label = "test" };
     try Writer.expectValue("break :@\"test\" ", expr);
 }
 
