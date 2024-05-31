@@ -1,16 +1,17 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
-const testing = std.testing;
-const test_alloc = testing.allocator;
 const decl = @import("../../utils/declarative.zig");
 const StackChain = decl.StackChain;
 const Writer = @import("../CodegenWriter.zig");
+const testing = @import("../testing.zig");
+const test_alloc = testing.allocator;
 const scope = @import("scope.zig");
 const exp = @import("expr.zig");
 const Expr = exp.Expr;
 const ExprBuild = exp.ExprBuild;
-const _xpr = exp._tst;
+const _blk = exp._blk;
+const _raw = exp._raw;
 
 pub const If = struct {
     branches: []const Branch,
@@ -30,7 +31,7 @@ pub const If = struct {
                 try writer.appendValue(branch);
             }
         }
-        try endStatement(writer, format, self.branches[self.branches.len - 1].body);
+        try scope.statementSemicolon(writer, format, self.branches[self.branches.len - 1].body);
     }
 
     pub fn build(
@@ -78,32 +79,32 @@ pub const If = struct {
 };
 
 test "If" {
-    const Test = TestVal(If);
+    const Test = testing.TestVal(If);
     var tester = Test{ .expected = "if (foo) bar" };
-    try If.build(test_alloc, Test.callback, &tester, _xpr("foo"))
-        .body(_xpr("bar")).end();
+    try If.build(test_alloc, Test.callback, &tester, _raw("foo"))
+        .body(_raw("bar")).end();
 
     tester.expected = "if (foo) |bar| baz else qux";
-    try If.build(test_alloc, Test.callback, &tester, _xpr("foo"))
-        .capture("bar").body(_xpr("baz"))
-        .@"else"().body(_xpr("qux")).end();
+    try If.build(test_alloc, Test.callback, &tester, _raw("foo"))
+        .capture("bar").body(_raw("baz"))
+        .@"else"().body(_raw("qux")).end();
 
     tester.expected = "if (foo) bar else if (baz) qux else quxx";
-    try If.build(test_alloc, Test.callback, &tester, _xpr("foo"))
-        .body(_xpr("bar"))
-        .elseIf(_xpr("baz")).body(_xpr("qux"))
-        .@"else"().body(_xpr("quxx")).end();
+    try If.build(test_alloc, Test.callback, &tester, _raw("foo"))
+        .body(_raw("bar"))
+        .elseIf(_raw("baz")).body(_raw("qux"))
+        .@"else"().body(_raw("quxx")).end();
 }
 
 test "If: statement" {
-    const Test = TestFmt(If, "{;}");
+    const Test = testing.TestFmt(If, "{;}");
     var tester = Test{ .expected = "if (foo) bar else baz;" };
-    try If.build(test_alloc, Test.callback, &tester, _xpr("foo"))
-        .body(_xpr("bar")).@"else"().body(_xpr("baz")).end();
+    try If.build(test_alloc, Test.callback, &tester, _raw("foo"))
+        .body(_raw("bar")).@"else"().body(_raw("baz")).end();
 
     tester.expected = "if (foo) bar else {}";
-    try If.build(test_alloc, Test.callback, &tester, _xpr("foo"))
-        .body(_xpr("bar")).@"else"().body(_blk).end();
+    try If.build(test_alloc, Test.callback, &tester, _raw("foo"))
+        .body(_raw("bar")).@"else"().body(_blk).end();
 }
 
 pub const For = struct {
@@ -148,7 +149,7 @@ pub const For = struct {
                 try writer.appendValue(branch);
             }
         }
-        try endStatement(writer, format, self.branches[self.branches.len - 1].body);
+        try scope.statementSemicolon(writer, format, self.branches[self.branches.len - 1].body);
     }
 
     pub fn build(allocator: Allocator, callback: anytype, ctx: anytype) Build(@TypeOf(callback)) {
@@ -219,31 +220,31 @@ pub const For = struct {
 };
 
 test "For" {
-    const Test = TestVal(For);
+    const Test = testing.TestVal(For);
     var tester = Test{ .expected = "for (foo) |bar| baz" };
-    try For.build(test_alloc, Test.callback, &tester).iter(_xpr("foo"), "bar")
-        .body(_xpr("baz")).end();
+    try For.build(test_alloc, Test.callback, &tester).iter(_raw("foo"), "bar")
+        .body(_raw("baz")).end();
 
     tester.expected = "for (foo, bar) |baz, _| qux";
     try For.build(test_alloc, Test.callback, &tester)
-        .iter(_xpr("foo"), "baz").iter(_xpr("bar"), "_")
-        .body(_xpr("qux")).end();
+        .iter(_raw("foo"), "baz").iter(_raw("bar"), "_")
+        .body(_raw("qux")).end();
 
     tester.expected = "for (foo) |_| bar else baz";
-    try For.build(test_alloc, Test.callback, &tester).iter(_xpr("foo"), "_")
-        .body(_xpr("bar"))
-        .@"else"().body(_xpr("baz")).end();
+    try For.build(test_alloc, Test.callback, &tester).iter(_raw("foo"), "_")
+        .body(_raw("bar"))
+        .@"else"().body(_raw("baz")).end();
 }
 
 test "For: statement" {
-    const Test = TestFmt(For, "{;}");
+    const Test = testing.TestFmt(For, "{;}");
     var tester = Test{ .expected = "for (foo) |_| bar else baz;" };
-    try For.build(test_alloc, Test.callback, &tester).iter(_xpr("foo"), "_")
-        .body(_xpr("bar")).@"else"().body(_xpr("baz")).end();
+    try For.build(test_alloc, Test.callback, &tester).iter(_raw("foo"), "_")
+        .body(_raw("bar")).@"else"().body(_raw("baz")).end();
 
     tester.expected = "for (foo) |_| bar else {}";
-    try For.build(test_alloc, Test.callback, &tester).iter(_xpr("foo"), "_")
-        .body(_xpr("bar")).@"else"().body(_blk).end();
+    try For.build(test_alloc, Test.callback, &tester).iter(_raw("foo"), "_")
+        .body(_raw("bar")).@"else"().body(_blk).end();
 }
 
 pub const While = struct {
@@ -272,7 +273,7 @@ pub const While = struct {
                 try writer.appendValue(branch);
             }
         }
-        try endStatement(writer, format, self.branches[self.branches.len - 1].body);
+        try scope.statementSemicolon(writer, format, self.branches[self.branches.len - 1].body);
     }
 
     pub fn build(
@@ -339,30 +340,30 @@ pub const While = struct {
 };
 
 test "While" {
-    const Test = TestVal(While);
+    const Test = testing.TestVal(While);
     var tester = Test{ .expected = "while (foo) bar" };
-    try While.build(test_alloc, Test.callback, &tester, _xpr("foo"))
-        .body(_xpr("bar")).end();
+    try While.build(test_alloc, Test.callback, &tester, _raw("foo"))
+        .body(_raw("bar")).end();
 
     tester.expected = "while (foo) : (bar) baz";
-    try While.build(test_alloc, Test.callback, &tester, _xpr("foo"))
-        .onContinue(_xpr("bar")).body(_xpr("baz")).end();
+    try While.build(test_alloc, Test.callback, &tester, _raw("foo"))
+        .onContinue(_raw("bar")).body(_raw("baz")).end();
 
     tester.expected = "while (foo) |_| : (bar) baz else qux";
-    try While.build(test_alloc, Test.callback, &tester, _xpr("foo"))
-        .capture("_").onContinue(_xpr("bar")).body(_xpr("baz"))
-        .@"else"().body(_xpr("qux")).end();
+    try While.build(test_alloc, Test.callback, &tester, _raw("foo"))
+        .capture("_").onContinue(_raw("bar")).body(_raw("baz"))
+        .@"else"().body(_raw("qux")).end();
 }
 
 test "While: statement" {
-    const Test = TestFmt(While, "{;}");
+    const Test = testing.TestFmt(While, "{;}");
     var tester = Test{ .expected = "while (foo) bar else baz;" };
-    try While.build(test_alloc, Test.callback, &tester, _xpr("foo"))
-        .body(_xpr("bar")).@"else"().body(_xpr("baz")).end();
+    try While.build(test_alloc, Test.callback, &tester, _raw("foo"))
+        .body(_raw("bar")).@"else"().body(_raw("baz")).end();
 
     tester.expected = "while (foo) bar else {}";
-    try While.build(test_alloc, Test.callback, &tester, _xpr("foo"))
-        .body(_xpr("bar")).@"else"().body(_blk).end();
+    try While.build(test_alloc, Test.callback, &tester, _raw("foo"))
+        .body(_raw("bar")).@"else"().body(_blk).end();
 }
 
 pub const Branch = struct {
@@ -502,7 +503,7 @@ pub const Branch = struct {
     }
 };
 
-pub const SwitchFn = *const fn (*Switch.Build) anyerror!void;
+pub const SwitchClosure = *const fn (*Switch.Build) anyerror!void;
 
 pub const Switch = struct {
     value: Expr,
@@ -529,6 +530,7 @@ pub const Switch = struct {
         return .{
             .allocator = allocator,
             .value = value,
+            .xpr = .{ .allocator = allocator },
         };
     }
 
@@ -599,6 +601,7 @@ pub const Switch = struct {
         value: ExprBuild,
         statements: std.ArrayListUnmanaged(Statement) = .{},
         state: State = .idle,
+        xpr: ExprBuild,
 
         const State = enum { idle, inlined, end_inlined, end };
 
@@ -645,7 +648,7 @@ pub const Switch = struct {
             };
             return .{
                 .parent = self,
-                .cases = StackChain(?CaseBuild).start(.{ .single = _xpr("else") }),
+                .cases = StackChain(?CaseBuild).start(.{ .single = _raw("else") }),
                 .allow_case = false,
             };
         }
@@ -658,7 +661,7 @@ pub const Switch = struct {
             };
             return .{
                 .parent = self,
-                .cases = StackChain(?CaseBuild).start(.{ .single = _xpr("_") }),
+                .cases = StackChain(?CaseBuild).start(.{ .single = _raw("_") }),
                 .allow_case = false,
             };
         }
@@ -774,16 +777,16 @@ pub const Switch = struct {
 };
 
 test "Switch" {
-    var build = Switch.build(test_alloc, _xpr("foo"));
-    errdefer build.deinit();
+    var b = Switch.build(test_alloc, _raw("foo"));
+    errdefer b.deinit();
 
-    try build.branch().case(_xpr("bar")).case(_xpr("baz"))
-        .capture("val").capture("tag").body(_xpr("qux"));
-    try build.branch().caseRange(_xpr("18"), _xpr("108"))
-        .body(_xpr("unreachable"));
-    try build.inlined().@"else"().body(_xpr("unreachable"));
+    try b.branch().case(b.xpr.raw("bar")).case(b.xpr.raw("baz"))
+        .capture("val").capture("tag").body(b.xpr.raw("qux"));
+    try b.branch().caseRange(b.xpr.raw("18"), b.xpr.raw("108"))
+        .body(b.xpr.raw("unreachable"));
+    try b.inlined().@"else"().body(b.xpr.raw("unreachable"));
 
-    const data = try build.consume();
+    const data = try b.consume();
     defer data.deinit(test_alloc);
     try Writer.expectValue(
         \\switch (foo) {
@@ -794,107 +797,31 @@ test "Switch" {
     , data);
 }
 
-pub const Defer = struct {
-    body: Expr,
+pub const WordLabel = struct {
+    tag: std.zig.Token.Tag,
+    label: ?[]const u8,
 
-    pub fn deinit(self: Defer, allocator: Allocator) void {
-        self.body.deinit(allocator);
-    }
-
-    pub fn write(self: Defer, writer: *Writer, comptime format: []const u8) !void {
-        try writer.appendFmt("defer {}", .{self.body});
-        try endStatement(writer, format, self.body);
-    }
-};
-
-test "Defer" {
-    const expr = Defer{ .body = .{ .raw = "foo" } };
-    defer expr.deinit(test_alloc);
-    try Writer.expectValue("defer foo", expr);
-}
-
-test "Defer: statement" {
-    var expr = Defer{ .body = .{ .raw = "foo" } };
-    {
-        defer expr.deinit(test_alloc);
-        try Writer.expectFmt("defer foo;", "{;}", .{expr});
-    }
-
-    expr = Defer{ .body = Expr{
-        .flow = .{ .block = .{ .statements = &.{} } },
-    } };
-    {
-        defer expr.deinit(test_alloc);
-        try Writer.expectFmt("defer {}", "{;}", .{expr});
-    }
-}
-
-pub const Errdefer = struct {
-    payload: ?[]const u8 = null,
-    body: Expr,
-
-    pub fn deinit(self: Errdefer, allocator: Allocator) void {
-        self.body.deinit(allocator);
-    }
-
-    pub fn write(self: Errdefer, writer: *Writer, comptime format: []const u8) !void {
-        try writer.appendString("errdefer ");
-        if (self.payload) |p| {
-            try writer.appendFmt("|{_}| ", .{std.zig.fmtId(p)});
+    pub fn write(self: WordLabel, writer: *Writer, comptime format: []const u8) !void {
+        const keyword = self.tag.lexeme().?;
+        const suffix: u8 = if (scope.isStatement(format)) ';' else ' ';
+        if (self.label) |t| {
+            try writer.appendFmt("{s} :{_}{c}", .{ keyword, std.zig.fmtId(t), suffix });
+        } else {
+            try writer.appendFmt("{s}{c}", .{ keyword, suffix });
         }
-        try writer.appendValue(self.body);
-        try endStatement(writer, format, self.body);
-    }
-
-    pub fn build(callback: anytype, ctx: anytype) Build(@TypeOf(callback)) {
-        return .{ .callback = decl.callback(ctx, callback) };
-    }
-
-    pub fn Build(comptime Fn: type) type {
-        const Callback = decl.InferCallback(Fn);
-        return struct {
-            const Self = @This();
-
-            callback: Callback,
-            payload: ?[]const u8 = null,
-
-            pub fn capture(self: Self, payload: []const u8) Self {
-                assert(self.payload == null);
-                var dupe = self;
-                dupe.payload = payload;
-                return dupe;
-            }
-
-            pub fn body(self: Self, expr: ExprBuild) Callback.Return {
-                if (expr.consume()) |data| {
-                    return self.callback.invoke(.{
-                        .payload = self.payload,
-                        .body = data,
-                    });
-                } else |err| {
-                    return self.callback.fail(err);
-                }
-            }
-        };
     }
 };
 
-test "ErrorDefer" {
-    const Test = TestVal(Errdefer);
-    var tester = Test{ .expected = "errdefer foo" };
-    try Errdefer.build(Test.callback, &tester).body(_xpr("foo"));
+test "WordLabel" {
+    var expr = WordLabel{ .tag = .keyword_return, .label = null };
+    try Writer.expectValue("return ", expr);
+    try Writer.expectFmt("return;", "{;}", .{expr});
 
-    tester.expected = "errdefer |foo| bar";
-    try Errdefer.build(Test.callback, &tester).capture("foo").body(_xpr("bar"));
-}
+    expr = WordLabel{ .tag = .keyword_break, .label = "foo" };
+    try Writer.expectValue("break :foo ", expr);
 
-test "ErrorDefer: statement" {
-    const Test = TestFmt(Errdefer, "{;}");
-    var tester = Test{ .expected = "errdefer foo;" };
-    try Errdefer.build(Test.callback, &tester).body(_xpr("foo"));
-
-    tester.expected = "errdefer {}";
-    try Errdefer.build(Test.callback, &tester).body(_blk);
+    expr = WordLabel{ .tag = .keyword_break, .label = "test" };
+    try Writer.expectValue("break :@\"test\" ", expr);
 }
 
 fn consumeChainAs(
@@ -933,38 +860,4 @@ fn consumeChainAs(
     }
 
     return has_error orelse list;
-}
-
-fn endStatement(writer: *Writer, comptime format: []const u8, expr: Expr) !void {
-    if (comptime !scope.isStatement(format)) return;
-    if (expr != .flow or expr.flow != .block) try writer.appendChar(';');
-}
-
-const _blk = ExprBuild{
-    .allocator = test_alloc,
-    .exprs = StackChain(?Expr).start(Expr{
-        .flow = .{ .block = .{ .statements = &.{} } },
-    }),
-};
-
-fn TestVal(comptime T: type) type {
-    return struct {
-        expected: []const u8 = "",
-
-        pub fn callback(self: *@This(), value: T) !void {
-            defer value.deinit(test_alloc);
-            try Writer.expectValue(self.expected, value);
-        }
-    };
-}
-
-fn TestFmt(comptime T: type, comptime format: []const u8) type {
-    return struct {
-        expected: []const u8 = "",
-
-        pub fn callback(self: *@This(), value: T) !void {
-            defer value.deinit(test_alloc);
-            try Writer.expectFmt(self.expected, format, .{value});
-        }
-    };
 }
