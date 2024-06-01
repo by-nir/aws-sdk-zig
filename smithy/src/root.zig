@@ -41,6 +41,7 @@ test {
 
     // Codegen
     _ = @import("codegen/CodegenWriter.zig");
+    _ = @import("codegen/zig/utils.zig");
     _ = @import("codegen/zig/expr.zig");
     _ = @import("codegen/zig/flow.zig");
     _ = @import("codegen/zig/declare.zig");

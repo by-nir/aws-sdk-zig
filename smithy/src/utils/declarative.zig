@@ -226,7 +226,7 @@ pub fn StackChain(comptime T: type) type {
             return !has_items;
         }
 
-        pub fn unwrapIntro(self: *const Self, buffer: []Value) ![]const Value {
+        pub fn unwrapInto(self: *const Self, buffer: []Value) ![]const Value {
             if (self.isEmpty()) {
                 return &.{};
             } else if (self.len > buffer.len) {
@@ -342,13 +342,13 @@ test "StackChain.unwrap" {
     var buffer_small: [2][]const u8 = undefined;
     try testing.expectError(
         error.InsufficientBufferSize,
-        chain.unwrapIntro(&buffer_small),
+        chain.unwrapInto(&buffer_small),
     );
 
     var buffer: [4][]const u8 = undefined;
     try testing.expectEqualDeep(
         &[_][]const u8{ "foo", "bar", "baz" },
-        try chain.unwrapIntro(&buffer),
+        try chain.unwrapInto(&buffer),
     );
 }
 
@@ -358,13 +358,13 @@ test "StackChain.unwrap optional" {
     var buffer_small: [2][]const u8 = undefined;
     try testing.expectError(
         error.InsufficientBufferSize,
-        chain.unwrapIntro(&buffer_small),
+        chain.unwrapInto(&buffer_small),
     );
 
     var buffer: [4][]const u8 = undefined;
     try testing.expectEqualDeep(
         &[_][]const u8{ "foo", "bar", "baz" },
-        try chain.unwrapIntro(&buffer),
+        try chain.unwrapInto(&buffer),
     );
 }
 

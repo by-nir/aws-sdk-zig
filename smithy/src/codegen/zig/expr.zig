@@ -1,16 +1,16 @@
 const std = @import("std");
 const ZigToken = std.zig.Token.Tag;
 const Allocator = std.mem.Allocator;
+const test_alloc = std.testing.allocator;
 const dcl = @import("../../utils/declarative.zig");
 const StackChain = dcl.StackChain;
 const Closure = dcl.Closure;
 const callClosure = dcl.callClosure;
 const Writer = @import("../CodegenWriter.zig");
-const testing = @import("../testing.zig");
-const test_alloc = testing.allocator;
 const flow = @import("flow.zig");
 const scope = @import("scope.zig");
 const declare = @import("declare.zig");
+const utils = @import("utils.zig");
 
 pub const Expr = union(enum) {
     _empty,
@@ -40,7 +40,7 @@ pub const Expr = union(enum) {
             ._error => |err| return err,
             ._chain => |chain| {
                 std.debug.assert(chain.len > 0);
-                if (comptime scope.isStatement(format)) {
+                if (comptime utils.isStatement(format)) {
                     const last = chain.len - 1;
                     for (chain[0..last]) |x| try x.write(writer, "");
                     try chain[last].write(writer, format);
@@ -52,7 +52,7 @@ pub const Expr = union(enum) {
             inline .flow, .declare => |t| try t.write(writer, format),
             inline else => |t| {
                 try t.write(writer);
-                try scope.statementSemicolon(writer, format, null);
+                try utils.statementSemicolon(writer, format, null);
             },
         }
     }
@@ -81,6 +81,7 @@ const ExprFlow = union(enum) {
     @"for": flow.For,
     @"while": *const flow.While,
     @"switch": *const flow.Switch,
+    call: flow.Call,
     word_expr: *const WordExpr,
     word_capture: *const WordCaptureExpr,
     word_label: flow.WordLabel,
@@ -89,7 +90,7 @@ const ExprFlow = union(enum) {
     pub fn deinit(self: ExprFlow, allocator: Allocator) void {
         switch (self) {
             .word_label => {},
-            inline .@"if", .@"for", .block => |t| t.deinit(allocator),
+            inline .@"if", .@"for", .call, .block => |t| t.deinit(allocator),
             inline else => |t| {
                 t.deinit(allocator);
                 allocator.destroy(t);
@@ -99,7 +100,7 @@ const ExprFlow = union(enum) {
 
     pub fn write(self: ExprFlow, writer: *Writer, comptime format: []const u8) !void {
         switch (self) {
-            inline .block, .@"switch" => |t| try t.write(writer),
+            inline .call, .block, .@"switch" => |t| try t.write(writer),
             inline else => |t| try t.write(writer, format),
         }
     }
@@ -109,6 +110,7 @@ const ExprDeclare = union(enum) {
     field: *const declare.Field,
     variable: *const declare.Variable,
     namespace: *const declare.Namespace,
+    function: *const declare.Function,
     word_expr: *const WordExpr,
     word_block: declare.WordBlock,
 
@@ -128,7 +130,7 @@ const ExprDeclare = union(enum) {
             inline else => |t| try t.write(writer),
         }
 
-        if (scope.isStatement(format)) switch (self) {
+        if (utils.isStatement(format)) switch (self) {
             .word_block => {},
             .field => try writer.appendChar(','),
             else => try writer.appendChar(';'),
@@ -309,45 +311,6 @@ pub const ExprBuild = struct {
             .expects("catch |foo| bar");
     }
 
-    pub fn returns(self: *const ExprBuild) ExprBuild {
-        const data = flow.WordLabel{
-            .token = .keyword_return,
-            .label = null,
-        };
-        return self.append(.{ .flow = .{ .word_label = data } });
-    }
-
-    test "returns" {
-        try ExprBuild.init(test_alloc).returns().raw("foo")
-            .expects("return foo");
-    }
-
-    pub fn breaks(self: *const ExprBuild, label: ?[]const u8) ExprBuild {
-        const data = flow.WordLabel{
-            .token = .keyword_break,
-            .label = label,
-        };
-        return self.append(.{ .flow = .{ .word_label = data } });
-    }
-
-    test "breaks" {
-        try ExprBuild.init(test_alloc).breaks("foo").raw("bar")
-            .expects("break :foo bar");
-    }
-
-    pub fn continues(self: *const ExprBuild, label: ?[]const u8) ExprBuild {
-        const data = flow.WordLabel{
-            .token = .keyword_continue,
-            .label = label,
-        };
-        return self.append(.{ .flow = .{ .word_label = data } });
-    }
-
-    test "continues" {
-        try ExprBuild.init(test_alloc).continues("foo").raw("bar")
-            .expects("continue :foo bar");
-    }
-
     pub fn block(self: *const ExprBuild, closure: scope.BlockClosure) ExprBuild {
         return self.blockWith({}, closure);
     }
@@ -379,9 +342,53 @@ pub const ExprBuild = struct {
         );
     }
 
+    pub fn returns(self: *const ExprBuild) ExprBuild {
+        const data = flow.WordLabel{ .token = .keyword_return, .label = null };
+        return self.append(.{ .flow = .{ .word_label = data } });
+    }
+
+    pub fn breaks(self: *const ExprBuild, label: ?[]const u8) ExprBuild {
+        const data = flow.WordLabel{ .token = .keyword_break, .label = label };
+        return self.append(.{ .flow = .{ .word_label = data } });
+    }
+
+    pub fn continues(self: *const ExprBuild, label: ?[]const u8) ExprBuild {
+        const data = flow.WordLabel{ .token = .keyword_continue, .label = label };
+        return self.append(.{ .flow = .{ .word_label = data } });
+    }
+
+    test "terminators" {
+        const build = ExprBuild.init(test_alloc);
+        try build.returns().raw("foo").expects("return foo");
+        try build.breaks("foo").raw("bar").expects("break :foo bar");
+        try build.continues("foo").raw("bar").expects("continue :foo bar");
+    }
+
     //
     // Declare
     //
+
+    pub fn variable(self: *const ExprBuild, name: []const u8) declare.Variable.Build(@TypeOf(endVariable)) {
+        return declare.Variable.build(endVariable, self, false, name);
+    }
+
+    pub fn constant(self: *const ExprBuild, name: []const u8) declare.Variable.Build(@TypeOf(endVariable)) {
+        return declare.Variable.build(endVariable, self, true, name);
+    }
+
+    fn endVariable(self: *const ExprBuild, value: anyerror!declare.Variable) ExprBuild {
+        const data = value catch |err| return self.append(err);
+        const dupe = self.dupeValue(data) catch |err| {
+            data.deinit(self.allocator);
+            return self.append(err);
+        };
+        return self.append(.{ .declare = .{ .variable = dupe } });
+    }
+
+    test "variables" {
+        try ExprBuild.init(test_alloc).variable("foo").comma().constant("bar").assign().raw("baz")
+            .expects("var foo, const bar = baz");
+    }
 
     pub fn @"struct"(self: *const ExprBuild) declare.Namespace.Build(@TypeOf(endNamespace)) {
         return declare.Namespace.build(self.allocator, endNamespace, self, .keyword_struct);
@@ -404,7 +411,7 @@ pub const ExprBuild = struct {
         return self.append(.{ .declare = .{ .namespace = dupe } });
     }
 
-    test "namespace" {
+    test "namespaces" {
         const Test = struct {
             fn f(_: *scope.ContainerBuild) !void {}
         };
@@ -434,10 +441,10 @@ pub const WordExpr = struct {
         const keyword = self.token.lexeme().?;
         if (self.expr) |t| {
             try writer.appendFmt("{s} {}", .{ keyword, t });
-            try scope.statementSemicolon(writer, format, self.expr);
+            try utils.statementSemicolon(writer, format, self.expr);
         } else {
             try writer.appendString(keyword);
-            try scope.statementSemicolon(writer, format, null);
+            try utils.statementSemicolon(writer, format, null);
         }
     }
 };
@@ -482,7 +489,7 @@ pub const WordCaptureExpr = struct {
             try writer.appendFmt("|{_}| ", .{std.zig.fmtId(p)});
         }
         try writer.appendValue(self.body);
-        try scope.statementSemicolon(writer, format, self.body);
+        try utils.statementSemicolon(writer, format, self.body);
     }
 
     pub fn build(callback: anytype, ctx: anytype, token: ZigToken) Build(@TypeOf(callback)) {
@@ -524,7 +531,7 @@ pub const WordCaptureExpr = struct {
 };
 
 test "WordCaptureExpr" {
-    const Test = testing.TestVal(WordCaptureExpr);
+    const Test = utils.TestVal(WordCaptureExpr);
     var tester = Test{ .expected = "errdefer foo" };
     try WordCaptureExpr.build(Test.callback, &tester, .keyword_errdefer).body(_raw("foo"));
 
@@ -534,7 +541,7 @@ test "WordCaptureExpr" {
 }
 
 test "WordCaptureExpr: statement" {
-    const Test = testing.TestFmt(WordCaptureExpr, "{;}");
+    const Test = utils.TestFmt(WordCaptureExpr, "{;}");
     var tester = Test{ .expected = "errdefer foo;" };
     try WordCaptureExpr.build(Test.callback, &tester, .keyword_errdefer).body(_raw("foo"));
 

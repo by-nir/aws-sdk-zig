@@ -1,16 +1,15 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
+const test_alloc = std.testing.allocator;
 const dcl = @import("../../utils/declarative.zig");
 const StackChain = dcl.StackChain;
 const InferCallback = dcl.InferCallback;
 const Cb = dcl.Callback;
 const createCallback = dcl.callback;
 const Writer = @import("../CodegenWriter.zig");
-const testing = @import("../testing.zig");
-const test_alloc = testing.allocator;
-const scope = @import("scope.zig");
 const declare = @import("declare.zig");
+const utils = @import("utils.zig");
 const exp = @import("expr.zig");
 const Expr = exp.Expr;
 const ExprBuild = exp.ExprBuild;
@@ -35,7 +34,7 @@ pub const If = struct {
                 try writer.appendValue(branch);
             }
         }
-        try scope.statementSemicolon(writer, format, self.branches[self.branches.len - 1].body);
+        try utils.statementSemicolon(writer, format, self.branches[self.branches.len - 1].body);
     }
 
     pub fn build(
@@ -83,7 +82,7 @@ pub const If = struct {
 };
 
 test "If" {
-    const Test = testing.TestVal(If);
+    const Test = utils.TestVal(If);
     var tester = Test{ .expected = "if (foo) bar" };
     try If.build(test_alloc, Test.callback, &tester, _raw("foo"))
         .body(_raw("bar")).end();
@@ -101,7 +100,7 @@ test "If" {
 }
 
 test "If: statement" {
-    const Test = testing.TestFmt(If, "{;}");
+    const Test = utils.TestFmt(If, "{;}");
     var tester = Test{ .expected = "if (foo) bar else baz;" };
     try If.build(test_alloc, Test.callback, &tester, _raw("foo"))
         .body(_raw("bar")).@"else"().body(_raw("baz")).end();
@@ -153,7 +152,7 @@ pub const For = struct {
                 try writer.appendValue(branch);
             }
         }
-        try scope.statementSemicolon(writer, format, self.branches[self.branches.len - 1].body);
+        try utils.statementSemicolon(writer, format, self.branches[self.branches.len - 1].body);
     }
 
     pub fn build(allocator: Allocator, callback: anytype, ctx: anytype) Build(@TypeOf(callback)) {
@@ -200,7 +199,9 @@ pub const For = struct {
 
             pub fn body(self: *const Self, expr: ExprBuild) BranchBuild {
                 const cb = createCallback(self, end);
-                return BranchBuild.newAppend(self.allocator, cb, .{ .body = expr });
+                return BranchBuild.newAppend(self.allocator, cb, .{
+                    .body = expr,
+                });
             }
 
             fn end(self: *const Self, branches: anyerror![]const Branch) Callback.Return {
@@ -209,7 +210,12 @@ pub const For = struct {
                     while (it.next()) |t| t.deinit();
                     return self.callback.fail(err);
                 };
-                const iterables = consumeChainAs(self.allocator, IterableBuild, Iterable, self.iterables) catch |err| {
+                const iterables = utils.consumeChainAs(
+                    self.allocator,
+                    IterableBuild,
+                    Iterable,
+                    self.iterables,
+                ) catch |err| {
                     for (alloc_branch) |t| t.deinit(self.allocator);
                     self.allocator.free(alloc_branch);
                     return self.callback.fail(err);
@@ -224,7 +230,7 @@ pub const For = struct {
 };
 
 test "For" {
-    const Test = testing.TestVal(For);
+    const Test = utils.TestVal(For);
     var tester = Test{ .expected = "for (foo) |bar| baz" };
     try For.build(test_alloc, Test.callback, &tester).iter(_raw("foo"), "bar")
         .body(_raw("baz")).end();
@@ -241,7 +247,7 @@ test "For" {
 }
 
 test "For: statement" {
-    const Test = testing.TestFmt(For, "{;}");
+    const Test = utils.TestFmt(For, "{;}");
     var tester = Test{ .expected = "for (foo) |_| bar else baz;" };
     try For.build(test_alloc, Test.callback, &tester).iter(_raw("foo"), "_")
         .body(_raw("bar")).@"else"().body(_raw("baz")).end();
@@ -277,7 +283,7 @@ pub const While = struct {
                 try writer.appendValue(branch);
             }
         }
-        try scope.statementSemicolon(writer, format, self.branches[self.branches.len - 1].body);
+        try utils.statementSemicolon(writer, format, self.branches[self.branches.len - 1].body);
     }
 
     pub fn build(
@@ -344,7 +350,7 @@ pub const While = struct {
 };
 
 test "While" {
-    const Test = testing.TestVal(While);
+    const Test = utils.TestVal(While);
     var tester = Test{ .expected = "while (foo) bar" };
     try While.build(test_alloc, Test.callback, &tester, _raw("foo"))
         .body(_raw("bar")).end();
@@ -360,7 +366,7 @@ test "While" {
 }
 
 test "While: statement" {
-    const Test = testing.TestFmt(While, "{;}");
+    const Test = utils.TestFmt(While, "{;}");
     var tester = Test{ .expected = "while (foo) bar else baz;" };
     try While.build(test_alloc, Test.callback, &tester, _raw("foo"))
         .body(_raw("bar")).@"else"().body(_raw("baz")).end();
@@ -481,7 +487,12 @@ pub const Branch = struct {
             }
 
             pub fn end(self: *const Self) Return {
-                if (consumeChainAs(self.allocator, Partial, Branch, self.flushPartial())) |branches| {
+                if (utils.consumeChainAs(
+                    self.allocator,
+                    Partial,
+                    Branch,
+                    self.flushPartial(),
+                )) |branches| {
                     return self.callback.invoke(branches);
                 } else |err| {
                     return self.callback.fail(err);
@@ -523,7 +534,7 @@ pub const Switch = struct {
         } else {
             try writer.appendFmt("switch ({}) {{", .{self.value});
             try writer.breakList(Statement, self.statements, .{
-                .line = .{ .indent = scope.INDENT_STR },
+                .line = .{ .indent = utils.INDENT_STR },
             });
             try writer.breakChar('}');
         }
@@ -689,7 +700,12 @@ pub const Switch = struct {
             };
             errdefer self.allocator.free(alloc_payload);
 
-            const alloc_cases = try consumeChainAs(self.allocator, CaseBuild, Case, cases);
+            const alloc_cases = try utils.consumeChainAs(
+                self.allocator,
+                CaseBuild,
+                Case,
+                cases,
+            );
 
             const is_inline = switch (self.state) {
                 .idle => false,
@@ -800,13 +816,63 @@ test "Switch" {
     , data);
 }
 
+pub const Call = struct {
+    name: []const u8,
+    args: []const Expr,
+
+    pub fn init(allocator: Allocator, name: []const u8, args: []const ExprBuild) !Call {
+        if (args.len == 0) {
+            return .{ .name = name, .args = &.{} };
+        } else {
+            var processed: usize = 0;
+            const alloc_args = try allocator.alloc(Expr, args.len);
+            errdefer {
+                for (alloc_args[0..processed]) |t| t.deinit(allocator);
+                allocator.free(alloc_args);
+            }
+
+            for (args, 0..) |arg, i| {
+                alloc_args[i] = try arg.consume();
+                processed += 1;
+            }
+            return .{
+                .name = name,
+                .args = alloc_args,
+            };
+        }
+    }
+
+    pub fn deinit(self: Call, allocator: Allocator) void {
+        for (self.args) |t| t.deinit(allocator);
+        allocator.free(self.args);
+    }
+
+    pub fn write(self: Call, writer: *Writer) !void {
+        if (self.args.len == 0) {
+            try writer.appendFmt("{}()", .{std.zig.fmtId(self.name)});
+        } else {
+            try writer.appendFmt("{}(", .{std.zig.fmtId(self.name)});
+            try writer.appendList(Expr, self.args, .{
+                .delimiter = ", ",
+            });
+            try writer.appendChar(')');
+        }
+    }
+};
+
+test "Call" {
+    var b = try Call.init(test_alloc, "foo", &.{ _raw("bar"), _raw("baz") });
+    defer b.deinit(test_alloc);
+    try Writer.expectValue("foo(bar, baz)", b);
+}
+
 pub const WordLabel = struct {
     token: std.zig.Token.Tag,
     label: ?[]const u8,
 
     pub fn write(self: WordLabel, writer: *Writer, comptime format: []const u8) !void {
         const keyword = self.token.lexeme().?;
-        const suffix: u8 = if (scope.isStatement(format)) ';' else ' ';
+        const suffix: u8 = if (utils.isStatement(format)) ';' else ' ';
         if (self.label) |t| {
             try writer.appendFmt("{s} :{_}{c}", .{ keyword, std.zig.fmtId(t), suffix });
         } else {
@@ -825,42 +891,4 @@ test "WordLabel" {
 
     expr = WordLabel{ .token = .keyword_break, .label = "test" };
     try Writer.expectValue("break :@\"test\" ", expr);
-}
-
-fn consumeChainAs(
-    allocator: Allocator,
-    comptime Src: type,
-    comptime Dest: type,
-    chain: StackChain(?Src),
-) ![]const Dest {
-    if (chain.isEmpty()) return &.{};
-
-    const total = chain.count();
-    var consumed: usize = 0;
-    const list = allocator.alloc(Dest, total) catch |err| {
-        var it = chain.iterateReversed();
-        while (it.next()) |t| t.deinit();
-        return err;
-    };
-    errdefer {
-        for (list[0..consumed]) |t| t.deinit(allocator);
-        allocator.free(list);
-    }
-
-    var has_error: ?anyerror = null;
-    var it = chain.iterateReversed();
-    while (it.next()) |source| {
-        if (has_error == null) {
-            const index = total - consumed - 1;
-            list[index] = source.consume() catch |err| {
-                has_error = err;
-                continue;
-            };
-            consumed += 1;
-        } else {
-            source.deinit();
-        }
-    }
-
-    return has_error orelse list;
 }
