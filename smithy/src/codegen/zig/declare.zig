@@ -2,15 +2,16 @@ const std = @import("std");
 const ZigToken = std.zig.Token.Tag;
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
+const test_alloc = std.testing.allocator;
 const dcl = @import("../../utils/declarative.zig");
+const StackChain = dcl.StackChain;
 const cb = dcl.callback;
 const InferCallback = dcl.InferCallback;
 const Closure = dcl.Closure;
 const callClosure = dcl.callClosure;
 const Writer = @import("../CodegenWriter.zig");
-const testing = @import("../testing.zig");
-const test_alloc = testing.allocator;
 const scope = @import("scope.zig");
+const utils = @import("utils.zig");
 const exp = @import("expr.zig");
 const Expr = exp.Expr;
 const ExprBuild = exp.ExprBuild;
@@ -120,7 +121,7 @@ pub const Field = struct {
 };
 
 test "Field" {
-    const Test = testing.TestVal(Field);
+    const Test = utils.TestVal(Field);
     var tester = Test{ .expected = "foo: Bar" };
     try Field.build(Test.callback, &tester, "foo").typing(_xpr("Bar")).end();
 
@@ -141,12 +142,11 @@ pub const Variable = struct {
     name: []const u8,
     type: ?Expr,
     alignment: ?Expr,
-    assign: Expr,
+    is_assign: bool,
 
     pub fn deinit(self: Variable, allocator: Allocator) void {
         if (self.type) |t| t.deinit(allocator);
         if (self.alignment) |t| t.deinit(allocator);
-        self.assign.deinit(allocator);
     }
 
     pub fn write(self: Variable, writer: *Writer) !void {
@@ -156,7 +156,7 @@ pub const Variable = struct {
             try writer.appendFmt(": {}", .{t});
             if (self.alignment) |a| try writer.appendFmt(" align({})", .{a});
         }
-        try writer.appendFmt(" = {}", .{self.assign});
+        try writer.appendString(if (self.is_assign) " = " else ", ");
     }
 
     pub fn build(callback: anytype, ctx: anytype, is_const: bool, name: []const u8) Build(@TypeOf(callback)) {
@@ -199,35 +199,36 @@ pub const Variable = struct {
                 return dupe;
             }
 
-            pub fn assign(self: Self, expr: ExprBuild) Callback.Return {
-                if (self.consume(expr)) |data| {
+            pub fn assign(self: Self) Callback.Return {
+                if (self.consume(true)) |data| {
                     return self.callback.invoke(data);
                 } else |err| {
                     return self.callback.fail(err);
                 }
             }
 
-            fn consume(self: Self, expr: ExprBuild) !Variable {
-                const alloc_assign = expr.consume() catch |err| {
-                    if (self.type) |x| x.deinit();
-                    if (self.@"align") |x| x.deinit();
-                    return err;
-                };
-                errdefer alloc_assign.deinit(expr.allocator);
+            pub fn comma(self: Self) Callback.Return {
+                if (self.consume(false)) |data| {
+                    return self.callback.invoke(data);
+                } else |err| {
+                    return self.callback.fail(err);
+                }
+            }
 
+            fn consume(self: Self, is_assign: bool) !Variable {
                 const alloc_type = if (self.type) |t| t.consume() catch |err| {
                     if (self.@"align") |x| x.deinit();
                     return err;
                 } else null;
                 errdefer if (alloc_type) |t| t.deinit(self.type.?.allocator);
-
                 const alloc_align = if (self.@"align") |t| try t.consume() else null;
+
                 return .{
                     .is_const = self.is_const,
                     .name = self.name,
                     .type = alloc_type,
                     .alignment = alloc_align,
-                    .assign = alloc_assign,
+                    .is_assign = is_assign,
                 };
             }
         };
@@ -235,16 +236,16 @@ pub const Variable = struct {
 };
 
 test "Variable" {
-    const Test = testing.TestVal(Variable);
-    var tester = Test{ .expected = "var foo = bar" };
-    try Variable.build(Test.callback, &tester, false, "foo").assign(_xpr("bar"));
+    const Test = utils.TestVal(Variable);
+    var tester = Test{ .expected = "var foo = " };
+    try Variable.build(Test.callback, &tester, false, "foo").assign();
 
-    tester.expected = "var @\"test\" = foo";
-    try Variable.build(Test.callback, &tester, false, "test").assign(_xpr("foo"));
+    tester.expected = "var @\"test\", ";
+    try Variable.build(Test.callback, &tester, false, "test").comma();
 
-    tester.expected = "const foo: Bar align(baz) = qux";
+    tester.expected = "const foo: Bar align(baz) = ";
     try Variable.build(Test.callback, &tester, true, "foo").typing(_xpr("Bar"))
-        .alignment(_xpr("baz")).assign(_xpr("qux"));
+        .alignment(_xpr("baz")).assign();
 }
 
 pub const Namespace = struct {
@@ -269,7 +270,7 @@ pub const Namespace = struct {
             return writer.appendString(" {}");
         } else {
             try writer.appendString(" {\n");
-            try writer.indentPush(scope.INDENT_STR);
+            try writer.indentPush(utils.INDENT_STR);
             try self.container.write(writer);
             writer.indentPop();
             try writer.breakChar('}');
@@ -346,7 +347,7 @@ pub const Namespace = struct {
 };
 
 test "Namespace" {
-    const Test = testing.TestVal(Namespace);
+    const Test = utils.TestVal(Namespace);
     var tester = Test{ .expected = "union(enum) {}" };
     try Namespace.build(test_alloc, Test.callback, &tester, .keyword_union).body(struct {
         fn f(_: *scope.ContainerBuild) !void {}
@@ -428,4 +429,183 @@ test "WordBlock" {
         \\    defer bar;
         \\}
     , block);
+}
+
+pub const Function = struct {
+    name: []const u8,
+    args: []const Arg,
+    @"return": ?Expr,
+    body: scope.Block,
+
+    pub const Arg = struct {
+        name: []const u8,
+        type: ?Expr,
+
+        pub fn deinit(self: Arg, allocator: Allocator) void {
+            if (self.type) |t| t.deinit(allocator);
+        }
+
+        pub fn write(self: Arg, writer: *Writer) !void {
+            if (self.type) |t| {
+                try writer.appendFmt("{s}: {}", .{ self.name, t });
+            } else {
+                try writer.appendFmt("{s}: anytype", .{self.name});
+            }
+        }
+    };
+
+    pub fn deinit(self: Function, allocator: Allocator) void {
+        for (self.args) |t| t.deinit(allocator);
+        allocator.free(self.args);
+        if (self.@"return") |t| t.deinit(allocator);
+        self.body.deinit(allocator);
+    }
+
+    pub fn write(self: Function, writer: *Writer) !void {
+        try writer.appendFmt("fn {}(", .{std.zig.fmtId(self.name)});
+        try writer.appendList(Arg, self.args, .{
+            .delimiter = ", ",
+        });
+        if (self.@"return") |t| {
+            try writer.appendFmt(") {} ", .{t});
+        } else {
+            try writer.appendString(") void ");
+        }
+        try self.body.write(writer);
+    }
+
+    pub fn build(
+        allocator: Allocator,
+        callback: anytype,
+        ctx: anytype,
+        name: []const u8,
+    ) Build(@TypeOf(callback)) {
+        return .{
+            .allocator = allocator,
+            .callback = cb(ctx, callback),
+            .name = name,
+        };
+    }
+
+    pub const ArgBuild = struct {
+        name: []const u8,
+        type: ?ExprBuild,
+
+        pub fn deinit(self: ArgBuild) void {
+            if (self.type) |t| t.deinit();
+        }
+
+        pub fn consume(self: ArgBuild) !Arg {
+            return .{
+                .name = self.name,
+                .type = if (self.type) |t| try t.consume() else null,
+            };
+        }
+    };
+
+    pub fn Build(comptime Fn: type) type {
+        const Callback = InferCallback(Fn);
+        return struct {
+            const Self = @This();
+
+            allocator: Allocator,
+            callback: Callback,
+            name: []const u8,
+            args: StackChain(?ArgBuild) = .{},
+            @"return": ?ExprBuild = null,
+
+            pub fn deinit(self: Self) void {
+                var it = self.args.iterateReversed();
+                while (it.next()) |a| if (a.type) |at| at.deinit();
+                if (self.@"return") |t| t.deinit();
+            }
+
+            pub fn arg(self: *const Self, name: []const u8, typing: ?ExprBuild) Self {
+                assert(self.@"return" == null);
+                var dupe = self.*;
+                dupe.args = self.args.append(.{
+                    .name = name,
+                    .type = typing,
+                });
+                return dupe;
+            }
+
+            pub fn returns(self: Self, typing: ?ExprBuild) Self {
+                assert(self.@"return" == null);
+                var dupe = self;
+                dupe.@"return" = typing;
+                return dupe;
+            }
+
+            pub fn body(self: Self, closure: scope.BlockClosure) Callback.Return {
+                if (self.consume({}, closure)) |data| {
+                    return self.callback.invoke(data);
+                } else |err| {
+                    return self.callback.fail(err);
+                }
+            }
+
+            pub fn bodyWith(
+                self: Self,
+                ctx: anytype,
+                closure: Closure(@TypeOf(ctx), scope.BlockClosure),
+            ) Callback.Return {
+                if (self.consume(ctx, closure)) |data| {
+                    return self.callback.invoke(data);
+                } else |err| {
+                    return self.callback.fail(err);
+                }
+            }
+
+            fn consume(
+                self: Self,
+                ctx: anytype,
+                closure: Closure(@TypeOf(ctx), scope.BlockClosure),
+            ) !Function {
+                const alloc_args = utils.consumeChainAs(
+                    self.allocator,
+                    ArgBuild,
+                    Arg,
+                    self.args,
+                ) catch |err| {
+                    if (self.@"return") |t| t.deinit();
+                    return err;
+                };
+                errdefer {
+                    for (alloc_args) |t| t.deinit(self.allocator);
+                    self.allocator.free(alloc_args);
+                }
+
+                const alloc_return = if (self.@"return") |t| try t.consume() else null;
+                errdefer if (alloc_return) |t| t.deinit(self.allocator);
+
+                var builder = scope.BlockBuild.init(self.allocator);
+                errdefer builder.deinit();
+                try callClosure(ctx, closure, .{&builder});
+
+                return .{
+                    .name = self.name,
+                    .args = alloc_args,
+                    .@"return" = alloc_return,
+                    .body = try builder.consume(),
+                };
+            }
+        };
+    }
+};
+
+test "Function" {
+    const Test = utils.TestVal(Function);
+    var tester = Test{ .expected = 
+    \\fn foo(bar: Bar, baz: anytype) Qux {
+    \\    defer foo;
+    \\}
+    };
+    try Function.build(test_alloc, Test.callback, &tester, "foo")
+        .arg("bar", _xpr("Bar")).arg("baz", null)
+        .returns(_xpr("Qux")).body(struct {
+        fn f(b: *scope.BlockBuild) !void {
+            try b.defers(b.xpr.raw("foo"));
+        }
+    }.f);
 }
