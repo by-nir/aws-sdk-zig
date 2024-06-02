@@ -821,25 +821,10 @@ pub const Call = struct {
     args: []const Expr,
 
     pub fn init(allocator: Allocator, name: []const u8, args: []const ExprBuild) !Call {
-        if (args.len == 0) {
-            return .{ .name = name, .args = &.{} };
-        } else {
-            var processed: usize = 0;
-            const alloc_args = try allocator.alloc(Expr, args.len);
-            errdefer {
-                for (alloc_args[0..processed]) |t| t.deinit(allocator);
-                allocator.free(alloc_args);
-            }
-
-            for (args, 0..) |arg, i| {
-                alloc_args[i] = try arg.consume();
-                processed += 1;
-            }
-            return .{
-                .name = name,
-                .args = alloc_args,
-            };
-        }
+        return .{
+            .name = name,
+            .args = try utils.consumeExprBuildList(allocator, args),
+        };
     }
 
     pub fn deinit(self: Call, allocator: Allocator) void {

@@ -4,7 +4,9 @@ const testing = std.testing;
 const dcl = @import("../../utils/declarative.zig");
 const StackChain = dcl.StackChain;
 const Writer = @import("../CodegenWriter.zig");
-const Expr = @import("expr.zig").Expr;
+const exp = @import("expr.zig");
+const Expr = exp.Expr;
+const ExprBuild = exp.ExprBuild;
 
 pub const INDENT_STR = " " ** 4;
 
@@ -55,6 +57,24 @@ pub fn consumeChainAs(
     }
 
     return has_error orelse list;
+}
+
+pub fn consumeExprBuildList(allocator: Allocator, builders: []const ExprBuild) ![]const Expr {
+    if (builders.len == 0) return &.{};
+
+    var processed: usize = 0;
+    const exprs = try allocator.alloc(Expr, builders.len);
+    errdefer {
+        for (exprs[0..processed]) |t| t.deinit(allocator);
+        allocator.free(exprs);
+    }
+
+    for (builders, 0..) |builder, i| {
+        exprs[i] = try builder.consume();
+        processed += 1;
+    }
+
+    return exprs;
 }
 
 pub fn TestVal(comptime T: type) type {

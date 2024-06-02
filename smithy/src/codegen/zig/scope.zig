@@ -475,6 +475,18 @@ pub const BlockBuild = struct {
         return self.startChain().raw("_ = ");
     }
 
+    pub fn valueOf(self: *BlockBuild, v: anytype) ExprBuild {
+        return self.startChain().valueOf(v);
+    }
+
+    pub fn typeOf(self: *BlockBuild, comptime T: type) ExprBuild {
+        return self.startChain().typeOf(T);
+    }
+
+    pub fn This(self: *BlockBuild) ExprBuild {
+        return self.startChain().This();
+    }
+
     pub fn compTime(self: *BlockBuild, name: []const u8, args: []const ExprBuild) ExprBuild {
         return self.startChain().compTime(name, args);
     }

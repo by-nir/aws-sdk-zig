@@ -22,6 +22,7 @@ pub const Expr = union(enum) {
     value: ExprValue,
     flow: ExprFlow,
     declare: ExprDeclare,
+    operator: ZigToken,
     keyword_tight: ZigToken,
     keyword_space: ZigToken,
 
@@ -31,7 +32,7 @@ pub const Expr = union(enum) {
                 for (chain) |t| t.deinit(allocator);
                 allocator.free(chain);
             },
-            inline .flow, .declare => |f| f.deinit(allocator),
+            inline .type, .value, .flow, .declare => |f| f.deinit(allocator),
             else => {},
         }
     }
@@ -50,10 +51,16 @@ pub const Expr = union(enum) {
                     for (chain) |t| try t.write(writer, format);
                 }
             },
+            .raw => |s| {
+                try writer.appendString(s);
+            },
             .id => |name| {
                 try writer.appendFmt("{}", .{std.zig.fmtId(name)});
             },
             inline .flow, .declare => |t| try t.write(writer, format),
+            .operator => |t| {
+                try writer.appendFmt(" {s} ", .{t.lexeme().?});
+            },
             .keyword_tight => |t| try writer.appendString(t.lexeme().?),
             .keyword_space => |t| {
                 try writer.appendFmt("{s} ", .{t.lexeme().?});
@@ -68,20 +75,146 @@ pub const Expr = union(enum) {
 };
 
 const ExprType = union(enum) {
-    PLACEHOLDER,
+    This,
+    optional: *const Expr,
+    array: struct { len: usize, type: *const Expr },
+    slice: struct { mutable: bool, type: *const Expr },
+    pointer: struct { mutable: bool, type: *const Expr },
+
+    pub fn deinit(self: ExprType, allocator: Allocator) void {
+        switch (self) {
+            .This => {},
+            .optional => |t| allocator.destroy(t),
+            inline else => |t| allocator.destroy(t.type),
+        }
+    }
 
     pub fn write(self: ExprType, writer: *Writer) anyerror!void {
-        _ = self; // autofix
-        _ = writer; // autofix
+        switch (self) {
+            .This => try writer.appendString("@This()"),
+            .optional => |t| {
+                try writer.appendFmt("?{}", .{t});
+            },
+            .array => |t| {
+                try writer.appendFmt("[{d}]{}", .{ t.len, t.type });
+            },
+            inline .slice, .pointer => |t, g| {
+                if (g == .pointer)
+                    try writer.appendChar('*')
+                else
+                    try writer.appendString("[]");
+
+                if (t.mutable)
+                    try writer.appendValue(t.type)
+                else
+                    try writer.appendFmt("const {}", .{t.type});
+            },
+        }
     }
 };
 
 const ExprValue = union(enum) {
-    PLACEHOLDER,
+    undefined,
+    null,
+    void,
+    false,
+    true,
+    int: i64,
+    uint: u64,
+    float: f64,
+    string: []const u8,
+    group: *const Expr,
+    @"error": []const u8,
+    @"enum": []const u8,
+    @"union": [2][]const u8,
+    @"struct": struct { identifier: ?*const Expr, values: []const Expr },
+
+    pub fn deinit(self: ExprValue, allocator: Allocator) void {
+        switch (self) {
+            .group => |t| allocator.destroy(t),
+            .@"struct" => |t| {
+                if (t.identifier) |id| {
+                    id.deinit(allocator);
+                    allocator.destroy(id);
+                }
+                for (t.values) |v| v.deinit(allocator);
+                allocator.free(t.values);
+            },
+            else => {},
+        }
+    }
 
     pub fn write(self: ExprValue, writer: *Writer) anyerror!void {
-        _ = self; // autofix
-        _ = writer; // autofix
+        switch (self) {
+            .void => try writer.appendString("{}"),
+            inline .undefined, .null, .false, .true => |_, t| {
+                try writer.appendString(@tagName(t));
+            },
+            inline .int, .uint, .float => |t| try writer.appendFmt("{d}", .{t}),
+            .string => |s| try writer.appendFmt("\"{s}\"", .{s}),
+            .group => |t| try writer.appendFmt("({})", .{t}),
+            .@"error" => |s| try writer.appendFmt("error.{s}", .{s}),
+            .@"enum" => |s| try writer.appendFmt(".{s}", .{s}),
+            .@"union" => |t| switch (t[1].len) {
+                0 => try writer.appendFmt(".{s}", .{t[0]}),
+                else => try writer.appendFmt(".{{ .{s} = {s} }}", .{ t[0], t[1] }),
+            },
+            .@"struct" => |t| {
+                const len = t.values.len;
+                if (t.identifier) |id| {
+                    try id.write(writer, "");
+                } else {
+                    try writer.appendChar('.');
+                }
+                switch (len) {
+                    0 => return writer.appendString("{}"),
+                    1 => try writer.appendChar('{'),
+                    else => try writer.appendString("{ "),
+                }
+                try writer.appendList(Expr, t.values, .{
+                    .delimiter = ", ",
+                });
+                switch (len) {
+                    1 => try writer.appendChar('}'),
+                    else => try writer.appendString(" }"),
+                }
+            },
+        }
+    }
+
+    pub fn of(v: anytype) ExprValue {
+        const T = @TypeOf(v);
+        return switch (@typeInfo(T)) {
+            .Void => .void,
+            .Null => .null,
+            .Bool => if (v) .true else .false,
+            .Int => |t| switch (t.signedness) {
+                .signed => .{ .int = v },
+                .unsigned => .{ .uint = v },
+            },
+            .ComptimeInt => if (v < 0) .{ .int = v } else .{ .uint = v },
+            .Float, .ComptimeFloat => .{ .float = v },
+            .Enum, .EnumLiteral => .{ .@"enum" = @tagName(v) },
+            .Optional => if (v) |s| return of(s) else .null,
+            .ErrorSet => .{ .@"error" = @errorName(v) },
+            .ErrorUnion => |t| if (v) |s| switch (@typeInfo(t.payload)) {
+                .Void => .void,
+                else => return of(s),
+            } else |e| .{ .@"error" = @errorName(e) },
+            .Pointer => |t| blk: {
+                if (t.size == .Slice and t.child == u8) {
+                    break :blk .{ .string = v };
+                } else if (t.size == .One) {
+                    const meta = @typeInfo(t.child);
+                    if (meta == .Array and meta.Array.child == u8) {
+                        break :blk .{ .string = v };
+                    }
+                }
+                @compileError("Only string pointers can auto-covert into a value expression.");
+            },
+            // Union, Fn, Pointer, Array, Struct
+            else => @compileError("Type `" ++ @typeName(T) ++ "` can’t auto-convert into a value expression."),
+        };
     }
 };
 
@@ -207,18 +340,6 @@ pub const ExprBuild = struct {
         return self.append(.{ .raw = value });
     }
 
-    pub fn dot(self: *const ExprBuild) ExprBuild {
-        return self.append(.{ .keyword_tight = .period });
-    }
-
-    pub fn comma(self: *const ExprBuild) ExprBuild {
-        return self.append(.{ .keyword_space = .comma });
-    }
-
-    test "separator" {
-        try ExprBuild.init(test_alloc).comma().dot().expects(", .");
-    }
-
     pub fn id(self: *const ExprBuild, name: []const u8) ExprBuild {
         return self.append(.{ .id = name });
     }
@@ -227,12 +348,192 @@ pub const ExprBuild = struct {
         try ExprBuild.init(test_alloc).id("test").expects("@\"test\"");
     }
 
-    pub fn @"packed"(self: *const ExprBuild) ExprBuild {
-        return self.append(.{ .keyword_space = .keyword_packed });
+    pub fn typeOf(self: *const ExprBuild, comptime T: type) ExprBuild {
+        return self.append(.{ .raw = @typeName(T) });
+    }
+
+    pub fn typeOptional(self: *const ExprBuild, expr: ExprBuild) ExprBuild {
+        const data = expr.consume() catch |err| return self.append(err);
+        const dupe = self.dupeValue(data) catch |err| {
+            data.deinit(self.allocator);
+            return self.append(err);
+        };
+        return self.append(.{ .type = .{ .optional = dupe } });
+    }
+
+    pub fn typeArray(self: *const ExprBuild, len: usize, expr: ExprBuild) ExprBuild {
+        const data = expr.consume() catch |err| return self.append(err);
+        const dupe = self.dupeValue(data) catch |err| {
+            data.deinit(self.allocator);
+            return self.append(err);
+        };
+        return self.append(.{ .type = .{ .array = .{
+            .len = len,
+            .type = dupe,
+        } } });
+    }
+
+    pub fn typeSlice(self: *const ExprBuild, mutable: bool, expr: ExprBuild) ExprBuild {
+        const data = expr.consume() catch |err| return self.append(err);
+        const dupe = self.dupeValue(data) catch |err| {
+            data.deinit(self.allocator);
+            return self.append(err);
+        };
+        return self.append(.{ .type = .{ .slice = .{
+            .mutable = mutable,
+            .type = dupe,
+        } } });
+    }
+
+    pub fn typePointer(self: *const ExprBuild, mutable: bool, expr: ExprBuild) ExprBuild {
+        const data = expr.consume() catch |err| return self.append(err);
+        const dupe = self.dupeValue(data) catch |err| {
+            data.deinit(self.allocator);
+            return self.append(err);
+        };
+        return self.append(.{ .type = .{ .pointer = .{
+            .mutable = mutable,
+            .type = dupe,
+        } } });
+    }
+
+    pub fn This(self: *const ExprBuild) ExprBuild {
+        return self.append(.{ .type = .This });
+    }
+
+    test "types" {
+        try ExprBuild.init(test_alloc).typeOf(error{Foo}!*const []u8).expects("error{Foo}!*const []u8");
+        try ExprBuild.init(test_alloc).typeOptional(_raw("foo")).expects("?foo");
+        try ExprBuild.init(test_alloc).typeArray(108, _raw("foo")).expects("[108]foo");
+        try ExprBuild.init(test_alloc).typeSlice(true, _raw("foo")).expects("[]foo");
+        try ExprBuild.init(test_alloc).typeSlice(false, _raw("foo")).expects("[]const foo");
+        try ExprBuild.init(test_alloc).typePointer(true, _raw("foo")).expects("*foo");
+        try ExprBuild.init(test_alloc).typePointer(false, _raw("foo")).expects("*const foo");
+        try ExprBuild.init(test_alloc).This().expects("@This()");
+    }
+
+    pub fn valueOf(self: *const ExprBuild, v: anytype) ExprBuild {
+        return self.append(.{ .value = ExprValue.of(v) });
+    }
+
+    test "valueOf" {
+        try ExprBuild.init(test_alloc).valueOf({}).expects("{}");
+        try ExprBuild.init(test_alloc).valueOf(null).expects("null");
+        try ExprBuild.init(test_alloc).valueOf(true).expects("true");
+        try ExprBuild.init(test_alloc).valueOf(false).expects("false");
+        try ExprBuild.init(test_alloc).valueOf(@as(i8, -108)).expects("-108");
+        try ExprBuild.init(test_alloc).valueOf(@as(u8, 108)).expects("108");
+        try ExprBuild.init(test_alloc).valueOf(-108).expects("-108");
+        try ExprBuild.init(test_alloc).valueOf(108).expects("108");
+        try ExprBuild.init(test_alloc).valueOf(@as(f64, 1.08)).expects("1.08");
+        try ExprBuild.init(test_alloc).valueOf(1.08).expects("1.08");
+        try ExprBuild.init(test_alloc).valueOf(.foo).expects(".foo");
+        try ExprBuild.init(test_alloc).valueOf(ExprValue.void).expects(".void");
+        // try ExprBuild.init(test_alloc).val(ExprValue{ .int = 108 }).expects(".{ .int = 108 }");
+        try ExprBuild.init(test_alloc).valueOf(@as(error{Foo}!void, error.Foo)).expects("error.Foo");
+        try ExprBuild.init(test_alloc).valueOf(@as(error{Foo}!void, {})).expects("{}");
+        try ExprBuild.init(test_alloc).valueOf(@as(error{Foo}!u8, 108)).expects("108");
+        try ExprBuild.init(test_alloc).valueOf(@as(?u8, 108)).expects("108");
+        try ExprBuild.init(test_alloc).valueOf(@as(?u8, null)).expects("null");
+        try ExprBuild.init(test_alloc).valueOf("foo").expects("\"foo\"");
+    }
+
+    pub fn group(self: *const ExprBuild, expr: ExprBuild) ExprBuild {
+        const data = expr.consume() catch |err| return self.append(err);
+        const dupe = self.dupeValue(data) catch |err| {
+            data.deinit(self.allocator);
+            return self.append(err);
+        };
+        return self.append(.{ .value = .{ .group = dupe } });
+    }
+
+    test "group" {
+        try ExprBuild.init(test_alloc).group(_raw("foo")).expects("(foo)");
+    }
+
+    pub fn structLiteral(self: *const ExprBuild, identifier: ?ExprBuild, values: []const ExprBuild) ExprBuild {
+        const alloc_vals = utils.consumeExprBuildList(self.allocator, values) catch |err| {
+            if (identifier) |t| t.deinit();
+            return self.append(err);
+        };
+
+        const alloc_id = if (identifier) |t| blk: {
+            const data = t.consume() catch |err| break :blk err;
+            errdefer data.deinit(self.allocator);
+            break :blk self.dupeValue(data) catch |err| err;
+        } catch |err| {
+            for (alloc_vals) |v| v.deinit(self.allocator);
+            self.allocator.free(alloc_vals);
+            return self.append(err);
+        } else null;
+
+        return self.append(.{ .value = .{ .@"struct" = .{
+            .identifier = alloc_id,
+            .values = alloc_vals,
+        } } });
+    }
+
+    test "structLiteral" {
+        try ExprBuild.init(test_alloc).structLiteral(_raw("Foo"), &.{})
+            .expects("Foo{}");
+
+        try ExprBuild.init(test_alloc).structLiteral(null, &.{
+            _raw("foo"),
+        }).expects(".{foo}");
+
+        try ExprBuild.init(test_alloc).structLiteral(null, &.{
+            _raw("foo"),
+            _raw("bar"),
+        }).expects(".{ foo, bar }");
+    }
+
+    pub fn dot(self: *const ExprBuild) ExprBuild {
+        return self.append(.{ .keyword_tight = .period });
+    }
+
+    pub fn comma(self: *const ExprBuild) ExprBuild {
+        return self.append(.{ .keyword_space = .comma });
+    }
+
+    pub fn unwrap(self: *const ExprBuild) ExprBuild {
+        return self.append(.{ .raw = ".?" });
+    }
+
+    pub fn deref(self: *const ExprBuild) ExprBuild {
+        return self.append(.{ .keyword_tight = .period_asterisk });
+    }
+
+    pub fn address(self: *const ExprBuild) ExprBuild {
+        return self.append(.{ .keyword_tight = .ampersand });
+    }
+
+    pub fn assign(self: *const ExprBuild) ExprBuild {
+        return self.append(.{ .operator = .equal });
+    }
+
+    pub fn orElse(self: *const ExprBuild) ExprBuild {
+        return self.append(.{ .operator = .keyword_orelse });
+    }
+
+    pub fn op(self: *const ExprBuild, o: Operator) ExprBuild {
+        switch (o) {
+            .not, .@"~" => return self.append(.{ .keyword_tight = o.toToken() }),
+            else => return self.append(.{ .operator = o.toToken() }),
+        }
+    }
+
+    test "separator" {
+        try ExprBuild.init(test_alloc).comma().dot().unwrap().deref().address()
+            .orElse().assign().op(.not).op(.@"~").op(.eql)
+            .expects(", ..?.*& orelse  = !~ == ");
     }
 
     pub fn compTime(self: *const ExprBuild) ExprBuild {
         return self.append(.{ .keyword_space = .keyword_comptime });
+    }
+
+    pub fn @"packed"(self: *const ExprBuild) ExprBuild {
+        return self.append(.{ .keyword_space = .keyword_packed });
     }
 
     pub fn @"noalias"(self: *const ExprBuild) ExprBuild {
@@ -650,6 +951,64 @@ pub const _blk = ExprBuild{
     .exprs = StackChain(?Expr).start(Expr{
         .flow = .{ .block = .{ .statements = &.{} } },
     }),
+};
+
+const TokenInt = @typeInfo(ZigToken).Enum.tag_type;
+pub const Operator = enum(TokenInt) {
+    eql = @intFromEnum(ZigToken.equal_equal),
+    not_eql = @intFromEnum(ZigToken.bang_equal),
+    lt = @intFromEnum(ZigToken.angle_bracket_left),
+    lte = @intFromEnum(ZigToken.angle_bracket_left_equal),
+    gt = @intFromEnum(ZigToken.angle_bracket_right),
+    gte = @intFromEnum(ZigToken.angle_bracket_right_equal),
+    not = @intFromEnum(ZigToken.bang),
+    @"and" = @intFromEnum(ZigToken.keyword_and),
+    @"or" = @intFromEnum(ZigToken.keyword_or),
+
+    @"+" = @intFromEnum(ZigToken.plus),
+    @"+=" = @intFromEnum(ZigToken.plus_equal),
+    @"+%" = @intFromEnum(ZigToken.plus_percent),
+    @"+%=" = @intFromEnum(ZigToken.plus_percent_equal),
+    @"+|" = @intFromEnum(ZigToken.plus_pipe),
+    @"+|=" = @intFromEnum(ZigToken.plus_pipe_equal),
+    @"-" = @intFromEnum(ZigToken.minus),
+    @"-=" = @intFromEnum(ZigToken.minus_equal),
+    @"-%" = @intFromEnum(ZigToken.minus_percent),
+    @"-%=" = @intFromEnum(ZigToken.minus_percent_equal),
+    @"-|" = @intFromEnum(ZigToken.minus_pipe),
+    @"-|=" = @intFromEnum(ZigToken.minus_pipe_equal),
+    @"*" = @intFromEnum(ZigToken.asterisk),
+    @"*=" = @intFromEnum(ZigToken.asterisk_equal),
+    @"*%" = @intFromEnum(ZigToken.asterisk_percent),
+    @"*%=" = @intFromEnum(ZigToken.asterisk_percent_equal),
+    @"*|" = @intFromEnum(ZigToken.asterisk_pipe),
+    @"*|=" = @intFromEnum(ZigToken.asterisk_pipe_equal),
+    @"/" = @intFromEnum(ZigToken.slash),
+    @"/=" = @intFromEnum(ZigToken.slash_equal),
+    @"%" = @intFromEnum(ZigToken.percent),
+    @"%=" = @intFromEnum(ZigToken.percent_equal),
+
+    @"++" = @intFromEnum(ZigToken.plus_plus),
+    @"**" = @intFromEnum(ZigToken.asterisk_asterisk),
+
+    @"~" = @intFromEnum(ZigToken.tilde),
+    @"|" = @intFromEnum(ZigToken.pipe),
+    @"|=" = @intFromEnum(ZigToken.pipe_equal),
+    @"^" = @intFromEnum(ZigToken.caret),
+    @"^=" = @intFromEnum(ZigToken.caret_equal),
+    @"&" = @intFromEnum(ZigToken.ampersand),
+    @"&=" = @intFromEnum(ZigToken.ampersand_equal),
+
+    @"<<" = @intFromEnum(ZigToken.angle_bracket_angle_bracket_left),
+    @"<<=" = @intFromEnum(ZigToken.angle_bracket_angle_bracket_left_equal),
+    @"<<|" = @intFromEnum(ZigToken.angle_bracket_angle_bracket_left_pipe),
+    @"<<|=" = @intFromEnum(ZigToken.angle_bracket_angle_bracket_left_pipe_equal),
+    @">>" = @intFromEnum(ZigToken.angle_bracket_angle_bracket_right),
+    @">>=" = @intFromEnum(ZigToken.angle_bracket_angle_bracket_right_equal),
+
+    pub fn toToken(self: Operator) ZigToken {
+        return @enumFromInt(@intFromEnum(self));
+    }
 };
 
 test {
