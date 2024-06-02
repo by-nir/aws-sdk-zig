@@ -32,7 +32,7 @@ pub const Field = struct {
 
     pub fn write(self: Field, writer: *Writer) !void {
         if (self.name) |s| {
-            try writer.appendFmt("{_}: {}", .{ std.zig.fmtId(s), self.type });
+            try writer.appendFmt("{}: {}", .{ std.zig.fmtId(s), self.type });
         } else {
             try writer.appendValue(self.type);
         }
@@ -151,7 +151,7 @@ pub const Variable = struct {
 
     pub fn write(self: Variable, writer: *Writer) !void {
         try writer.appendString(if (self.is_const) "const " else "var ");
-        try writer.appendFmt("{_}", .{std.zig.fmtId(self.name)});
+        try writer.appendFmt("{}", .{std.zig.fmtId(self.name)});
         if (self.type) |t| {
             try writer.appendFmt(": {}", .{t});
             if (self.alignment) |a| try writer.appendFmt(" align({})", .{a});
@@ -368,12 +368,12 @@ test "Namespace" {
     try Namespace.build(test_alloc, Test.callback, &tester, .keyword_struct)
         .bodyWith(@as([]u8, &tag), struct {
         fn f(ctx: []u8, b: *scope.ContainerBuild) !void {
-            try b.field("foo").typing(b.xpr.raw(ctx)).end();
+            try b.field("foo").typing(b.x.raw(ctx)).end();
         }
     }.f);
 }
 
-pub const WordBlock = struct {
+pub const TokenBlock = struct {
     tokan: ZigToken,
     name: ?[]const u8,
     block: scope.Block,
@@ -384,7 +384,7 @@ pub const WordBlock = struct {
         name: ?[]const u8,
         ctx: anytype,
         closure: Closure(@TypeOf(ctx), scope.BlockClosure),
-    ) !WordBlock {
+    ) !TokenBlock {
         var builder = scope.BlockBuild.init(allocator);
         callClosure(ctx, closure, .{&builder}) catch |err| {
             builder.deinit();
@@ -397,11 +397,11 @@ pub const WordBlock = struct {
         };
     }
 
-    pub fn deinit(self: WordBlock, allocator: Allocator) void {
+    pub fn deinit(self: TokenBlock, allocator: Allocator) void {
         self.block.deinit(allocator);
     }
 
-    pub fn write(self: WordBlock, writer: *Writer) !void {
+    pub fn write(self: TokenBlock, writer: *Writer) !void {
         try writer.appendFmt("{s} ", .{self.tokan.lexeme().?});
         if (self.name) |s| {
             try writer.appendFmt("\"{}\" ", .{std.zig.fmtEscapes(s)});
@@ -410,16 +410,16 @@ pub const WordBlock = struct {
     }
 };
 
-test "WordBlock" {
+test "TokenBlock" {
     var tag: [3]u8 = "bar".*;
-    const block = try WordBlock.init(
+    const block = try TokenBlock.init(
         test_alloc,
         .keyword_test,
         "foo",
         @as([]u8, &tag),
         struct {
             fn f(ctx: []u8, b: *scope.BlockBuild) !void {
-                try b.defers(b.xpr.raw(ctx));
+                try b.defers(b.x.raw(ctx));
             }
         }.f,
     );
@@ -434,6 +434,7 @@ test "WordBlock" {
 pub const Function = struct {
     name: []const u8,
     args: []const Arg,
+    conv: ?std.builtin.CallingConvention,
     @"return": ?Expr,
     body: scope.Block,
 
@@ -446,10 +447,11 @@ pub const Function = struct {
         }
 
         pub fn write(self: Arg, writer: *Writer) !void {
+            const name = std.zig.fmtId(self.name);
             if (self.type) |t| {
-                try writer.appendFmt("{s}: {}", .{ self.name, t });
+                try writer.appendFmt("{_}: {}", .{ name, t });
             } else {
-                try writer.appendFmt("{s}: anytype", .{self.name});
+                try writer.appendFmt("{_}: anytype", .{name});
             }
         }
     };
@@ -466,10 +468,14 @@ pub const Function = struct {
         try writer.appendList(Arg, self.args, .{
             .delimiter = ", ",
         });
+        try writer.appendString(") ");
+        if (self.conv) |c| {
+            try writer.appendFmt("callconv(.{s}) ", .{@tagName(c)});
+        }
         if (self.@"return") |t| {
-            try writer.appendFmt(") {} ", .{t});
+            try writer.appendFmt("{} ", .{t});
         } else {
-            try writer.appendString(") void ");
+            try writer.appendString("void ");
         }
         try self.body.write(writer);
     }
@@ -512,6 +518,7 @@ pub const Function = struct {
             callback: Callback,
             name: []const u8,
             args: StackChain(?ArgBuild) = .{},
+            conv: ?std.builtin.CallingConvention = null,
             @"return": ?ExprBuild = null,
 
             pub fn deinit(self: Self) void {
@@ -527,6 +534,14 @@ pub const Function = struct {
                     .name = name,
                     .type = typing,
                 });
+                return dupe;
+            }
+
+            pub fn callConv(self: Self, conv: std.builtin.CallingConvention) Self {
+                assert(self.conv == null);
+                assert(self.@"return" == null);
+                var dupe = self;
+                dupe.conv = conv;
                 return dupe;
             }
 
@@ -586,6 +601,7 @@ pub const Function = struct {
                 return .{
                     .name = self.name,
                     .args = alloc_args,
+                    .conv = self.conv,
                     .@"return" = alloc_return,
                     .body = try builder.consume(),
                 };
@@ -597,15 +613,16 @@ pub const Function = struct {
 test "Function" {
     const Test = utils.TestVal(Function);
     var tester = Test{ .expected = 
-    \\fn foo(bar: Bar, baz: anytype) Qux {
+    \\fn foo(bar: Bar, baz: anytype) callconv(.C) Qux {
     \\    defer foo;
     \\}
     };
     try Function.build(test_alloc, Test.callback, &tester, "foo")
         .arg("bar", _xpr("Bar")).arg("baz", null)
+        .callConv(.C)
         .returns(_xpr("Qux")).body(struct {
         fn f(b: *scope.BlockBuild) !void {
-            try b.defers(b.xpr.raw("foo"));
+            try b.defers(b.x.raw("foo"));
         }
     }.f);
 }
