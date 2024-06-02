@@ -13,6 +13,7 @@ const utils = @import("utils.zig");
 const exp = @import("expr.zig");
 const Expr = exp.Expr;
 const ExprBuild = exp.ExprBuild;
+const ExprComment = exp.ExprComment;
 const _blk = exp._blk;
 const _raw = exp._raw;
 
@@ -87,9 +88,15 @@ test "If" {
     try If.build(test_alloc, Test.callback, &tester, _raw("foo"))
         .body(_raw("bar")).end();
 
-    tester.expected = "if (foo) |bar| baz else qux";
+    tester.expected =
+        \\if (foo) |bar| baz
+        \\// foo
+        \\// bar
+        \\else qux
+    ;
     try If.build(test_alloc, Test.callback, &tester, _raw("foo"))
         .capture("bar").body(_raw("baz"))
+        .comment("foo\nbar")
         .@"else"().body(_raw("qux")).end();
 
     tester.expected = "if (foo) bar else if (baz) qux else quxx";
@@ -377,6 +384,7 @@ test "While: statement" {
 }
 
 pub const Branch = struct {
+    comment: ?ExprComment = null,
     condition: ?Expr = null,
     payload: ?[]const u8 = null,
     body: Expr,
@@ -387,11 +395,19 @@ pub const Branch = struct {
     }
 
     pub fn write(self: Branch, writer: *Writer) !void {
-        if (self.condition) |condition| {
+        if (self.comment) |t| {
+            try writer.breakValue(t);
+            if (self.condition) |condition| {
+                try writer.breakFmt("else if ({}) ", .{condition});
+            } else {
+                try writer.breakString("else ");
+            }
+        } else if (self.condition) |condition| {
             try writer.appendFmt(" else if ({}) ", .{condition});
         } else {
             try writer.appendString(" else ");
         }
+
         try self.writeBody(writer);
     }
 
@@ -401,6 +417,7 @@ pub const Branch = struct {
     }
 
     const Partial = struct {
+        comment: ?ExprComment = null,
         condition: ?ExprBuild = null,
         payload: ?[]const u8 = null,
         body: ?ExprBuild = null,
@@ -429,6 +446,7 @@ pub const Branch = struct {
                 return err;
             } else null;
             return .{
+                .comment = self.comment,
                 .condition = alloc_cond,
                 .payload = self.payload,
                 .body = alloc_body,
@@ -478,12 +496,29 @@ pub const Branch = struct {
                 return dupe;
             }
 
+            pub fn comment(self: *const Self, value: []const u8) Self {
+                return self.flushAndReset(null, ExprComment{
+                    .kind = .normal,
+                    .source = .{ .plain = value },
+                });
+            }
+
             pub fn elseIf(self: *const Self, condition: ExprBuild) Self {
-                return self.flushAndReset(condition);
+                if (self.partial.comment == null) {
+                    return self.flushAndReset(condition, null);
+                } else {
+                    var dupe = self.*;
+                    dupe.partial.condition = condition;
+                    return dupe;
+                }
             }
 
             pub fn @"else"(self: *const Self) Self {
-                return self.flushAndReset(null);
+                if (self.partial.comment == null) {
+                    return self.flushAndReset(null, null);
+                } else {
+                    return self.*;
+                }
             }
 
             pub fn end(self: *const Self) Return {
@@ -499,10 +534,10 @@ pub const Branch = struct {
                 }
             }
 
-            fn flushAndReset(self: *const Self, condition: ?ExprBuild) Self {
+            fn flushAndReset(self: *const Self, condition: ?ExprBuild, comm: ?ExprComment) Self {
                 var dupe = self.*;
                 dupe.branches = self.flushPartial();
-                dupe.partial = .{ .condition = condition };
+                dupe.partial = .{ .condition = condition, .comment = comm };
                 return dupe;
             }
 
@@ -568,6 +603,7 @@ pub const Switch = struct {
     };
 
     const Statement = union(enum) {
+        comment: ExprComment,
         prong: struct {
             is_inline: bool,
             cases: []const Case,
@@ -577,6 +613,7 @@ pub const Switch = struct {
 
         pub fn deinit(self: Statement, allocator: Allocator) void {
             switch (self) {
+                .comment => {},
                 .prong => |p| {
                     for (p.cases) |t| t.deinit(allocator);
                     allocator.free(p.cases);
@@ -606,6 +643,7 @@ pub const Switch = struct {
                     }
                     try writer.appendFmt(" {},", .{prong.body});
                 },
+                .comment => |t| try writer.appendValue(t),
             }
         }
     };
@@ -641,6 +679,14 @@ pub const Switch = struct {
                 };
                 return .{ .value = value, .statements = statements };
             }
+        }
+
+        pub fn comment(self: *Build, value: []const u8) !void {
+            assert(self.state == .idle or self.state == .inlined);
+            try self.statements.append(self.allocator, .{ .comment = ExprComment{
+                .kind = .normal,
+                .source = .{ .plain = value },
+            } });
         }
 
         pub fn inlined(self: *Build) *Build {
@@ -801,6 +847,7 @@ test "Switch" {
 
     try b.branch().case(b.x.raw("bar")).case(b.x.raw("baz"))
         .capture("val").capture("tag").body(b.x.raw("qux"));
+    try b.comment("foo\nbar");
     try b.branch().caseRange(b.x.raw("18"), b.x.raw("108"))
         .body(b.x.raw("unreachable"));
     try b.inlined().@"else"().body(b.x.raw("unreachable"));
@@ -810,6 +857,8 @@ test "Switch" {
     try Writer.expectValue(
         \\switch (foo) {
         \\    bar, baz => |val, tag| qux,
+        \\    // foo
+        \\    // bar
         \\    18...108 => unreachable,
         \\    inline else => unreachable,
         \\}

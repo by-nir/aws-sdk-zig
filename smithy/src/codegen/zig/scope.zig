@@ -26,12 +26,13 @@ pub const Container = struct {
         for (self.statements, 0..) |statement, i| {
             if (i == 0) {
                 try writer.appendFmt("{s}{;}", .{ writer.prefix, statement });
+                continue;
             } else {
-                try writer.breakEmpty(1);
+                // Empty line padding, unless previous is a comment
+                if (i > 0 and self.statements[i - 1] != .comment) try writer.breakEmpty(1);
                 try writer.breakFmt("{;}", .{statement});
             }
         }
-    }
 };
 
 test "Container" {
@@ -135,6 +136,29 @@ pub const ContainerBuild = struct {
         const data = try self.allocator.create(@TypeOf(value));
         data.* = value;
         return data;
+    }
+
+    pub fn comment(self: *ContainerBuild, kind: exp.ExprComment.Kind, value: []const u8) !void {
+        try self.appendStatement(.{ .comment = .{
+            .kind = kind,
+            .source = .{ .plain = value },
+        } });
+    }
+
+    test "comment" {
+        var b = init(test_alloc);
+        errdefer b.deinit();
+
+        try b.comment(.normal, "foo\nbar");
+        try b.constant("foo").assign().raw("bar;").end();
+
+        const data = try b.consume();
+        defer data.deinit(test_alloc);
+        try Writer.expectValue(
+            \\// foo
+            \\// bar
+            \\const foo = bar;
+        , data);
     }
 
     //
@@ -355,12 +379,13 @@ pub const Block = struct {
         if (self.statements.len == 0) return writer.appendString("{}");
 
         try writer.appendChar('{');
-        try writer.indentPush(utils.INDENT_STR);
+        try writer.pushIndent(utils.INDENT_STR);
         for (self.statements, 0..) |statement, i| {
-            if (i > 0) try writer.breakEmpty(1);
+            // Empty line padding, unless previous is a comment
+            if (i > 0 and self.statements[i - 1] != .comment) try writer.breakEmpty(1);
             try writer.breakFmt("{;}", .{statement});
         }
-        writer.indentPop();
+        writer.popIndent();
         try writer.breakChar('}');
     }
 };
@@ -446,8 +471,33 @@ pub const BlockBuild = struct {
         return data;
     }
 
-    pub fn raw(self: *BlockBuild, string: []const u8) ExprBuild {
+    pub fn raw(self: *BlockBuild, string: []const u8) !void {
         return self.append(.{ .raw = string });
+    }
+
+    pub fn comment(self: *BlockBuild, kind: exp.ExprComment.Kind, value: []const u8) !void {
+        try self.append(.{ .comment = .{
+            .kind = kind,
+            .source = .{ .plain = value },
+        } });
+    }
+
+    test "comment" {
+        var b = init(test_alloc);
+        errdefer b.deinit();
+
+        try b.comment(.normal, "foo\nbar");
+        try b.constant("foo").assign().raw("bar;").end();
+
+        const data = try b.consume();
+        defer data.deinit(test_alloc);
+        try Writer.expectValue(
+            \\{
+            \\    // foo
+            \\    // bar
+            \\    const foo = bar;
+            \\}
+        , data);
     }
 
     pub fn variable(

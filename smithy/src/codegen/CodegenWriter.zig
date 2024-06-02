@@ -69,12 +69,12 @@ pub fn deinit(self: *Self) void {
     self.* = undefined;
 }
 
-pub fn indentPush(self: *Self, segment: []const u8) !void {
+pub fn pushIndent(self: *Self, segment: []const u8) !void {
     try self.prefix_segments.append(self.allocator, self.prefix);
     self.prefix = try fmt.allocPrint(self.allocator, "{s}{s}", .{ self.prefix, segment });
 }
 
-pub fn indentPop(self: *Self) void {
+pub fn popIndent(self: *Self) void {
     self.allocator.free(self.prefix);
     self.prefix = self.prefix_segments.pop();
 }
@@ -83,13 +83,13 @@ test "indent" {
     var writer = init(test_alloc, undefined);
     defer writer.deinit();
 
-    try writer.indentPush("Foo");
+    try writer.pushIndent("Foo");
     try testing.expectEqualStrings("Foo", writer.prefix);
-    try writer.indentPush("Bar");
+    try writer.pushIndent("Bar");
     try testing.expectEqualStrings("FooBar", writer.prefix);
-    writer.indentPop();
+    writer.popIndent();
     try testing.expectEqualStrings("Foo", writer.prefix);
-    writer.indentPop();
+    writer.popIndent();
     try testing.expectEqualStrings("", writer.prefix);
 }
 
@@ -138,12 +138,44 @@ test "appendRepeatStr" {
     try testing.expectEqualStrings("FooFooBarBar", stream.getWritten());
 }
 
+pub fn appendMultiLine(self: *Self, str: []const u8) !void {
+    var first = true;
+    var trimmed: ?[]const u8 = null;
+    var it = mem.tokenizeAny(u8, str, "\n");
+    while (it.next()) |s| {
+        if (first) {
+            first = false;
+            try self.output.writeAll(s);
+        } else {
+            try self.output.print("\n{s}{s}", .{ self.prefix, s });
+        }
+
+        var index = it.index + 1;
+        while (str.len > index and str[index] == '\n') : (index += 1) {
+            if (trimmed == null) {
+                trimmed = mem.trimRight(u8, self.prefix, &std.ascii.whitespace);
+            }
+            try self.output.print("\n{s}", .{trimmed.?});
+        }
+    }
+}
+
+test "appendMultiLine" {
+    var buffer: [32]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buffer);
+    var writer = try initPrefix(test_alloc, stream.writer().any(), ">> ");
+    defer writer.deinit();
+
+    try writer.appendMultiLine("Foo\nBar\n\nBaz");
+    try testing.expectEqualStrings("Foo\n>> Bar\n>>\n>> Baz", stream.getWritten());
+}
+
 pub fn appendList(self: *Self, comptime T: type, items: []const T, comptime options: ListOptions) !void {
     const deli: []const u8, const linebreak: bool = switch (options.line) {
         .none => .{ options.delimiter, false },
         .linebreak => .{ mem.trimRight(u8, options.delimiter, &std.ascii.whitespace), true },
         .indent => |str| blk: {
-            try self.indentPush(str);
+            try self.pushIndent(str);
             break :blk .{ mem.trimRight(u8, options.delimiter, &std.ascii.whitespace), true };
         },
     };
@@ -163,7 +195,7 @@ pub fn appendList(self: *Self, comptime T: type, items: []const T, comptime opti
         }
     }
 
-    if (options.line == .indent) self.indentPop();
+    if (options.line == .indent) self.popIndent();
 }
 
 test "appendList" {
@@ -290,12 +322,38 @@ test "breakRepeatStr" {
     try testing.expectEqualStrings("\n>> FooFoo\n>> BarBar", stream.getWritten());
 }
 
+pub fn breakMultiLine(self: *Self, str: []const u8) !void {
+    var trimmed: ?[]const u8 = null;
+    var it = mem.tokenizeAny(u8, str, "\n");
+    while (it.next()) |s| {
+        try self.output.print("\n{s}{s}", .{ self.prefix, s });
+
+        var index = it.index + 1;
+        while (str.len > index and str[index] == '\n') : (index += 1) {
+            if (trimmed == null) {
+                trimmed = mem.trimRight(u8, self.prefix, &std.ascii.whitespace);
+            }
+            try self.output.print("\n{s}", .{trimmed.?});
+        }
+    }
+}
+
+test "breakMultiLine" {
+    var buffer: [32]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buffer);
+    var writer = try initPrefix(test_alloc, stream.writer().any(), ">> ");
+    defer writer.deinit();
+
+    try writer.breakMultiLine("Foo\nBar\n\nBaz");
+    try testing.expectEqualStrings("\n>> Foo\n>> Bar\n>>\n>> Baz", stream.getWritten());
+}
+
 pub fn breakList(self: *Self, comptime T: type, items: []const T, comptime options: ListOptions) !void {
     const deli: []const u8, const linebreak: bool = switch (options.line) {
         .none => .{ options.delimiter, false },
         .linebreak => .{ mem.trimRight(u8, options.delimiter, &std.ascii.whitespace), true },
         .indent => |str| blk: {
-            try self.indentPush(str);
+            try self.pushIndent(str);
             break :blk .{ mem.trimRight(u8, options.delimiter, &std.ascii.whitespace), true };
         },
     };
@@ -313,7 +371,7 @@ pub fn breakList(self: *Self, comptime T: type, items: []const T, comptime optio
         }
     }
 
-    if (options.line == .indent) self.indentPop();
+    if (options.line == .indent) self.popIndent();
 }
 
 test "breakList" {
