@@ -270,9 +270,9 @@ pub const Namespace = struct {
             return writer.appendString(" {}");
         } else {
             try writer.appendString(" {\n");
-            try writer.indentPush(utils.INDENT_STR);
+            try writer.pushIndent(utils.INDENT_STR);
             try self.container.write(writer);
-            writer.indentPop();
+            writer.popIndent();
             try writer.breakChar('}');
         }
     }

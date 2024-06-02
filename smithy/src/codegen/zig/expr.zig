@@ -20,6 +20,7 @@ pub const Expr = union(enum) {
     id: []const u8,
     type: ExprType,
     value: ExprValue,
+    comment: ExprComment,
     flow: ExprFlow,
     declare: ExprDeclare,
     operator: ZigToken,
@@ -51,12 +52,11 @@ pub const Expr = union(enum) {
                     for (chain) |t| try t.write(writer, format);
                 }
             },
-            .raw => |s| {
-                try writer.appendString(s);
-            },
+            .raw => |s| try writer.appendMultiLine(s),
             .id => |name| {
                 try writer.appendFmt("{}", .{std.zig.fmtId(name)});
             },
+            .comment => |t| try t.write(writer),
             inline .flow, .declare => |t| try t.write(writer, format),
             .operator => |t| {
                 try writer.appendFmt(" {s} ", .{t.lexeme().?});
@@ -215,6 +215,31 @@ const ExprValue = union(enum) {
             // Union, Fn, Pointer, Array, Struct
             else => @compileError("Type `" ++ @typeName(T) ++ "` can’t auto-convert into a value expression."),
         };
+    }
+};
+
+pub const ExprComment = struct {
+    kind: Kind,
+    source: Source,
+
+    pub const Kind = enum { normal, doc, doc_top };
+    pub const Source = union(enum) {
+        plain: []const u8,
+    };
+
+    pub fn write(self: ExprComment, writer: *Writer) !void {
+        const indent = switch (self.kind) {
+            .normal => "// ",
+            .doc => "/// ",
+            .doc_top => "//! ",
+        };
+        try writer.pushIndent(indent);
+        defer writer.popIndent();
+
+        try writer.appendString(indent);
+        switch (self.source) {
+            .plain => |s| try writer.appendMultiLine(s),
+        }
     }
 };
 
