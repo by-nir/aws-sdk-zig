@@ -544,7 +544,7 @@ pub const Switch = struct {
         return .{
             .allocator = allocator,
             .value = value,
-            .xpr = .{ .allocator = allocator },
+            .x = .{ .allocator = allocator },
         };
     }
 
@@ -615,7 +615,7 @@ pub const Switch = struct {
         value: ExprBuild,
         statements: std.ArrayListUnmanaged(Statement) = .{},
         state: State = .idle,
-        xpr: ExprBuild,
+        x: ExprBuild,
 
         const State = enum { idle, inlined, end_inlined, end };
 
@@ -799,11 +799,11 @@ test "Switch" {
     var b = Switch.build(test_alloc, _raw("foo"));
     errdefer b.deinit();
 
-    try b.branch().case(b.xpr.raw("bar")).case(b.xpr.raw("baz"))
-        .capture("val").capture("tag").body(b.xpr.raw("qux"));
-    try b.branch().caseRange(b.xpr.raw("18"), b.xpr.raw("108"))
-        .body(b.xpr.raw("unreachable"));
-    try b.inlined().@"else"().body(b.xpr.raw("unreachable"));
+    try b.branch().case(b.x.raw("bar")).case(b.x.raw("baz"))
+        .capture("val").capture("tag").body(b.x.raw("qux"));
+    try b.branch().caseRange(b.x.raw("18"), b.x.raw("108"))
+        .body(b.x.raw("unreachable"));
+    try b.inlined().@"else"().body(b.x.raw("unreachable"));
 
     const data = try b.consume();
     defer data.deinit(test_alloc);
@@ -866,11 +866,11 @@ test "Call" {
     try Writer.expectValue("foo(bar, baz)", b);
 }
 
-pub const WordLabel = struct {
+pub const TokenReflow = struct {
     token: std.zig.Token.Tag,
     label: ?[]const u8,
 
-    pub fn write(self: WordLabel, writer: *Writer, comptime format: []const u8) !void {
+    pub fn write(self: TokenReflow, writer: *Writer, comptime format: []const u8) !void {
         const keyword = self.token.lexeme().?;
         const suffix: u8 = if (utils.isStatement(format)) ';' else ' ';
         if (self.label) |t| {
@@ -881,14 +881,14 @@ pub const WordLabel = struct {
     }
 };
 
-test "WordLabel" {
-    var expr = WordLabel{ .token = .keyword_return, .label = null };
+test "TokenReflow" {
+    var expr = TokenReflow{ .token = .keyword_return, .label = null };
     try Writer.expectValue("return ", expr);
     try Writer.expectFmt("return;", "{;}", .{expr});
 
-    expr = WordLabel{ .token = .keyword_break, .label = "foo" };
+    expr = TokenReflow{ .token = .keyword_break, .label = "foo" };
     try Writer.expectValue("break :foo ", expr);
 
-    expr = WordLabel{ .token = .keyword_break, .label = "test" };
+    expr = TokenReflow{ .token = .keyword_break, .label = "test" };
     try Writer.expectValue("break :@\"test\" ", expr);
 }

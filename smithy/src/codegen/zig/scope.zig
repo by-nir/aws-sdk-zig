@@ -60,13 +60,14 @@ test "Container" {
 pub const ContainerClosure = *const fn (*ContainerBuild) anyerror!void;
 pub const ContainerBuild = struct {
     allocator: Allocator,
+    prefixes: StackChain(?Expr) = .{},
     statements: std.ArrayListUnmanaged(Expr) = .{},
-    xpr: ExprBuild,
+    x: ExprBuild,
 
     pub fn init(allocator: Allocator) ContainerBuild {
         return .{
             .allocator = allocator,
-            .xpr = .{ .allocator = allocator },
+            .x = .{ .allocator = allocator },
         };
     }
 
@@ -82,8 +83,52 @@ pub const ContainerBuild = struct {
         };
     }
 
-    fn append(self: *ContainerBuild, stmnt: Expr) !void {
-        try self.statements.append(self.allocator, stmnt);
+    fn appendPrefix(self: *ContainerBuild, expr: Expr) *ContainerBuild {
+        self.prefixes = self.prefixes.append(expr);
+        return self;
+    }
+
+    fn appendStatement(self: *ContainerBuild, expr: Expr) !void {
+        if (self.prefixes.isEmpty()) {
+            try self.statements.append(self.allocator, expr);
+        } else switch (expr) {
+            ._chain => |c| {
+                defer self.prefixes = .{};
+                const pref_len = self.prefixes.len;
+                const statement = try self.allocator.alloc(Expr, pref_len + c.len);
+                errdefer self.allocator.free(statement);
+                _ = try self.prefixes.unwrapInto(statement[0..pref_len]);
+                @memcpy(statement[pref_len..], c);
+                try self.statements.append(self.allocator, .{
+                    ._chain = statement,
+                });
+                self.allocator.free(c);
+            },
+            else => {
+                defer self.prefixes = .{};
+                const chain = self.prefixes.append(expr);
+                const statement = try chain.unwrapAlloc(self.allocator);
+                errdefer self.allocator.free(statement);
+                try self.statements.append(self.allocator, .{
+                    ._chain = statement,
+                });
+            },
+        }
+    }
+
+    fn startChain(self: *ContainerBuild) ExprBuild {
+        defer self.prefixes = .{};
+        return .{
+            .allocator = self.allocator,
+            .exprs = self.prefixes,
+            .callback_ctx = self,
+            .callback_fn = endChain,
+        };
+    }
+
+    fn endChain(ctx: *anyopaque, expr: Expr) !void {
+        const self: *ContainerBuild = @alignCast(@ptrCast(ctx));
+        try self.statements.append(self.allocator, expr);
     }
 
     fn dupeValue(self: ContainerBuild, value: anytype) !*@TypeOf(value) {
@@ -91,6 +136,7 @@ pub const ContainerBuild = struct {
         data.* = value;
         return data;
     }
+
     //
     // Declare
     //
@@ -103,31 +149,35 @@ pub const ContainerBuild = struct {
         errdefer value.deinit(self.allocator);
         const dupe = try self.dupeValue(value);
         errdefer self.allocator.destroy(dupe);
-        try self.append(.{ .declare = .{ .field = dupe } });
+        try self.appendStatement(.{
+            .declare = .{ .field = dupe },
+        });
     }
 
     test "field" {
         var b = init(test_alloc);
         errdefer b.deinit();
-        try b.field("foo").typing(b.xpr.raw("Bar")).end();
+        try b.field("foo").typing(b.x.raw("Bar")).end();
         try b.expect("foo: Bar");
     }
 
     pub fn using(self: *ContainerBuild, expr: ExprBuild) !void {
         const data = try expr.consume();
         errdefer data.deinit(self.allocator);
-        const dupe = try self.dupeValue(exp.WordExpr{
+        const dupe = try self.dupeValue(exp.TokenExpr{
             .token = .keyword_usingnamespace,
             .expr = data,
         });
         errdefer self.allocator.destroy(dupe);
-        try self.append(.{ .declare = .{ .word_expr = dupe } });
+        try self.appendStatement(.{
+            .declare = .{ .token_expr = dupe },
+        });
     }
 
     test "using" {
         var b = init(test_alloc);
         errdefer b.deinit();
-        try b.using(b.xpr.raw("foo"));
+        try b.using(b.x.raw("foo"));
         try b.expect("usingnamespace foo");
     }
 
@@ -135,26 +185,14 @@ pub const ContainerBuild = struct {
         self: *ContainerBuild,
         name: []const u8,
     ) declare.Variable.Build(fn (*const ExprBuild, anyerror!declare.Variable) ExprBuild) {
-        return self.startVariable().variable(name);
+        return self.startChain().variable(name);
     }
 
     pub fn constant(
         self: *ContainerBuild,
         name: []const u8,
     ) declare.Variable.Build(fn (*const ExprBuild, anyerror!declare.Variable) ExprBuild) {
-        return self.startVariable().constant(name);
-    }
-
-    fn startVariable(self: *ContainerBuild) ExprBuild {
-        var expr = self.xpr; // TODO: or consume prefix
-        expr.callback_ctx = self;
-        expr.callback_fn = endVariable;
-        return expr;
-    }
-
-    fn endVariable(ctx: *anyopaque, expr: Expr) !void {
-        const self: *ContainerBuild = @alignCast(@ptrCast(ctx));
-        try self.statements.append(self.allocator, expr);
+        return self.startChain().constant(name);
     }
 
     test "variables" {
@@ -177,16 +215,18 @@ pub const ContainerBuild = struct {
         errdefer value.deinit(self.allocator);
         const dupe = try self.dupeValue(value);
         errdefer self.allocator.destroy(dupe);
-        try self.append(.{ .declare = .{ .function = dupe } });
+        try self.appendStatement(.{
+            .declare = .{ .function = dupe },
+        });
     }
 
     test "function" {
         var b = init(test_alloc);
         errdefer b.deinit();
-        try b.function("foo").arg("bar", b.xpr.raw("Bar"))
-            .arg("baz", null).returns(b.xpr.raw("Qux")).body(struct {
+        try b.function("foo").arg("bar", b.x.raw("Bar"))
+            .arg("baz", null).returns(b.x.raw("Qux")).body(struct {
             fn f(bf: *BlockBuild) !void {
-                try bf.defers(bf.xpr.raw("foo"));
+                try bf.defers(bf.x.raw("foo"));
             }
         }.f);
         try b.expect(
@@ -209,7 +249,7 @@ pub const ContainerBuild = struct {
         ctx: anytype,
         closure: Closure(@TypeOf(ctx), BlockClosure),
     ) !void {
-        const data = try declare.WordBlock.init(
+        const data = try declare.TokenBlock.init(
             self.allocator,
             .keyword_comptime,
             null,
@@ -217,7 +257,9 @@ pub const ContainerBuild = struct {
             closure,
         );
         errdefer data.deinit(self.allocator);
-        try self.append(.{ .declare = .{ .word_block = data } });
+        try self.appendStatement(.{
+            .declare = .{ .token_block = data },
+        });
     }
 
     test "comptimeBlock" {
@@ -239,9 +281,11 @@ pub const ContainerBuild = struct {
         ctx: anytype,
         closure: Closure(@TypeOf(ctx), BlockClosure),
     ) !void {
-        const data = try declare.WordBlock.init(self.allocator, .keyword_test, name, ctx, closure);
+        const data = try declare.TokenBlock.init(self.allocator, .keyword_test, name, ctx, closure);
         errdefer data.deinit(self.allocator);
-        try self.append(.{ .declare = .{ .word_block = data } });
+        try self.appendStatement(.{
+            .declare = .{ .token_block = data },
+        });
     }
 
     test "testBlock" {
@@ -257,6 +301,45 @@ pub const ContainerBuild = struct {
         const data = try self.consume();
         defer data.deinit(test_alloc);
         try Writer.expectValue(expected, data.statements[0]);
+    }
+
+    //
+    // Prefix
+    //
+
+    pub fn public(self: *ContainerBuild) *ContainerBuild {
+        return self.appendPrefix(.{ .keyword_space = .keyword_pub });
+    }
+
+    pub fn threadLocal(self: *ContainerBuild) *ContainerBuild {
+        return self.appendPrefix(.{ .keyword_space = .keyword_threadlocal });
+    }
+
+    pub fn exports(self: *ContainerBuild) *ContainerBuild {
+        return self.appendPrefix(.{ .keyword_space = .keyword_export });
+    }
+
+    pub fn externs(self: *ContainerBuild, name: ?[]const u8) *ContainerBuild {
+        const data = exp.TokenStrExpr{
+            .token = .keyword_extern,
+            .string = name,
+        };
+        return self.appendPrefix(.{ .declare = .{ .token_str = data } });
+    }
+
+    pub fn inlines(self: *ContainerBuild) *ContainerBuild {
+        return self.appendPrefix(.{ .keyword = .keyword_inline });
+    }
+
+    pub fn noInline(self: *ContainerBuild) *ContainerBuild {
+        return self.appendPrefix(.{ .keyword = .keyword_noinline });
+    }
+
+    test "prefix" {
+        var b = init(test_alloc);
+        errdefer b.deinit();
+        try b.public().using(b.x.raw("foo"));
+        try b.expect("pub usingnamespace foo");
     }
 };
 
@@ -311,12 +394,12 @@ pub const BlockClosure = *const fn (*BlockBuild) anyerror!void;
 pub const BlockBuild = struct {
     allocator: Allocator,
     statements: std.ArrayListUnmanaged(Expr) = .{},
-    xpr: ExprBuild,
+    x: ExprBuild,
 
     pub fn init(allocator: Allocator) BlockBuild {
         return .{
             .allocator = allocator,
-            .xpr = .{ .allocator = allocator },
+            .x = .{ .allocator = allocator },
         };
     }
 
@@ -333,7 +416,7 @@ pub const BlockBuild = struct {
     }
 
     fn startChain(self: *BlockBuild) ExprBuild {
-        var expr = self.xpr; // TODO: or consume prefix
+        var expr = self.x;
         expr.callback_ctx = self;
         expr.callback_fn = appendChain;
         return expr;
@@ -344,7 +427,7 @@ pub const BlockBuild = struct {
             .allocator = self.allocator,
             .callback_ctx = self,
             .callback_fn = appendChain,
-            .exprs = StackChain(?Expr).start(expr), // TODO: or consume prefix
+            .exprs = StackChain(?Expr).start(expr),
         };
     }
 
@@ -363,9 +446,38 @@ pub const BlockBuild = struct {
         return data;
     }
 
-    //
-    // Control Flow
-    //
+    pub fn raw(self: *BlockBuild, string: []const u8) ExprBuild {
+        return self.append(.{ .raw = string });
+    }
+
+    pub fn variable(
+        self: *BlockBuild,
+        name: []const u8,
+    ) declare.Variable.Build(fn (*const ExprBuild, anyerror!declare.Variable) ExprBuild) {
+        return self.startChain().variable(name);
+    }
+
+    pub fn constant(
+        self: *BlockBuild,
+        name: []const u8,
+    ) declare.Variable.Build(fn (*const ExprBuild, anyerror!declare.Variable) ExprBuild) {
+        return self.startChain().constant(name);
+    }
+
+    test "variables" {
+        var b = init(test_alloc);
+        errdefer b.deinit();
+        try b.variable("foo").comma().constant("bar").assign().raw("baz").end();
+        try b.expect("var foo, const bar = baz");
+    }
+
+    pub fn discard(self: *BlockBuild) ExprBuild {
+        return self.startChain().raw("_ = ");
+    }
+
+    pub fn compTime(self: *BlockBuild, name: []const u8, args: []const ExprBuild) ExprBuild {
+        return self.startChain().compTime(name, args);
+    }
 
     pub fn @"if"(self: *BlockBuild, condition: ExprBuild) flow.If.Build(@TypeOf(endIf)) {
         return flow.If.build(self.allocator, endIf, self, condition);
@@ -379,7 +491,7 @@ pub const BlockBuild = struct {
     test "if" {
         var b = init(test_alloc);
         errdefer b.deinit();
-        try b.@"if"(b.xpr.raw("foo")).body(b.xpr.raw("bar")).end();
+        try b.@"if"(b.x.raw("foo")).body(b.x.raw("bar")).end();
         try b.expect("if (foo) bar");
     }
 
@@ -395,7 +507,7 @@ pub const BlockBuild = struct {
     test "for" {
         var b = init(test_alloc);
         errdefer b.deinit();
-        try b.@"for"().iter(b.xpr.raw("foo"), "_").body(b.xpr.raw("bar")).end();
+        try b.@"for"().iter(b.x.raw("foo"), "_").body(b.x.raw("bar")).end();
         try b.expect("for (foo) |_| bar");
     }
 
@@ -413,7 +525,7 @@ pub const BlockBuild = struct {
     test "while" {
         var b = init(test_alloc);
         errdefer b.deinit();
-        try b.@"while"(b.xpr.raw("foo")).body(b.xpr.raw("bar")).end();
+        try b.@"while"(b.x.raw("foo")).body(b.x.raw("bar")).end();
         try b.expect("while (foo) bar");
     }
 
@@ -443,15 +555,15 @@ pub const BlockBuild = struct {
     test "switch" {
         var b = init(test_alloc);
         errdefer b.deinit();
-        try b.@"switch"(b.xpr.raw("foo"), struct {
+        try b.@"switch"(b.x.raw("foo"), struct {
             fn f(_: *flow.Switch.Build) !void {}
         }.f);
         try b.expect("switch (foo) {}");
 
         var tag: [3]u8 = "bar".*;
-        try b.switchWith(b.xpr.raw("foo"), @as([]u8, &tag), struct {
+        try b.switchWith(b.x.raw("foo"), @as([]u8, &tag), struct {
             fn f(ctx: []u8, s: *flow.Switch.Build) !void {
-                try s.branch().case(s.xpr.raw(ctx)).body(s.xpr.raw("baz"));
+                try s.branch().case(s.x.raw(ctx)).body(s.x.raw("baz"));
             }
         }.f);
         try b.expect(
@@ -461,51 +573,50 @@ pub const BlockBuild = struct {
         );
     }
 
-    pub fn call(self: *BlockBuild, name: []const u8, args: []const ExprBuild) !void {
-        const data = try flow.Call.init(self.allocator, name, args);
-        try self.append(.{ .flow = .{ .call = data } });
+    pub fn call(self: *BlockBuild, name: []const u8, args: []const ExprBuild) ExprBuild {
+        return self.startChain().call(name, args);
     }
 
     test "call" {
         var b = init(test_alloc);
         errdefer b.deinit();
-        try b.call("foo", &.{ b.xpr.raw("bar"), b.xpr.raw("baz") });
+        try b.call("foo", &.{ b.x.raw("bar"), b.x.raw("baz") }).end();
         try b.expect("foo(bar, baz)");
     }
 
     pub fn defers(self: *BlockBuild, expr: ExprBuild) !void {
-        const data = exp.WordExpr{
+        const data = exp.TokenExpr{
             .token = .keyword_defer,
             .expr = try expr.consume(),
         };
         errdefer data.deinit(self.allocator);
         const dupe = try self.dupeValue(data);
         errdefer self.allocator.destroy(dupe);
-        try self.append(.{ .flow = .{ .word_expr = dupe } });
+        try self.append(.{ .flow = .{ .token_expr = dupe } });
     }
 
     test "defers" {
         var b = init(test_alloc);
         errdefer b.deinit();
-        try b.defers(b.xpr.raw("foo"));
+        try b.defers(b.x.raw("foo"));
         try b.expect("defer foo");
     }
 
-    pub fn errorDefers(self: *BlockBuild) exp.WordCaptureExpr.Build(@TypeOf(endErrorDefers)) {
-        return exp.WordCaptureExpr.build(endErrorDefers, self, .keyword_errdefer);
+    pub fn errorDefers(self: *BlockBuild) exp.TokenCaptureExpr.Build(@TypeOf(endErrorDefers)) {
+        return exp.TokenCaptureExpr.build(endErrorDefers, self, .keyword_errdefer);
     }
 
-    fn endErrorDefers(self: *BlockBuild, value: exp.WordCaptureExpr) !void {
+    fn endErrorDefers(self: *BlockBuild, value: exp.TokenCaptureExpr) !void {
         errdefer value.deinit(self.allocator);
         const data = try self.dupeValue(value);
         errdefer self.allocator.destroy(data);
-        try self.append(.{ .flow = .{ .word_capture = data } });
+        try self.append(.{ .flow = .{ .token_capture = data } });
     }
 
     test "errorDefers" {
         var b = init(test_alloc);
         errdefer b.deinit();
-        try b.errorDefers().body(b.xpr.raw("foo"));
+        try b.errorDefers().body(b.x.raw("foo"));
         try b.expect("errdefer foo");
     }
 
@@ -539,7 +650,7 @@ pub const BlockBuild = struct {
         var tag: [3]u8 = "bar".*;
         try b.blockWith(@as([]u8, &tag), struct {
             fn f(ctx: []u8, k: *BlockBuild) !void {
-                try k.defers(k.xpr.raw(ctx));
+                try k.defers(k.x.raw(ctx));
             }
         }.f);
         try b.expect(
@@ -561,7 +672,7 @@ pub const BlockBuild = struct {
         return self.startChain().continues(label);
     }
 
-    test "terminators" {
+    test "reflows" {
         var b = init(test_alloc);
         errdefer b.deinit();
         try b.returns().raw("foo").end();
@@ -574,45 +685,25 @@ pub const BlockBuild = struct {
         try b.expect("continue :foo bar");
     }
 
-    //
-    // Declare
-    //
-
-    pub fn variable(
-        self: *BlockBuild,
-        name: []const u8,
-    ) declare.Variable.Build(fn (*const ExprBuild, anyerror!declare.Variable) ExprBuild) {
-        return self.startChain().variable(name);
-    }
-
-    pub fn constant(
-        self: *BlockBuild,
-        name: []const u8,
-    ) declare.Variable.Build(fn (*const ExprBuild, anyerror!declare.Variable) ExprBuild) {
-        return self.startChain().constant(name);
-    }
-
-    test "variables" {
-        var b = init(test_alloc);
-        errdefer b.deinit();
-        try b.variable("foo").comma().constant("bar").assign().raw("baz").end();
-        try b.expect("var foo, const bar = baz");
-    }
-
-    //
-    // Expression
-    //
-
-    // import() [not more smarting about imports – just a regular call, we can use declaration and comma for what we need];
-    // value(); type(); discard(); assign(), op()...
-    // dot(), .comma() ref/name/identifier([]const u8), OPERATIONS
-
     fn expect(self: *BlockBuild, expected: []const u8) !void {
         const data = try self.consume();
         defer data.deinit(test_alloc);
         try Writer.expectValue(expected, data.statements[0]);
     }
 };
+
+pub const BlockLabel = struct {
+    name: []const u8,
+
+    pub fn write(self: BlockLabel, writer: *Writer) !void {
+        try writer.appendFmt("{_}: ", .{std.zig.fmtId(self.name)});
+    }
+};
+
+test "BlockLabel" {
+    const expr = BlockLabel{ .name = "foo" };
+    try Writer.expectValue("foo: ", expr);
+}
 
 test {
     _ = BlockBuild;
