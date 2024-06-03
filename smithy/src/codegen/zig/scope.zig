@@ -77,7 +77,8 @@ test "Container" {
 pub const ContainerClosure = *const fn (*ContainerBuild) anyerror!void;
 pub const ContainerBuild = struct {
     allocator: Allocator,
-    prefixes: StackChain(?Expr) = .{},
+    prefix_len: u3 = 0,
+    prefixes: [4]Expr = undefined,
     statements: std.ArrayListUnmanaged(Expr) = .{},
     x: ExprBuild,
 
@@ -101,31 +102,33 @@ pub const ContainerBuild = struct {
     }
 
     fn appendPrefix(self: *ContainerBuild, expr: Expr) *ContainerBuild {
-        self.prefixes = self.prefixes.append(expr);
+        assert(self.prefix_len < 4);
+        self.prefixes[self.prefix_len] = expr;
+        self.prefix_len += 1;
         return self;
     }
 
     fn appendStatement(self: *ContainerBuild, expr: Expr) !void {
-        if (self.prefixes.isEmpty()) {
+        if (self.prefix_len == 0) {
             try self.statements.append(self.allocator, expr);
         } else switch (expr) {
             ._chain => |c| {
-                defer self.prefixes = .{};
-                const pref_len = self.prefixes.len;
-                const statement = try self.allocator.alloc(Expr, pref_len + c.len);
+                defer self.prefix_len = 0;
+                const statement = try self.allocator.alloc(Expr, self.prefix_len + c.len);
                 errdefer self.allocator.free(statement);
-                _ = try self.prefixes.unwrapInto(statement[0..pref_len]);
-                @memcpy(statement[pref_len..], c);
+                @memcpy(statement[0..self.prefix_len], self.prefixes[0..self.prefix_len]);
+                @memcpy(statement[self.prefix_len..], c);
                 try self.statements.append(self.allocator, .{
                     ._chain = statement,
                 });
                 self.allocator.free(c);
             },
             else => {
-                defer self.prefixes = .{};
-                const chain = self.prefixes.append(expr);
-                const statement = try chain.unwrapAlloc(self.allocator);
+                defer self.prefix_len = 0;
+                const statement = try self.allocator.alloc(Expr, self.prefix_len + 1);
                 errdefer self.allocator.free(statement);
+                @memcpy(statement[0..self.prefix_len], self.prefixes[0..self.prefix_len]);
+                statement[self.prefix_len] = expr;
                 try self.statements.append(self.allocator, .{
                     ._chain = statement,
                 });
@@ -134,10 +137,8 @@ pub const ContainerBuild = struct {
     }
 
     fn startChain(self: *ContainerBuild) ExprBuild {
-        defer self.prefixes = .{};
         return .{
             .allocator = self.allocator,
-            .exprs = self.prefixes,
             .callback_ctx = self,
             .callback_fn = endChain,
         };
@@ -419,8 +420,8 @@ pub const ContainerBuild = struct {
     test "prefix" {
         var b = init(test_alloc);
         errdefer b.deinit();
-        try b.public().using(b.x.raw("foo"));
-        try b.expect("pub usingnamespace foo");
+        try b.public().exports().using(b.x.raw("foo"));
+        try b.expect("pub export usingnamespace foo");
     }
 };
 
