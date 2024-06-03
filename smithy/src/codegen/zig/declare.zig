@@ -324,23 +324,16 @@ pub const Namespace = struct {
                     return self.callback.fail(err);
                 } else null;
 
-                var builder = scope.ContainerBuild.init(self.allocator);
-                callClosure(ctx, closure, .{&builder}) catch |err| {
-                    builder.deinit();
+                const data = scope.Container.init(self.allocator, ctx, closure) catch |err| {
                     if (alloc_backing) |t| t.deinit(self.allocator);
                     return self.callback.fail(err);
                 };
 
-                if (builder.consume()) |data| {
-                    return self.callback.invoke(.{
-                        .token = self.token,
-                        .backing = alloc_backing,
-                        .container = data,
-                    });
-                } else |err| {
-                    if (alloc_backing) |t| t.deinit(self.allocator);
-                    return self.callback.fail(err);
-                }
+                return self.callback.invoke(.{
+                    .token = self.token,
+                    .backing = alloc_backing,
+                    .container = data,
+                });
             }
         };
     }

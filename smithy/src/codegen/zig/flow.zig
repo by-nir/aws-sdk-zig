@@ -7,6 +7,8 @@ const StackChain = dcl.StackChain;
 const InferCallback = dcl.InferCallback;
 const Cb = dcl.Callback;
 const createCallback = dcl.callback;
+const Closure = dcl.Closure;
+const md = @import("../md.zig");
 const Writer = @import("../CodegenWriter.zig");
 const declare = @import("declare.zig");
 const utils = @import("utils.zig");
@@ -99,10 +101,19 @@ test "If" {
         .comment("foo\nbar")
         .@"else"().body(_raw("qux")).end();
 
-    tester.expected = "if (foo) bar else if (baz) qux else quxx";
+    tester.expected =
+        \\if (foo) bar else if (baz) qux
+        \\// # foo
+        \\else quxx
+    ;
     try If.build(test_alloc, Test.callback, &tester, _raw("foo"))
         .body(_raw("bar"))
         .elseIf(_raw("baz")).body(_raw("qux"))
+        .commentMarkdown(struct {
+        fn f(b: *md.Document.Build) !void {
+            try b.heading(1, "foo");
+        }
+    }.f)
         .@"else"().body(_raw("quxx")).end();
 }
 
@@ -384,19 +395,23 @@ test "While: statement" {
 }
 
 pub const Branch = struct {
-    comment: ?ExprComment = null,
+    comment: ?anyerror!ExprComment = null,
     condition: ?Expr = null,
     payload: ?[]const u8 = null,
     body: Expr,
 
     pub fn deinit(self: Branch, allocator: Allocator) void {
-        self.body.deinit(allocator);
+        if (self.comment) |comment| {
+            if (comment) |t| t.deinit(allocator) else |_| {}
+        }
         if (self.condition) |condition| condition.deinit(allocator);
+        self.body.deinit(allocator);
     }
 
     pub fn write(self: Branch, writer: *Writer) !void {
-        if (self.comment) |t| {
-            try writer.breakValue(t);
+        if (self.comment) |comment| {
+            try writer.breakValue(comment catch |err| return err);
+
             if (self.condition) |condition| {
                 try writer.breakFmt("else if ({}) ", .{condition});
             } else {
@@ -417,7 +432,7 @@ pub const Branch = struct {
     }
 
     const Partial = struct {
-        comment: ?ExprComment = null,
+        comment: ?anyerror!ExprComment = null,
         condition: ?ExprBuild = null,
         payload: ?[]const u8 = null,
         body: ?ExprBuild = null,
@@ -503,6 +518,25 @@ pub const Branch = struct {
                 });
             }
 
+            pub fn commentMarkdown(self: *const Self, closure: md.DocumentClosure) Self {
+                return self.commentMarkdownWith({}, closure);
+            }
+
+            pub fn commentMarkdownWith(
+                self: *const Self,
+                ctx: anytype,
+                closure: Closure(@TypeOf(ctx), md.DocumentClosure),
+            ) Self {
+                if (md.Document.init(self.allocator, {}, closure)) |data| {
+                    return self.flushAndReset(null, ExprComment{
+                        .kind = .normal,
+                        .source = .{ .markdown = data },
+                    });
+                } else |err| {
+                    return self.flushAndReset(null, err);
+                }
+            }
+
             pub fn elseIf(self: *const Self, condition: ExprBuild) Self {
                 if (self.partial.comment == null) {
                     return self.flushAndReset(condition, null);
@@ -534,7 +568,7 @@ pub const Branch = struct {
                 }
             }
 
-            fn flushAndReset(self: *const Self, condition: ?ExprBuild, comm: ?ExprComment) Self {
+            fn flushAndReset(self: *const Self, condition: ?ExprBuild, comm: ?anyerror!ExprComment) Self {
                 var dupe = self.*;
                 dupe.branches = self.flushPartial();
                 dupe.partial = .{ .condition = condition, .comment = comm };
@@ -613,7 +647,7 @@ pub const Switch = struct {
 
         pub fn deinit(self: Statement, allocator: Allocator) void {
             switch (self) {
-                .comment => {},
+                .comment => |t| t.deinit(allocator),
                 .prong => |p| {
                     for (p.cases) |t| t.deinit(allocator);
                     allocator.free(p.cases);
@@ -686,6 +720,24 @@ pub const Switch = struct {
             try self.statements.append(self.allocator, .{ .comment = ExprComment{
                 .kind = .normal,
                 .source = .{ .plain = value },
+            } });
+        }
+
+        pub fn commentMarkdown(self: *Build, closure: md.DocumentClosure) !void {
+            try self.commentMarkdownWith({}, closure);
+        }
+
+        pub fn commentMarkdownWith(
+            self: *Build,
+            ctx: anytype,
+            closure: Closure(@TypeOf(ctx), md.DocumentClosure),
+        ) !void {
+            assert(self.state == .idle or self.state == .inlined);
+            const data = try md.Document.init(self.allocator, {}, closure);
+            errdefer data.deinit(self.allocator);
+            try self.statements.append(self.allocator, .{ .comment = ExprComment{
+                .kind = .normal,
+                .source = .{ .markdown = data },
             } });
         }
 
@@ -850,6 +902,11 @@ test "Switch" {
     try b.comment("foo\nbar");
     try b.branch().caseRange(b.x.raw("18"), b.x.raw("108"))
         .body(b.x.raw("unreachable"));
+    try b.commentMarkdown(struct {
+        fn f(m: *md.Document.Build) !void {
+            try m.heading(1, "foo");
+        }
+    }.f);
     try b.inlined().@"else"().body(b.x.raw("unreachable"));
 
     const data = try b.consume();
@@ -860,6 +917,7 @@ test "Switch" {
         \\    // foo
         \\    // bar
         \\    18...108 => unreachable,
+        \\    // # foo
         \\    inline else => unreachable,
         \\}
     , data);

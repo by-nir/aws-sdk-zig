@@ -6,6 +6,7 @@ const dcl = @import("../../utils/declarative.zig");
 const StackChain = dcl.StackChain;
 const Closure = dcl.Closure;
 const callClosure = dcl.callClosure;
+const md = @import("../md.zig");
 const Writer = @import("../CodegenWriter.zig");
 const flow = @import("flow.zig");
 const scope = @import("scope.zig");
@@ -33,7 +34,9 @@ pub const Expr = union(enum) {
                 for (chain) |t| t.deinit(allocator);
                 allocator.free(chain);
             },
-            inline .type, .value, .flow, .declare => |f| f.deinit(allocator),
+            inline .type, .value, .comment, .flow, .declare => |f| {
+                f.deinit(allocator);
+            },
             else => {},
         }
     }
@@ -225,7 +228,15 @@ pub const ExprComment = struct {
     pub const Kind = enum { normal, doc, doc_top };
     pub const Source = union(enum) {
         plain: []const u8,
+        markdown: md.Document,
     };
+
+    pub fn deinit(self: ExprComment, allocator: Allocator) void {
+        switch (self.source) {
+            .plain => {},
+            .markdown => |t| t.deinit(allocator),
+        }
+    }
 
     pub fn write(self: ExprComment, writer: *Writer) !void {
         const indent = switch (self.kind) {
@@ -239,6 +250,7 @@ pub const ExprComment = struct {
         try writer.appendString(indent);
         switch (self.source) {
             .plain => |s| try writer.appendMultiLine(s),
+            .markdown => |t| try t.write(writer),
         }
     }
 };

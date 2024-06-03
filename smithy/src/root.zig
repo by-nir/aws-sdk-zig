@@ -46,6 +46,7 @@ test {
     _ = @import("codegen/zig/flow.zig");
     _ = @import("codegen/zig/declare.zig");
     _ = @import("codegen/zig/scope.zig");
+    _ = @import("codegen/md.zig");
     _ = @import("codegen/StackWriter.zig");
     _ = Markdown;
     _ = Script;
