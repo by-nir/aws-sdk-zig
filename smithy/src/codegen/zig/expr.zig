@@ -83,21 +83,27 @@ const ExprType = union(enum) {
     array: struct { len: usize, type: *const Expr },
     slice: struct { mutable: bool, type: *const Expr },
     pointer: struct { mutable: bool, type: *const Expr },
+    val_index: usize,
+    val_from: usize,
+    val_range: [2]usize,
 
     pub fn deinit(self: ExprType, allocator: Allocator) void {
         switch (self) {
-            .This => {},
             .optional => |t| allocator.destroy(t),
-            inline else => |t| allocator.destroy(t.type),
+            inline .array, .slice, .pointer => |t| allocator.destroy(t.type),
+            else => {},
         }
     }
 
     pub fn write(self: ExprType, writer: *Writer) anyerror!void {
         switch (self) {
             .This => try writer.appendString("@This()"),
-            .optional => |t| {
-                try writer.appendFmt("?{}", .{t});
+            .val_index => |d| try writer.appendFmt("[{d}]", .{d}),
+            .val_from => |d| try writer.appendFmt("[{d}..]", .{d}),
+            .val_range => |r| {
+                try writer.appendFmt("[{d}..{d}]", .{ r[0], r[1] });
             },
+            .optional => |t| try writer.appendFmt("?{}", .{t}),
             .array => |t| {
                 try writer.appendFmt("[{d}]{}", .{ t.len, t.type });
             },
@@ -536,12 +542,30 @@ pub const ExprBuild = struct {
         return self.append(.{ .raw = ".?" });
     }
 
-    pub fn deref(self: *const ExprBuild) ExprBuild {
+    pub fn addressOf(self: *const ExprBuild) ExprBuild {
+        return self.append(.{ .keyword_tight = .ampersand });
+    }
+
+    pub fn valDeref(self: *const ExprBuild) ExprBuild {
         return self.append(.{ .keyword_tight = .period_asterisk });
     }
 
-    pub fn address(self: *const ExprBuild) ExprBuild {
-        return self.append(.{ .keyword_tight = .ampersand });
+    pub fn valIndexer(self: *const ExprBuild, i: usize) ExprBuild {
+        return self.append(.{ .type = .{
+            .val_index = i,
+        } });
+    }
+
+    pub fn valFrom(self: *const ExprBuild, i: usize) ExprBuild {
+        return self.append(.{ .type = .{
+            .val_from = i,
+        } });
+    }
+
+    pub fn valRange(self: *const ExprBuild, a: usize, b: usize) ExprBuild {
+        return self.append(.{ .type = .{
+            .val_range = .{ a, b },
+        } });
     }
 
     pub fn assign(self: *const ExprBuild) ExprBuild {
@@ -560,9 +584,10 @@ pub const ExprBuild = struct {
     }
 
     test "separator" {
-        try ExprBuild.init(test_alloc).comma().dot().unwrap().deref().address()
+        try ExprBuild.init(test_alloc).comma().dot().unwrap().addressOf()
+            .valDeref().valIndexer(8).valFrom(8).valRange(6, 8)
             .orElse().assign().op(.not).op(.@"~").op(.eql)
-            .expects(", ..?.*& orelse  = !~ == ");
+            .expects(", ..?&.*[8][8..][6..8] orelse  = !~ == ");
     }
 
     pub fn compTime(self: *const ExprBuild) ExprBuild {
