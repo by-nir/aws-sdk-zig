@@ -6,6 +6,7 @@ const dcl = @import("../../utils/declarative.zig");
 const StackChain = dcl.StackChain;
 const Closure = dcl.Closure;
 const callClosure = dcl.callClosure;
+const md = @import("../md.zig");
 const Writer = @import("../CodegenWriter.zig");
 const declare = @import("declare.zig");
 const utils = @import("utils.zig");
@@ -13,9 +14,24 @@ const flow = @import("flow.zig");
 const exp = @import("expr.zig");
 const Expr = exp.Expr;
 const ExprBuild = exp.ExprBuild;
+const ExprComment = exp.ExprComment;
 
 pub const Container = struct {
     statements: []const Expr,
+
+    pub fn init(
+        allocator: Allocator,
+        ctx: anytype,
+        closure: Closure(@TypeOf(ctx), ContainerClosure),
+    ) !Container {
+        var build = ContainerBuild{
+            .allocator = allocator,
+            .x = .{ .allocator = allocator },
+        };
+        errdefer build.deinit();
+        try callClosure(ctx, closure, .{&build});
+        return build.consume();
+    }
 
     pub fn deinit(self: Container, allocator: Allocator) void {
         for (self.statements) |t| t.deinit(allocator);
@@ -26,13 +42,13 @@ pub const Container = struct {
         for (self.statements, 0..) |statement, i| {
             if (i == 0) {
                 try writer.appendFmt("{s}{;}", .{ writer.prefix, statement });
-                continue;
             } else {
                 // Empty line padding, unless previous is a comment
                 if (i > 0 and self.statements[i - 1] != .comment) try writer.breakEmpty(1);
                 try writer.breakFmt("{;}", .{statement});
             }
         }
+    }
 };
 
 test "Container" {
@@ -138,7 +154,7 @@ pub const ContainerBuild = struct {
         return data;
     }
 
-    pub fn comment(self: *ContainerBuild, kind: exp.ExprComment.Kind, value: []const u8) !void {
+    pub fn comment(self: *ContainerBuild, kind: ExprComment.Kind, value: []const u8) !void {
         try self.appendStatement(.{ .comment = .{
             .kind = kind,
             .source = .{ .plain = value },
@@ -157,6 +173,47 @@ pub const ContainerBuild = struct {
         try Writer.expectValue(
             \\// foo
             \\// bar
+            \\const foo = bar;
+        , data);
+    }
+
+    pub fn commentMarkdown(
+        self: *ContainerBuild,
+        kind: ExprComment.Kind,
+        closure: md.DocumentClosure,
+    ) !void {
+        try self.commentMarkdownWith(kind, {}, closure);
+    }
+
+    pub fn commentMarkdownWith(
+        self: *ContainerBuild,
+        kind: ExprComment.Kind,
+        ctx: anytype,
+        closure: Closure(@TypeOf(ctx), md.DocumentClosure),
+    ) !void {
+        const data = try md.Document.init(self.allocator, {}, closure);
+        errdefer data.deinit(self.allocator);
+        try self.appendStatement(.{ .comment = .{
+            .kind = kind,
+            .source = .{ .markdown = data },
+        } });
+    }
+
+    test "commentMarkdown" {
+        var b = init(test_alloc);
+        errdefer b.deinit();
+
+        try b.commentMarkdown(.doc, struct {
+            fn f(m: *md.Document.Build) !void {
+                try m.heading(1, "qux");
+            }
+        }.f);
+        try b.constant("foo").assign().raw("bar;").end();
+
+        const data = try b.consume();
+        defer data.deinit(test_alloc);
+        try Writer.expectValue(
+            \\/// # qux
             \\const foo = bar;
         , data);
     }
@@ -475,7 +532,7 @@ pub const BlockBuild = struct {
         return self.append(.{ .raw = string });
     }
 
-    pub fn comment(self: *BlockBuild, kind: exp.ExprComment.Kind, value: []const u8) !void {
+    pub fn comment(self: *BlockBuild, kind: ExprComment.Kind, value: []const u8) !void {
         try self.append(.{ .comment = .{
             .kind = kind,
             .source = .{ .plain = value },
@@ -495,6 +552,49 @@ pub const BlockBuild = struct {
             \\{
             \\    // foo
             \\    // bar
+            \\    const foo = bar;
+            \\}
+        , data);
+    }
+
+    pub fn commentMarkdown(
+        self: *BlockBuild,
+        kind: ExprComment.Kind,
+        closure: md.DocumentClosure,
+    ) !void {
+        try self.commentMarkdownWith(kind, {}, closure);
+    }
+
+    pub fn commentMarkdownWith(
+        self: *BlockBuild,
+        kind: ExprComment.Kind,
+        ctx: anytype,
+        closure: Closure(@TypeOf(ctx), md.DocumentClosure),
+    ) !void {
+        const data = try md.Document.init(self.allocator, {}, closure);
+        errdefer data.deinit(self.allocator);
+        try self.append(.{ .comment = .{
+            .kind = kind,
+            .source = .{ .markdown = data },
+        } });
+    }
+
+    test "commentMarkdown" {
+        var b = init(test_alloc);
+        errdefer b.deinit();
+
+        try b.commentMarkdown(.doc, struct {
+            fn f(m: *md.Document.Build) !void {
+                try m.heading(1, "qux");
+            }
+        }.f);
+        try b.constant("foo").assign().raw("bar;").end();
+
+        const data = try b.consume();
+        defer data.deinit(test_alloc);
+        try Writer.expectValue(
+            \\{
+            \\    /// # qux
             \\    const foo = bar;
             \\}
         , data);
