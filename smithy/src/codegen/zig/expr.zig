@@ -48,14 +48,19 @@ pub const Expr = union(enum) {
             ._chain => |chain| {
                 std.debug.assert(chain.len > 0);
                 if (comptime utils.isStatement(format)) {
-                    const last = chain.len - 1;
-                    for (chain[0..last]) |x| try x.write(writer, "");
-                    try chain[last].write(writer, format);
+                    const last_idx = chain.len - 1;
+                    for (chain[0..last_idx]) |x| try x.write(writer, "");
+                    const last = chain[last_idx];
+                    try last.write(writer, format);
+                    if (last == .flow) try last.flow.writeChainEnd(writer);
                 } else {
                     for (chain) |t| try t.write(writer, format);
                 }
             },
-            .raw => |s| try writer.appendMultiLine(s),
+            .raw => |s| {
+                try writer.appendMultiLine(s);
+                try utils.statementSemicolon(writer, format, null);
+            },
             .id => |name| {
                 try writer.appendFmt("{}", .{std.zig.fmtId(name)});
             },
@@ -89,8 +94,14 @@ const ExprType = union(enum) {
 
     pub fn deinit(self: ExprType, allocator: Allocator) void {
         switch (self) {
-            .optional => |t| allocator.destroy(t),
-            inline .array, .slice, .pointer => |t| allocator.destroy(t.type),
+            .optional => |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+            },
+            inline .array, .slice, .pointer => |t| {
+                t.type.deinit(allocator);
+                allocator.destroy(t.type);
+            },
             else => {},
         }
     }
@@ -286,9 +297,17 @@ const ExprFlow = union(enum) {
 
     pub fn write(self: ExprFlow, writer: *Writer, comptime format: []const u8) !void {
         switch (self) {
-            inline .@"switch", .call, .block, .block_label => |t| try t.write(writer),
+            .call => |t| {
+                try t.write(writer);
+                try utils.statementSemicolon(writer, format, null);
+            },
+            inline .@"switch", .block, .block_label => |t| try t.write(writer),
             inline else => |t| try t.write(writer, format),
         }
+    }
+
+    pub fn writeChainEnd(self: ExprFlow, writer: *Writer) !void {
+        if (self == .@"switch") try writer.appendChar(';');
     }
 };
 
@@ -319,7 +338,7 @@ const ExprDeclare = union(enum) {
         }
 
         if (utils.isStatement(format)) switch (self) {
-            .token_block => {},
+            .function, .token_block => {},
             .field => try writer.appendChar(','),
             else => try writer.appendChar(';'),
         };
@@ -381,6 +400,10 @@ pub const ExprBuild = struct {
 
     pub fn raw(self: *const ExprBuild, value: []const u8) ExprBuild {
         return self.append(.{ .raw = value });
+    }
+
+    pub fn rawExpr(self: *const ExprBuild, value: ExprBuild) ExprBuild {
+        return self.append(value.consume());
     }
 
     pub fn id(self: *const ExprBuild, name: []const u8) ExprBuild {
@@ -590,6 +613,19 @@ pub const ExprBuild = struct {
             .expects(", ..?&.*[8][8..][6..8] orelse  = !~ == ");
     }
 
+    pub fn import(self: *const ExprBuild, name: []const u8) ExprBuild {
+        const args = self.allocator.alloc(Expr, 1) catch |err| return self.append(err);
+        args[0] = .{ .value = ExprValue.of(name) };
+        return self.append(.{ .flow = .{ .call = flow.Call{
+            .name = "@import",
+            .args = args,
+        } } });
+    }
+
+    test "import" {
+        try ExprBuild.init(test_alloc).import("std").expects("@import(\"std\")");
+    }
+
     pub fn compTime(self: *const ExprBuild) ExprBuild {
         return self.append(.{ .keyword_space = .keyword_comptime });
     }
@@ -650,7 +686,7 @@ pub const ExprBuild = struct {
     }
 
     pub fn @"switch"(self: *const ExprBuild, value: ExprBuild, closure: flow.SwitchClosure) ExprBuild {
-        return self.switchWith(self, value, {}, closure);
+        return self.switchWith(value, {}, closure);
     }
 
     pub fn switchWith(
@@ -808,8 +844,9 @@ pub const ExprBuild = struct {
     }
 
     test "variables" {
-        try ExprBuild.init(test_alloc).variable("foo").comma().constant("bar").assign().raw("baz")
-            .expects("var foo, const bar = baz");
+        try ExprBuild.init(test_alloc).variable("foo").comma(
+            ExprBuild.init(test_alloc).constant("bar").assign(_raw("baz")),
+        ).expects("var foo, const bar = baz");
     }
 
     pub fn @"struct"(self: *const ExprBuild) declare.Namespace.Build(@TypeOf(endNamespace)) {

@@ -941,9 +941,9 @@ pub const Call = struct {
 
     pub fn write(self: Call, writer: *Writer) !void {
         if (self.args.len == 0) {
-            try writer.appendFmt("{}()", .{std.zig.fmtId(self.name)});
+            try writer.appendFmt("{s}()", .{self.name});
         } else {
-            try writer.appendFmt("{}(", .{std.zig.fmtId(self.name)});
+            try writer.appendFmt("{s}(", .{self.name});
             try writer.appendList(Expr, self.args, .{
                 .delimiter = ", ",
             });

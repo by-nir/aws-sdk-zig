@@ -9,7 +9,7 @@ const Cb = dcl.Callback;
 const createCallback = dcl.callback;
 const Closure = dcl.Closure;
 const callClosure = dcl.callClosure;
-const zig = @import("zig/scope.zig");
+const zig = @import("zig.zig");
 const Writer = @import("CodegenWriter.zig");
 
 // TODO: Support soft/hard width guidelines
@@ -274,7 +274,7 @@ pub const Styled = struct {
                 });
             }
 
-            fn end(self: Self) Callback.Return {
+            pub fn end(self: Self) Callback.Return {
                 if (self.chain.unwrapAlloc(self.allocator)) |segments| {
                     return self.callback.invoke(.{ .segments = segments });
                 } else |err| {
@@ -664,7 +664,7 @@ test "code" {
     const Test = struct {
         fn code(b: *zig.ContainerBuild) !void {
             try b.commentMarkdown(.doc, comment);
-            try b.constant("foo").assign().raw("bar").end();
+            try b.constant("foo").assign(b.x.raw("bar"));
         }
 
         fn comment(b: *Document.Build) !void {
@@ -682,7 +682,7 @@ test "code" {
         \\/// # Baz
         \\///
         \\/// Qux...
-        \\const foo = bar
+        \\const foo = bar;
         \\```
     , build.blocks.items[0]);
 }

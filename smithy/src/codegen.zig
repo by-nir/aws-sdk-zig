@@ -12,6 +12,11 @@ const SmithyId = syb_id.SmithyId;
 const SmithyType = syb_id.SmithyType;
 const syb_shape = @import("symbols/shapes.zig");
 const SmithyModel = syb_shape.SmithyModel;
+const Writer = @import("codegen/CodegenWriter.zig");
+const zig = @import("codegen/zig.zig");
+const ExprBuild = zig.ExprBuild;
+const BlockBuild = zig.BlockBuild;
+const ContainerBuild = zig.ContainerBuild;
 const names = @import("utils/names.zig");
 const IssuesBag = @import("utils/IssuesBag.zig");
 const trt_http = @import("traits/http.zig");
@@ -19,8 +24,6 @@ const trt_docs = @import("traits/docs.zig");
 const trt_refine = @import("traits/refine.zig");
 const trt_behave = @import("traits/behavior.zig");
 const trt_constr = @import("traits/constraint.zig");
-const Script = @import("codegen/Zig.zig");
-const StackWriter = @import("codegen/StackWriter.zig");
 
 const Self = @This();
 
@@ -31,13 +34,13 @@ pub const Policy = struct {
 };
 
 pub const Hooks = struct {
-    writeScriptHead: ?*const fn (Allocator, *Script, *const SmithyModel) anyerror!void = null,
-    uniqueListType: ?*const fn (Allocator, Script.Expr) anyerror!Script.Expr = null,
-    writeErrorShape: *const fn (Allocator, *Script, *const SmithyModel, ErrorShape) anyerror!void,
-    writeServiceHead: ?*const fn (Allocator, *Script, *const SmithyModel, *const syb_shape.SmithyService) anyerror!void = null,
-    writeResourceHead: ?*const fn (Allocator, *Script, *const SmithyModel, SmithyId, *const syb_shape.SmithyResource) anyerror!void = null,
-    operationReturnType: ?*const fn (Allocator, *const SmithyModel, OperationShape) anyerror!?Script.Expr = null,
-    writeOperationBody: *const fn (Allocator, *Script.Scope, *const SmithyModel, OperationShape) anyerror!void,
+    writeScriptHead: ?*const fn (Allocator, *ContainerBuild, *const SmithyModel) anyerror!void = null,
+    uniqueListType: ?*const fn (Allocator, []const u8) anyerror![]const u8 = null,
+    writeErrorShape: *const fn (Allocator, *ContainerBuild, *const SmithyModel, ErrorShape) anyerror!void,
+    writeServiceHead: ?*const fn (Allocator, *ContainerBuild, *const SmithyModel, *const syb_shape.SmithyService) anyerror!void = null,
+    writeResourceHead: ?*const fn (Allocator, *ContainerBuild, *const SmithyModel, SmithyId, *const syb_shape.SmithyResource) anyerror!void = null,
+    operationReturnType: ?*const fn (Allocator, *const SmithyModel, OperationShape) anyerror!?[]const u8 = null,
+    writeOperationBody: *const fn (Allocator, *BlockBuild, *const SmithyModel, OperationShape) anyerror!void,
 
     pub const ErrorShape = struct {
         id: SmithyId,
@@ -48,9 +51,14 @@ pub const Hooks = struct {
 
     pub const OperationShape = struct {
         id: SmithyId,
-        input: ?struct { identifier: Script.Identifier, type: Script.Expr },
-        output_type: ?Script.Expr,
-        errors_type: ?Script.Expr,
+        input: ?Input,
+        output_type: ?[]const u8,
+        errors_type: ?[]const u8,
+
+        pub const Input = struct {
+            identifier: []const u8,
+            type: []const u8,
+        };
     };
 };
 
@@ -80,24 +88,26 @@ pub fn writeScript(
         .model = model,
     };
 
-    var writer = StackWriter.init(self.arena, output, .{});
-    var script = try Script.init(&writer, null);
+    const context = .{ .self = &self, .root = root };
+    const script = try zig.Container.init(arena, context, struct {
+        fn f(ctx: @TypeOf(context), bld: *ContainerBuild) !void {
+            if (ctx.self.hooks.writeScriptHead) |hook| {
+                try hook(ctx.self.arena, bld, ctx.self.model);
+            }
 
-    if (self.hooks.writeScriptHead) |hook| {
-        try hook(self.arena, &script, model);
-    }
+            try bld.constant("std").assign(bld.x.import("std"));
 
-    const imp_std = try script.import("std");
-    assert(std.mem.eql(u8, imp_std.name, "_imp_std"));
+            try ctx.self.enqueueShape(ctx.root);
+            while (ctx.self.dequeueShape()) |id| try ctx.self.writeShape(bld, id);
+        }
+    }.f);
+    defer script.deinit(arena);
 
-    try self.enqueueShape(root);
-    while (self.dequeueShape()) |id| {
-        try self.writeShape(&script, id);
-    }
+    var writer = Writer.init(arena, output);
+    defer writer.deinit();
 
-    // End script with empty line (after imports)
-    try script.writer.deferLineBreak(.self, 1);
-    try script.end();
+    try script.write(&writer);
+    try writer.breakEmpty(1);
 }
 
 test "writeScript" {
@@ -109,7 +119,7 @@ test "writeScript" {
     defer buffer.deinit();
 
     var model = SmithyModel{};
-    try test_model.setupShapeQueue(&model);
+    try test_model.setupRootAndChild(&model);
     defer model.deinit(test_alloc);
 
     var issues = IssuesBag.init(test_alloc);
@@ -125,15 +135,16 @@ test "writeScript" {
         SmithyId.of("test#Root"),
     );
     try testing.expectEqualStrings(
-        \\pub const Root = []const Child;
-        \\pub const Child = []const i32;
+        \\const std = @import("std");
         \\
-        \\const _imp_std = @import("std");
+        \\pub const Root = []const Child;
+        \\
+        \\pub const Child = []const i32;
         \\
     , buffer.items);
 }
 
-fn writeShape(self: *Self, script: *Script, id: SmithyId) !void {
+fn writeShape(self: *Self, bld: *ContainerBuild, id: SmithyId) !void {
     const shape = self.model.getShape(id) orelse switch (self.policy.unknown_shape) {
         .skip => {
             try self.issues.add(.{ .codegen_unknown_shape = @intFromEnum(id) });
@@ -146,16 +157,16 @@ fn writeShape(self: *Self, script: *Script, id: SmithyId) !void {
     };
 
     (switch (shape) {
-        .list => |m| self.writeListShape(script, id, m),
-        .map => |m| self.writeMapShape(script, id, m),
-        .str_enum => |m| self.writeStrEnumShape(script, id, m),
-        .int_enum => |m| self.writeIntEnumShape(script, id, m),
-        .tagged_uinon => |m| self.writeUnionShape(script, id, m),
-        .structure => |m| self.writeStructShape(script, id, m),
-        .service => |t| self.writeServiceShape(script, id, t),
-        .resource => |t| self.writeResourceShape(script, id, t),
+        .list => |m| self.writeListShape(bld, id, m),
+        .map => |m| self.writeMapShape(bld, id, m),
+        .str_enum => |m| self.writeStrEnumShape(bld, id, m),
+        .int_enum => |m| self.writeIntEnumShape(bld, id, m),
+        .tagged_uinon => |m| self.writeUnionShape(bld, id, m),
+        .structure => |m| self.writeStructShape(bld, id, m),
+        .resource => |t| self.writeResourceShape(bld, id, t),
+        .service => |t| self.writeServiceShape(bld, id, t),
         .string => if (trt_constr.Enum.get(self.model, id)) |members|
-            self.writeTraitEnumShape(script, id, members)
+            self.writeTraitEnumShape(bld, id, members)
         else
             error.InvalidRootShape,
         else => error.InvalidRootShape,
@@ -207,48 +218,34 @@ test "writeShape" {
     try test_model.setupUnit(&model);
     defer model.deinit(test_alloc);
 
-    var self = Self{
-        .arena = tester.allocator(),
-        .hooks = TEST_HOOKS,
-        .policy = TEST_POLICY,
-        .model = &model,
-        .issues = tester.issues,
-    };
-    try self.writeShape(tester.script, SmithyId.of("test#Unit"));
+    var self = tester.initCodegen(&model);
+    try self.writeShape(tester.build, SmithyId.of("test#Unit"));
     try testing.expectEqualDeep(&.{
         IssuesBag.Issue{ .codegen_invalid_root = .{ .id = @intFromEnum(SmithyId.of("test#Unit")) } },
     }, tester.issues.all());
     try tester.expect("");
 }
 
-fn writeListShape(self: *Self, script: *Script, id: SmithyId, memeber: SmithyId) !void {
+fn writeListShape(self: *Self, bld: *ContainerBuild, id: SmithyId, memeber: SmithyId) !void {
     const shape_name = try self.model.tryGetName(id);
-    const target_type = Script.Expr{ .raw = try self.unwrapShapeName(memeber) };
-    try self.writeDocComment(script, id, false);
-    if (self.model.hasTrait(id, trt_constr.unique_items_id)) {
-        const target = if (self.hooks.uniqueListType) |hook|
-            try hook(self.arena, target_type)
-        else
-            Script.Expr.call(
-                "*const _imp_std.AutoArrayHashMapUnmanaged",
-                &.{ target_type, .{ .raw = "void" } },
+    const type_name = try self.unwrapShapeName(memeber);
+    try self.writeDocComment(bld, id, false);
+
+    const target_exp = if (self.model.hasTrait(id, trt_constr.unique_items_id)) blk: {
+        if (self.hooks.uniqueListType) |hook| {
+            break :blk bld.x.raw(try hook(self.arena, type_name));
+        } else {
+            break :blk bld.x.call(
+                "*const std.AutoArrayHashMapUnmanaged",
+                &.{ bld.x.raw(type_name), bld.x.raw("void") },
             );
-        _ = try script.variable(
-            .{ .is_public = true },
-            .{ .identifier = .{ .name = shape_name } },
-            target,
-        );
-    } else {
-        const target = if (self.model.hasTrait(id, trt_refine.sparse_id))
-            Script.Expr{ .typ_optional = &target_type }
-        else
-            target_type;
-        _ = try script.variable(
-            .{ .is_public = true },
-            .{ .identifier = .{ .name = shape_name } },
-            .{ .typ_slice = .{ .type = &target } },
-        );
-    }
+        }
+    } else if (self.model.hasTrait(id, trt_refine.sparse_id))
+        bld.x.typeSlice(false, bld.x.typeOptional(bld.x.raw(type_name)))
+    else
+        bld.x.typeSlice(false, bld.x.raw(type_name));
+
+    try bld.public().constant(shape_name).assign(target_exp);
 }
 
 test "writeListShape" {
@@ -259,45 +256,37 @@ test "writeListShape" {
     try test_model.setupList(&model);
     defer model.deinit(test_alloc);
 
-    var self = Self{
-        .arena = tester.allocator(),
-        .hooks = TEST_HOOKS,
-        .policy = TEST_POLICY,
-        .model = &model,
-        .issues = tester.issues,
-    };
-    try self.writeShape(tester.script, SmithyId.of("test#List"));
-    try self.writeShape(tester.script, SmithyId.of("test#Set"));
+    var self = tester.initCodegen(&model);
+    try self.writeShape(tester.build, SmithyId.of("test#List"));
+    try self.writeShape(tester.build, SmithyId.of("test#Set"));
     try tester.expect(
         \\pub const List = []const ?i32;
-        \\pub const Set = *const _imp_std.AutoArrayHashMapUnmanaged(i32, void);
+        \\
+        \\pub const Set = *const std.AutoArrayHashMapUnmanaged(i32, void);
     );
 }
 
-fn writeMapShape(self: *Self, script: *Script, id: SmithyId, memeber: [2]SmithyId) !void {
+fn writeMapShape(self: *Self, bld: *ContainerBuild, id: SmithyId, memeber: [2]SmithyId) !void {
     const shape_name = try self.model.tryGetName(id);
     const key_name = try self.unwrapShapeName(memeber[0]);
     const val_type = try self.unwrapShapeName(memeber[1]);
-    const value: Script.Expr = if (self.model.hasTrait(id, trt_refine.sparse_id))
-        .{ .raw_seq = &.{ "?", val_type } }
-    else
-        .{ .raw = val_type };
+    try self.writeDocComment(bld, id, false);
 
-    try self.writeDocComment(script, id, false);
-    _ = try script.variable(
-        .{ .is_public = true },
-        .{ .identifier = .{ .name = shape_name } },
-        if (std.mem.eql(u8, key_name, "[]const u8"))
-            Script.Expr.call(
-                "*const _imp_std.StringArrayHashMapUnmanaged",
-                &.{value},
-            )
-        else
-            Script.Expr.call(
-                "*const _imp_std.AutoArrayHashMapUnmanaged",
-                &.{ .{ .raw = key_name }, value },
-            ),
-    );
+    var value: ExprBuild = bld.x.raw(val_type);
+    if (self.model.hasTrait(id, trt_refine.sparse_id))
+        value = bld.x.typeOptional(value);
+
+    var fn_name: []const u8 = undefined;
+    var args: []const ExprBuild = undefined;
+    if (std.mem.eql(u8, key_name, "[]const u8")) {
+        fn_name = "*const std.StringArrayHashMapUnmanaged";
+        args = &.{value};
+    } else {
+        fn_name = "*const std.AutoArrayHashMapUnmanaged";
+        args = &.{ bld.x.raw(key_name), value };
+    }
+
+    try bld.public().constant(shape_name).assign(bld.x.call(fn_name, args));
 }
 
 test "writeMapShape" {
@@ -308,19 +297,13 @@ test "writeMapShape" {
     try test_model.setupMap(&model);
     defer model.deinit(test_alloc);
 
-    var self = Self{
-        .arena = tester.allocator(),
-        .hooks = TEST_HOOKS,
-        .policy = TEST_POLICY,
-        .model = &model,
-        .issues = tester.issues,
-    };
-    try self.writeShape(tester.script, SmithyId.of("test#Map"));
-    try tester.expect("pub const Map = *const _imp_std.AutoArrayHashMapUnmanaged(i32, ?i32);");
+    var self = tester.initCodegen(&model);
+    try self.writeShape(tester.build, SmithyId.of("test#Map"));
+    try tester.expect("pub const Map = *const std.AutoArrayHashMapUnmanaged(i32, ?i32);");
 }
 
-fn writeStrEnumShape(self: *Self, script: *Script, id: SmithyId, members: []const SmithyId) !void {
-    var list = try std.ArrayList(StrEnumMember).initCapacity(self.arena, members.len);
+fn writeStrEnumShape(self: *Self, bld: *ContainerBuild, id: SmithyId, members: []const SmithyId) !void {
+    var list = try EnumList.initCapacity(self.arena, members.len);
     defer list.deinit();
     for (members) |m| {
         const name = try self.model.tryGetName(m);
@@ -330,11 +313,16 @@ fn writeStrEnumShape(self: *Self, script: *Script, id: SmithyId, members: []cons
             .field = try names.snakeCase(self.arena, name),
         });
     }
-    try self.writeEnumShape(script, id, list.items);
+    try self.writeEnumShape(bld, id, list.items);
 }
 
-fn writeTraitEnumShape(self: *Self, script: *Script, id: SmithyId, members: []const trt_constr.Enum.Member) !void {
-    var list = try std.ArrayList(StrEnumMember).initCapacity(self.arena, members.len);
+fn writeTraitEnumShape(
+    self: *Self,
+    bld: *ContainerBuild,
+    id: SmithyId,
+    members: []const trt_constr.Enum.Member,
+) !void {
+    var list = try EnumList.initCapacity(self.arena, members.len);
     defer list.deinit();
     for (members) |m| {
         list.appendAssumeCapacity(.{
@@ -342,97 +330,75 @@ fn writeTraitEnumShape(self: *Self, script: *Script, id: SmithyId, members: []co
             .field = try names.snakeCase(self.arena, m.name orelse m.value),
         });
     }
-    try self.writeEnumShape(script, id, list.items);
+    try self.writeEnumShape(bld, id, list.items);
 }
 
+const EnumList = std.ArrayList(StrEnumMember);
 const StrEnumMember = struct {
     value: []const u8,
     field: []const u8,
 
-    pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-        try writer.print(".{{ \"{s}\", .{s} }}", .{ self.value, self.field });
+    pub fn format(self: StrEnumMember, writer: *Writer) !void {
+        try writer.appendFmt(".{{ \"{s}\", .{s} }}", .{ self.value, self.field });
+    }
+
+    pub fn asLiteralExpr(self: StrEnumMember, bld: *ContainerBuild) ExprBuild {
+        return bld.x.structLiteral(
+            null,
+            &.{ bld.x.valueOf(self.value), bld.x.dot().raw(self.field) },
+        );
     }
 };
 
-fn writeEnumShape(self: *Self, script: *Script, id: SmithyId, members: []const StrEnumMember) !void {
-    const shape_name = try self.model.tryGetName(id);
-    try self.writeDocComment(script, id, false);
-    var scope = try script.declare(.{ .name = shape_name }, .{
-        .is_public = true,
-        .type = .{ .TaggedUnion = null },
-    });
+fn writeEnumShape(self: *Self, bld: *ContainerBuild, id: SmithyId, members: []const StrEnumMember) !void {
+    const context = .{ .self = self, .members = members };
+    const Closures = struct {
+        fn shape(ctx: @TypeOf(context), b: *ContainerBuild) !void {
+            var literals = std.ArrayList(ExprBuild).init(ctx.self.arena);
+            defer literals.deinit();
 
-    var doc = try scope.comment(.doc);
-    try doc.paragraph("Used for backwards compatibility when adding new values.");
-    try doc.end();
-    _ = try scope.field(.{ .name = "UNKNOWN", .type = .typ_string });
+            try b.comment(.doc, "Used for backwards compatibility when adding new values.");
+            try b.field("UNKNOWN").typing(b.x.typeOf([]const u8)).end();
+            for (ctx.members) |m| {
+                try b.field(m.field).end();
+                try literals.append(m.asLiteralExpr(b));
+            }
 
-    for (members) |member| {
-        _ = try scope.field(.{ .name = member.field, .type = null });
-    }
+            try b.constant("ParseMap").assign(b.x.raw("std.StaticStringMap(@This())"));
+            try b.constant("parse_map").assign(
+                b.x.call("ParseMap.initComptime", &.{
+                    b.x.structLiteral(null, literals.items),
+                }),
+            );
 
-    const imp_std = try scope.import("std");
-    const map_type = try scope.variable(.{}, .{
-        .identifier = .{ .name = "ParseMap" },
-    }, Script.Expr.call(
-        try imp_std.child(self.arena, "StaticStringMap"),
-        &.{.{ .raw = "@This()" }},
-    ));
+            try b.public().function("parse").arg("value", b.x.typeOf([]const u8))
+                .returns(b.x.This()).body(parse);
 
-    const map_values = blk: {
-        var vals = std.ArrayList(StrEnumMember).init(self.arena);
-        defer vals.deinit();
+            try b.public().function("serialize").arg("self", b.x.This())
+                .returns(b.x.typeOf([]const u8)).bodyWith(ctx, serialize);
+        }
 
-        const map_list = try scope.preRenderMultiline(self.arena, StrEnumMember, members, ".{", "}");
-        defer self.arena.free(map_list);
+        fn parse(b: *BlockBuild) !void {
+            try b.returns().raw("parse_map.get(value) orelse .{ .UNKNOWN = value }").end();
+        }
 
-        break :blk try scope.variable(.{}, .{
-            .identifier = .{ .name = "parse_map" },
-        }, Script.Expr.call(
-            try map_type.child(self.arena, "initComptime"),
-            &.{.{ .raw = map_list }},
-        ));
+        fn serialize(ctx: @TypeOf(context), b: *BlockBuild) !void {
+            try b.returns().switchWith(b.x.raw("self"), ctx, serializeSwitch).end();
+        }
+
+        fn serializeSwitch(ctx: @TypeOf(context), b: *zig.SwitchBuild) !void {
+            try b.branch().case(b.x.valueOf(.UNKNOWN)).capture("s").body(b.x.raw("s"));
+            for (ctx.members) |m| {
+                try b.branch().case(b.x.dot().raw(m.field)).body(b.x.valueOf(m.value));
+            }
+        }
     };
 
-    var blk = try scope.function(.{
-        .is_public = true,
-    }, .{
-        .identifier = .{ .name = "parse" },
-        .parameters = &.{
-            .{ .identifier = .{ .name = "value" }, .type = .typ_string },
-        },
-        .return_type = .typ_This,
-    });
-    try blk.prefix(.ret).exprFmt("{}.get(value) orelse .{{ .UNKNOWN = value }}", .{map_values});
-    try blk.end();
-
-    blk = try scope.function(.{
-        .is_public = true,
-    }, .{
-        .identifier = .{ .name = "serialize" },
-        .parameters = &.{Script.param_self},
-        .return_type = .typ_string,
-    });
-    const swtch = try blk.prefix(.ret).switchCtrl(.{ .raw = "self" });
-    var prong = try swtch.prong(&.{
-        .{ .value = .{ .name = "UNKNOWN" } },
-    }, .{
-        .payload = &.{.{ .name = "s" }},
-    }, .inlined);
-    try prong.expr(.{ .raw = "s" });
-    try prong.end();
-    for (members) |member| {
-        prong = try swtch.prong(&.{
-            .{ .value = .{ .name = member.field } },
-        }, .{}, .inlined);
-        try prong.expr(Script.Expr.val(member.value));
-        try prong.end();
-    }
-    try swtch.end();
-    try scope.writer.writeByte(';');
-    try blk.end();
-
-    try scope.end();
+    const shape_name = try self.model.tryGetName(id);
+    try self.writeDocComment(bld, id, false);
+    try bld.public().constant(shape_name).assign(
+        bld.x.@"union"().bodyWith(context, Closures.shape),
+    );
 }
 
 test "writeEnumShape" {
@@ -443,15 +409,9 @@ test "writeEnumShape" {
     try test_model.setupEnum(&model);
     defer model.deinit(test_alloc);
 
-    var self = Self{
-        .arena = tester.allocator(),
-        .hooks = TEST_HOOKS,
-        .policy = TEST_POLICY,
-        .model = &model,
-        .issues = tester.issues,
-    };
-    try self.writeShape(tester.script, SmithyId.of("test#Enum"));
-    try self.writeShape(tester.script, SmithyId.of("test#EnumTrt"));
+    var self = tester.initCodegen(&model);
+    try self.writeShape(tester.build, SmithyId.of("test#Enum"));
+    try self.writeShape(tester.build, SmithyId.of("test#EnumTrt"));
 
     const BODY =
         \\    /// Used for backwards compatibility when adding new values.
@@ -459,11 +419,9 @@ test "writeEnumShape" {
         \\    foo_bar,
         \\    baz_qux,
         \\
-        \\    const ParseMap = _imp_std.StaticStringMap(@This());
-        \\    const parse_map = ParseMap.initComptime(.{
-        \\        .{ "FOO_BAR", .foo_bar },
-        \\        .{ "baz$qux", .baz_qux },
-        \\    });
+        \\    const ParseMap = std.StaticStringMap(@This());
+        \\
+        \\    const parse_map = ParseMap.initComptime(.{ .{ "FOO_BAR", .foo_bar }, .{ "baz$qux", .baz_qux } });
         \\
         \\    pub fn parse(value: []const u8) @This() {
         \\        return parse_map.get(value) orelse .{ .UNKNOWN = value };
@@ -478,55 +436,42 @@ test "writeEnumShape" {
         \\    }
         \\};
     ;
-
     try tester.expect("pub const Enum = union(enum) {\n" ++ BODY ++
         "\n\n" ++ "pub const EnumTrt = union(enum) {\n" ++ BODY);
 }
 
-fn writeIntEnumShape(self: *Self, script: *Script, id: SmithyId, members: []const SmithyId) !void {
+fn writeIntEnumShape(self: *Self, bld: *ContainerBuild, id: SmithyId, members: []const SmithyId) !void {
+    const context = .{ .self = self, .members = members };
+    const Closures = struct {
+        fn shape(ctx: @TypeOf(context), b: *ContainerBuild) !void {
+            for (ctx.members) |m| {
+                try b.field(try names.snakeCase(ctx.self.arena, try ctx.self.model.tryGetName(m)))
+                    .assign(b.x.valueOf(trt_refine.EnumValue.get(ctx.self.model, m).?.integer));
+            }
+            try b.comment(.doc, "Used for backwards compatibility when adding new values.");
+            try b.field("_").end();
+
+            try b.public().function("parse").arg("value", b.x.typeOf(i32))
+                .returns(b.x.This()).body(parse);
+
+            try b.public().function("serialize").arg("self", b.x.This())
+                .returns(b.x.typeOf(i32)).body(serialize);
+        }
+
+        fn parse(b: *BlockBuild) !void {
+            try b.returns().raw("@enumFromInt(value)").end();
+        }
+
+        fn serialize(b: *BlockBuild) !void {
+            try b.returns().raw("@intFromEnum(self)").end();
+        }
+    };
+
     const shape_name = try self.model.tryGetName(id);
-    try self.writeDocComment(script, id, false);
-    var scope = try script.declare(.{ .name = shape_name }, .{
-        .is_public = true,
-        .type = .{ .Enum = .{ .raw = "i32" } },
-    });
-
-    for (members) |m| {
-        _ = try scope.field(.{
-            .name = try names.snakeCase(self.arena, try self.model.tryGetName(m)),
-            .type = null,
-            .assign = Script.Expr.val(trt_refine.EnumValue.get(self.model, m).?.integer),
-        });
-    }
-
-    var doc = try scope.comment(.doc);
-    try doc.paragraph("Used for backwards compatibility when adding new values.");
-    try doc.end();
-    _ = try scope.field(.{ .name = "_", .type = null });
-
-    var blk = try scope.function(.{
-        .is_public = true,
-    }, .{
-        .identifier = .{ .name = "parse" },
-        .parameters = &.{
-            .{ .identifier = .{ .name = "value" }, .type = Script.Expr.typ(i32) },
-        },
-        .return_type = .typ_This,
-    });
-    try blk.prefix(.ret).expr(.{ .raw = "@enumFromInt(value)" });
-    try blk.end();
-
-    blk = try scope.function(.{
-        .is_public = true,
-    }, .{
-        .identifier = .{ .name = "serialize" },
-        .parameters = &.{Script.param_self},
-        .return_type = Script.Expr.typ(i32),
-    });
-    try blk.prefix(.ret).expr(.{ .raw = "@intFromEnum(self)" });
-    try blk.end();
-
-    try scope.end();
+    try self.writeDocComment(bld, id, false);
+    try bld.public().constant(shape_name).assign(
+        bld.x.@"enum"().typing(bld.x.typeOf(i32)).bodyWith(context, Closures.shape),
+    );
 }
 
 test "writeIntEnumShape" {
@@ -537,20 +482,12 @@ test "writeIntEnumShape" {
     try test_model.setupIntEnum(&model);
     defer model.deinit(test_alloc);
 
-    var self = Self{
-        .arena = tester.allocator(),
-        .hooks = TEST_HOOKS,
-        .policy = TEST_POLICY,
-        .model = &model,
-        .issues = tester.issues,
-    };
-    try self.writeShape(tester.script, SmithyId.of("test#IntEnum"));
+    var self = tester.initCodegen(&model);
+    try self.writeShape(tester.build, SmithyId.of("test#IntEnum"));
     try tester.expect(
-        \\/// An **integer-based** enumeration.
         \\pub const IntEnum = enum(i32) {
         \\    foo_bar = 8,
         \\    baz_qux = 9,
-        \\
         \\    /// Used for backwards compatibility when adding new values.
         \\    _,
         \\
@@ -565,35 +502,30 @@ test "writeIntEnumShape" {
     );
 }
 
-fn writeUnionShape(self: *Self, script: *Script, id: SmithyId, members: []const SmithyId) !void {
+fn writeUnionShape(self: *Self, bld: *ContainerBuild, id: SmithyId, members: []const SmithyId) !void {
     const shape_name = try self.model.tryGetName(id);
-    try self.writeDocComment(script, id, false);
-    var scope = try script.declare(.{ .name = shape_name }, .{
-        .is_public = true,
-        .type = .{ .TaggedUnion = null },
-    });
-    for (members) |m| {
-        const shape = self.unwrapShapeName(m) catch |e| {
-            scope.deinit();
-            return e;
-        };
-        var name = self.model.tryGetName(m) catch |e| {
-            scope.deinit();
-            return e;
-        };
-        name = names.snakeCase(self.arena, name) catch |e| {
-            scope.deinit();
-            return e;
-        };
-        _ = scope.field(.{
-            .name = name,
-            .type = if (shape.len > 0) .{ .raw = shape } else null,
-        }) catch |e| {
-            scope.deinit();
-            return e;
-        };
-    }
-    try scope.end();
+    try self.writeDocComment(bld, id, false);
+
+    const context = .{ .self = self, .members = members };
+    try bld.public().constant(shape_name).assign(
+        bld.x.@"union"().bodyWith(context, struct {
+            fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
+                for (ctx.members) |m| {
+                    const shape = try ctx.self.unwrapShapeName(m);
+                    const name = try names.snakeCase(
+                        ctx.self.arena,
+                        try ctx.self.model.tryGetName(m),
+                    );
+
+                    if (shape.len > 0) {
+                        try b.field(name).typing(b.x.raw(shape)).end();
+                    } else {
+                        try b.field(name).end();
+                    }
+                }
+            }
+        }.f),
+    );
 }
 
 test "writeUnionShape" {
@@ -604,14 +536,8 @@ test "writeUnionShape" {
     try test_model.setupUnion(&model);
     defer model.deinit(test_alloc);
 
-    var self = Self{
-        .arena = tester.allocator(),
-        .hooks = TEST_HOOKS,
-        .policy = TEST_POLICY,
-        .model = &model,
-        .issues = tester.issues,
-    };
-    try self.writeShape(tester.script, SmithyId.of("test#Union"));
+    var self = tester.initCodegen(&model);
+    try self.writeShape(tester.build, SmithyId.of("test#Union"));
     try tester.expect(
         \\pub const Union = union(enum) {
         \\    foo,
@@ -621,34 +547,26 @@ test "writeUnionShape" {
     );
 }
 
-fn writeStructShape(self: *Self, script: *Script, id: SmithyId, members: []const SmithyId) !void {
+fn writeStructShape(self: *Self, bld: *ContainerBuild, id: SmithyId, members: []const SmithyId) !void {
     const shape_name = try self.model.tryGetName(id);
-    const is_input = self.model.hasTrait(id, trt_refine.input_id);
-    try self.writeDocComment(script, id, false);
-    var scope = try script.declare(.{ .name = shape_name }, .{
-        .is_public = true,
-        .type = .{ .Struct = null },
-    });
-    self.writeStructShapeError(&scope, id) catch |e| {
-        scope.deinit();
-        return e;
-    };
-    self.writeStructShapeMixin(&scope, is_input, id) catch |e| {
-        scope.deinit();
-        return e;
-    };
-    for (members) |m| {
-        self.writeStructShapeMember(&scope, is_input, m) catch |e| {
-            scope.deinit();
-            return e;
-        };
-    }
-    try scope.end();
+    try self.writeDocComment(bld, id, false);
+
+    const context = .{ .self = self, .id = id, .members = members };
+    try bld.public().constant(shape_name).assign(
+        bld.x.@"struct"().bodyWith(context, struct {
+            fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
+                const is_input = ctx.self.model.hasTrait(ctx.id, trt_refine.input_id);
+                try ctx.self.writeStructShapeError(b, ctx.id);
+                try ctx.self.writeStructShapeMixin(b, is_input, ctx.id);
+                for (ctx.members) |m| try ctx.self.writeStructShapeMember(b, is_input, m);
+            }
+        }.f),
+    );
 }
 
-fn writeStructShapeError(self: *Self, script: *Script, id: SmithyId) !void {
+fn writeStructShapeError(self: *Self, bld: *ContainerBuild, id: SmithyId) !void {
     const source = trt_refine.Error.get(self.model, id) orelse return;
-    _ = try self.hooks.writeErrorShape(self.arena, script, self.model, .{
+    try self.hooks.writeErrorShape(self.arena, bld, self.model, .{
         .id = id,
         .source = source,
         .retryable = self.model.hasTrait(id, trt_behave.retryable_id),
@@ -656,43 +574,42 @@ fn writeStructShapeError(self: *Self, script: *Script, id: SmithyId) !void {
     });
 }
 
-fn writeStructShapeMixin(self: *Self, script: *Script, is_input: bool, id: SmithyId) !void {
+fn writeStructShapeMixin(self: *Self, bld: *ContainerBuild, is_input: bool, id: SmithyId) !void {
     const mixins = self.model.getMixins(id) orelse return;
     for (mixins) |mix_id| {
-        try self.writeStructShapeMixin(script, is_input, mix_id);
+        try self.writeStructShapeMixin(bld, is_input, mix_id);
         const mixin = (try self.model.tryGetShape(mix_id)).structure;
         for (mixin) |m| {
-            try self.writeStructShapeMember(script, is_input, m);
+            try self.writeStructShapeMember(bld, is_input, m);
         }
     }
 }
 
-fn writeStructShapeMember(self: *Self, script: *Script, is_input: bool, id: SmithyId) !void {
+fn writeStructShapeMember(self: *Self, bld: *ContainerBuild, is_input: bool, id: SmithyId) !void {
     // https://smithy.io/2.0/spec/aggregate-types.html#structure-member-optionality
-    const optional = if (is_input) true else if (self.model.getTraits(id)) |bag| blk: {
+    const optional: bool = if (is_input) true else if (self.model.getTraits(id)) |bag| blk: {
         break :blk bag.has(trt_refine.client_optional_id) or
             !(bag.has(trt_refine.required_id) or bag.has(trt_refine.Default.id));
     } else true;
-    const assign: ?Script.Expr = blk: {
-        break :blk if (optional)
-            .{ .raw = "null" }
-        else if (trt_refine.Default.get(self.model, id)) |json|
-            switch (try self.unwrapShapeType(id)) {
-                .str_enum => Script.Expr{ .val_enum = json.string },
-                .int_enum => Script.Expr.call("@enumFromInt", &.{Script.Expr.val(json.integer)}),
-                else => .{ .json = json },
-            }
-        else
-            null;
-    };
 
-    try self.writeDocComment(script, id, true);
-    const type_expr = Script.Expr{ .raw = try self.unwrapShapeName(id) };
-    _ = try script.field(.{
-        .name = try names.snakeCase(self.arena, try self.model.tryGetName(id)),
-        .type = if (optional) .{ .typ_optional = &type_expr } else type_expr,
-        .assign = assign,
-    });
+    const shape_name = try names.snakeCase(self.arena, try self.model.tryGetName(id));
+    var type_expr = bld.x.raw(try self.unwrapShapeName(id));
+    if (optional) type_expr = bld.x.typeOptional(type_expr);
+
+    try self.writeDocComment(bld, id, true);
+    const field = bld.field(shape_name).typing(type_expr);
+    const assign: ?ExprBuild = blk: {
+        if (optional) break :blk bld.x.valueOf(null);
+        if (trt_refine.Default.get(self.model, id)) |json| {
+            break :blk switch (try self.unwrapShapeType(id)) {
+                .str_enum => bld.x.dot().raw(json.string),
+                .int_enum => bld.x.call("@enumFromInt", &.{bld.x.valueOf(json.integer)}),
+                else => unreachable,
+            };
+        }
+        break :blk null;
+    };
+    if (assign) |a| try field.assign(a) else try field.end();
 }
 
 test "writeStructShape" {
@@ -704,45 +621,37 @@ test "writeStructShape" {
     try test_model.setupError(&model);
     defer model.deinit(test_alloc);
 
-    var self = Self{
-        .arena = tester.allocator(),
-        .hooks = TEST_HOOKS,
-        .policy = TEST_POLICY,
-        .model = &model,
-        .issues = tester.issues,
-    };
-    try self.writeShape(tester.script, SmithyId.of("test#Struct"));
-    try self.writeShape(tester.script, SmithyId.of("test#Error"));
+    var self = tester.initCodegen(&model);
+    try self.writeShape(tester.build, SmithyId.of("test#Struct"));
+    try self.writeShape(tester.build, SmithyId.of("test#Error"));
     try tester.expect(
         \\pub const Struct = struct {
         \\    mixed: ?bool = null,
-        \\
-        \\    /// A **struct** member.
         \\    foo_bar: i32,
-        \\
-        \\    /// An **integer-based** enumeration.
         \\    baz_qux: IntEnum = @enumFromInt(8),
         \\};
         \\
         \\pub const Error = struct {
         \\    pub const source: ErrorSource = .client;
+        \\
         \\    pub const code: u10 = 429;
+        \\
         \\    pub const retryable = true;
         \\};
     );
 }
 
-fn writeOperationShapes(self: *Self, script: *Script, id: SmithyId) !void {
+fn writeOperationShapes(self: *Self, bld: *ContainerBuild, id: SmithyId) !void {
     const operation = (try self.model.tryGetShape(id)).operation;
 
     if (operation.input) |in_id| {
         const members = (try self.model.tryGetShape(in_id)).structure;
-        try self.writeStructShape(script, in_id, members);
+        try self.writeStructShape(bld, in_id, members);
     }
 
     if (operation.output) |out_id| {
         const members = (try self.model.tryGetShape(out_id)).structure;
-        try self.writeStructShape(script, out_id, members);
+        try self.writeStructShape(bld, out_id, members);
     }
 
     for (operation.errors) |err_id| {
@@ -759,130 +668,100 @@ test "writeOperationShapes" {
     try test_model.setupServiceShapes(&model);
     defer model.deinit(test_alloc);
 
-    var self = Self{
-        .arena = tester.allocator(),
-        .hooks = TEST_HOOKS,
-        .policy = TEST_POLICY,
-        .model = &model,
-        .issues = tester.issues,
-    };
-    try self.writeOperationShapes(tester.script, SmithyId.of("test.serve#Operation"));
+    var self = tester.initCodegen(&model);
+    try self.writeOperationShapes(tester.build, SmithyId.of("test.serve#Operation"));
     try tester.expect(
-        \\pub const OperationInput = struct {
+        \\pub const OperationInput = struct {};
         \\
-        \\};
-        \\
-        \\pub const OperationOutput = struct {
-        \\
-        \\};
+        \\pub const OperationOutput = struct {};
     );
     const node = self.shape_queue.first.?;
     try testing.expectEqual(null, node.next);
     try testing.expectEqual(SmithyId.of("test.error#NotFound"), node.data);
 }
 
-fn writeOperationFunc(self: *Self, script: *Script, id: SmithyId) !void {
+fn writeOperationFunc(self: *Self, bld: *ContainerBuild, id: SmithyId) !void {
     const common_errors = try self.getServiceErrors();
     const operation = (try self.model.tryGetShape(id)).operation;
     const op_name = try names.camelCase(self.arena, try self.model.tryGetName(id));
 
-    var name_buffer: [128]u8 = undefined;
-    const errors_type = try self.writeOperationFuncError(
-        script,
-        name_buffer[0..],
-        op_name,
-        operation.errors,
-        common_errors,
-    );
+    const errors_type = if (operation.errors.len + common_errors.len > 0)
+        try self.writeOperationFuncError(bld, op_name, operation.errors, common_errors)
+    else
+        null;
 
+    const shape_input = if (operation.input) |d| Hooks.OperationShape.Input{
+        .identifier = "input",
+        .type = try self.model.tryGetName(d),
+    } else null;
+    const shape_output = if (operation.output) |d|
+        try self.model.tryGetName(d)
+    else
+        null;
     const shape = Hooks.OperationShape{
         .id = id,
-        .input = if (operation.input) |d| .{
-            .identifier = .{ .name = "input" },
-            .type = .{ .raw = try self.model.tryGetName(d) },
-        } else null,
-        .output_type = if (operation.output) |d|
-            Script.Expr{ .raw = try self.model.tryGetName(d) }
-        else
-            null,
+        .input = shape_input,
+        .output_type = shape_output,
         .errors_type = errors_type,
     };
-    const return_type = if (self.hooks.operationReturnType) |hook|
-        try hook(self.arena, self.model, shape)
+    const return_type = if (self.hooks.operationReturnType) |hook| blk: {
+        const result = try hook(self.arena, self.model, shape);
+        break :blk if (result) |s| bld.x.raw(s) else bld.x.typeOf(void);
+    } else if (shape_output) |s|
+        bld.x.raw(s)
     else
-        shape.output_type;
+        bld.x.typeOf(void);
 
-    var block = try script.function(.{
-        .is_public = true,
-    }, .{
-        .identifier = .{ .name = op_name },
-        .parameters = if (shape.input) |input|
-            &.{ Script.param_self, .{
-                .identifier = input.identifier,
-                .type = input.type,
-            } }
-        else
-            &.{Script.param_self},
-        .return_type = return_type,
-    });
-    try self.hooks.writeOperationBody(self.arena, &block, self.model, shape);
-    try block.end();
+    const context = .{ .self = self, .shape = shape };
+    const func1 = bld.public().function(op_name).arg("self", bld.x.This());
+    const func2 = if (shape_input) |input| func1.arg(input.identifier, bld.x.raw(input.type)) else func1;
+    try func2.returns(return_type).bodyWith(context, struct {
+        fn f(ctx: @TypeOf(context), b: *BlockBuild) !void {
+            try ctx.self.hooks.writeOperationBody(ctx.self.arena, b, ctx.self.model, ctx.shape);
+        }
+    }.f);
 }
 
 fn writeOperationFuncError(
     self: *Self,
-    script: *Script,
-    buffer: []u8,
+    bld: *ContainerBuild,
     op_name: []const u8,
     op_errors: []const SmithyId,
     common_errors: []const SmithyId,
-) !?Script.Expr {
-    if (op_errors.len + common_errors.len == 0) return null;
-
-    const suffix = "Errors";
-    const total_len = op_name.len + suffix.len;
-    assert(total_len <= 128);
-    @memcpy(buffer[0..op_name.len], op_name);
-    @memcpy(buffer[op_name.len..][0..suffix.len], suffix);
-    buffer[0] = std.ascii.toUpper(buffer[0]);
-    const type_name = buffer[0..total_len];
-
-    var scope = try script.declare(.{ .name = type_name }, .{
-        .is_public = true,
-        .type = .{ .TaggedUnion = null },
+) ![]const u8 {
+    const type_name = try std.fmt.allocPrint(self.arena, "{c}{s}Errors", .{
+        std.ascii.toUpper(op_name[0]),
+        op_name[1..op_name.len],
     });
-    for (common_errors) |m| {
-        self.writeOperationFuncErrorMember(&scope, m) catch |e| {
-            scope.deinit();
-            return e;
-        };
-    }
-    for (op_errors) |m| {
-        self.writeOperationFuncErrorMember(&scope, m) catch |e| {
-            scope.deinit();
-            return e;
-        };
-    }
-    try scope.end();
 
-    return Script.Expr{ .raw = type_name };
+    const context = .{ .self = self, .common_errors = common_errors, .op_errors = op_errors };
+    try bld.public().constant(type_name).assign(bld.x.@"union"().bodyWith(context, struct {
+        fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
+            for (ctx.common_errors) |m| try ctx.self.writeOperationFuncErrorMember(b, m);
+            for (ctx.op_errors) |m| try ctx.self.writeOperationFuncErrorMember(b, m);
+        }
+    }.f));
+
+    return type_name;
 }
 
-fn writeOperationFuncErrorMember(self: *Self, scope: *Script, member: SmithyId) !void {
-    var name = try self.model.tryGetName(member);
+fn writeOperationFuncErrorMember(self: *Self, bld: *ContainerBuild, member: SmithyId) !void {
+    var field_name = try self.model.tryGetName(member);
     inline for (.{ "error", "exception" }) |suffix| {
-        if (std.ascii.endsWithIgnoreCase(name, suffix)) {
-            name = name[0 .. name.len - suffix.len];
+        if (std.ascii.endsWithIgnoreCase(field_name, suffix)) {
+            field_name = field_name[0 .. field_name.len - suffix.len];
             break;
         }
     }
+    field_name = try names.snakeCase(self.arena, field_name);
 
-    const shape = try self.unwrapShapeName(member);
-    try self.writeDocComment(scope, member, true);
-    _ = try scope.field(.{
-        .name = try names.snakeCase(self.arena, name),
-        .type = if (shape.len > 0) .{ .raw = shape } else null,
-    });
+    const type_name = try self.unwrapShapeName(member);
+    try self.writeDocComment(bld, member, true);
+    if (type_name.len > 0) {
+        try bld.field(field_name).typing(bld.x.raw(type_name)).end();
+    } else {
+        try bld.field(field_name).end();
+    }
 }
 
 test "writeOperationFunc" {
@@ -893,14 +772,8 @@ test "writeOperationFunc" {
     try test_model.setupServiceShapes(&model);
     defer model.deinit(test_alloc);
 
-    var self = Self{
-        .arena = tester.allocator(),
-        .hooks = TEST_HOOKS,
-        .policy = TEST_POLICY,
-        .model = &model,
-        .issues = tester.issues,
-    };
-    try self.writeOperationFunc(tester.script, SmithyId.of("test.serve#Operation"));
+    var self = tester.initCodegen(&model);
+    try self.writeOperationFunc(tester.build, SmithyId.of("test.serve#Operation"));
     try tester.expect(
         \\pub const OperationErrors = union(enum) {
         \\    service: ServiceError,
@@ -913,70 +786,43 @@ test "writeOperationFunc" {
     );
 }
 
-fn writeResourceShape(self: *Self, script: *Script, id: SmithyId, resource: *const syb_shape.SmithyResource) !void {
+fn writeResourceShape(
+    self: *Self,
+    bld: *ContainerBuild,
+    id: SmithyId,
+    resource: *const syb_shape.SmithyResource,
+) !void {
+    const LIFECYCLE_OPS = &.{ "create", "put", "read", "update", "delete", "list" };
     const resource_name = try self.model.tryGetName(id);
-    var scope = try script.declare(.{ .name = resource_name }, .{
-        .is_public = true,
-        .type = .{ .Struct = null },
-    });
-    if (self.hooks.writeResourceHead) |hook| {
-        hook(self.arena, &scope, self.model, id, resource) catch |e| {
-            scope.deinit();
-            return e;
-        };
-    }
-    for (resource.identifiers) |idn| {
-        self.writeDocComment(script, id, true) catch |e| {
-            scope.deinit();
-            return e;
-        };
-        const name = names.snakeCase(self.arena, idn.name) catch |e| {
-            scope.deinit();
-            return e;
-        };
-        _ = scope.field(.{
-            .name = name,
-            .type = .{ .raw = try self.unwrapShapeName(idn.shape) },
-        }) catch |e| {
-            scope.deinit();
-            return e;
-        };
-    }
-    const lifecycle_ops = &.{ "create", "put", "read", "update", "delete", "list" };
-    inline for (lifecycle_ops) |field| {
+    const context = .{ .self = self, .id = id, .resource = resource };
+    try bld.public().constant(resource_name).assign(bld.x.@"struct"().bodyWith(context, struct {
+        fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
+            if (ctx.self.hooks.writeResourceHead) |hook| {
+                try hook(ctx.self.arena, b, ctx.self.model, ctx.id, ctx.resource);
+            }
+            for (ctx.resource.identifiers) |d| {
+                try ctx.self.writeDocComment(b, d.shape, true);
+                const name = try names.snakeCase(ctx.self.arena, d.name);
+                try b.field(name).typing(b.x.raw(try ctx.self.unwrapShapeName(d.shape))).end();
+            }
+
+            inline for (LIFECYCLE_OPS) |field| {
+                if (@field(ctx.resource, field)) |op_id| {
+                    try ctx.self.writeOperationFunc(b, op_id);
+                }
+            }
+            for (ctx.resource.operations) |op_id| try ctx.self.writeOperationFunc(b, op_id);
+            for (ctx.resource.collection_ops) |op_id| try ctx.self.writeOperationFunc(b, op_id);
+        }
+    }.f));
+
+    inline for (LIFECYCLE_OPS) |field| {
         if (@field(resource, field)) |op_id| {
-            self.writeOperationFunc(&scope, op_id) catch |e| {
-                scope.deinit();
-                return e;
-            };
+            try self.writeOperationShapes(bld, op_id);
         }
     }
-    for (resource.operations) |op_id| {
-        self.writeOperationFunc(&scope, op_id) catch |e| {
-            scope.deinit();
-            return e;
-        };
-    }
-    for (resource.collection_ops) |op_id| {
-        self.writeOperationFunc(&scope, op_id) catch |e| {
-            scope.deinit();
-            return e;
-        };
-    }
-    try scope.end();
-
-    inline for (lifecycle_ops) |field| {
-        if (@field(resource, field)) |op_id| {
-            try self.writeOperationShapes(script, op_id);
-        }
-    }
-    for (resource.operations) |op_id| {
-        try self.writeOperationShapes(script, op_id);
-    }
-    for (resource.collection_ops) |op_id| {
-        try self.writeOperationShapes(script, op_id);
-    }
-
+    for (resource.operations) |op_id| try self.writeOperationShapes(bld, op_id);
+    for (resource.collection_ops) |op_id| try self.writeOperationShapes(bld, op_id);
     for (resource.resources) |rsc_id| try self.enqueueShape(rsc_id);
 }
 
@@ -988,14 +834,8 @@ test "writeResourceShape" {
     try test_model.setupServiceShapes(&model);
     defer model.deinit(test_alloc);
 
-    var self = Self{
-        .arena = tester.allocator(),
-        .hooks = TEST_HOOKS,
-        .policy = TEST_POLICY,
-        .model = &model,
-        .issues = tester.issues,
-    };
-    try self.writeShape(tester.script, SmithyId.of("test.serve#Resource"));
+    var self = tester.initCodegen(&model);
+    try self.writeShape(tester.build, SmithyId.of("test.serve#Resource"));
     try tester.expect(
         \\pub const Resource = struct {
         \\    forecast_id: []const u8,
@@ -1010,45 +850,39 @@ test "writeResourceShape" {
         \\    }
         \\};
         \\
-        \\pub const OperationInput = struct {
+        \\pub const OperationInput = struct {};
         \\
-        \\};
-        \\
-        \\pub const OperationOutput = struct {
-        \\
-        \\};
+        \\pub const OperationOutput = struct {};
     );
 }
 
-fn writeServiceShape(self: *Self, script: *Script, id: SmithyId, service: *const syb_shape.SmithyService) !void {
+fn writeServiceShape(
+    self: *Self,
+    bld: *ContainerBuild,
+    id: SmithyId,
+    service: *const syb_shape.SmithyService,
+) !void {
     // Cache errors
     if (self.service_errors == null) self.service_errors = service.errors;
 
     const service_name = try self.model.tryGetName(id);
-    try self.writeDocComment(script, id, false);
-    var scope = try script.declare(.{ .name = service_name }, .{
-        .is_public = true,
-        .type = .{ .Struct = null },
-    });
-    if (self.hooks.writeServiceHead) |hook| {
-        hook(self.arena, &scope, self.model, service) catch |e| {
-            scope.deinit();
-            return e;
-        };
-    }
-    for (service.operations) |op_id| {
-        self.writeOperationFunc(&scope, op_id) catch |e| {
-            scope.deinit();
-            return e;
-        };
-    }
-    try scope.end();
+    try self.writeDocComment(bld, id, false);
+    const context = .{ .self = self, .service = service };
+    try bld.public().constant(service_name).assign(
+        bld.x.@"struct"().bodyWith(context, struct {
+            fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
+                if (ctx.self.hooks.writeServiceHead) |hook| {
+                    try hook(ctx.self.arena, b, ctx.self.model, ctx.service);
+                }
+                for (ctx.service.operations) |op_id| {
+                    try ctx.self.writeOperationFunc(b, op_id);
+                }
+            }
+        }.f),
+    );
 
     for (service.operations) |op_id| {
-        self.writeOperationShapes(script, op_id) catch |e| {
-            scope.deinit();
-            return e;
-        };
+        try self.writeOperationShapes(bld, op_id);
     }
 
     for (service.resources) |rsc_id| try self.enqueueShape(rsc_id);
@@ -1063,16 +897,9 @@ test "writeServiceShape" {
     try test_model.setupServiceShapes(&model);
     defer model.deinit(test_alloc);
 
-    var self = Self{
-        .arena = tester.allocator(),
-        .hooks = TEST_HOOKS,
-        .policy = TEST_POLICY,
-        .model = &model,
-        .issues = tester.issues,
-    };
-    try self.writeShape(tester.script, SmithyId.of("test.serve#Service"));
+    var self = tester.initCodegen(&model);
+    try self.writeShape(tester.build, SmithyId.of("test.serve#Service"));
     try tester.expect(
-        \\/// Some _service_...
         \\pub const Service = struct {
         \\    pub const OperationErrors = union(enum) {
         \\        service: ServiceError,
@@ -1084,13 +911,9 @@ test "writeServiceShape" {
         \\    }
         \\};
         \\
-        \\pub const OperationInput = struct {
+        \\pub const OperationInput = struct {};
         \\
-        \\};
-        \\
-        \\pub const OperationOutput = struct {
-        \\
-        \\};
+        \\pub const OperationOutput = struct {};
     );
 
     try testing.expectEqual(3, self.shape_visited.count());
@@ -1101,7 +924,8 @@ test "writeServiceShape" {
     try testing.expectEqualDeep(&.{SmithyId.of("test.error#ServiceError")}, self.service_errors);
 }
 
-fn writeDocComment(self: *Self, script: *Script, id: SmithyId, target_fallback: bool) !void {
+fn writeDocComment(self: *Self, bld: *ContainerBuild, id: SmithyId, target_fallback: bool) !void {
+    _ = bld; // autofix
     var raw_doc = trt_docs.Documentation.get(self.model, id);
     if (target_fallback and raw_doc == null) if (self.model.getShape(id)) |shape| {
         switch (shape) {
@@ -1109,11 +933,6 @@ fn writeDocComment(self: *Self, script: *Script, id: SmithyId, target_fallback: 
             else => {},
         }
     };
-    if (raw_doc) |doc| {
-        var md = try script.comment(.doc);
-        try md.writeSource(doc);
-        try md.end();
-    }
 }
 
 fn unwrapShapeName(self: *Self, id: SmithyId) ![]const u8 {
@@ -1238,42 +1057,28 @@ const TEST_POLICY = Policy{
 };
 
 const TEST_HOOKS = Hooks{
-    .writeScriptHead = hookScriptHead,
     .writeErrorShape = hookErrorShape,
     .writeOperationBody = hookOperationBody,
 };
 
-fn hookScriptHead(_: Allocator, script: *Script, _: *const SmithyModel) !void {
-    _ = try script.import("std");
+fn hookErrorShape(_: Allocator, bld: *ContainerBuild, _: *const SmithyModel, shape: Hooks.ErrorShape) !void {
+    try bld.public().constant("source").typing(bld.x.raw("ErrorSource"))
+        .assign(bld.x.valueOf(shape.source));
+
+    try bld.public().constant("code").typing(bld.x.typeOf(u10))
+        .assign(bld.x.valueOf(shape.code));
+
+    try bld.public().constant("retryable").assign(bld.x.valueOf(shape.retryable));
 }
 
-fn hookErrorShape(_: Allocator, script: *Script, _: *const SmithyModel, shape: Hooks.ErrorShape) !void {
-    _ = try script.variable(.{ .is_public = true }, .{
-        .identifier = .{ .name = "source" },
-        .type = .{ .raw = "ErrorSource" },
-    }, Script.Expr.val(shape.source));
-
-    _ = try script.variable(.{ .is_public = true }, .{
-        .identifier = .{ .name = "code" },
-        .type = Script.Expr.typ(u10),
-    }, Script.Expr.val(shape.code));
-
-    _ = try script.variable(.{ .is_public = true }, .{
-        .identifier = .{ .name = "retryable" },
-    }, Script.Expr.val(shape.retryable));
-}
-
-fn hookOperationBody(_: Allocator, body: *Script.Scope, _: *const SmithyModel, _: Hooks.OperationShape) !void {
-    try body.prefix(.ret).expr(.{ .raw = "undefined" });
+fn hookOperationBody(_: Allocator, bld: *BlockBuild, _: *const SmithyModel, _: Hooks.OperationShape) !void {
+    try bld.returns().raw("undefined").end();
 }
 
 const ScriptTester = struct {
     did_end: bool = false,
     arena: *std.heap.ArenaAllocator,
-    buffer: *std.ArrayList(u8),
-    buffer_writer: *std.ArrayList(u8).Writer,
-    writer: *StackWriter,
-    script: *Script,
+    build: *ContainerBuild,
     issues: *IssuesBag,
 
     pub fn init() !ScriptTester {
@@ -1284,55 +1089,25 @@ const ScriptTester = struct {
             test_alloc.destroy(arena);
         }
 
-        const buffer = try test_alloc.create(std.ArrayList(u8));
-        buffer.* = std.ArrayList(u8).init(test_alloc);
-        errdefer {
-            buffer.deinit();
-            test_alloc.destroy(buffer);
-        }
-
-        const buffer_writer = try test_alloc.create(std.ArrayList(u8).Writer);
-        buffer_writer.* = buffer.writer();
-        errdefer test_alloc.destroy(buffer_writer);
-
-        const writer = try test_alloc.create(StackWriter);
-        writer.* = StackWriter.init(test_alloc, buffer_writer.any(), .{});
-        errdefer {
-            writer.deinit();
-            test_alloc.destroy(writer);
-        }
-
-        const script = try test_alloc.create(Script);
-        errdefer test_alloc.destroy(script);
-        script.* = try Script.init(writer, null);
-        errdefer script.deinit();
-
-        const imp_std = try script.import("std");
-        assert(std.mem.eql(u8, imp_std.name, "_imp_std"));
+        const build = try test_alloc.create(ContainerBuild);
+        errdefer test_alloc.destroy(build);
+        build.* = ContainerBuild.init(test_alloc);
+        errdefer build.deinit();
 
         const issues = try test_alloc.create(IssuesBag);
-        errdefer test_alloc.destroy(script);
+        errdefer test_alloc.destroy(build);
         issues.* = IssuesBag.init(test_alloc);
 
         return .{
             .arena = arena,
-            .buffer = buffer,
-            .buffer_writer = buffer_writer,
-            .writer = writer,
-            .script = script,
+            .build = build,
             .issues = issues,
         };
     }
 
     pub fn deinit(self: *ScriptTester) void {
-        if (!self.did_end) self.script.deinit();
-        test_alloc.destroy(self.script);
-        test_alloc.destroy(self.writer);
-
-        test_alloc.destroy(self.buffer_writer);
-
-        self.buffer.deinit();
-        test_alloc.destroy(self.buffer);
+        if (!self.did_end) self.build.deinit();
+        test_alloc.destroy(self.build);
 
         self.arena.deinit();
         test_alloc.destroy(self.arena);
@@ -1341,16 +1116,21 @@ const ScriptTester = struct {
         test_alloc.destroy(self.issues);
     }
 
-    pub fn allocator(self: *ScriptTester) Allocator {
-        return self.arena.allocator();
+    pub fn initCodegen(self: *ScriptTester, model: *const SmithyModel) Self {
+        return Self{
+            .arena = self.arena.allocator(),
+            .hooks = TEST_HOOKS,
+            .policy = TEST_POLICY,
+            .model = model,
+            .issues = self.issues,
+        };
     }
 
     pub fn expect(self: *ScriptTester, comptime expected: []const u8) !void {
+        const script = try self.build.consume();
         self.did_end = true;
-        try self.script.end();
-        try testing.expectEqualStrings(
-            expected ++ "\n\nconst _imp_std = @import(\"std\");",
-            self.buffer.items,
-        );
+        defer script.deinit(test_alloc);
+
+        try Writer.expectValue(expected, script);
     }
 };

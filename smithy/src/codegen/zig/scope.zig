@@ -39,23 +39,40 @@ pub const Container = struct {
     }
 
     pub fn write(self: Container, writer: *Writer) !void {
-        for (self.statements, 0..) |statement, i| {
+        for (self.statements, 0..) |expr, i| {
             if (i == 0) {
-                try writer.appendFmt("{s}{;}", .{ writer.prefix, statement });
+                try writer.appendFmt("{s}{;}", .{ writer.prefix, expr });
             } else {
-                // Empty line padding, unless previous is a comment
-                if (i > 0 and self.statements[i - 1] != .comment) try writer.breakEmpty(1);
-                try writer.breakFmt("{;}", .{statement});
+                if (self.shouldPadStatement(expr, i)) try writer.breakEmpty(1);
+                try writer.breakFmt("{;}", .{expr});
             }
         }
+    }
+
+    fn shouldPadStatement(self: Container, current: Expr, i: usize) bool {
+        const prev = self.statements[i - 1];
+        if (prev == .comment) return false;
+        if (prev == .declare and prev.declare == .field) {
+            switch (current) {
+                .declare => |t| return t != .field,
+                .comment => {
+                    if (i == self.statements.len - 1) return true;
+                    const next = self.statements[i + 1];
+                    if (next == .declare and next.declare == .field) return false;
+                },
+                else => {},
+            }
+        }
+        return true;
     }
 };
 
 test "Container" {
     try Writer.expectValue(
         \\foo: Bar,
+        \\baz: Qux,
         \\
-        \\foo: Bar,
+        \\usingnamespace foo;
     , Container{
         .statements = &.{
             .{ .declare = .{ .field = &declare.Field{
@@ -65,10 +82,14 @@ test "Container" {
                 .assign = null,
             } } },
             .{ .declare = .{ .field = &declare.Field{
-                .name = "foo",
-                .type = .{ .raw = "Bar" },
+                .name = "baz",
+                .type = .{ .raw = "Qux" },
                 .alignment = null,
                 .assign = null,
+            } } },
+            .{ .declare = .{ .token_expr = &exp.TokenExpr{
+                .token = .keyword_usingnamespace,
+                .expr = .{ .raw = "foo" },
             } } },
         },
     });
@@ -136,19 +157,6 @@ pub const ContainerBuild = struct {
         }
     }
 
-    fn startChain(self: *ContainerBuild) ExprBuild {
-        return .{
-            .allocator = self.allocator,
-            .callback_ctx = self,
-            .callback_fn = endChain,
-        };
-    }
-
-    fn endChain(ctx: *anyopaque, expr: Expr) !void {
-        const self: *ContainerBuild = @alignCast(@ptrCast(ctx));
-        try self.statements.append(self.allocator, expr);
-    }
-
     fn dupeValue(self: ContainerBuild, value: anytype) !*@TypeOf(value) {
         const data = try self.allocator.create(@TypeOf(value));
         data.* = value;
@@ -167,7 +175,7 @@ pub const ContainerBuild = struct {
         errdefer b.deinit();
 
         try b.comment(.normal, "foo\nbar");
-        try b.constant("foo").assign().raw("bar;").end();
+        try b.constant("foo").assign(b.x.raw("bar"));
 
         const data = try b.consume();
         defer data.deinit(test_alloc);
@@ -209,7 +217,7 @@ pub const ContainerBuild = struct {
                 try m.heading(1, "qux");
             }
         }.f);
-        try b.constant("foo").assign().raw("bar;").end();
+        try b.constant("foo").assign(b.x.raw("bar"));
 
         const data = try b.consume();
         defer data.deinit(test_alloc);
@@ -266,26 +274,35 @@ pub const ContainerBuild = struct {
     pub fn variable(
         self: *ContainerBuild,
         name: []const u8,
-    ) declare.Variable.Build(fn (*const ExprBuild, anyerror!declare.Variable) ExprBuild) {
-        return self.startChain().variable(name);
+    ) declare.Variable.Build(@TypeOf(endVariable)) {
+        return declare.Variable.build(endVariable, self, false, name);
     }
 
     pub fn constant(
         self: *ContainerBuild,
         name: []const u8,
-    ) declare.Variable.Build(fn (*const ExprBuild, anyerror!declare.Variable) ExprBuild) {
-        return self.startChain().constant(name);
+    ) declare.Variable.Build(@TypeOf(endVariable)) {
+        return declare.Variable.build(endVariable, self, true, name);
+    }
+
+    fn endVariable(self: *ContainerBuild, value: declare.Variable) !void {
+        errdefer value.deinit(self.allocator);
+        const dupe = try self.dupeValue(value);
+        errdefer self.allocator.destroy(dupe);
+        try self.appendStatement(.{
+            .declare = .{ .variable = dupe },
+        });
     }
 
     test "variables" {
         var b = init(test_alloc);
         errdefer b.deinit();
-        try b.variable("foo").assign().raw("bar").end();
+        try b.variable("foo").assign(b.x.raw("bar"));
         try b.expect("var foo = bar");
 
         b.deinit();
         b = init(test_alloc);
-        try b.constant("foo").assign().raw("bar").end();
+        try b.constant("foo").assign(b.x.raw("bar"));
         try b.expect("const foo = bar");
     }
 
@@ -533,6 +550,17 @@ pub const BlockBuild = struct {
         return self.append(.{ .raw = string });
     }
 
+    pub fn id(self: *BlockBuild, name: []const u8) ExprBuild {
+        return self.startChain().id(name);
+    }
+
+    test "id" {
+        var b = init(test_alloc);
+        errdefer b.deinit();
+        try b.id("foo").dot().raw("bar").end();
+        try b.expect("foo.bar");
+    }
+
     pub fn comment(self: *BlockBuild, kind: ExprComment.Kind, value: []const u8) !void {
         try self.append(.{ .comment = .{
             .kind = kind,
@@ -545,7 +573,7 @@ pub const BlockBuild = struct {
         errdefer b.deinit();
 
         try b.comment(.normal, "foo\nbar");
-        try b.constant("foo").assign().raw("bar;").end();
+        try b.constant("foo").assign(b.x.raw("bar"));
 
         const data = try b.consume();
         defer data.deinit(test_alloc);
@@ -589,7 +617,7 @@ pub const BlockBuild = struct {
                 try m.heading(1, "qux");
             }
         }.f);
-        try b.constant("foo").assign().raw("bar;").end();
+        try b.constant("foo").assign(b.x.raw("bar"));
 
         const data = try b.consume();
         defer data.deinit(test_alloc);
@@ -604,21 +632,30 @@ pub const BlockBuild = struct {
     pub fn variable(
         self: *BlockBuild,
         name: []const u8,
-    ) declare.Variable.Build(fn (*const ExprBuild, anyerror!declare.Variable) ExprBuild) {
-        return self.startChain().variable(name);
+    ) declare.Variable.Build(@TypeOf(endVariable)) {
+        return declare.Variable.build(endVariable, self, false, name);
     }
 
     pub fn constant(
         self: *BlockBuild,
         name: []const u8,
-    ) declare.Variable.Build(fn (*const ExprBuild, anyerror!declare.Variable) ExprBuild) {
-        return self.startChain().constant(name);
+    ) declare.Variable.Build(@TypeOf(endVariable)) {
+        return declare.Variable.build(endVariable, self, true, name);
+    }
+
+    fn endVariable(self: *BlockBuild, value: declare.Variable) !void {
+        errdefer value.deinit(self.allocator);
+        const dupe = try self.dupeValue(value);
+        errdefer self.allocator.destroy(dupe);
+        try self.append(.{
+            .declare = .{ .variable = dupe },
+        });
     }
 
     test "variables" {
         var b = init(test_alloc);
         errdefer b.deinit();
-        try b.variable("foo").comma().constant("bar").assign().raw("baz").end();
+        try b.variable("foo").comma(b.x.constant("bar").assign(b.x.raw("baz")));
         try b.expect("var foo, const bar = baz");
     }
 
