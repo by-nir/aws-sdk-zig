@@ -20,23 +20,29 @@ const _xpr = exp._raw;
 pub const Field = struct {
     /// `null` when part of a tuple.
     name: ?[]const u8,
-    type: Expr,
+    /// may be `null` when part of an enum/union.
+    type: ?Expr,
     alignment: ?Expr,
     assign: ?Expr,
 
     pub fn deinit(self: Field, allocator: Allocator) void {
-        self.type.deinit(allocator);
+        if (self.type) |t| t.deinit(allocator);
         if (self.alignment) |t| t.deinit(allocator);
         if (self.assign) |t| t.deinit(allocator);
     }
 
     pub fn write(self: Field, writer: *Writer) !void {
         if (self.name) |s| {
-            try writer.appendFmt("{}: {}", .{ std.zig.fmtId(s), self.type });
-        } else {
-            try writer.appendValue(self.type);
+            try writer.appendFmt("{_}", .{std.zig.fmtId(s)});
         }
-        if (self.alignment) |t| try writer.appendFmt(" align({})", .{t});
+        if (self.type) |t| {
+            if (self.name == null) {
+                try writer.appendValue(t);
+            } else {
+                try writer.appendFmt(": {}", .{t});
+            }
+            if (self.alignment) |a| try writer.appendFmt(" align({})", .{a});
+        }
         if (self.assign) |t| try writer.appendFmt(" = {}", .{t});
     }
 
@@ -95,12 +101,12 @@ pub const Field = struct {
             }
 
             fn consume(self: Self, assignment: ?ExprBuild) !Field {
-                const alloc_type = self.type.?.consume() catch |err| {
+                const alloc_type = if (self.type) |t| t.consume() catch |err| {
                     if (self.@"align") |x| x.deinit();
                     if (assignment) |x| x.deinit();
                     return err;
-                };
-                errdefer alloc_type.deinit(self.type.?.allocator);
+                } else null;
+                errdefer if (alloc_type) |t| t.deinit(self.type.?.allocator);
 
                 const alloc_align = if (self.@"align") |t| t.consume() catch |err| {
                     if (assignment) |x| x.deinit();
@@ -122,7 +128,10 @@ pub const Field = struct {
 
 test "Field" {
     const Test = utils.TestVal(Field);
-    var tester = Test{ .expected = "foo: Bar" };
+    var tester = Test{ .expected = "foo" };
+    try Field.build(Test.callback, &tester, "foo").end();
+
+    tester.expected = "foo: Bar";
     try Field.build(Test.callback, &tester, "foo").typing(_xpr("Bar")).end();
 
     tester.expected = "@\"test\": Foo";
@@ -142,11 +151,13 @@ pub const Variable = struct {
     name: []const u8,
     type: ?Expr,
     alignment: ?Expr,
+    expr: Expr,
     is_assign: bool,
 
     pub fn deinit(self: Variable, allocator: Allocator) void {
         if (self.type) |t| t.deinit(allocator);
         if (self.alignment) |t| t.deinit(allocator);
+        self.expr.deinit(allocator);
     }
 
     pub fn write(self: Variable, writer: *Writer) !void {
@@ -156,7 +167,11 @@ pub const Variable = struct {
             try writer.appendFmt(": {}", .{t});
             if (self.alignment) |a| try writer.appendFmt(" align({})", .{a});
         }
-        try writer.appendString(if (self.is_assign) " = " else ", ");
+        if (self.is_assign) {
+            try writer.appendFmt(" = {}", .{self.expr});
+        } else {
+            try writer.appendFmt(", {}", .{self.expr});
+        }
     }
 
     pub fn build(callback: anytype, ctx: anytype, is_const: bool, name: []const u8) Build(@TypeOf(callback)) {
@@ -199,28 +214,36 @@ pub const Variable = struct {
                 return dupe;
             }
 
-            pub fn assign(self: Self) Callback.Return {
-                if (self.consume(true)) |data| {
+            pub fn assign(self: Self, expr: ExprBuild) Callback.Return {
+                if (self.consume(expr, true)) |data| {
                     return self.callback.invoke(data);
                 } else |err| {
                     return self.callback.fail(err);
                 }
             }
 
-            pub fn comma(self: Self) Callback.Return {
-                if (self.consume(false)) |data| {
+            pub fn comma(self: Self, expr: ExprBuild) Callback.Return {
+                if (self.consume(expr, false)) |data| {
                     return self.callback.invoke(data);
                 } else |err| {
                     return self.callback.fail(err);
                 }
             }
 
-            fn consume(self: Self, is_assign: bool) !Variable {
+            fn consume(self: Self, expr: ExprBuild, is_assign: bool) !Variable {
+                const alloc_expr = expr.consume() catch |err| {
+                    if (self.type) |t| t.deinit();
+                    if (self.@"align") |x| x.deinit();
+                    return err;
+                };
+                errdefer alloc_expr.deinit(expr.allocator);
+
                 const alloc_type = if (self.type) |t| t.consume() catch |err| {
                     if (self.@"align") |x| x.deinit();
                     return err;
                 } else null;
                 errdefer if (alloc_type) |t| t.deinit(self.type.?.allocator);
+
                 const alloc_align = if (self.@"align") |t| try t.consume() else null;
 
                 return .{
@@ -228,6 +251,7 @@ pub const Variable = struct {
                     .name = self.name,
                     .type = alloc_type,
                     .alignment = alloc_align,
+                    .expr = alloc_expr,
                     .is_assign = is_assign,
                 };
             }
@@ -237,15 +261,15 @@ pub const Variable = struct {
 
 test "Variable" {
     const Test = utils.TestVal(Variable);
-    var tester = Test{ .expected = "var foo = " };
-    try Variable.build(Test.callback, &tester, false, "foo").assign();
+    var tester = Test{ .expected = "var foo = bar" };
+    try Variable.build(Test.callback, &tester, false, "foo").assign(_xpr("bar"));
 
-    tester.expected = "var @\"test\", ";
-    try Variable.build(Test.callback, &tester, false, "test").comma();
+    tester.expected = "var @\"test\", foo";
+    try Variable.build(Test.callback, &tester, false, "test").comma(_xpr("foo"));
 
-    tester.expected = "const foo: Bar align(baz) = ";
+    tester.expected = "const foo: Bar align(baz) = qux";
     try Variable.build(Test.callback, &tester, true, "foo").typing(_xpr("Bar"))
-        .alignment(_xpr("baz")).assign();
+        .alignment(_xpr("baz")).assign(_xpr("qux"));
 }
 
 pub const Namespace = struct {

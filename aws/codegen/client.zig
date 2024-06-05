@@ -3,8 +3,7 @@ const fs = std.fs;
 const Allocator = std.mem.Allocator;
 const allocPrint = std.fmt.allocPrint;
 const smithy = @import("smithy");
-const Script = smithy.Script;
-const Expr = Script.Expr;
+const zig = smithy.codegen_zig;
 const Pipeline = smithy.Pipeline;
 const PipelineHooks = Pipeline.Hooks;
 const SmithyModel = smithy.SmithyModel;
@@ -113,158 +112,117 @@ fn writeReadme(
     });
 }
 
-fn writeScriptHead(arena: Allocator, script: *Script, model: *const SmithyModel) !void {
-    _ = try script.import("std");
+fn writeScriptHead(arena: Allocator, bld: *zig.ContainerBuild, model: *const SmithyModel) !void {
+    try bld.constant("aws_types").assign(bld.x.import("aws-types"));
+    try bld.constant("ErrorSource").assign(bld.x.raw("aws_types.ErrorSource"));
+    try bld.constant("Failable").assign(bld.x.raw("aws_types.Failable"));
 
-    const aws_types = try script.import("aws-types");
-    _ = try script.variable(.{}, .{
-        .identifier = .{ .name = "ErrorSource" },
-        .type = null,
-    }, .{ .raw = try aws_types.child(arena, "ErrorSource") });
-    _ = try script.variable(.{}, .{
-        .identifier = .{ .name = "Failable" },
-        .type = null,
-    }, .{ .raw = try aws_types.child(arena, "Failable") });
+    try bld.constant("aws_runtime").assign(bld.x.import("aws-runtime"));
+    try bld.constant("Runtime").assign(bld.x.raw("aws_runtime.Client"));
+    try bld.constant("Signer").assign(bld.x.raw("aws_runtime.Signer"));
+    try bld.constant("Endpoint").assign(bld.x.raw("aws_runtime.Endpoint"));
 
-    const runtime = try script.import("aws-runtime");
-    _ = try script.variable(.{}, .{
-        .identifier = .{ .name = "Runtime" },
-        .type = null,
-    }, .{ .raw = try runtime.child(arena, "Client") });
-    _ = try script.variable(.{}, .{
-        .identifier = .{ .name = "Signer" },
-        .type = null,
-    }, .{ .raw = try runtime.child(arena, "Signer") });
-    _ = try script.variable(.{}, .{
-        .identifier = .{ .name = "Endpoint" },
-        .type = null,
-    }, .{ .raw = try runtime.child(arena, "Endpoint") });
+    const service = trt_core.Service.get(model, model.service) orelse {
+        return error.MissingService;
+    };
+    const service_endpoint = service.endpoint_prefix orelse {
+        return error.MissingServiceEndpoint;
+    };
 
-    const service = trt_core.Service.get(model, model.service) orelse return error.MissingService;
-    const service_endpoint = service.endpoint_prefix orelse return error.MissingServiceEndpoint;
-
-    _ = try script.variable(.{}, .{
-        .identifier = .{ .name = "endpoint_config" },
-        .type = null,
-    }, Expr.structLiteral(".", &.{
-        .{ .raw = try allocPrint(arena, ".name = \"{s}\"", .{service_endpoint}) },
+    try bld.constant("endpoint_config").assign(bld.x.structLiteral(null, &.{
+        bld.x.raw(try allocPrint(arena, ".name = \"{s}\"", .{service_endpoint})),
     }));
 }
 
-fn writeServiceHead(arena: Allocator, script: *Script, model: *const SmithyModel, shape: *const SmithyService) !void {
-    _ = try script.field(.{
-        .name = "runtime",
-        .type = .{ .raw = "*Runtime" },
-    });
-    _ = try script.field(.{
-        .name = "signer",
-        .type = .{ .raw = "Signer" },
-    });
-    _ = try script.field(.{
-        .name = "endpoint",
-        .type = .{ .raw = "Endpoint" },
-    });
+fn writeServiceHead(
+    arena: Allocator,
+    bld: *zig.ContainerBuild,
+    model: *const SmithyModel,
+    shape: *const SmithyService,
+) !void {
+    try bld.field("runtime").typing(bld.x.raw("*Runtime")).end();
+    try bld.field("signer").typing(bld.x.raw("Signer")).end();
+    try bld.field("endpoint").typing(bld.x.raw("Endpoint")).end();
 
-    //
-    // Init function
-    //
+    const Funcs = struct {
+        fn init(b: *zig.BlockBuild) !void {
+            try b.discard().raw("region").end();
+            try b.discard().raw("auth").end();
+            try b.constant("runtime").assign(b.x.raw("Runtime.retain()"));
+            try b.constant("signer").assign(b.x.raw("undefined"));
+            try b.constant("endpoint").assign(b.x.raw("undefined"));
+            try b.returns().structLiteral(null, &.{
+                b.x.raw(".runtime = runtime"),
+                b.x.raw(".signer = signer"),
+                b.x.raw(".endpoint = endpoint"),
+            }).end();
+        }
 
-    var block = try script.function(.{
-        .is_public = true,
-    }, .{
-        .identifier = .{ .name = "init" },
-        .parameters = &.{
-            .{
-                .identifier = .{ .name = "region" },
-                .type = null,
-            },
-            .{
-                .identifier = .{ .name = "auth" },
-                .type = null,
-            },
-        },
-        .return_type = .typ_This,
-    });
-    try block.expr(.{ .raw = "_ = region" });
-    try block.expr(.{ .raw = "_ = auth" });
-    try block.destruct(
-        &.{.{ .unmut = .{ .name = "runtime" } }},
-        .{ .raw = "Runtime.retain()" },
-    );
-    try block.destruct(
-        &.{.{ .unmut = .{ .name = "signer" } }},
-        .{ .raw = "undefined" },
-    );
-    try block.destruct(
-        &.{.{ .unmut = .{ .name = "endpoint" } }},
-        .{ .raw = "undefined" },
-    );
-    try block.prefix(.ret).expr(.{ .raw = ".{ .runtime = runtime, .signer = signer, .endpoint = endpoint }" });
-    try block.end();
+        fn deinit(b: *zig.BlockBuild) !void {
+            try b.raw("self.runtime.release()");
+            try b.raw("self.endpoint.deinit()");
+        }
+    };
 
-    //
-    // Deinit function
-    //
+    try bld.public().function("init").arg("region", null).arg("auth", null)
+        .returns(bld.x.This()).body(Funcs.init);
 
-    block = try script.function(.{
-        .is_public = true,
-    }, .{
-        .identifier = .{ .name = "deinit" },
-        .parameters = &.{Script.param_self},
-        .return_type = null,
-    });
-    try block.expr(.{ .raw = "self.runtime.release()" });
-    try block.expr(.{ .raw = "self.endpoint.deinit()" });
-    try block.end();
+    try bld.public().function("deinit").arg("self", bld.x.This()).body(Funcs.deinit);
 
     _ = arena; // autofix
     _ = model; // autofix
     _ = shape; // autofix
 }
 
-fn operationReturnType(arena: Allocator, _: *const SmithyModel, shape: GenerateHooks.OperationShape) !?Expr {
-    return if (shape.errors_type) |errors| blk: {
-        const args = try arena.alloc(Expr, 2);
-        args[0] = shape.output_type orelse Expr.typ(void);
-        args[1] = errors;
-        break :blk Expr.call("Failable", args);
-    } else shape.output_type;
+fn operationReturnType(
+    arena: Allocator,
+    _: *const SmithyModel,
+    shape: GenerateHooks.OperationShape,
+) !?[]const u8 {
+    return if (shape.errors_type) |errors|
+        try std.fmt.allocPrint(arena, "Failable({s}, {s})", .{
+            shape.output_type orelse "void",
+            errors,
+        })
+    else
+        shape.output_type;
 }
 
 fn writeOperationBody(
     _: Allocator,
-    body: *Script.Scope,
+    bld: *zig.BlockBuild,
     model: *const SmithyModel,
     shape: GenerateHooks.OperationShape,
 ) !void {
     const action = try model.tryGetName(shape.id);
     _ = action; // autofix
 
-    try body.expr(.{ .raw = "_ = self" });
-    try body.expr(.{ .raw = "_ = input" });
-    try body.prefix(.ret).expr(.{ .raw = "undefined" });
+    try bld.discard().raw("self").end();
+    try bld.discard().raw("input").end();
+    try bld.returns().raw("undefined").end();
 }
 
-fn writeErrorShape(_: Allocator, script: *Script, _: *const SmithyModel, shape: GenerateHooks.ErrorShape) !void {
-    _ = try script.variable(.{ .is_public = true }, .{
-        .identifier = .{ .name = "source" },
-        .type = .{ .raw = "ErrorSource" },
-    }, Expr.val(shape.source));
+fn writeErrorShape(
+    _: Allocator,
+    bld: *zig.ContainerBuild,
+    _: *const SmithyModel,
+    shape: GenerateHooks.ErrorShape,
+) !void {
+    try bld.public().constant("source").typing(bld.x.raw("ErrorSource"))
+        .assign(bld.x.valueOf(shape.source));
 
-    _ = try script.variable(.{ .is_public = true }, .{
-        .identifier = .{ .name = "code" },
-        .type = Expr.typ(u10),
-    }, Expr.val(shape.code));
+    try bld.public().constant("code").typing(bld.x.typeOf(u10))
+        .assign(bld.x.valueOf(shape.code));
 
-    _ = try script.variable(.{ .is_public = true }, .{
-        .identifier = .{ .name = "retryable" },
-    }, Expr.val(shape.retryable));
+    try bld.public().constant("retryable").assign(bld.x.valueOf(shape.retryable));
 }
 
-fn uniqueListType(arena: Allocator, item: Expr) !Expr {
-    const args = try arena.alloc(Expr, 1);
-    args[0] = item;
-    return Expr.call("*const _aws_types.Set", args);
+fn uniqueListType(arena: Allocator, item_type: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(
+        arena,
+        "*const _aws_types.Set({s})",
+        .{item_type},
+    );
 }
 
 test {

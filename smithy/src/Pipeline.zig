@@ -11,9 +11,9 @@ const testing = std.testing;
 const test_alloc = testing.allocator;
 const parse = @import("parse.zig");
 const prelude = @import("prelude.zig");
-const generate = @import("codegen.zig");
-const Markdown = @import("codegen/Markdown.zig");
-const StackWriter = @import("codegen/StackWriter.zig");
+const codegen = @import("codegen.zig");
+const md = @import("codegen/md.zig");
+const Writer = @import("codegen/CodegenWriter.zig");
 const syb_traits = @import("symbols/traits.zig");
 const SmithyModel = @import("symbols/shapes.zig").SmithyModel;
 const IssuesBag = @import("utils/IssuesBag.zig");
@@ -29,7 +29,7 @@ const Options = struct {
     /// Relative to the working directory.
     out_dir_relative: []const u8,
     parse_policy: parse.Policy,
-    codegen_policy: generate.Policy,
+    codegen_policy: codegen.Policy,
     process_policy: Policy,
 };
 
@@ -56,11 +56,11 @@ page_alloc: Allocator,
 issues: IssuesBag,
 traits: syb_traits.TraitsManager,
 process_hooks: Hooks,
-codegen_hooks: generate.Hooks,
+codegen_hooks: codegen.Hooks,
 src_dir: fs.Dir,
 out_dir: fs.Dir,
 parse_policy: parse.Policy,
-codegen_policy: generate.Policy,
+codegen_policy: codegen.Policy,
 process_policy: Policy,
 
 pub fn init(
@@ -68,7 +68,7 @@ pub fn init(
     page_alloc: Allocator,
     options: Options,
     process_hooks: Hooks,
-    codegen_hooks: generate.Hooks,
+    codegen_hooks: codegen.Hooks,
 ) !*Self {
     const self = try gpa_alloc.create(Self);
     self.gpa_alloc = gpa_alloc;
@@ -237,7 +237,7 @@ fn generateScript(self: *Self, arena: Allocator, model: *const SmithyModel, dir:
 
     const zig_head = @embedFile("codegen/template/head.zig.template") ++ "\n\n";
     try file.writer().writeAll(zig_head);
-    try generate.writeScript(
+    try codegen.writeScript(
         arena,
         file.writer().any(),
         self.codegen_hooks,
@@ -253,16 +253,21 @@ fn generateReadme(self: *Self, arena: Allocator, model: *const SmithyModel, dir:
     const title =
         trt_docs.Title.get(model, model.service) orelse
         try titleCase(arena, slug);
-    var intro: ?[]const u8 = null;
-    if (trt_docs.Documentation.get(model, model.service)) |docs| {
-        var intro_buffer = std.ArrayList(u8).init(arena);
-        errdefer intro_buffer.deinit();
-        var intro_writer = StackWriter.init(arena, intro_buffer.writer().any(), .{});
-        var md = Markdown.init(&intro_writer);
-        try md.writeSource(docs);
-        try md.end();
-        intro = try intro_buffer.toOwnedSlice();
-    }
+    const intro: ?[]const u8 = if (trt_docs.Documentation.get(model, model.service)) |docs| blk: {
+        var builder = md.Document.Build{ .allocator = arena };
+        _ = docs; // autofix
+        const markdown = try builder.consume();
+        defer markdown.deinit(arena);
+
+        var output = std.ArrayList(u8).init(arena);
+        errdefer output.deinit();
+
+        var writer = Writer.init(arena, output.writer().any());
+        defer writer.deinit();
+
+        try markdown.write(&writer);
+        break :blk try output.toOwnedSlice();
+    } else null;
 
     var file = try dir.createFile("README.md", .{});
     defer file.close();

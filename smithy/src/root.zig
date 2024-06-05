@@ -6,8 +6,8 @@ pub const ParsePolicy = parse.Policy;
 const codegen = @import("codegen.zig");
 pub const GenerateHooks = codegen.Hooks;
 pub const GeneratePolicy = codegen.Policy;
-pub const Script = @import("codegen/Zig.zig");
-pub const Markdown = @import("codegen/Markdown.zig");
+pub const codegen_zig = @import("codegen/zig.zig");
+pub const codegen_md = @import("codegen/md.zig");
 
 const syb_id = @import("symbols/identity.zig");
 pub usingnamespace syb_id;
@@ -41,15 +41,8 @@ test {
 
     // Codegen
     _ = @import("codegen/CodegenWriter.zig");
-    _ = @import("codegen/zig/utils.zig");
-    _ = @import("codegen/zig/expr.zig");
-    _ = @import("codegen/zig/flow.zig");
-    _ = @import("codegen/zig/declare.zig");
-    _ = @import("codegen/zig/scope.zig");
-    _ = @import("codegen/md.zig");
-    _ = @import("codegen/StackWriter.zig");
-    _ = Markdown;
-    _ = Script;
+    _ = codegen_md;
+    _ = codegen_zig;
     _ = codegen;
 
     // Pipeline
