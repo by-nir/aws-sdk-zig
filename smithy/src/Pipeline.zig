@@ -233,19 +233,23 @@ fn parseModel(self: *Self, arena: Allocator, json_name: []const u8, issues: *Iss
 
 fn generateScript(self: *Self, arena: Allocator, model: *const SmithyModel, dir: fs.Dir, issues: *IssuesBag) !void {
     var file = try dir.createFile("client.zig", .{});
+    var file_buffer = std.io.bufferedWriter(file.writer());
     defer file.close();
 
     const zig_head = @embedFile("codegen/template/head.zig.template") ++ "\n\n";
-    try file.writer().writeAll(zig_head);
+    try file_buffer.writer().writeAll(zig_head);
+
     try codegen.writeScript(
         arena,
-        file.writer().any(),
+        file_buffer.writer().any(),
         self.codegen_hooks,
         self.codegen_policy,
         issues,
         model,
         model.service,
     );
+
+    try file_buffer.flush();
 }
 
 fn generateReadme(self: *Self, arena: Allocator, model: *const SmithyModel, dir: fs.Dir, slug: []const u8) !void {
@@ -270,15 +274,18 @@ fn generateReadme(self: *Self, arena: Allocator, model: *const SmithyModel, dir:
     } else null;
 
     var file = try dir.createFile("README.md", .{});
+    var file_buffer = std.io.bufferedWriter(file.writer());
     defer file.close();
 
     const md_head = @embedFile("codegen/template/head.md.template") ++ "\n\n";
-    try file.writer().writeAll(md_head);
-    try hook(arena, file.writer().any(), model, Hooks.ReadmeMeta{
+    try file_buffer.writer().writeAll(md_head);
+    try hook(arena, file_buffer.writer().any(), model, Hooks.ReadmeMeta{
         .slug = slug,
         .title = title,
         .intro = intro,
     });
+
+    try file_buffer.flush();
 }
 
 pub const Report = struct {

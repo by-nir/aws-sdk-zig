@@ -25,7 +25,4 @@ pub fn build(b: *std.Build) void {
         .install_dir = .prefix,
         .install_subdir = "../sdk",
     });
-
-    const aws_fmt = b.addFmt(.{ .paths = &.{"sdk"} });
-    b.getInstallStep().dependOn(&aws_fmt.step);
 }
