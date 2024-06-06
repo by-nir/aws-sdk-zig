@@ -12,8 +12,9 @@ const SmithyId = syb_id.SmithyId;
 const SmithyType = syb_id.SmithyType;
 const syb_shape = @import("symbols/shapes.zig");
 const SmithyModel = syb_shape.SmithyModel;
-const Writer = @import("codegen/CodegenWriter.zig");
+const md = @import("codegen/md.zig");
 const zig = @import("codegen/zig.zig");
+const Writer = @import("codegen/CodegenWriter.zig");
 const ExprBuild = zig.ExprBuild;
 const BlockBuild = zig.BlockBuild;
 const ContainerBuild = zig.ContainerBuild;
@@ -485,6 +486,7 @@ test "writeIntEnumShape" {
     var self = tester.initCodegen(&model);
     try self.writeShape(tester.build, SmithyId.of("test#IntEnum"));
     try tester.expect(
+        \\/// An **integer-based** enumeration.
         \\pub const IntEnum = enum(i32) {
         \\    foo_bar = 8,
         \\    baz_qux = 9,
@@ -627,7 +629,9 @@ test "writeStructShape" {
     try tester.expect(
         \\pub const Struct = struct {
         \\    mixed: ?bool = null,
+        \\    /// A **struct** member.
         \\    foo_bar: i32,
+        \\    /// An **integer-based** enumeration.
         \\    baz_qux: IntEnum = @enumFromInt(8),
         \\};
         \\
@@ -900,6 +904,7 @@ test "writeServiceShape" {
     var self = tester.initCodegen(&model);
     try self.writeShape(tester.build, SmithyId.of("test.serve#Service"));
     try tester.expect(
+        \\/// Some _service_...
         \\pub const Service = struct {
         \\    pub const OperationErrors = union(enum) {
         \\        service: ServiceError,
@@ -925,14 +930,20 @@ test "writeServiceShape" {
 }
 
 fn writeDocComment(self: *Self, bld: *ContainerBuild, id: SmithyId, target_fallback: bool) !void {
-    _ = bld; // autofix
-    var raw_doc = trt_docs.Documentation.get(self.model, id);
-    if (target_fallback and raw_doc == null) if (self.model.getShape(id)) |shape| {
+    var docs = trt_docs.Documentation.get(self.model, id);
+    if (target_fallback and docs == null) if (self.model.getShape(id)) |shape| {
         switch (shape) {
-            .target => |t| raw_doc = trt_docs.Documentation.get(self.model, t),
+            .target => |t| docs = trt_docs.Documentation.get(self.model, t),
             else => {},
         }
     };
+
+    const context = .{ .arena = self.arena, .html = docs orelse return };
+    try bld.commentMarkdownWith(.doc, context, struct {
+        fn f(ctx: @TypeOf(context), b: *md.Document.Build) !void {
+            try md.convertHtml(ctx.arena, b, ctx.html);
+        }
+    }.f);
 }
 
 fn unwrapShapeName(self: *Self, id: SmithyId) ![]const u8 {

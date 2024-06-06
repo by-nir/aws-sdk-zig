@@ -200,7 +200,7 @@ pub const ContainerBuild = struct {
         ctx: anytype,
         closure: Closure(@TypeOf(ctx), md.DocumentClosure),
     ) !void {
-        const data = try md.Document.init(self.allocator, {}, closure);
+        const data = try md.Document.init(self.allocator, ctx, closure);
         errdefer data.deinit(self.allocator);
         try self.appendStatement(.{ .comment = .{
             .kind = kind,
@@ -600,7 +600,7 @@ pub const BlockBuild = struct {
         ctx: anytype,
         closure: Closure(@TypeOf(ctx), md.DocumentClosure),
     ) !void {
-        const data = try md.Document.init(self.allocator, {}, closure);
+        const data = try md.Document.init(self.allocator, ctx, closure);
         errdefer data.deinit(self.allocator);
         try self.append(.{ .comment = .{
             .kind = kind,

@@ -527,7 +527,7 @@ pub const Branch = struct {
                 ctx: anytype,
                 closure: Closure(@TypeOf(ctx), md.DocumentClosure),
             ) Self {
-                if (md.Document.init(self.allocator, {}, closure)) |data| {
+                if (md.Document.init(self.allocator, ctx, closure)) |data| {
                     return self.flushAndReset(null, ExprComment{
                         .kind = .normal,
                         .source = .{ .markdown = data },
@@ -733,7 +733,7 @@ pub const Switch = struct {
             closure: Closure(@TypeOf(ctx), md.DocumentClosure),
         ) !void {
             assert(self.state == .idle or self.state == .inlined);
-            const data = try md.Document.init(self.allocator, {}, closure);
+            const data = try md.Document.init(self.allocator, ctx, closure);
             errdefer data.deinit(self.allocator);
             try self.statements.append(self.allocator, .{ .comment = ExprComment{
                 .kind = .normal,
