@@ -90,7 +90,7 @@ pub fn setupEnum(model: *SmithyModel) !void {
 pub fn setupIntEnum(model: *SmithyModel) !void {
     const Static = struct {
         const shape = &.{ SmithyId.of("test#IntEnum$FOO_BAR"), SmithyId.of("test#IntEnum$BAZ_QUX") };
-        const doc: []const u8 = "An <b>integer-based</b> enumeration.";
+        const doc: []const u8 = "<p>An <b>integer-based</b> enumeration.</p>";
         const traits = &.{.{
             .id = SmithyId.of("smithy.api#documentation"),
             .value = @as(*const anyopaque, @ptrCast(&doc)),
@@ -140,7 +140,7 @@ pub fn setupStruct(model: *SmithyModel) !void {
         const structure = &.{ SmithyId.of("test#Struct$fooBar"), SmithyId.of("test#Struct$bazQux") };
         const mixins = &.{SmithyId.of("test#Mixin")};
         const mixed = &.{SmithyId.of("test#Mixin$mixed")};
-        const member_doc: []const u8 = "A <b>struct</b> member.";
+        const member_doc: []const u8 = "<p>A <b>struct</b> member.</p>";
         const member_traits = .{
             .{ .id = trt_refine.required_id, .value = null },
             .{
@@ -202,7 +202,7 @@ pub fn setupServiceShapes(model: *SmithyModel) !void {
             .resources = &.{SmithyId.of("test.serve#Resource")},
             .errors = &.{SmithyId.of("test.error#ServiceError")},
         };
-        const service_doc: []const u8 = "Some <i>service</i>...";
+        const service_doc: []const u8 = "<p>Some <i>service</i>...</p>";
         const service_traits = &.{.{
             .id = SmithyId.of("smithy.api#documentation"),
             .value = @as(*const anyopaque, @ptrCast(&service_doc)),

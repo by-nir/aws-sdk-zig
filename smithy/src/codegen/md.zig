@@ -12,6 +12,9 @@ const callClosure = dcl.callClosure;
 const zig = @import("zig.zig");
 const Writer = @import("CodegenWriter.zig");
 
+const html = @import("md/html.zig");
+pub const convertHtml = html.convert;
+
 // TODO: Support soft/hard width guidelines
 
 pub const DocumentClosure = *const fn (*Document.Build) anyerror!void;
@@ -71,26 +74,26 @@ pub const Document = struct {
             } });
         }
 
-        pub fn paragraph(self: *Build) Styled.Build(*Build, anyerror!void) {
+        pub fn paragraph(self: *Build) Formated.Build(*Build, anyerror!void) {
             return .{
                 .allocator = self.allocator,
                 .callback = createCallback(self, endParagraph),
             };
         }
 
-        fn endParagraph(self: *Build, text: Styled) !void {
-            try self.blocks.append(self.allocator, .{ .paragraph = text });
+        fn endParagraph(self: *Build, formated: Formated) !void {
+            try self.blocks.append(self.allocator, .{ .paragraph = formated });
         }
 
-        pub fn quote(self: *Build) Styled.Build(*Build, anyerror!void) {
+        pub fn quote(self: *Build) Formated.Build(*Build, anyerror!void) {
             return .{
                 .allocator = self.allocator,
                 .callback = createCallback(self, endQuote),
             };
         }
 
-        fn endQuote(self: *Build, text: Styled) !void {
-            try self.blocks.append(self.allocator, .{ .quote = text });
+        fn endQuote(self: *Build, formated: Formated) !void {
+            try self.blocks.append(self.allocator, .{ .quote = formated });
         }
 
         pub fn list(self: *Build, kind: List.Kind, closure: ListClosure) !void {
@@ -141,8 +144,8 @@ pub const Document = struct {
 pub const Block = union(enum) {
     comment: []const u8,
     heading: Heading,
-    paragraph: Styled,
-    quote: Styled,
+    paragraph: Formated,
+    quote: Formated,
     list: List,
     table: Table,
     code: zig.Container,
@@ -176,20 +179,25 @@ pub const Block = union(enum) {
     }
 };
 
-pub const Styled = struct {
+pub const Formated = struct {
     segments: []const Segment,
 
-    pub fn deinit(self: Styled, allocator: Allocator) void {
+    pub fn deinit(self: Formated, allocator: Allocator) void {
         allocator.free(self.segments);
     }
 
-    pub fn write(self: Styled, writer: *Writer) !void {
-        try writer.appendList(Segment, self.segments, .{
-            .delimiter = " ",
-        });
+    pub fn write(self: Formated, writer: *Writer) !void {
+        for (self.segments, 0..) |segment, i| {
+            assert(segment.text.len > 0);
+            if (i == 0 or std.mem.indexOfScalar(u8, ".,;:?!", segment.text[0]) != null) {
+                try writer.appendValue(segment);
+            } else {
+                try writer.appendFmt(" {}", .{segment});
+            }
+        }
     }
 
-    pub const Format = union(enum) {
+    pub const Style = union(enum) {
         plain,
         italic,
         bold,
@@ -199,26 +207,26 @@ pub const Styled = struct {
     };
 
     pub const Segment = struct {
-        string: []const u8,
-        format: Format,
+        text: []const u8,
+        format: Style,
 
         pub fn write(self: Segment, writer: *Writer) !void {
             switch (self.format) {
-                .plain => try writer.appendString(self.string),
-                .italic => try writer.appendFmt("_{s}_", .{self.string}),
-                .bold => try writer.appendFmt("**{s}**", .{self.string}),
-                .bold_italic => try writer.appendFmt("***{s}***", .{self.string}),
-                .code => try writer.appendFmt("`{s}`", .{self.string}),
+                .plain => try writer.appendString(self.text),
+                .italic => try writer.appendFmt("_{s}_", .{self.text}),
+                .bold => try writer.appendFmt("**{s}**", .{self.text}),
+                .bold_italic => try writer.appendFmt("***{s}***", .{self.text}),
+                .code => try writer.appendFmt("`{s}`", .{self.text}),
                 .link => |url| try writer.appendFmt(
                     "[{s}]({s})",
-                    .{ self.string, url },
+                    .{ self.text, url },
                 ),
             }
         }
     };
 
     pub fn Build(comptime Context: type, comptime Return: type) type {
-        const Callback = Cb(Context, Styled, Return);
+        const Callback = Cb(Context, Formated, Return);
         return struct {
             const Self = @This();
 
@@ -234,42 +242,42 @@ pub const Styled = struct {
 
             pub fn plain(self: *const Self, text: []const u8) Self {
                 return self.append(.{
-                    .string = text,
+                    .text = text,
                     .format = .plain,
                 });
             }
 
             pub fn italic(self: *const Self, text: []const u8) Self {
                 return self.append(.{
-                    .string = text,
+                    .text = text,
                     .format = .italic,
                 });
             }
 
             pub fn bold(self: *const Self, text: []const u8) Self {
                 return self.append(.{
-                    .string = text,
+                    .text = text,
                     .format = .bold,
                 });
             }
 
             pub fn boldItalic(self: *const Self, text: []const u8) Self {
                 return self.append(.{
-                    .string = text,
+                    .text = text,
                     .format = .bold_italic,
                 });
             }
 
             pub fn code(self: *const Self, text: []const u8) Self {
                 return self.append(.{
-                    .string = text,
+                    .text = text,
                     .format = .code,
                 });
             }
 
             pub fn link(self: *const Self, text: []const u8, url: []const u8) Self {
                 return self.append(.{
-                    .string = text,
+                    .text = text,
                     .format = .{ .link = url },
                 });
             }
@@ -285,9 +293,9 @@ pub const Styled = struct {
     }
 };
 
-test "Styled" {
+test "Formated" {
     const Test = struct {
-        fn end(_: void, text: Styled) !void {
+        fn end(_: void, text: Formated) !void {
             defer text.deinit(test_alloc);
             const seg = text.segments;
             try Writer.expectValue("foo", seg[0]);
@@ -299,7 +307,7 @@ test "Styled" {
         }
     };
 
-    try (Styled.Build(void, anyerror!void){
+    try (Formated.Build(void, anyerror!void){
         .allocator = test_alloc,
         .callback = createCallback({}, Test.end),
     }).plain("foo").italic("bar").bold("baz").boldItalic("qux")
@@ -354,7 +362,7 @@ pub const List = struct {
 
     pub const Item = union(enum) {
         plain: []const u8,
-        styled: Styled,
+        formated: Formated,
         list: List,
 
         pub fn deinit(self: Item, allocator: Allocator) void {
@@ -396,7 +404,7 @@ pub const List = struct {
                 if (i > 0) try writer.breakString("");
                 switch (item) {
                     .plain => |s| try writer.appendFmt("- {s}", .{s}),
-                    .styled => |t| try writer.appendFmt("- {}", .{t}),
+                    .formated => |t| try writer.appendFmt("- {}", .{t}),
                     .list => |t| try writeSubList(t, writer),
                 }
             },
@@ -404,7 +412,7 @@ pub const List = struct {
                 if (i > 1) try writer.breakString("");
                 switch (item) {
                     .plain => |s| try writer.appendFmt("{d}. {s}", .{ i, s }),
-                    .styled => |t| try writer.appendFmt("{d}. {}", .{ i, t }),
+                    .formated => |t| try writer.appendFmt("{d}. {}", .{ i, t }),
                     .list => |t| try writeSubList(t, writer),
                 }
             },
@@ -439,15 +447,15 @@ pub const List = struct {
             try self.items.append(self.allocator, .{ .plain = text });
         }
 
-        pub fn styled(self: *Build) Styled.Build(*Build, anyerror!void) {
+        pub fn formated(self: *Build) Formated.Build(*Build, anyerror!void) {
             return .{
                 .allocator = self.allocator,
-                .callback = createCallback(self, endStyled),
+                .callback = createCallback(self, endFormated),
             };
         }
 
-        fn endStyled(self: *Build, text: Styled) !void {
-            try self.items.append(self.allocator, .{ .styled = text });
+        fn endFormated(self: *Build, text: Formated) !void {
+            try self.items.append(self.allocator, .{ .formated = text });
         }
 
         pub fn subList(self: *Build, kind: List.Kind, closure: ListClosure) !void {
@@ -474,11 +482,11 @@ test "list" {
     try build.list(.unordered, struct {
         fn f(b: *List.Build) !void {
             try b.plain("foo");
-            try b.styled().plain("bar").end();
+            try b.formated().plain("bar").end();
             try b.subList(.ordered, struct {
                 fn f(sub: *List.Build) !void {
                     try sub.plain("baz");
-                    try sub.styled().plain("qux").end();
+                    try sub.formated().plain("qux").end();
                 }
             }.f);
         }
@@ -685,4 +693,8 @@ test "code" {
         \\const foo = bar;
         \\```
     , build.blocks.items[0]);
+}
+
+test {
+    _ = html;
 }

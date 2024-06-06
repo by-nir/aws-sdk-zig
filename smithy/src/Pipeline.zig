@@ -186,10 +186,10 @@ fn processModel(self: *Self, arena: Allocator, report: *Report, json_name: []con
 
     const slug = json_name[0 .. json_name.len - ".json".len];
     var out_dir = try self.out_dir.makeOpenPath(slug, .{});
+    defer out_dir.close();
     errdefer out_dir.deleteTree(slug) catch |err| {
         log.err("Deleting model’s output dir failed: {s}", .{@errorName(err)});
     };
-    defer out_dir.close();
 
     self.generateScript(arena, &model, out_dir, &issues) catch |err| {
         switch (err) {
@@ -254,9 +254,9 @@ fn generateReadme(self: *Self, arena: Allocator, model: *const SmithyModel, dir:
         trt_docs.Title.get(model, model.service) orelse
         try titleCase(arena, slug);
     const intro: ?[]const u8 = if (trt_docs.Documentation.get(model, model.service)) |docs| blk: {
-        var builder = md.Document.Build{ .allocator = arena };
-        _ = docs; // autofix
-        const markdown = try builder.consume();
+        var build = md.Document.Build{ .allocator = arena };
+        try md.convertHtml(arena, &build, docs);
+        const markdown = try build.consume();
         defer markdown.deinit(arena);
 
         var output = std.ArrayList(u8).init(arena);
