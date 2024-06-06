@@ -7,23 +7,25 @@
 //!
 //! [Smithy Spec](https://smithy.io/2.0/spec/model.html#prelude)
 const std = @import("std");
-const TraitsManager = @import("symbols/traits.zig").TraitsManager;
-const trt_auth = @import("traits/auth.zig");
-const trt_behavior = @import("traits/behavior.zig");
-const trt_constraint = @import("traits/constraint.zig");
-const trt_docs = @import("traits/docs.zig");
-const trt_endpoint = @import("traits/endpoint.zig");
-const trt_http = @import("traits/http.zig");
-const trt_protocol = @import("traits/protocol.zig");
-const trt_refine = @import("traits/refine.zig");
-const trt_resource = @import("traits/resource.zig");
-const trt_stream = @import("traits/stream.zig");
-const trt_validate = @import("traits/validate.zig");
-const sys_compliance = @import("systems/compliance.zig");
-const sys_smoke = @import("systems/smoke.zig");
-const sys_waiters = @import("systems/waiters.zig");
-const sys_mqtt = @import("systems/mqtt.zig");
-const sys_rules = @import("systems/rules.zig");
+const TraitsManager = @import("systems/traits.zig").TraitsManager;
+
+const auth = @import("traits/auth.zig");
+const behavior = @import("traits/behavior.zig");
+const constraint = @import("traits/constraint.zig");
+const docs = @import("traits/docs.zig");
+const endpoint = @import("traits/endpoint.zig");
+const http = @import("traits/http.zig");
+const protocol = @import("traits/protocol.zig");
+const refine = @import("traits/refine.zig");
+const resource = @import("traits/resource.zig");
+const stream = @import("traits/stream.zig");
+const validate = @import("traits/validate.zig");
+
+const compliance = @import("traits/compliance.zig");
+const smoke = @import("traits/smoke.zig");
+const waiters = @import("traits/waiters.zig");
+const mqtt = @import("traits/mqtt.zig");
+const rules = @import("traits/rules.zig");
 
 pub const TYPE_UNIT = "smithy.api#Unit";
 pub const TYPE_BLOB = "smithy.api#Blob";
@@ -49,39 +51,39 @@ pub const PRIMITIVE_FLOAT = "smithy.api#PrimitiveFloat";
 pub const PRIMITIVE_DOUBLE = "smithy.api#PrimitiveDouble";
 
 pub fn registerTraits(allocator: std.mem.Allocator, manager: *TraitsManager) !void {
-    try manager.registerAll(allocator, trt_auth.traits);
-    try manager.registerAll(allocator, trt_behavior.traits);
-    try manager.registerAll(allocator, trt_constraint.traits);
-    try manager.registerAll(allocator, trt_docs.traits);
-    try manager.registerAll(allocator, trt_endpoint.traits);
-    try manager.registerAll(allocator, trt_http.traits);
-    try manager.registerAll(allocator, trt_protocol.traits);
-    try manager.registerAll(allocator, trt_refine.traits);
-    try manager.registerAll(allocator, trt_resource.traits);
-    try manager.registerAll(allocator, trt_stream.traits);
-    try manager.registerAll(allocator, trt_validate.traits);
-    try manager.registerAll(allocator, sys_compliance.traits);
-    try manager.registerAll(allocator, sys_smoke.traits);
-    try manager.registerAll(allocator, sys_waiters.traits);
-    try manager.registerAll(allocator, sys_mqtt.traits);
-    try manager.registerAll(allocator, sys_rules.traits);
+    try manager.registerAll(allocator, auth.traits);
+    try manager.registerAll(allocator, behavior.traits);
+    try manager.registerAll(allocator, constraint.traits);
+    try manager.registerAll(allocator, docs.traits);
+    try manager.registerAll(allocator, endpoint.traits);
+    try manager.registerAll(allocator, http.traits);
+    try manager.registerAll(allocator, protocol.traits);
+    try manager.registerAll(allocator, refine.traits);
+    try manager.registerAll(allocator, resource.traits);
+    try manager.registerAll(allocator, stream.traits);
+    try manager.registerAll(allocator, validate.traits);
+    try manager.registerAll(allocator, compliance.traits);
+    try manager.registerAll(allocator, smoke.traits);
+    try manager.registerAll(allocator, waiters.traits);
+    try manager.registerAll(allocator, mqtt.traits);
+    try manager.registerAll(allocator, rules.traits);
 }
 
 test {
-    _ = trt_auth;
-    _ = trt_behavior;
-    _ = trt_constraint;
-    _ = trt_docs;
-    _ = trt_endpoint;
-    _ = trt_http;
-    _ = trt_protocol;
-    _ = trt_refine;
-    _ = trt_resource;
-    _ = trt_stream;
-    _ = trt_validate;
-    _ = sys_compliance;
-    _ = sys_smoke;
-    _ = sys_waiters;
-    _ = sys_mqtt;
-    _ = sys_rules;
+    _ = auth;
+    _ = behavior;
+    _ = constraint;
+    _ = docs;
+    _ = endpoint;
+    _ = http;
+    _ = protocol;
+    _ = refine;
+    _ = resource;
+    _ = stream;
+    _ = validate;
+    _ = compliance;
+    _ = smoke;
+    _ = waiters;
+    _ = mqtt;
+    _ = rules;
 }

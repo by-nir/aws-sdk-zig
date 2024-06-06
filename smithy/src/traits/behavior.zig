@@ -1,12 +1,12 @@
 //! Behavior traits
 //!
 //! [Smithy Spec](https://smithy.io/2.0/spec/behavior-traits.html)
-const TraitsList = @import("../symbols/traits.zig").TraitsRegistry;
-const syb_id = @import("../symbols/identity.zig");
-const SmithyId = syb_id.SmithyId;
+const symbols = @import("../systems/symbols.zig");
+const SmithyId = symbols.SmithyId;
+const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
 
 // TODO: Remainig traits
-pub const traits: TraitsList = &.{
+pub const traits: TraitsRegistry = &.{
     // smithy.api#idempotencyToken
     // smithy.api#idempotent
     // smithy.api#readonly

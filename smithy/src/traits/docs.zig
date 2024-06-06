@@ -6,13 +6,14 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const TraitsList = @import("../symbols/traits.zig").TraitsRegistry;
-const SmithyId = @import("../symbols/identity.zig").SmithyId;
-const SmithyModel = @import("../symbols/shapes.zig").SmithyModel;
+const symbols = @import("../systems/symbols.zig");
+const SmithyId = symbols.SmithyId;
+const SmithyModel = symbols.SmithyModel;
+const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
 const JsonReader = @import("../utils/JsonReader.zig");
 
 // TODO: Remainig traits
-pub const traits: TraitsList = &.{
+pub const traits: TraitsRegistry = &.{
     // smithy.api#deprecated
     .{ Documentation.id, Documentation.parse },
     // smithy.api#examples

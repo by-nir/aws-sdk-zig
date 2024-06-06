@@ -4,15 +4,14 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const JsonReader = @import("utils/JsonReader.zig");
+const symbols = @import("systems/symbols.zig");
+const SmithyId = symbols.SmithyId;
+const SmithyType = symbols.SmithyType;
+const SmithyMeta = symbols.SmithyMeta;
+const SmithyModel = symbols.SmithyModel;
+const TraitsManager = @import("systems/traits.zig").TraitsManager;
 const IssuesBag = @import("utils/IssuesBag.zig");
-const syb_id = @import("symbols/identity.zig");
-const SmithyId = syb_id.SmithyId;
-const SmithyType = syb_id.SmithyType;
-const syb_shape = @import("symbols/shapes.zig");
-const SmithyMeta = syb_shape.SmithyMeta;
-const SmithyModel = syb_shape.SmithyModel;
-const TraitsManager = @import("symbols/traits.zig").TraitsManager;
+const JsonReader = @import("utils/JsonReader.zig");
 const trt_refine = @import("traits/refine.zig");
 
 const Self = @This();
@@ -29,11 +28,11 @@ const Context = struct {
 
     pub const Target = union(enum) {
         none,
-        service: *syb_shape.SmithyService,
-        resource: *syb_shape.SmithyResource,
-        operation: *syb_shape.SmithyOperation,
+        service: *symbols.SmithyService,
+        resource: *symbols.SmithyResource,
+        operation: *symbols.SmithyOperation,
         id_list: *std.ArrayListUnmanaged(SmithyId),
-        ref_map: *std.ArrayListUnmanaged(syb_id.SmithyRefMapValue),
+        ref_map: *std.ArrayListUnmanaged(symbols.SmithyRefMapValue),
         meta,
         meta_list: *std.ArrayListUnmanaged(SmithyMeta),
         meta_map: *std.ArrayListUnmanaged(SmithyMeta.Pair),
@@ -83,7 +82,7 @@ fn parseScope(
 }
 
 fn parseProp(self: *Self, prop_name: []const u8, ctx: Context) !void {
-    switch (syb_id.SmithyProperty.of(prop_name)) {
+    switch (symbols.SmithyProperty.of(prop_name)) {
         .smithy => try self.validateSmithyVersion(),
         .mixins => try self.parseMixins(ctx.id),
         .traits => try self.parseTraits(ctx.name.?, ctx.id),
@@ -184,7 +183,7 @@ fn parseShapeRefList(
     comptime map: bool,
     parsFn: JsonReader.NextScopeFn(*Self, Context, if (map) .object else .array),
 ) !void {
-    var list = std.ArrayListUnmanaged(if (map) syb_id.SmithyRefMapValue else SmithyId){};
+    var list = std.ArrayListUnmanaged(if (map) symbols.SmithyRefMapValue else SmithyId){};
     errdefer list.deinit(self.arena);
     if (map)
         try self.parseScope(.object, parsFn, .{ .target = .{ .ref_map = &list } })
@@ -238,7 +237,7 @@ fn parseMixins(self: *Self, parent_id: SmithyId) !void {
 }
 
 fn parseTraits(self: *Self, parent_name: []const u8, parent_id: SmithyId) !void {
-    var traits: std.ArrayListUnmanaged(syb_id.SmithyTaggedValue) = .{};
+    var traits: std.ArrayListUnmanaged(symbols.SmithyTaggedValue) = .{};
     errdefer traits.deinit(self.arena);
     try self.reader.nextObjectBegin();
     while (try self.reader.peek() == .string) {
@@ -282,11 +281,11 @@ fn parseTraits(self: *Self, parent_name: []const u8, parent_id: SmithyId) !void 
 }
 
 /// Returns `true` if already had traits.
-fn putTraits(self: *Self, id: SmithyId, traits: []const syb_id.SmithyTaggedValue) !bool {
+fn putTraits(self: *Self, id: SmithyId, traits: []const symbols.SmithyTaggedValue) !bool {
     const result = try self.model.traits.getOrPut(self.arena, id);
     if (result.found_existing) {
         const current_len = result.value_ptr.*.len;
-        const all = try self.arena.alloc(syb_id.SmithyTaggedValue, current_len + traits.len);
+        const all = try self.arena.alloc(symbols.SmithyTaggedValue, current_len + traits.len);
         @memcpy(all[0..current_len], result.value_ptr.*);
         @memcpy(all[current_len..][0..traits.len], traits);
         self.arena.free(result.value_ptr.*);
@@ -312,18 +311,18 @@ fn parseShape(self: *Self, shape_name: []const u8, _: Context) !void {
             return;
         },
         .service => .{ .service = blk: {
-            const ptr = try self.arena.create(syb_shape.SmithyService);
-            ptr.* = mem.zeroInit(syb_shape.SmithyService, .{});
+            const ptr = try self.arena.create(symbols.SmithyService);
+            ptr.* = mem.zeroInit(symbols.SmithyService, .{});
             break :blk ptr;
         } },
         .resource => .{ .resource = blk: {
-            const ptr = try self.arena.create(syb_shape.SmithyResource);
-            ptr.* = mem.zeroInit(syb_shape.SmithyResource, .{});
+            const ptr = try self.arena.create(symbols.SmithyResource);
+            ptr.* = mem.zeroInit(symbols.SmithyResource, .{});
             break :blk ptr;
         } },
         .operation => .{ .operation = blk: {
-            const ptr = try self.arena.create(syb_shape.SmithyOperation);
-            ptr.* = mem.zeroInit(syb_shape.SmithyOperation, .{});
+            const ptr = try self.arena.create(symbols.SmithyOperation);
+            ptr.* = mem.zeroInit(symbols.SmithyOperation, .{});
             break :blk ptr;
         } },
         else => blk: {
@@ -358,7 +357,7 @@ fn putShape(self: *Self, id: SmithyId, type_id: SmithyId, name: []const u8, targ
                 const boolean = JsonReader.Value{ .boolean = false };
             };
             if (mem.startsWith(u8, name, "smithy.api#Primitive")) {
-                const traits = try self.arena.alloc(syb_id.SmithyTaggedValue, 1);
+                const traits = try self.arena.alloc(symbols.SmithyTaggedValue, 1);
                 traits[0] = .{
                     .id = trt_refine.Default.id,
                     .value = switch (t) {

@@ -8,13 +8,14 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const SmithyId = @import("../symbols/identity.zig").SmithyId;
-const TraitsList = @import("../symbols/traits.zig").TraitsRegistry;
-const SmithyModel = @import("../symbols/shapes.zig").SmithyModel;
+const symbols = @import("../systems/symbols.zig");
+const SmithyId = symbols.SmithyId;
+const SmithyModel = symbols.SmithyModel;
+const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
 const JsonReader = @import("../utils/JsonReader.zig");
 
 // TODO: Remainig traits
-pub const traits: TraitsList = &.{
+pub const traits: TraitsRegistry = &.{
     .{ id_ref_id, null },
     // smithy.api#length
     // smithy.api#pattern

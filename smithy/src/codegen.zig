@@ -7,11 +7,10 @@ const assert = std.debug.assert;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const test_model = @import("testing/model.zig");
-const syb_id = @import("symbols/identity.zig");
-const SmithyId = syb_id.SmithyId;
-const SmithyType = syb_id.SmithyType;
-const syb_shape = @import("symbols/shapes.zig");
-const SmithyModel = syb_shape.SmithyModel;
+const symbols = @import("systems/symbols.zig");
+const SmithyId = symbols.SmithyId;
+const SmithyType = symbols.SmithyType;
+const SmithyModel = symbols.SmithyModel;
 const md = @import("codegen/md.zig");
 const zig = @import("codegen/zig.zig");
 const Writer = @import("codegen/CodegenWriter.zig");
@@ -38,8 +37,8 @@ pub const Hooks = struct {
     writeScriptHead: ?*const fn (Allocator, *ContainerBuild, *const SmithyModel) anyerror!void = null,
     uniqueListType: ?*const fn (Allocator, []const u8) anyerror![]const u8 = null,
     writeErrorShape: *const fn (Allocator, *ContainerBuild, *const SmithyModel, ErrorShape) anyerror!void,
-    writeServiceHead: ?*const fn (Allocator, *ContainerBuild, *const SmithyModel, *const syb_shape.SmithyService) anyerror!void = null,
-    writeResourceHead: ?*const fn (Allocator, *ContainerBuild, *const SmithyModel, SmithyId, *const syb_shape.SmithyResource) anyerror!void = null,
+    writeServiceHead: ?*const fn (Allocator, *ContainerBuild, *const SmithyModel, *const symbols.SmithyService) anyerror!void = null,
+    writeResourceHead: ?*const fn (Allocator, *ContainerBuild, *const SmithyModel, SmithyId, *const symbols.SmithyResource) anyerror!void = null,
     operationReturnType: ?*const fn (Allocator, *const SmithyModel, OperationShape) anyerror!?[]const u8 = null,
     writeOperationBody: *const fn (Allocator, *BlockBuild, *const SmithyModel, OperationShape) anyerror!void,
 
@@ -794,7 +793,7 @@ fn writeResourceShape(
     self: *Self,
     bld: *ContainerBuild,
     id: SmithyId,
-    resource: *const syb_shape.SmithyResource,
+    resource: *const symbols.SmithyResource,
 ) !void {
     const LIFECYCLE_OPS = &.{ "create", "put", "read", "update", "delete", "list" };
     const resource_name = try self.model.tryGetName(id);
@@ -864,7 +863,7 @@ fn writeServiceShape(
     self: *Self,
     bld: *ContainerBuild,
     id: SmithyId,
-    service: *const syb_shape.SmithyService,
+    service: *const symbols.SmithyService,
 ) !void {
     // Cache errors
     if (self.service_errors == null) self.service_errors = service.errors;

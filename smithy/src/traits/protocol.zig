@@ -1,10 +1,10 @@
 //! Serialization and Protocol traits
 //!
 //! [Smithy Spec](https://smithy.io/2.0/spec/protocol-traits.html)
-const TraitsList = @import("../symbols/traits.zig").TraitsRegistry;
+const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
 
 // TODO: Remainig traits
-pub const traits: TraitsList = &.{
+pub const traits: TraitsRegistry = &.{
     // smithy.api#protocolDefinition
     // smithy.api#jsonName
     // smithy.api#mediaType

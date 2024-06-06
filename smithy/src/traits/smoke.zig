@@ -2,9 +2,9 @@
 //! ensuring core functionality works as expected.
 //!
 //! [Smithy Spec](https://smithy.io/2.0/additional-specs/smoke-tests.html)
-const TraitsList = @import("../symbols/traits.zig").TraitsRegistry;
+const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
 
 // TODO: Remainig traits
-pub const traits: TraitsList = &.{
+pub const traits: TraitsRegistry = &.{
     // smithy.test#smokeTests
 };

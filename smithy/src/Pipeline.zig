@@ -14,11 +14,11 @@ const prelude = @import("prelude.zig");
 const codegen = @import("codegen.zig");
 const md = @import("codegen/md.zig");
 const Writer = @import("codegen/CodegenWriter.zig");
-const syb_traits = @import("symbols/traits.zig");
-const SmithyModel = @import("symbols/shapes.zig").SmithyModel;
+const sys_traits = @import("systems/traits.zig");
+const SmithyModel = @import("systems/symbols.zig").SmithyModel;
 const IssuesBag = @import("utils/IssuesBag.zig");
 const JsonReader = @import("utils/JsonReader.zig");
-const titleCase = @import("utils/names.zig").titleCase;
+const names_util = @import("utils/names.zig");
 const trt_docs = @import("traits/docs.zig");
 
 const Self = @This();
@@ -54,7 +54,7 @@ pub const Hooks = struct {
 gpa_alloc: Allocator,
 page_alloc: Allocator,
 issues: IssuesBag,
-traits: syb_traits.TraitsManager,
+traits: sys_traits.TraitsManager,
 process_hooks: Hooks,
 codegen_hooks: codegen.Hooks,
 src_dir: fs.Dir,
@@ -80,7 +80,7 @@ pub fn init(
     self.process_policy = options.process_policy;
     errdefer gpa_alloc.destroy(self);
 
-    self.traits = syb_traits.TraitsManager{};
+    self.traits = sys_traits.TraitsManager{};
     errdefer self.traits.deinit(gpa_alloc);
     try prelude.registerTraits(gpa_alloc, &self.traits);
 
@@ -104,7 +104,7 @@ pub fn deinit(self: *Self) void {
     self.gpa_alloc.destroy(self);
 }
 
-pub fn registerTraits(self: *Self, traits: syb_traits.TraitsRegistry) !void {
+pub fn registerTraits(self: *Self, traits: sys_traits.TraitsRegistry) !void {
     try self.traits.registerAll(self.gpa_alloc, traits);
 }
 
@@ -256,7 +256,7 @@ fn generateReadme(self: *Self, arena: Allocator, model: *const SmithyModel, dir:
     const hook = self.process_hooks.writeReadme orelse return;
     const title =
         trt_docs.Title.get(model, model.service) orelse
-        try titleCase(arena, slug);
+        try names_util.titleCase(arena, slug);
     const intro: ?[]const u8 = if (trt_docs.Documentation.get(model, model.service)) |docs| blk: {
         var build = md.Document.Build{ .allocator = arena };
         try md.convertHtml(arena, &build, docs);

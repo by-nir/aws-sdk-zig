@@ -13,16 +13,6 @@ const syb_id = @import("../symbols/identity.zig");
 const SmithyId = syb_id.SmithyId;
 const idHash = syb_id.idHash;
 const SmithyModel = @import("../symbols/shapes.zig").SmithyModel;
-const TraitsList = @import("../symbols/traits.zig").TraitsRegistry;
-
-// TODO: Remainig traits
-pub const traits: TraitsList = &.{
-    // smithy.rules#clientContextParams
-    // smithy.rules#contextParam
-    // smithy.rules#operationContextParams
-    // smithy.rules#staticContextParams
-    .{ EndpointRuleSet.id, EndpointRuleSet.parse },
-};
 
 const RulesBuiltInId = enum(syb_id.IdHashInt) {
     pub const NULL: RulesBuiltInId = @enumFromInt(0);

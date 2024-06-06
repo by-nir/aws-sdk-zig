@@ -2,70 +2,19 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = std.testing.allocator;
+const symbols = @import("symbols.zig");
+const SmithyId = symbols.SmithyId;
+const TaggedValue = symbols.SmithyTaggedValue;
 const JsonReader = @import("../utils/JsonReader.zig");
-const identity = @import("identity.zig");
-const SmithyId = identity.SmithyId;
-const TaggedValue = identity.SmithyTaggedValue;
 
 /// Parse the trait’s value from the source JSON AST, which will be used
 /// during the source generation.
-const SmithyTrait = *const fn (
+const TraitParser = *const fn (
     arena: Allocator,
     reader: *JsonReader,
 ) anyerror!*const anyopaque;
 
-pub const TraitsRegistry = []const struct { SmithyId, ?SmithyTrait };
-
-pub const TraitsBag = struct {
-    values: []const TaggedValue,
-
-    pub fn has(self: TraitsBag, id: SmithyId) bool {
-        for (self.values) |trait| {
-            if (trait.id == id) return true;
-        }
-        return false;
-    }
-
-    pub fn TraitReturn(comptime T: type) type {
-        return switch (@typeInfo(T)) {
-            .Bool, .Int, .Float, .Enum, .Union, .Pointer => T,
-            else => *const T,
-        };
-    }
-
-    pub fn get(self: TraitsBag, comptime T: type, id: SmithyId) ?TraitReturn(T) {
-        const trait = self.getOpaque(id) orelse return null;
-        const ptr: *const T = @alignCast(@ptrCast(trait));
-        return switch (@typeInfo(T)) {
-            .Bool, .Int, .Float, .Enum, .Union, .Pointer => ptr.*,
-            else => ptr,
-        };
-    }
-
-    pub fn getOpaque(self: TraitsBag, id: SmithyId) ?*const anyopaque {
-        for (self.values) |trait| {
-            if (trait.id == id) return trait.value;
-        }
-        return null;
-    }
-};
-
-test "TraitsBag" {
-    const int: u8 = 108;
-    const traits = TraitsBag{ .values = &.{
-        .{ .id = SmithyId.of("foo"), .value = null },
-        .{ .id = SmithyId.of("bar"), .value = &int },
-    } };
-
-    try testing.expect(traits.has(SmithyId.of("foo")));
-    try testing.expect(traits.has(SmithyId.of("bar")));
-    try testing.expect(!traits.has(SmithyId.of("baz")));
-    try testing.expectEqual(
-        @intFromPtr(&int),
-        @intFromPtr(traits.getOpaque(SmithyId.of("bar")).?),
-    );
-    try testing.expectEqual(108, traits.get(u8, SmithyId.of("bar")));
-}
+pub const TraitsRegistry = []const struct { SmithyId, ?TraitParser };
 
 /// Traits are model components that can be attached to shapes to describe additional
 /// information about the shape; shapes provide the structure and layout of an API,
@@ -73,15 +22,15 @@ test "TraitsBag" {
 ///
 /// [Smithy Spec](https://smithy.io/2.0/spec/model.html#traits)
 pub const TraitsManager = struct {
-    traits: std.AutoHashMapUnmanaged(SmithyId, ?SmithyTrait) = .{},
+    traits: std.AutoHashMapUnmanaged(SmithyId, ?TraitParser) = .{},
 
     pub fn deinit(self: *TraitsManager, allocator: Allocator) void {
         self.traits.deinit(allocator);
         self.* = undefined;
     }
 
-    pub fn register(self: *TraitsManager, allocator: Allocator, id: SmithyId, trait: ?SmithyTrait) !void {
-        try self.traits.put(allocator, id, trait);
+    pub fn register(self: *TraitsManager, allocator: Allocator, id: SmithyId, parser: ?TraitParser) !void {
+        try self.traits.put(allocator, id, parser);
     }
 
     pub fn registerAll(self: *TraitsManager, allocator: Allocator, traits: TraitsRegistry) !void {
@@ -138,4 +87,55 @@ test "TraitManager" {
     );
     defer test_alloc.free(value);
     try testing.expectEqualStrings("baz", value);
+}
+
+pub const TraitsProvider = struct {
+    values: []const TaggedValue,
+
+    pub fn has(self: TraitsProvider, id: SmithyId) bool {
+        for (self.values) |trait| {
+            if (trait.id == id) return true;
+        }
+        return false;
+    }
+
+    pub fn TraitReturn(comptime T: type) type {
+        return switch (@typeInfo(T)) {
+            .Bool, .Int, .Float, .Enum, .Union, .Pointer => T,
+            else => *const T,
+        };
+    }
+
+    pub fn get(self: TraitsProvider, comptime T: type, id: SmithyId) ?TraitReturn(T) {
+        const trait = self.getOpaque(id) orelse return null;
+        const ptr: *const T = @alignCast(@ptrCast(trait));
+        return switch (@typeInfo(T)) {
+            .Bool, .Int, .Float, .Enum, .Union, .Pointer => ptr.*,
+            else => ptr,
+        };
+    }
+
+    pub fn getOpaque(self: TraitsProvider, id: SmithyId) ?*const anyopaque {
+        for (self.values) |trait| {
+            if (trait.id == id) return trait.value;
+        }
+        return null;
+    }
+};
+
+test "TraitsProvider" {
+    const int: u8 = 108;
+    const traits = TraitsProvider{ .values = &.{
+        .{ .id = SmithyId.of("foo"), .value = null },
+        .{ .id = SmithyId.of("bar"), .value = &int },
+    } };
+
+    try testing.expect(traits.has(SmithyId.of("foo")));
+    try testing.expect(traits.has(SmithyId.of("bar")));
+    try testing.expect(!traits.has(SmithyId.of("baz")));
+    try testing.expectEqual(
+        @intFromPtr(&int),
+        @intFromPtr(traits.getOpaque(SmithyId.of("bar")).?),
+    );
+    try testing.expectEqual(108, traits.get(u8, SmithyId.of("bar")));
 }

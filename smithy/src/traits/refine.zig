@@ -6,14 +6,14 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const syb_id = @import("../symbols/identity.zig");
-const SmithyId = syb_id.SmithyId;
-const SmithyType = syb_id.SmithyType;
-const TraitsList = @import("../symbols/traits.zig").TraitsRegistry;
-const SmithyModel = @import("../symbols/shapes.zig").SmithyModel;
+const symbols = @import("../systems/symbols.zig");
+const SmithyId = symbols.SmithyId;
+const SmithyType = symbols.SmithyType;
+const SmithyModel = symbols.SmithyModel;
+const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
 const JsonReader = @import("../utils/JsonReader.zig");
 
-pub const traits: TraitsList = &.{
+pub const traits: TraitsRegistry = &.{
     .{ Default.id, Default.parse },
     .{ default_added_id, null },
     .{ required_id, null },

@@ -2,10 +2,10 @@
 //! or [streams of events](https://smithy.io/2.0/spec/streaming.html#event-streams).
 //!
 //! [Smithy Spec](https://smithy.io/2.0/spec/streaming.html)
-const TraitsList = @import("../symbols/traits.zig").TraitsRegistry;
+const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
 
 // TODO: Remainig traits
-pub const traits: TraitsList = &.{
+pub const traits: TraitsRegistry = &.{
     // smithy.api#eventHeader
     // smithy.api#eventPayload
     // smithy.api#requiresLength

@@ -9,14 +9,11 @@ pub const GeneratePolicy = codegen.Policy;
 pub const codegen_zig = @import("codegen/zig.zig");
 pub const codegen_md = @import("codegen/md.zig");
 
-const syb_id = @import("symbols/identity.zig");
-pub usingnamespace syb_id;
+const symbols = @import("systems/symbols.zig");
+pub usingnamespace symbols;
 
-const syb_shapes = @import("symbols/shapes.zig");
-pub usingnamespace syb_shapes;
-
-const syb_traits = @import("symbols/traits.zig");
-pub const TraitsRegistry = syb_traits.TraitsRegistry;
+const traits = @import("systems/traits.zig");
+pub const TraitsRegistry = traits.TraitsRegistry;
 
 const IssuesBag = @import("utils/IssuesBag.zig");
 pub const PolicyResolution = IssuesBag.PolicyResolution;
@@ -31,9 +28,8 @@ test {
     _ = JsonReader;
 
     // Systems
-    _ = syb_id;
-    _ = syb_traits;
-    _ = syb_shapes;
+    _ = symbols;
+    _ = traits;
     _ = @import("prelude.zig");
 
     // Parse
