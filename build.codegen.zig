@@ -2,7 +2,7 @@ const std = @import("std");
 const default_whitelist = [_][]const u8{"cloudcontrol"};
 
 pub fn build(b: *std.Build) void {
-    const aws = b.dependency("aws-zig", .{
+    const aws = b.dependency("aws-runtime", .{
         .target = b.graph.host,
     });
 

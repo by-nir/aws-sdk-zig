@@ -6,10 +6,10 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const symbols = @import("../systems/symbols.zig");
-const SmithyId = symbols.SmithyId;
-const SmithyType = symbols.SmithyType;
-const SmithyModel = symbols.SmithyModel;
+const syb = @import("../systems/symbols.zig");
+const SmithyId = syb.SmithyId;
+const SmithyType = syb.SmithyType;
+const SymbolsProvider = syb.SymbolsProvider;
 const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
 const JsonReader = @import("../utils/JsonReader.zig");
 
@@ -78,8 +78,8 @@ pub const Default = struct {
         return value;
     }
 
-    pub fn get(model: *const SmithyModel, shape_id: SmithyId) ?Value {
-        return model.getTrait(Value, shape_id, id);
+    pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?Value {
+        return symbols.getTrait(Value, shape_id, id);
     }
 };
 
@@ -120,8 +120,8 @@ pub const EnumValue = struct {
         return value;
     }
 
-    pub fn get(model: *const SmithyModel, shape_id: SmithyId) ?Val {
-        return model.getTrait(Val, shape_id, id);
+    pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?Val {
+        return symbols.getTrait(Val, shape_id, id);
     }
 };
 
@@ -162,8 +162,8 @@ pub const Error = struct {
         return value;
     }
 
-    pub fn get(model: *const SmithyModel, shape_id: SmithyId) ?Source {
-        return model.getTrait(Source, shape_id, id);
+    pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?Source {
+        return symbols.getTrait(Source, shape_id, id);
     }
 };
 

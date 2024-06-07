@@ -15,10 +15,10 @@ const codegen = @import("codegen.zig");
 const md = @import("codegen/md.zig");
 const Writer = @import("codegen/CodegenWriter.zig");
 const sys_traits = @import("systems/traits.zig");
-const SmithyModel = @import("systems/symbols.zig").SmithyModel;
+const SymbolsProvider = @import("systems/symbols.zig").SymbolsProvider;
+const name_util = @import("utils/names.zig");
 const IssuesBag = @import("utils/IssuesBag.zig");
 const JsonReader = @import("utils/JsonReader.zig");
-const names_util = @import("utils/names.zig");
 const trt_docs = @import("traits/docs.zig");
 
 const Self = @This();
@@ -39,7 +39,7 @@ pub const Policy = struct {
 };
 
 pub const Hooks = struct {
-    writeReadme: ?*const fn (Allocator, std.io.AnyWriter, *const SmithyModel, ReadmeMeta) anyerror!void = null,
+    writeReadme: ?*const fn (Allocator, std.io.AnyWriter, *SymbolsProvider, ReadmeMeta) anyerror!void = null,
 
     pub const ReadmeMeta = struct {
         /// `{[title]s}` service title
@@ -119,7 +119,7 @@ pub fn processFiles(self: *Self, filenames: []const []const u8) !Report {
     for (filenames) |filename| {
         if (!isValidModelFilename(filename)) continue;
         defer _ = arena.reset(.retain_capacity);
-        processModel(self, arena_alloc, &report, filename) catch |err| {
+        self.processModel(arena_alloc, &report, filename) catch |err| {
             log.err("Process error: {s}", .{@errorName(err)});
             return err;
         };
@@ -146,7 +146,7 @@ pub fn processAll(self: *Self, filter: ?*const fn (filename: []const u8) bool) !
         };
         defer _ = arena.reset(.retain_capacity);
 
-        processModel(self, arena_alloc, &report, entry.name) catch |err| {
+        self.processModel(arena_alloc, &report, entry.name) catch |err| {
             log.err("Process failed: {s}", .{@errorName(err)});
             return err;
         };
@@ -168,7 +168,7 @@ fn processModel(self: *Self, arena: Allocator, report: *Report, json_name: []con
     _ = &timer; // autofix
     _ = report; // autofix
 
-    const model = self.parseModel(arena, json_name, &issues) catch |err| {
+    var symbols = self.parseModel(arena, json_name, &issues) catch |err| {
         switch (err) {
             IssuesBag.PolicyAbortError => return err,
             else => switch (self.process_policy.model) {
@@ -183,6 +183,7 @@ fn processModel(self: *Self, arena: Allocator, report: *Report, json_name: []con
             },
         }
     };
+    defer symbols.deinit();
 
     const slug = json_name[0 .. json_name.len - ".json".len];
     var out_dir = try self.out_dir.makeOpenPath(slug, .{});
@@ -191,7 +192,8 @@ fn processModel(self: *Self, arena: Allocator, report: *Report, json_name: []con
         log.err("Deleting model’s output dir failed: {s}", .{@errorName(err)});
     };
 
-    self.generateScript(arena, &model, out_dir, &issues) catch |err| {
+    try symbols.enqueue(symbols.service_id);
+    self.generateScript(arena, &symbols, out_dir, &issues) catch |err| {
         switch (err) {
             IssuesBag.PolicyAbortError => return err,
             else => switch (self.process_policy.model) {
@@ -207,7 +209,7 @@ fn processModel(self: *Self, arena: Allocator, report: *Report, json_name: []con
         }
     };
 
-    self.generateReadme(arena, &model, out_dir, slug) catch |err| {
+    self.generateReadme(arena, &symbols, out_dir, slug) catch |err| {
         switch (self.process_policy.readme) {
             .abort => {
                 log.err("Readme failed: {s}", .{@errorName(err)});
@@ -221,17 +223,19 @@ fn processModel(self: *Self, arena: Allocator, report: *Report, json_name: []con
     };
 }
 
-fn parseModel(self: *Self, arena: Allocator, json_name: []const u8, issues: *IssuesBag) !SmithyModel {
+fn parseModel(self: *Self, arena: Allocator, json_name: []const u8, issues: *IssuesBag) !SymbolsProvider {
     var json_file = try self.src_dir.openFile(json_name, .{});
     defer json_file.close();
 
     var reader = try JsonReader.initFile(arena, json_file);
     defer reader.deinit();
 
-    return parse.parseJson(arena, self.traits, self.parse_policy, issues, &reader);
+    var model = try parse.parseJson(arena, self.traits, self.parse_policy, issues, &reader);
+    errdefer model.deinit();
+    return model.consume(arena);
 }
 
-fn generateScript(self: *Self, arena: Allocator, model: *const SmithyModel, dir: fs.Dir, issues: *IssuesBag) !void {
+fn generateScript(self: *Self, arena: Allocator, symbols: *SymbolsProvider, dir: fs.Dir, issues: *IssuesBag) !void {
     var file = try dir.createFile("client.zig", .{});
     var file_buffer = std.io.bufferedWriter(file.writer());
     defer file.close();
@@ -245,19 +249,18 @@ fn generateScript(self: *Self, arena: Allocator, model: *const SmithyModel, dir:
         self.codegen_hooks,
         self.codegen_policy,
         issues,
-        model,
-        model.service,
+        symbols,
     );
 
     try file_buffer.flush();
 }
 
-fn generateReadme(self: *Self, arena: Allocator, model: *const SmithyModel, dir: fs.Dir, slug: []const u8) !void {
+fn generateReadme(self: *Self, arena: Allocator, symbols: *SymbolsProvider, dir: fs.Dir, slug: []const u8) !void {
     const hook = self.process_hooks.writeReadme orelse return;
     const title =
-        trt_docs.Title.get(model, model.service) orelse
-        try names_util.titleCase(arena, slug);
-    const intro: ?[]const u8 = if (trt_docs.Documentation.get(model, model.service)) |docs| blk: {
+        trt_docs.Title.get(symbols, symbols.service_id) orelse
+        try name_util.titleCase(arena, slug);
+    const intro: ?[]const u8 = if (trt_docs.Documentation.get(symbols, symbols.service_id)) |docs| blk: {
         var build = md.Document.Build{ .allocator = arena };
         try md.convertHtml(arena, &build, docs);
         const markdown = try build.consume();
@@ -279,7 +282,7 @@ fn generateReadme(self: *Self, arena: Allocator, model: *const SmithyModel, dir:
 
     const md_head = @embedFile("codegen/template/head.md.template") ++ "\n\n";
     try file_buffer.writer().writeAll(md_head);
-    try hook(arena, file_buffer.writer().any(), model, Hooks.ReadmeMeta{
+    try hook(arena, file_buffer.writer().any(), symbols, Hooks.ReadmeMeta{
         .slug = slug,
         .title = title,
         .intro = intro,

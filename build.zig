@@ -10,12 +10,12 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const aws = b.dependency("aws-zig", .{
+    const runtime = b.dependency("aws-runtime", .{
         .target = target,
         .optimize = optimize,
     });
-    const aws_types = aws.module("types");
-    const aws_client = aws.module("client");
+    const aws_types = runtime.module("types");
+    const aws_client = runtime.module("client");
 
     b.modules.put("aws-types", aws_types) catch {};
 

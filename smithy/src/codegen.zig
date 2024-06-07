@@ -6,18 +6,18 @@ const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const test_model = @import("testing/model.zig");
-const symbols = @import("systems/symbols.zig");
-const SmithyId = symbols.SmithyId;
-const SmithyType = symbols.SmithyType;
-const SmithyModel = symbols.SmithyModel;
+const test_symbols = @import("testing/symbols.zig");
+const syb = @import("systems/symbols.zig");
+const SmithyId = syb.SmithyId;
+const SmithyType = syb.SmithyType;
+const SymbolsProvider = syb.SymbolsProvider;
 const md = @import("codegen/md.zig");
 const zig = @import("codegen/zig.zig");
 const Writer = @import("codegen/CodegenWriter.zig");
 const ExprBuild = zig.ExprBuild;
 const BlockBuild = zig.BlockBuild;
 const ContainerBuild = zig.ContainerBuild;
-const names = @import("utils/names.zig");
+const name_util = @import("utils/names.zig");
 const IssuesBag = @import("utils/IssuesBag.zig");
 const trt_http = @import("traits/http.zig");
 const trt_docs = @import("traits/docs.zig");
@@ -34,13 +34,13 @@ pub const Policy = struct {
 };
 
 pub const Hooks = struct {
-    writeScriptHead: ?*const fn (Allocator, *ContainerBuild, *const SmithyModel) anyerror!void = null,
+    writeScriptHead: ?*const fn (Allocator, *ContainerBuild, *SymbolsProvider) anyerror!void = null,
     uniqueListType: ?*const fn (Allocator, []const u8) anyerror![]const u8 = null,
-    writeErrorShape: *const fn (Allocator, *ContainerBuild, *const SmithyModel, ErrorShape) anyerror!void,
-    writeServiceHead: ?*const fn (Allocator, *ContainerBuild, *const SmithyModel, *const symbols.SmithyService) anyerror!void = null,
-    writeResourceHead: ?*const fn (Allocator, *ContainerBuild, *const SmithyModel, SmithyId, *const symbols.SmithyResource) anyerror!void = null,
-    operationReturnType: ?*const fn (Allocator, *const SmithyModel, OperationShape) anyerror!?[]const u8 = null,
-    writeOperationBody: *const fn (Allocator, *BlockBuild, *const SmithyModel, OperationShape) anyerror!void,
+    writeErrorShape: *const fn (Allocator, *ContainerBuild, *SymbolsProvider, ErrorShape) anyerror!void,
+    writeServiceHead: ?*const fn (Allocator, *ContainerBuild, *SymbolsProvider, *const syb.SmithyService) anyerror!void = null,
+    writeResourceHead: ?*const fn (Allocator, *ContainerBuild, *SymbolsProvider, SmithyId, *const syb.SmithyResource) anyerror!void = null,
+    operationReturnType: ?*const fn (Allocator, *SymbolsProvider, OperationShape) anyerror!?[]const u8 = null,
+    writeOperationBody: *const fn (Allocator, *BlockBuild, *SymbolsProvider, OperationShape) anyerror!void,
 
     pub const ErrorShape = struct {
         id: SmithyId,
@@ -66,10 +66,7 @@ arena: Allocator,
 hooks: Hooks,
 policy: Policy,
 issues: *IssuesBag,
-model: *const SmithyModel,
-service_errors: ?[]const SmithyId = null,
-shape_queue: std.DoublyLinkedList(SmithyId) = .{},
-shape_visited: std.AutoHashMapUnmanaged(SmithyId, void) = .{},
+symbols: *SymbolsProvider,
 
 pub fn writeScript(
     arena: Allocator,
@@ -77,28 +74,27 @@ pub fn writeScript(
     hooks: Hooks,
     policy: Policy,
     issues: *IssuesBag,
-    model: *const SmithyModel,
-    root: SmithyId,
+    symbols: *SymbolsProvider,
 ) !void {
     var self = Self{
         .arena = arena,
         .hooks = hooks,
         .policy = policy,
         .issues = issues,
-        .model = model,
+        .symbols = symbols,
     };
 
-    const context = .{ .self = &self, .root = root };
-    const script = try zig.Container.init(arena, context, struct {
-        fn f(ctx: @TypeOf(context), bld: *ContainerBuild) !void {
-            if (ctx.self.hooks.writeScriptHead) |hook| {
-                try hook(ctx.self.arena, bld, ctx.self.model);
+    const script = try zig.Container.init(arena, &self, struct {
+        fn f(ctx: *Self, bld: *ContainerBuild) !void {
+            if (ctx.hooks.writeScriptHead) |hook| {
+                try hook(ctx.arena, bld, ctx.symbols);
             }
 
             try bld.constant("std").assign(bld.x.import("std"));
 
-            try ctx.self.enqueueShape(ctx.root);
-            while (ctx.self.dequeueShape()) |id| try ctx.self.writeShape(bld, id);
+            while (ctx.symbols.next()) |id| {
+                try ctx.writeShape(bld, id);
+            }
         }
     }.f);
     defer script.deinit(arena);
@@ -112,27 +108,29 @@ pub fn writeScript(
 
 test "writeScript" {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const arena_alloc = arena.allocator();
     defer arena.deinit();
 
     var buffer = std.ArrayList(u8).init(test_alloc);
     const buffer_writer = buffer.writer().any();
     defer buffer.deinit();
 
-    var model = SmithyModel{};
-    try test_model.setupRootAndChild(&model);
-    defer model.deinit(test_alloc);
-
     var issues = IssuesBag.init(test_alloc);
     defer issues.deinit();
 
+    var symbols = try test_symbols.setup(
+        arena_alloc,
+        &.{.root_child},
+    );
+    try symbols.enqueue(SmithyId.of("test#Root"));
+
     try writeScript(
-        arena.allocator(),
+        arena_alloc,
         buffer_writer,
         TEST_HOOKS,
         TEST_POLICY,
         &issues,
-        &model,
-        SmithyId.of("test#Root"),
+        &symbols,
     );
     try testing.expectEqualStrings(
         \\const std = @import("std");
@@ -145,11 +143,8 @@ test "writeScript" {
 }
 
 fn writeShape(self: *Self, bld: *ContainerBuild, id: SmithyId) !void {
-    const shape = self.model.getShape(id) orelse switch (self.policy.unknown_shape) {
-        .skip => {
-            try self.issues.add(.{ .codegen_unknown_shape = @intFromEnum(id) });
-            return;
-        },
+    const shape = self.symbols.getShape(id) catch switch (self.policy.unknown_shape) {
+        .skip => return self.issues.add(.{ .codegen_unknown_shape = @intFromEnum(id) }),
         .abort => {
             log.err("Unknown shape: `{}`.", .{id});
             return IssuesBag.PolicyAbortError;
@@ -165,16 +160,16 @@ fn writeShape(self: *Self, bld: *ContainerBuild, id: SmithyId) !void {
         .structure => |m| self.writeStructShape(bld, id, m),
         .resource => |t| self.writeResourceShape(bld, id, t),
         .service => |t| self.writeServiceShape(bld, id, t),
-        .string => if (trt_constr.Enum.get(self.model, id)) |members|
+        .string => if (trt_constr.Enum.get(self.symbols, id)) |members|
             self.writeTraitEnumShape(bld, id, members)
         else
             error.InvalidRootShape,
         else => error.InvalidRootShape,
     }) catch |e| {
-        const shape_name = self.model.getName(id);
+        const shape_name = self.symbols.getShapeName(id, .type);
         const name_id: IssuesBag.Issue.NameOrId = if (shape_name) |n|
             .{ .name = n }
-        else
+        else |_|
             .{ .id = @intFromEnum(id) };
         switch (e) {
             error.InvalidRootShape => switch (self.policy.invalid_root) {
@@ -185,7 +180,7 @@ fn writeShape(self: *Self, bld: *ContainerBuild, id: SmithyId) !void {
                 .abort => {
                     if (shape_name) |n|
                         log.err("Invalid root shape: `{s}`.", .{n})
-                    else
+                    else |_|
                         log.err("Invalid root shape: `{}`.", .{id});
                     return IssuesBag.PolicyAbortError;
                 },
@@ -201,7 +196,7 @@ fn writeShape(self: *Self, bld: *ContainerBuild, id: SmithyId) !void {
                 .abort => {
                     if (shape_name) |n|
                         log.err("Shape `{s}` codegen failed: `{s}`.", .{ n, @errorName(e) })
-                    else
+                    else |_|
                         log.err("Shape `{}` codegen failed: `{s}`.", .{ id, @errorName(e) });
                     return IssuesBag.PolicyAbortError;
                 },
@@ -214,11 +209,13 @@ test "writeShape" {
     var tester = try ScriptTester.init();
     defer tester.deinit();
 
-    var model = SmithyModel{};
-    try test_model.setupUnit(&model);
-    defer model.deinit(test_alloc);
+    var symbols = try test_symbols.setup(
+        tester.allocator(),
+        &.{.unit},
+    );
+    defer symbols.deinit();
 
-    var self = tester.initCodegen(&model);
+    var self = tester.initCodegen(&symbols);
     try self.writeShape(tester.build, SmithyId.of("test#Unit"));
     try testing.expectEqualDeep(&.{
         IssuesBag.Issue{ .codegen_invalid_root = .{ .id = @intFromEnum(SmithyId.of("test#Unit")) } },
@@ -227,11 +224,11 @@ test "writeShape" {
 }
 
 fn writeListShape(self: *Self, bld: *ContainerBuild, id: SmithyId, memeber: SmithyId) !void {
-    const shape_name = try self.model.tryGetName(id);
-    const type_name = try self.unwrapShapeName(memeber);
+    const shape_name = try self.symbols.getShapeName(id, .type);
+    const type_name = try self.symbols.getTypeName(memeber);
     try self.writeDocComment(bld, id, false);
 
-    const target_exp = if (self.model.hasTrait(id, trt_constr.unique_items_id)) blk: {
+    const target_exp = if (self.symbols.hasTrait(id, trt_constr.unique_items_id)) blk: {
         if (self.hooks.uniqueListType) |hook| {
             break :blk bld.x.raw(try hook(self.arena, type_name));
         } else {
@@ -240,7 +237,7 @@ fn writeListShape(self: *Self, bld: *ContainerBuild, id: SmithyId, memeber: Smit
                 &.{ bld.x.raw(type_name), bld.x.raw("void") },
             );
         }
-    } else if (self.model.hasTrait(id, trt_refine.sparse_id))
+    } else if (self.symbols.hasTrait(id, trt_refine.sparse_id))
         bld.x.typeSlice(false, bld.x.typeOptional(bld.x.raw(type_name)))
     else
         bld.x.typeSlice(false, bld.x.raw(type_name));
@@ -252,11 +249,13 @@ test "writeListShape" {
     var tester = try ScriptTester.init();
     defer tester.deinit();
 
-    var model = SmithyModel{};
-    try test_model.setupList(&model);
-    defer model.deinit(test_alloc);
+    var symbols = try test_symbols.setup(
+        tester.allocator(),
+        &.{.list},
+    );
+    defer symbols.deinit();
 
-    var self = tester.initCodegen(&model);
+    var self = tester.initCodegen(&symbols);
     try self.writeShape(tester.build, SmithyId.of("test#List"));
     try self.writeShape(tester.build, SmithyId.of("test#Set"));
     try tester.expect(
@@ -267,23 +266,23 @@ test "writeListShape" {
 }
 
 fn writeMapShape(self: *Self, bld: *ContainerBuild, id: SmithyId, memeber: [2]SmithyId) !void {
-    const shape_name = try self.model.tryGetName(id);
-    const key_name = try self.unwrapShapeName(memeber[0]);
-    const val_type = try self.unwrapShapeName(memeber[1]);
+    const shape_name = try self.symbols.getShapeName(id, .type);
+    const key_type = try self.symbols.getTypeName(memeber[0]);
+    const val_type = try self.symbols.getTypeName(memeber[1]);
     try self.writeDocComment(bld, id, false);
 
     var value: ExprBuild = bld.x.raw(val_type);
-    if (self.model.hasTrait(id, trt_refine.sparse_id))
+    if (self.symbols.hasTrait(id, trt_refine.sparse_id))
         value = bld.x.typeOptional(value);
 
     var fn_name: []const u8 = undefined;
     var args: []const ExprBuild = undefined;
-    if (std.mem.eql(u8, key_name, "[]const u8")) {
+    if (std.mem.eql(u8, key_type, "[]const u8")) {
         fn_name = "*const std.StringArrayHashMapUnmanaged";
         args = &.{value};
     } else {
         fn_name = "*const std.AutoArrayHashMapUnmanaged";
-        args = &.{ bld.x.raw(key_name), value };
+        args = &.{ bld.x.raw(key_type), value };
     }
 
     try bld.public().constant(shape_name).assign(bld.x.call(fn_name, args));
@@ -293,11 +292,13 @@ test "writeMapShape" {
     var tester = try ScriptTester.init();
     defer tester.deinit();
 
-    var model = SmithyModel{};
-    try test_model.setupMap(&model);
-    defer model.deinit(test_alloc);
+    var symbols = try test_symbols.setup(
+        tester.allocator(),
+        &.{.map},
+    );
+    defer symbols.deinit();
 
-    var self = tester.initCodegen(&model);
+    var self = tester.initCodegen(&symbols);
     try self.writeShape(tester.build, SmithyId.of("test#Map"));
     try tester.expect("pub const Map = *const std.AutoArrayHashMapUnmanaged(i32, ?i32);");
 }
@@ -306,11 +307,12 @@ fn writeStrEnumShape(self: *Self, bld: *ContainerBuild, id: SmithyId, members: [
     var list = try EnumList.initCapacity(self.arena, members.len);
     defer list.deinit();
     for (members) |m| {
-        const name = try self.model.tryGetName(m);
-        const value = trt_refine.EnumValue.get(self.model, m);
+        const value = trt_refine.EnumValue.get(self.symbols, m);
+        const value_str = if (value) |v| v.string else try self.symbols.getShapeName(m, .constant);
+        const field_name = try self.symbols.getShapeName(m, .field);
         list.appendAssumeCapacity(.{
-            .value = if (value) |v| v.string else name,
-            .field = try names.snakeCase(self.arena, name),
+            .value = value_str,
+            .field = field_name,
         });
     }
     try self.writeEnumShape(bld, id, list.items);
@@ -327,7 +329,7 @@ fn writeTraitEnumShape(
     for (members) |m| {
         list.appendAssumeCapacity(.{
             .value = m.value,
-            .field = try names.snakeCase(self.arena, m.name orelse m.value),
+            .field = try name_util.snakeCase(self.arena, m.name orelse m.value),
         });
     }
     try self.writeEnumShape(bld, id, list.items);
@@ -394,7 +396,7 @@ fn writeEnumShape(self: *Self, bld: *ContainerBuild, id: SmithyId, members: []co
         }
     };
 
-    const shape_name = try self.model.tryGetName(id);
+    const shape_name = try self.symbols.getShapeName(id, .type);
     try self.writeDocComment(bld, id, false);
     try bld.public().constant(shape_name).assign(
         bld.x.@"union"().bodyWith(context, Closures.shape),
@@ -405,11 +407,13 @@ test "writeEnumShape" {
     var tester = try ScriptTester.init();
     defer tester.deinit();
 
-    var model = SmithyModel{};
-    try test_model.setupEnum(&model);
-    defer model.deinit(test_alloc);
+    var symbols = try test_symbols.setup(
+        tester.allocator(),
+        &.{.enums_str},
+    );
+    defer symbols.deinit();
 
-    var self = tester.initCodegen(&model);
+    var self = tester.initCodegen(&symbols);
     try self.writeShape(tester.build, SmithyId.of("test#Enum"));
     try self.writeShape(tester.build, SmithyId.of("test#EnumTrt"));
 
@@ -441,12 +445,13 @@ test "writeEnumShape" {
 }
 
 fn writeIntEnumShape(self: *Self, bld: *ContainerBuild, id: SmithyId, members: []const SmithyId) !void {
-    const context = .{ .self = self, .members = members };
+    const context = .{ .symbols = self.symbols, .members = members };
     const Closures = struct {
         fn shape(ctx: @TypeOf(context), b: *ContainerBuild) !void {
             for (ctx.members) |m| {
-                try b.field(try names.snakeCase(ctx.self.arena, try ctx.self.model.tryGetName(m)))
-                    .assign(b.x.valueOf(trt_refine.EnumValue.get(ctx.self.model, m).?.integer));
+                const shape_name = try ctx.symbols.getShapeName(m, .field);
+                const shape_value = trt_refine.EnumValue.get(ctx.symbols, m).?.integer;
+                try b.field(shape_name).assign(b.x.valueOf(shape_value));
             }
             try b.comment(.doc, "Used for backwards compatibility when adding new values.");
             try b.field("_").end();
@@ -467,7 +472,7 @@ fn writeIntEnumShape(self: *Self, bld: *ContainerBuild, id: SmithyId, members: [
         }
     };
 
-    const shape_name = try self.model.tryGetName(id);
+    const shape_name = try self.symbols.getShapeName(id, .type);
     try self.writeDocComment(bld, id, false);
     try bld.public().constant(shape_name).assign(
         bld.x.@"enum"().typing(bld.x.typeOf(i32)).bodyWith(context, Closures.shape),
@@ -478,11 +483,13 @@ test "writeIntEnumShape" {
     var tester = try ScriptTester.init();
     defer tester.deinit();
 
-    var model = SmithyModel{};
-    try test_model.setupIntEnum(&model);
-    defer model.deinit(test_alloc);
+    var symbols = try test_symbols.setup(
+        tester.allocator(),
+        &.{.enum_int},
+    );
+    defer symbols.deinit();
 
-    var self = tester.initCodegen(&model);
+    var self = tester.initCodegen(&symbols);
     try self.writeShape(tester.build, SmithyId.of("test#IntEnum"));
     try tester.expect(
         \\/// An **integer-based** enumeration.
@@ -504,24 +511,20 @@ test "writeIntEnumShape" {
 }
 
 fn writeUnionShape(self: *Self, bld: *ContainerBuild, id: SmithyId, members: []const SmithyId) !void {
-    const shape_name = try self.model.tryGetName(id);
+    const shape_name = try self.symbols.getShapeName(id, .type);
     try self.writeDocComment(bld, id, false);
 
-    const context = .{ .self = self, .members = members };
+    const context = .{ .symbols = self.symbols, .members = members };
     try bld.public().constant(shape_name).assign(
         bld.x.@"union"().bodyWith(context, struct {
             fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
                 for (ctx.members) |m| {
-                    const shape = try ctx.self.unwrapShapeName(m);
-                    const name = try names.snakeCase(
-                        ctx.self.arena,
-                        try ctx.self.model.tryGetName(m),
-                    );
-
-                    if (shape.len > 0) {
-                        try b.field(name).typing(b.x.raw(shape)).end();
+                    const type_name = try ctx.symbols.getTypeName(m);
+                    const member_name = try ctx.symbols.getShapeName(m, .field);
+                    if (type_name.len > 0) {
+                        try b.field(member_name).typing(b.x.raw(type_name)).end();
                     } else {
-                        try b.field(name).end();
+                        try b.field(member_name).end();
                     }
                 }
             }
@@ -533,11 +536,13 @@ test "writeUnionShape" {
     var tester = try ScriptTester.init();
     defer tester.deinit();
 
-    var model = SmithyModel{};
-    try test_model.setupUnion(&model);
-    defer model.deinit(test_alloc);
+    var symbols = try test_symbols.setup(
+        tester.allocator(),
+        &.{.union_str},
+    );
+    defer symbols.deinit();
 
-    var self = tester.initCodegen(&model);
+    var self = tester.initCodegen(&symbols);
     try self.writeShape(tester.build, SmithyId.of("test#Union"));
     try tester.expect(
         \\pub const Union = union(enum) {
@@ -549,14 +554,14 @@ test "writeUnionShape" {
 }
 
 fn writeStructShape(self: *Self, bld: *ContainerBuild, id: SmithyId, members: []const SmithyId) !void {
-    const shape_name = try self.model.tryGetName(id);
+    const shape_name = try self.symbols.getShapeName(id, .type);
     try self.writeDocComment(bld, id, false);
 
     const context = .{ .self = self, .id = id, .members = members };
     try bld.public().constant(shape_name).assign(
         bld.x.@"struct"().bodyWith(context, struct {
             fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
-                const is_input = ctx.self.model.hasTrait(ctx.id, trt_refine.input_id);
+                const is_input = ctx.self.symbols.hasTrait(ctx.id, trt_refine.input_id);
                 try ctx.self.writeStructShapeError(b, ctx.id);
                 try ctx.self.writeStructShapeMixin(b, is_input, ctx.id);
                 for (ctx.members) |m| try ctx.self.writeStructShapeMember(b, is_input, m);
@@ -566,20 +571,20 @@ fn writeStructShape(self: *Self, bld: *ContainerBuild, id: SmithyId, members: []
 }
 
 fn writeStructShapeError(self: *Self, bld: *ContainerBuild, id: SmithyId) !void {
-    const source = trt_refine.Error.get(self.model, id) orelse return;
-    try self.hooks.writeErrorShape(self.arena, bld, self.model, .{
+    const source = trt_refine.Error.get(self.symbols, id) orelse return;
+    try self.hooks.writeErrorShape(self.arena, bld, self.symbols, .{
         .id = id,
         .source = source,
-        .retryable = self.model.hasTrait(id, trt_behave.retryable_id),
-        .code = trt_http.HttpError.get(self.model, id) orelse if (source == .client) 400 else 500,
+        .retryable = self.symbols.hasTrait(id, trt_behave.retryable_id),
+        .code = trt_http.HttpError.get(self.symbols, id) orelse if (source == .client) 400 else 500,
     });
 }
 
 fn writeStructShapeMixin(self: *Self, bld: *ContainerBuild, is_input: bool, id: SmithyId) !void {
-    const mixins = self.model.getMixins(id) orelse return;
+    const mixins = self.symbols.getMixins(id) orelse return;
     for (mixins) |mix_id| {
         try self.writeStructShapeMixin(bld, is_input, mix_id);
-        const mixin = (try self.model.tryGetShape(mix_id)).structure;
+        const mixin = (try self.symbols.getShape(mix_id)).structure;
         for (mixin) |m| {
             try self.writeStructShapeMember(bld, is_input, m);
         }
@@ -588,21 +593,21 @@ fn writeStructShapeMixin(self: *Self, bld: *ContainerBuild, is_input: bool, id: 
 
 fn writeStructShapeMember(self: *Self, bld: *ContainerBuild, is_input: bool, id: SmithyId) !void {
     // https://smithy.io/2.0/spec/aggregate-types.html#structure-member-optionality
-    const optional: bool = if (is_input) true else if (self.model.getTraits(id)) |bag| blk: {
+    const optional: bool = if (is_input) true else if (self.symbols.getTraits(id)) |bag| blk: {
         break :blk bag.has(trt_refine.client_optional_id) or
             !(bag.has(trt_refine.required_id) or bag.has(trt_refine.Default.id));
     } else true;
 
-    const shape_name = try names.snakeCase(self.arena, try self.model.tryGetName(id));
-    var type_expr = bld.x.raw(try self.unwrapShapeName(id));
+    const shape_name = try self.symbols.getShapeName(id, .field);
+    var type_expr = bld.x.raw(try self.symbols.getTypeName(id));
     if (optional) type_expr = bld.x.typeOptional(type_expr);
 
     try self.writeDocComment(bld, id, true);
     const field = bld.field(shape_name).typing(type_expr);
     const assign: ?ExprBuild = blk: {
         if (optional) break :blk bld.x.valueOf(null);
-        if (trt_refine.Default.get(self.model, id)) |json| {
-            break :blk switch (try self.unwrapShapeType(id)) {
+        if (trt_refine.Default.get(self.symbols, id)) |json| {
+            break :blk switch (try self.symbols.getShapeUnwrap(id)) {
                 .str_enum => bld.x.dot().raw(json.string),
                 .int_enum => bld.x.call("@enumFromInt", &.{bld.x.valueOf(json.integer)}),
                 else => unreachable,
@@ -617,12 +622,13 @@ test "writeStructShape" {
     var tester = try ScriptTester.init();
     defer tester.deinit();
 
-    var model = SmithyModel{};
-    try test_model.setupStruct(&model);
-    try test_model.setupError(&model);
-    defer model.deinit(test_alloc);
+    var symbols = try test_symbols.setup(
+        tester.allocator(),
+        &.{ .structure, .err },
+    );
+    defer symbols.deinit();
 
-    var self = tester.initCodegen(&model);
+    var self = tester.initCodegen(&symbols);
     try self.writeShape(tester.build, SmithyId.of("test#Struct"));
     try self.writeShape(tester.build, SmithyId.of("test#Error"));
     try tester.expect(
@@ -645,21 +651,21 @@ test "writeStructShape" {
 }
 
 fn writeOperationShapes(self: *Self, bld: *ContainerBuild, id: SmithyId) !void {
-    const operation = (try self.model.tryGetShape(id)).operation;
+    const operation = (try self.symbols.getShape(id)).operation;
 
     if (operation.input) |in_id| {
-        const members = (try self.model.tryGetShape(in_id)).structure;
+        const members = (try self.symbols.getShape(in_id)).structure;
         try self.writeStructShape(bld, in_id, members);
     }
 
     if (operation.output) |out_id| {
-        const members = (try self.model.tryGetShape(out_id)).structure;
+        const members = (try self.symbols.getShape(out_id)).structure;
         try self.writeStructShape(bld, out_id, members);
     }
 
     for (operation.errors) |err_id| {
         // We don't write directly since an error may be used by multiple operations.
-        try self.enqueueShape(err_id);
+        try self.symbols.enqueue(err_id);
     }
 }
 
@@ -667,40 +673,45 @@ test "writeOperationShapes" {
     var tester = try ScriptTester.init();
     defer tester.deinit();
 
-    var model = SmithyModel{};
-    try test_model.setupServiceShapes(&model);
-    defer model.deinit(test_alloc);
+    var symbols = try test_symbols.setup(
+        tester.allocator(),
+        &.{.service},
+    );
+    defer symbols.deinit();
 
-    var self = tester.initCodegen(&model);
+    var self = tester.initCodegen(&symbols);
     try self.writeOperationShapes(tester.build, SmithyId.of("test.serve#Operation"));
     try tester.expect(
         \\pub const OperationInput = struct {};
         \\
         \\pub const OperationOutput = struct {};
     );
-    const node = self.shape_queue.first.?;
-    try testing.expectEqual(null, node.next);
-    try testing.expectEqual(SmithyId.of("test.error#NotFound"), node.data);
+    try testing.expectEqual(SmithyId.of("test.error#NotFound"), self.symbols.next());
 }
 
 fn writeOperationFunc(self: *Self, bld: *ContainerBuild, id: SmithyId) !void {
-    const common_errors = try self.getServiceErrors();
-    const operation = (try self.model.tryGetShape(id)).operation;
-    const op_name = try names.camelCase(self.arena, try self.model.tryGetName(id));
+    const service_errors = try self.symbols.getServiceErrors();
+    const operation = (try self.symbols.getShape(id)).operation;
+    const op_name = try self.symbols.getShapeName(id, .function);
 
-    const errors_type = if (operation.errors.len + common_errors.len > 0)
-        try self.writeOperationFuncError(bld, op_name, operation.errors, common_errors)
+    const errors_type = if (operation.errors.len + service_errors.len > 0)
+        try self.writeOperationFuncError(bld, op_name, operation.errors, service_errors)
     else
         null;
 
-    const shape_input = if (operation.input) |d| Hooks.OperationShape.Input{
-        .identifier = "input",
-        .type = try self.model.tryGetName(d),
+    const shape_input: ?Hooks.OperationShape.Input = if (operation.input) |d| blk: {
+        try self.symbols.markVisited(d);
+        break :blk .{
+            .identifier = "input",
+            .type = try self.symbols.getTypeName(d),
+        };
     } else null;
-    const shape_output = if (operation.output) |d|
-        try self.model.tryGetName(d)
-    else
-        null;
+
+    const shape_output: ?[]const u8 = if (operation.output) |d| blk: {
+        try self.symbols.markVisited(d);
+        break :blk try self.symbols.getTypeName(d);
+    } else null;
+
     const shape = Hooks.OperationShape{
         .id = id,
         .input = shape_input,
@@ -708,7 +719,7 @@ fn writeOperationFunc(self: *Self, bld: *ContainerBuild, id: SmithyId) !void {
         .errors_type = errors_type,
     };
     const return_type = if (self.hooks.operationReturnType) |hook| blk: {
-        const result = try hook(self.arena, self.model, shape);
+        const result = try hook(self.arena, self.symbols, shape);
         break :blk if (result) |s| bld.x.raw(s) else bld.x.typeOf(void);
     } else if (shape_output) |s|
         bld.x.raw(s)
@@ -720,7 +731,7 @@ fn writeOperationFunc(self: *Self, bld: *ContainerBuild, id: SmithyId) !void {
     const func2 = if (shape_input) |input| func1.arg(input.identifier, bld.x.raw(input.type)) else func1;
     try func2.returns(return_type).bodyWith(context, struct {
         fn f(ctx: @TypeOf(context), b: *BlockBuild) !void {
-            try ctx.self.hooks.writeOperationBody(ctx.self.arena, b, ctx.self.model, ctx.shape);
+            try ctx.self.hooks.writeOperationBody(ctx.self.arena, b, ctx.self.symbols, ctx.shape);
         }
     }.f);
 }
@@ -730,17 +741,17 @@ fn writeOperationFuncError(
     bld: *ContainerBuild,
     op_name: []const u8,
     op_errors: []const SmithyId,
-    common_errors: []const SmithyId,
+    service_errors: []const SmithyId,
 ) ![]const u8 {
     const type_name = try std.fmt.allocPrint(self.arena, "{c}{s}Errors", .{
         std.ascii.toUpper(op_name[0]),
         op_name[1..op_name.len],
     });
 
-    const context = .{ .self = self, .common_errors = common_errors, .op_errors = op_errors };
+    const context = .{ .self = self, .service_errors = service_errors, .op_errors = op_errors };
     try bld.public().constant(type_name).assign(bld.x.@"union"().bodyWith(context, struct {
         fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
-            for (ctx.common_errors) |m| try ctx.self.writeOperationFuncErrorMember(b, m);
+            for (ctx.service_errors) |m| try ctx.self.writeOperationFuncErrorMember(b, m);
             for (ctx.op_errors) |m| try ctx.self.writeOperationFuncErrorMember(b, m);
         }
     }.f));
@@ -749,21 +760,20 @@ fn writeOperationFuncError(
 }
 
 fn writeOperationFuncErrorMember(self: *Self, bld: *ContainerBuild, member: SmithyId) !void {
-    var field_name = try self.model.tryGetName(member);
-    inline for (.{ "error", "exception" }) |suffix| {
-        if (std.ascii.endsWithIgnoreCase(field_name, suffix)) {
-            field_name = field_name[0 .. field_name.len - suffix.len];
+    const type_name = try self.symbols.getTypeName(member);
+    var shape_name = try self.symbols.getShapeName(member, .field);
+    inline for (.{ "_error", "_exception" }) |suffix| {
+        if (std.ascii.endsWithIgnoreCase(shape_name, suffix)) {
+            shape_name = shape_name[0 .. shape_name.len - suffix.len];
             break;
         }
     }
-    field_name = try names.snakeCase(self.arena, field_name);
 
-    const type_name = try self.unwrapShapeName(member);
     try self.writeDocComment(bld, member, true);
     if (type_name.len > 0) {
-        try bld.field(field_name).typing(bld.x.raw(type_name)).end();
+        try bld.field(shape_name).typing(bld.x.raw(type_name)).end();
     } else {
-        try bld.field(field_name).end();
+        try bld.field(shape_name).end();
     }
 }
 
@@ -771,11 +781,13 @@ test "writeOperationFunc" {
     var tester = try ScriptTester.init();
     defer tester.deinit();
 
-    var model = SmithyModel{};
-    try test_model.setupServiceShapes(&model);
-    defer model.deinit(test_alloc);
+    var symbols = try test_symbols.setup(
+        tester.allocator(),
+        &.{.service},
+    );
+    defer symbols.deinit();
 
-    var self = tester.initCodegen(&model);
+    var self = tester.initCodegen(&symbols);
     try self.writeOperationFunc(tester.build, SmithyId.of("test.serve#Operation"));
     try tester.expect(
         \\pub const OperationErrors = union(enum) {
@@ -793,20 +805,21 @@ fn writeResourceShape(
     self: *Self,
     bld: *ContainerBuild,
     id: SmithyId,
-    resource: *const symbols.SmithyResource,
+    resource: *const syb.SmithyResource,
 ) !void {
     const LIFECYCLE_OPS = &.{ "create", "put", "read", "update", "delete", "list" };
-    const resource_name = try self.model.tryGetName(id);
+    const resource_name = try self.symbols.getShapeName(id, .type);
     const context = .{ .self = self, .id = id, .resource = resource };
     try bld.public().constant(resource_name).assign(bld.x.@"struct"().bodyWith(context, struct {
         fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
             if (ctx.self.hooks.writeResourceHead) |hook| {
-                try hook(ctx.self.arena, b, ctx.self.model, ctx.id, ctx.resource);
+                try hook(ctx.self.arena, b, ctx.self.symbols, ctx.id, ctx.resource);
             }
             for (ctx.resource.identifiers) |d| {
                 try ctx.self.writeDocComment(b, d.shape, true);
-                const name = try names.snakeCase(ctx.self.arena, d.name);
-                try b.field(name).typing(b.x.raw(try ctx.self.unwrapShapeName(d.shape))).end();
+                const type_name = try ctx.self.symbols.getTypeName(d.shape);
+                const shape_name = try name_util.snakeCase(ctx.self.arena, d.name);
+                try b.field(shape_name).typing(b.x.raw(type_name)).end();
             }
 
             inline for (LIFECYCLE_OPS) |field| {
@@ -826,18 +839,20 @@ fn writeResourceShape(
     }
     for (resource.operations) |op_id| try self.writeOperationShapes(bld, op_id);
     for (resource.collection_ops) |op_id| try self.writeOperationShapes(bld, op_id);
-    for (resource.resources) |rsc_id| try self.enqueueShape(rsc_id);
+    for (resource.resources) |rsc_id| try self.symbols.enqueue(rsc_id);
 }
 
 test "writeResourceShape" {
     var tester = try ScriptTester.init();
     defer tester.deinit();
 
-    var model = SmithyModel{};
-    try test_model.setupServiceShapes(&model);
-    defer model.deinit(test_alloc);
+    var symbols = try test_symbols.setup(
+        tester.allocator(),
+        &.{.service},
+    );
+    defer symbols.deinit();
 
-    var self = tester.initCodegen(&model);
+    var self = tester.initCodegen(&symbols);
     try self.writeShape(tester.build, SmithyId.of("test.serve#Resource"));
     try tester.expect(
         \\pub const Resource = struct {
@@ -863,19 +878,16 @@ fn writeServiceShape(
     self: *Self,
     bld: *ContainerBuild,
     id: SmithyId,
-    service: *const symbols.SmithyService,
+    service: *const syb.SmithyService,
 ) !void {
-    // Cache errors
-    if (self.service_errors == null) self.service_errors = service.errors;
-
-    const service_name = try self.model.tryGetName(id);
+    const service_name = try self.symbols.getShapeName(id, .type);
     try self.writeDocComment(bld, id, false);
     const context = .{ .self = self, .service = service };
     try bld.public().constant(service_name).assign(
         bld.x.@"struct"().bodyWith(context, struct {
             fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
                 if (ctx.self.hooks.writeServiceHead) |hook| {
-                    try hook(ctx.self.arena, b, ctx.self.model, ctx.service);
+                    try hook(ctx.self.arena, b, ctx.self.symbols, ctx.service);
                 }
                 for (ctx.service.operations) |op_id| {
                     try ctx.self.writeOperationFunc(b, op_id);
@@ -888,19 +900,21 @@ fn writeServiceShape(
         try self.writeOperationShapes(bld, op_id);
     }
 
-    for (service.resources) |rsc_id| try self.enqueueShape(rsc_id);
-    for (service.errors) |err_id| try self.enqueueShape(err_id);
+    for (service.resources) |rsc_id| try self.symbols.enqueue(rsc_id);
+    for (service.errors) |err_id| try self.symbols.enqueue(err_id);
 }
 
 test "writeServiceShape" {
     var tester = try ScriptTester.init();
     defer tester.deinit();
 
-    var model = SmithyModel{};
-    try test_model.setupServiceShapes(&model);
-    defer model.deinit(test_alloc);
+    var symbols = try test_symbols.setup(
+        tester.allocator(),
+        &.{.service},
+    );
+    defer symbols.deinit();
 
-    var self = tester.initCodegen(&model);
+    var self = tester.initCodegen(&symbols);
     try self.writeShape(tester.build, SmithyId.of("test.serve#Service"));
     try tester.expect(
         \\/// Some _service_...
@@ -920,21 +934,19 @@ test "writeServiceShape" {
         \\pub const OperationOutput = struct {};
     );
 
-    try testing.expectEqual(3, self.shape_visited.count());
-    try testing.expect(self.shape_visited.contains(SmithyId.of("test.serve#Resource")));
-    try testing.expect(self.shape_visited.contains(SmithyId.of("test.error#NotFound")));
-    try testing.expect(self.shape_visited.contains(SmithyId.of("test.error#ServiceError")));
-
-    try testing.expectEqualDeep(&.{SmithyId.of("test.error#ServiceError")}, self.service_errors);
+    try testing.expect(self.symbols.didVisit(SmithyId.of("test.serve#Resource")));
+    try testing.expect(self.symbols.didVisit(SmithyId.of("test.error#NotFound")));
+    try testing.expect(self.symbols.didVisit(SmithyId.of("test.error#ServiceError")));
 }
 
 fn writeDocComment(self: *Self, bld: *ContainerBuild, id: SmithyId, target_fallback: bool) !void {
-    var docs = trt_docs.Documentation.get(self.model, id);
-    if (target_fallback and docs == null) if (self.model.getShape(id)) |shape| {
-        switch (shape) {
-            .target => |t| docs = trt_docs.Documentation.get(self.model, t),
-            else => {},
-        }
+    const docs = trt_docs.Documentation.get(self.symbols, id) orelse blk: {
+        if (!target_fallback) break :blk null;
+        const shape = self.symbols.getShape(id) catch break :blk null;
+        break :blk switch (shape) {
+            .target => |t| trt_docs.Documentation.get(self.symbols, t),
+            else => null,
+        };
     };
 
     const context = .{ .arena = self.arena, .html = docs orelse return };
@@ -943,121 +955,6 @@ fn writeDocComment(self: *Self, bld: *ContainerBuild, id: SmithyId, target_fallb
             try md.convertHtml(ctx.arena, b, ctx.html);
         }
     }.f);
-}
-
-fn unwrapShapeName(self: *Self, id: SmithyId) ![]const u8 {
-    return switch (id) {
-        .str_enum, .int_enum, .list, .map, .structure, .tagged_uinon, .operation, .resource, .service, .apply => unreachable,
-        // By this point a document should have been parsed into a meaningful type:
-        .document => error.UnexpectedDocumentShape,
-        // Union shape generator assumes a unit is an empty string:
-        .unit => "",
-        .boolean => "bool",
-        .byte => "i8",
-        .short => "i16",
-        .integer => "i32",
-        .long => "i64",
-        .float => "f32",
-        .double => "f64",
-        .timestamp => "u64",
-        .string, .blob => "[]const u8",
-        .big_integer, .big_decimal => "[]const u8",
-        _ => |t| blk: {
-            const shape = try self.model.tryGetShape(t);
-            break :blk switch (shape) {
-                .target => |target| self.unwrapShapeName(target),
-                // zig fmt: off
-                inline .unit, .blob, .boolean, .string, .byte, .short, .integer, .long,
-                .float, .double, .big_integer, .big_decimal, .timestamp, .document =>
-                    |_, g| self.unwrapShapeName(std.enums.nameCast(SmithyId, g)),
-                // zig fmt: on
-                else => {
-                    try self.enqueueShape(t);
-                    break :blk self.model.tryGetName(t);
-                },
-            };
-        },
-    };
-}
-
-fn unwrapShapeType(self: *Self, id: SmithyId) !SmithyType {
-    return switch (id) {
-        // zig fmt: off
-        inline .unit, .blob, .boolean, .string, .byte, .short, .integer, .long,
-        .float, .double, .big_integer, .big_decimal, .timestamp, .document =>
-            |t| std.enums.nameCast(SmithyType, t),
-        // zig fmt: on
-        else => switch (try self.model.tryGetShape(id)) {
-            .target => |t| self.unwrapShapeType(t),
-            else => |t| t,
-        },
-    };
-}
-
-fn getServiceErrors(self: *Self) ![]const SmithyId {
-    if (self.service_errors) |e| {
-        return e;
-    } else {
-        const shape = try self.model.tryGetShape(self.model.service);
-        const errors = shape.service.errors;
-        self.service_errors = errors;
-        return errors;
-    }
-}
-
-test "getServiceErrors" {
-    var model = SmithyModel{};
-    try test_model.setupServiceShapes(&model);
-    defer model.deinit(test_alloc);
-
-    var self = Self{
-        .arena = test_alloc,
-        .hooks = TEST_HOOKS,
-        .policy = TEST_POLICY,
-        .model = &model,
-        .issues = undefined,
-    };
-    defer self.shape_visited.deinit(test_alloc);
-
-    const expected = .{SmithyId.of("test.error#ServiceError")};
-    try testing.expectEqualDeep(&expected, try self.getServiceErrors());
-    try testing.expectEqualDeep(&expected, self.service_errors);
-}
-
-fn enqueueShape(self: *Self, id: SmithyId) !void {
-    if (self.shape_visited.contains(id)) return;
-    try self.shape_visited.put(self.arena, id, void{});
-    const node = try self.arena.create(std.DoublyLinkedList(SmithyId).Node);
-    node.data = id;
-    self.shape_queue.append(node);
-}
-
-fn dequeueShape(self: *Self) ?SmithyId {
-    const node = self.shape_queue.popFirst() orelse return null;
-    const shape = node.data;
-    self.arena.destroy(node);
-    return shape;
-}
-
-test "shapes queue" {
-    var self = Self{
-        .arena = test_alloc,
-        .hooks = TEST_HOOKS,
-        .policy = TEST_POLICY,
-        .model = undefined,
-        .issues = undefined,
-    };
-    defer self.shape_visited.deinit(test_alloc);
-
-    try self.enqueueShape(SmithyId.of("A"));
-    try testing.expectEqualDeep(SmithyId.of("A"), self.dequeueShape());
-    try self.enqueueShape(SmithyId.of("A"));
-    try testing.expectEqual(null, self.dequeueShape());
-    try self.enqueueShape(SmithyId.of("B"));
-    try self.enqueueShape(SmithyId.of("C"));
-    try testing.expectEqualDeep(SmithyId.of("B"), self.dequeueShape());
-    try testing.expectEqualDeep(SmithyId.of("C"), self.dequeueShape());
-    try testing.expectEqual(null, self.dequeueShape());
 }
 
 const TEST_POLICY = Policy{
@@ -1071,7 +968,7 @@ const TEST_HOOKS = Hooks{
     .writeOperationBody = hookOperationBody,
 };
 
-fn hookErrorShape(_: Allocator, bld: *ContainerBuild, _: *const SmithyModel, shape: Hooks.ErrorShape) !void {
+fn hookErrorShape(_: Allocator, bld: *ContainerBuild, _: *const SymbolsProvider, shape: Hooks.ErrorShape) !void {
     try bld.public().constant("source").typing(bld.x.raw("ErrorSource"))
         .assign(bld.x.valueOf(shape.source));
 
@@ -1081,7 +978,7 @@ fn hookErrorShape(_: Allocator, bld: *ContainerBuild, _: *const SmithyModel, sha
     try bld.public().constant("retryable").assign(bld.x.valueOf(shape.retryable));
 }
 
-fn hookOperationBody(_: Allocator, bld: *BlockBuild, _: *const SmithyModel, _: Hooks.OperationShape) !void {
+fn hookOperationBody(_: Allocator, bld: *BlockBuild, _: *const SymbolsProvider, _: Hooks.OperationShape) !void {
     try bld.returns().raw("undefined").end();
 }
 
@@ -1126,13 +1023,18 @@ const ScriptTester = struct {
         test_alloc.destroy(self.issues);
     }
 
-    pub fn initCodegen(self: *ScriptTester, model: *const SmithyModel) Self {
+    pub fn allocator(self: *ScriptTester) Allocator {
+        return self.arena.allocator();
+    }
+
+    pub fn initCodegen(self: *ScriptTester, symbols: *SymbolsProvider) Self {
+        const alloc = self.arena.allocator();
         return Self{
-            .arena = self.arena.allocator(),
+            .arena = alloc,
             .hooks = TEST_HOOKS,
             .policy = TEST_POLICY,
-            .model = model,
             .issues = self.issues,
+            .symbols = symbols,
         };
     }
 

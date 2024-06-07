@@ -1,11 +1,10 @@
 .{
-    .name = "aws-zig",
+    .name = "aws-runtime",
     .version = "0.0.0",
-
-    //.minimum_zig_version = "0.13.0",
+    .minimum_zig_version = "0.14.0",
 
     .dependencies = .{
-        .@"smithy-zig" = .{
+        .smithy = .{
             .path = "../smithy",
         },
         .https12 = .{
@@ -18,7 +17,6 @@
         "build.zig",
         "build.zig.zon",
         "client",
-        "codegen",
         "types",
         "LICENSE",
         "README.md",

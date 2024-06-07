@@ -44,7 +44,7 @@ manager: TraitsManager,
 policy: Policy,
 issues: *IssuesBag,
 reader: *JsonReader,
-model: SmithyModel = .{},
+model: SmithyModel,
 
 /// Parse raw JSON into collection of Smithy symbols.
 ///
@@ -64,8 +64,9 @@ pub fn parseJson(
         .policy = policy,
         .issues = issues,
         .reader = json,
+        .model = SmithyModel.init(arena),
     };
-    errdefer parser.model.deinit(arena);
+    errdefer parser.model.deinit();
 
     try parser.parseScope(.object, parseProp, .{});
     try parser.reader.nextDocumentEnd();

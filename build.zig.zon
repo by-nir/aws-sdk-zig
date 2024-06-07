@@ -1,11 +1,10 @@
 .{
-    .name = "aws-sdk-zig",
+    .name = "aws-sdk",
     .version = "0.0.0",
-
-    //.minimum_zig_version = "0.13.0",
+    .minimum_zig_version = "0.14.0",
 
     .dependencies = .{
-        .@"aws-zig" = .{
+        .@"aws-runtime" = .{
             .path = "aws",
         },
         .@"aws-models" = .{
@@ -17,11 +16,9 @@
 
     .paths = .{
         "build.zig",
-        "build.codegen.zig",
         "build.zig.zon",
         "aws",
         "sdk",
-        "smithy",
         "LICENSE",
         "README.md",
     },

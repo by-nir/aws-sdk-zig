@@ -8,9 +8,9 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const symbols = @import("../systems/symbols.zig");
-const SmithyId = symbols.SmithyId;
-const SmithyModel = symbols.SmithyModel;
+const syb = @import("../systems/symbols.zig");
+const SmithyId = syb.SmithyId;
+const SymbolsProvider = syb.SymbolsProvider;
 const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
 const JsonReader = @import("../utils/JsonReader.zig");
 
@@ -114,8 +114,8 @@ pub const Enum = struct {
         }
     }
 
-    pub fn get(model: *const SmithyModel, shape_id: SmithyId) ?[]const Member {
-        const trait = model.getTraitOpaque(shape_id, id);
+    pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?[]const Member {
+        const trait = symbols.getTraitOpaque(shape_id, id);
         return if (trait) |ptr| cast(ptr) else null;
     }
 

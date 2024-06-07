@@ -4,19 +4,19 @@ const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = std.testing.allocator;
 
-pub fn snakeCase(arena: Allocator, input: []const u8) ![]const u8 {
+pub fn snakeCase(allocator: Allocator, input: []const u8) ![]const u8 {
     var retain = true;
     for (input) |c| {
         if (ascii.isUpper(c)) retain = false;
     }
     if (retain) {
         if (std.zig.Token.keywords.has(input))
-            return std.fmt.allocPrint(arena, "@\"{s}\"", .{input})
+            return std.fmt.allocPrint(allocator, "@\"{s}\"", .{input})
         else
             return input;
     }
 
-    var buffer = try std.ArrayList(u8).initCapacity(arena, input.len);
+    var buffer = try std.ArrayList(u8).initCapacity(allocator, input.len);
     errdefer buffer.deinit();
 
     var prev_upper = false;
@@ -50,8 +50,8 @@ test "snakeCase" {
     try testing.expectEqualStrings("@\"error\"", try snakeCase(arena_alloc, "error"));
 }
 
-pub fn camelCase(arena: Allocator, input: []const u8) ![]const u8 {
-    var buffer = try std.ArrayList(u8).initCapacity(arena, input.len);
+pub fn camelCase(allocator: Allocator, input: []const u8) ![]const u8 {
+    var buffer = try std.ArrayList(u8).initCapacity(allocator, input.len);
     errdefer buffer.deinit();
 
     var prev_lower = false;
@@ -89,8 +89,8 @@ test "camelCase" {
     try testing.expectEqualStrings("@\"error\"", try camelCase(arena_alloc, "error"));
 }
 
-pub fn titleCase(arena: Allocator, input: []const u8) ![]const u8 {
-    var buffer = try std.ArrayList(u8).initCapacity(arena, input.len);
+pub fn titleCase(allocator: Allocator, input: []const u8) ![]const u8 {
+    var buffer = try std.ArrayList(u8).initCapacity(allocator, input.len);
     errdefer buffer.deinit();
 
     var prev_upper = true;

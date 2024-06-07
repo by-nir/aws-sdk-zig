@@ -1,7 +1,9 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const prelude = @import("../prelude.zig");
+const name_util = @import("../utils/names.zig");
 const TraitsProvider = @import("traits.zig").TraitsProvider;
 
 pub const IdHashInt = u32;
@@ -260,140 +262,6 @@ test "SmithyProperty" {
     );
 }
 
-/// Parsed symbols (shapes and metadata) from a Smithy model.
-pub const SmithyModel = struct {
-    service: SmithyId = SmithyId.NULL,
-    meta: std.AutoHashMapUnmanaged(SmithyId, SmithyMeta) = .{},
-    shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType) = .{},
-    names: std.AutoHashMapUnmanaged(SmithyId, []const u8) = .{},
-    traits: std.AutoHashMapUnmanaged(SmithyId, []const SmithyTaggedValue) = .{},
-    mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId) = .{},
-
-    pub fn deinit(self: *SmithyModel, allocator: std.mem.Allocator) void {
-        self.meta.deinit(allocator);
-        self.shapes.deinit(allocator);
-        self.traits.deinit(allocator);
-        self.mixins.deinit(allocator);
-        self.names.deinit(allocator);
-    }
-
-    pub fn getMeta(self: SmithyModel, key: SmithyId) ?SmithyMeta {
-        return self.meta.get(key);
-    }
-
-    pub fn getShape(self: SmithyModel, id: SmithyId) ?SmithyType {
-        return self.shapes.get(id);
-    }
-
-    pub fn tryGetShape(self: SmithyModel, id: SmithyId) !SmithyType {
-        return self.shapes.get(id) orelse error.ShapeNotFound;
-    }
-
-    pub fn getName(self: SmithyModel, id: SmithyId) ?[]const u8 {
-        return self.names.get(id);
-    }
-
-    pub fn tryGetName(self: SmithyModel, id: SmithyId) ![]const u8 {
-        return self.names.get(id) orelse error.NameNotFound;
-    }
-
-    pub fn getMixins(self: SmithyModel, shape_id: SmithyId) ?[]const SmithyId {
-        return self.mixins.get(shape_id) orelse null;
-    }
-
-    pub fn getTraits(self: SmithyModel, shape_id: SmithyId) ?TraitsProvider {
-        const traits = self.traits.get(shape_id) orelse return null;
-        return TraitsProvider{ .values = traits };
-    }
-
-    pub fn hasTrait(self: SmithyModel, shape_id: SmithyId, trait_id: SmithyId) bool {
-        return if (self.getTraits(shape_id)) |t| t.has(trait_id) else false;
-    }
-
-    pub fn getTraitOpaque(self: SmithyModel, shape_id: SmithyId, trait_id: SmithyId) ?*const anyopaque {
-        return if (self.getTraits(shape_id)) |t| t.getOpaque(trait_id) else null;
-    }
-
-    pub fn getTrait(
-        self: SmithyModel,
-        comptime T: type,
-        shape_id: SmithyId,
-        trait_id: SmithyId,
-    ) ?TraitsProvider.TraitReturn(T) {
-        return if (self.getTraits(shape_id)) |t| t.get(T, trait_id) else null;
-    }
-};
-
-test "SmithyModel" {
-    const int: u8 = 108;
-    const shape_id = SmithyId.of("test.simple#Blob");
-    const trait_void = SmithyId.of("test.trait#Void");
-    const trait_int = SmithyId.of("test.trait#Int");
-
-    var meta: std.AutoHashMapUnmanaged(SmithyId, SmithyMeta) = .{};
-    defer meta.deinit(test_alloc);
-    try meta.put(test_alloc, shape_id, .{ .integer = 108 });
-
-    var shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType) = .{};
-    defer shapes.deinit(test_alloc);
-    try shapes.put(test_alloc, shape_id, .blob);
-
-    var names: std.AutoHashMapUnmanaged(SmithyId, []const u8) = .{};
-    defer names.deinit(test_alloc);
-    try names.put(test_alloc, shape_id, "Foo");
-
-    var traits: std.AutoHashMapUnmanaged(SmithyId, []const SmithyTaggedValue) = .{};
-    defer traits.deinit(test_alloc);
-    try traits.put(test_alloc, shape_id, &.{
-        .{ .id = trait_void, .value = null },
-        .{ .id = trait_int, .value = &int },
-    });
-
-    var mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId) = .{};
-    defer mixins.deinit(test_alloc);
-    try mixins.put(test_alloc, shape_id, &.{
-        SmithyId.of("test.mixin#Foo"),
-        SmithyId.of("test.mixin#Bar"),
-    });
-
-    const symbols = SmithyModel{
-        .service = SmithyId.NULL,
-        .meta = meta,
-        .shapes = shapes,
-        .names = names,
-        .traits = traits,
-        .mixins = mixins,
-    };
-
-    try testing.expectEqualDeep(
-        SmithyMeta{ .integer = 108 },
-        symbols.getMeta(shape_id),
-    );
-
-    try testing.expectEqual(.blob, symbols.getShape(shape_id));
-    try testing.expectEqual(.blob, symbols.tryGetShape(shape_id));
-    try testing.expectError(
-        error.ShapeNotFound,
-        symbols.tryGetShape(SmithyId.of("test#undefined")),
-    );
-
-    try testing.expectEqualStrings("Foo", symbols.getName(shape_id).?);
-    try testing.expectError(
-        error.NameNotFound,
-        symbols.tryGetName(SmithyId.of("test#undefined")),
-    );
-
-    try testing.expectEqualDeep(
-        &.{ SmithyId.of("test.mixin#Foo"), SmithyId.of("test.mixin#Bar") },
-        symbols.getMixins(shape_id),
-    );
-
-    try testing.expectEqualDeep(TraitsProvider{ .values = &.{
-        SmithyTaggedValue{ .id = trait_void, .value = null },
-        SmithyTaggedValue{ .id = trait_int, .value = &int },
-    } }, symbols.getTraits(shape_id));
-}
-
 /// A service is the entry point of an API that aggregates resources and operations together.
 ///
 /// [Smithy Spec](https://smithy.io/2.0/spec/service-types.html#service)
@@ -480,3 +348,490 @@ pub const SmithyMeta = union(enum) {
         value: SmithyMeta,
     };
 };
+
+/// Parsed symbols (shapes and metadata) from a Smithy model.
+pub const SmithyModel = struct {
+    allocator: Allocator,
+    service: SmithyId = SmithyId.NULL,
+    meta: std.AutoHashMapUnmanaged(SmithyId, SmithyMeta) = .{},
+    shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType) = .{},
+    names: std.AutoHashMapUnmanaged(SmithyId, []const u8) = .{},
+    traits: std.AutoHashMapUnmanaged(SmithyId, []const SmithyTaggedValue) = .{},
+    mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId) = .{},
+
+    pub fn init(allocator: Allocator) SmithyModel {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *SmithyModel) void {
+        self.meta.deinit(self.allocator);
+        self.shapes.deinit(self.allocator);
+        self.traits.deinit(self.allocator);
+        self.mixins.deinit(self.allocator);
+        self.names.deinit(self.allocator);
+    }
+
+    pub fn consume(self: *SmithyModel, arena: Allocator) !SymbolsProvider {
+        var dupe_meta = try self.meta.clone(arena);
+        errdefer dupe_meta.deinit(arena);
+
+        var dupe_shapes = try self.shapes.clone(arena);
+        errdefer dupe_shapes.deinit(arena);
+
+        var dupe_names = try self.names.clone(arena);
+        errdefer dupe_names.deinit(arena);
+
+        var dupe_traits = try self.traits.clone(arena);
+        errdefer dupe_traits.deinit(arena);
+
+        const dupe_mixins = try self.mixins.clone(arena);
+
+        defer self.deinit();
+        return .{
+            .arena = arena,
+            .service_id = self.service,
+            .model_meta = dupe_meta,
+            .model_shapes = dupe_shapes,
+            .model_names = dupe_names,
+            .model_traits = dupe_traits,
+            .model_mixins = dupe_mixins,
+        };
+    }
+
+    pub fn getName(self: SmithyModel, id: SmithyId) ?[]const u8 {
+        return self.names.get(id);
+    }
+    
+    pub fn tryGetName(self: SmithyModel, id: SmithyId) ![]const u8 {
+        return self.names.get(id) orelse error.NameNotFound;
+    }
+
+    pub fn getMeta(self: SmithyModel, key: SmithyId) ?SmithyMeta {
+        return self.meta.get(key);
+    }
+
+    pub fn getShape(self: SmithyModel, id: SmithyId) ?SmithyType {
+        return self.shapes.get(id);
+    }
+
+    pub fn tryGetShape(self: SmithyModel, id: SmithyId) !SmithyType {
+        return self.shapes.get(id) orelse error.ShapeNotFound;
+    }
+
+    pub fn getMixins(self: SmithyModel, shape_id: SmithyId) ?[]const SmithyId {
+        return self.mixins.get(shape_id) orelse null;
+    }
+
+    pub fn getTraits(self: SmithyModel, shape_id: SmithyId) ?TraitsProvider {
+        const traits = self.traits.get(shape_id) orelse return null;
+        return TraitsProvider{ .values = traits };
+    }
+
+    pub fn hasTrait(self: SmithyModel, shape_id: SmithyId, trait_id: SmithyId) bool {
+        return if (self.getTraits(shape_id)) |t| t.has(trait_id) else false;
+    }
+
+    pub fn getTraitOpaque(self: SmithyModel, shape_id: SmithyId, trait_id: SmithyId) ?*const anyopaque {
+        return if (self.getTraits(shape_id)) |t| t.getOpaque(trait_id) else null;
+    }
+
+    pub fn getTrait(
+        self: SmithyModel,
+        comptime T: type,
+        shape_id: SmithyId,
+        trait_id: SmithyId,
+    ) ?TraitsProvider.TraitReturn(T) {
+        return if (self.getTraits(shape_id)) |t| t.get(T, trait_id) else null;
+    }
+};
+
+pub const SymbolsProvider = struct {
+    arena: Allocator,
+    service_id: SmithyId,
+    model_meta: std.AutoHashMapUnmanaged(SmithyId, SmithyMeta),
+    model_shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType),
+    model_names: std.AutoHashMapUnmanaged(SmithyId, []const u8),
+    model_traits: std.AutoHashMapUnmanaged(SmithyId, []const SmithyTaggedValue),
+    model_mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId),
+    shapes_queue: std.DoublyLinkedList(SmithyId) = .{},
+    shapes_visited: std.AutoHashMapUnmanaged(SmithyId, void) = .{},
+    service_errors: ?[]const SmithyId = null,
+
+    pub fn deinit(self: *SymbolsProvider) void {
+        self.model_meta.deinit(self.arena);
+        self.model_shapes.deinit(self.arena);
+        self.model_names.deinit(self.arena);
+        self.model_traits.deinit(self.arena);
+        self.model_mixins.deinit(self.arena);
+
+        self.shapes_visited.deinit(self.arena);
+        var node = self.shapes_queue.first;
+        while (node) |n| {
+            node = n.next;
+            self.arena.destroy(n);
+        }
+    }
+
+    pub fn enqueue(self: *SymbolsProvider, id: SmithyId) !void {
+        if (self.shapes_visited.contains(id)) return;
+        try self.shapes_visited.put(self.arena, id, void{});
+        const node = try self.arena.create(std.DoublyLinkedList(SmithyId).Node);
+        node.data = id;
+        self.shapes_queue.append(node);
+    }
+
+    pub fn next(self: *SymbolsProvider) ?SmithyId {
+        const node = self.shapes_queue.popFirst() orelse return null;
+        const shape = node.data;
+        self.arena.destroy(node);
+        return shape;
+    }
+
+    /// This will NOT remove an existing shape from the queue.
+    pub fn markVisited(self: *SymbolsProvider, id: SmithyId) !void {
+        try self.shapes_visited.put(self.arena, id, void{});
+    }
+
+    pub fn didVisit(self: SymbolsProvider, id: SmithyId) bool {
+        return self.shapes_visited.contains(id);
+    }
+
+    pub fn getServiceErrors(self: *SymbolsProvider) ![]const SmithyId {
+        if (self.service_errors) |e| {
+            return e;
+        } else {
+            const shape = self.model_shapes.get(self.service_id) orelse {
+                return error.ServiceNotFound;
+            };
+            const errors = shape.service.errors;
+            self.service_errors = errors;
+            return errors;
+        }
+    }
+
+    pub fn getMeta(self: SymbolsProvider, key: SmithyId) ?SmithyMeta {
+        return self.model_meta.get(key);
+    }
+
+    pub fn getMixins(self: SymbolsProvider, shape_id: SmithyId) ?[]const SmithyId {
+        return self.model_mixins.get(shape_id);
+    }
+
+    pub fn getShape(self: SymbolsProvider, id: SmithyId) !SmithyType {
+        return self.model_shapes.get(id) orelse error.ShapeNotFound;
+    }
+
+    pub fn getShapeUnwrap(self: SymbolsProvider, id: SmithyId) !SmithyType {
+        switch (id) {
+            // zig fmt: off
+            inline .unit, .blob, .boolean, .string, .byte, .short, .integer, .long,
+            .float, .double, .big_integer, .big_decimal, .timestamp, .document =>
+                |t| return std.enums.nameCast(SmithyType, t),
+            // zig fmt: on
+            else => {
+                const shape = self.model_shapes.get(id) orelse return error.ShapeNotFound;
+                return switch (shape) {
+                    .target => |t| self.getShape(t),
+                    else => |t| t,
+                };
+            },
+        }
+    }
+
+    pub fn getTraits(self: SymbolsProvider, shape_id: SmithyId) ?TraitsProvider {
+        const traits = self.model_traits.get(shape_id) orelse return null;
+        return TraitsProvider{ .values = traits };
+    }
+
+    pub fn hasTrait(self: SymbolsProvider, shape_id: SmithyId, trait_id: SmithyId) bool {
+        const traits = self.getTraits(shape_id) orelse return false;
+        return traits.has(trait_id);
+    }
+
+    pub fn getTrait(
+        self: SymbolsProvider,
+        comptime T: type,
+        shape_id: SmithyId,
+        trait_id: SmithyId,
+    ) ?TraitsProvider.TraitReturn(T) {
+        const traits = self.getTraits(shape_id) orelse return null;
+        return traits.get(T, trait_id);
+    }
+
+    pub fn getTraitOpaque(self: SymbolsProvider, shape_id: SmithyId, trait_id: SmithyId) ?*const anyopaque {
+        const traits = self.getTraits(shape_id) orelse return null;
+        return traits.getOpaque(trait_id);
+    }
+
+    pub const NameFormat = enum {
+        /// field_name (snake case)
+        field,
+        /// functionName (camel case)
+        function,
+        /// TypeName (pascal case)
+        type,
+        // CONSTANT_NAME (scream case)
+        constant,
+        /// Title Name (title case)
+        title,
+    };
+
+    pub fn getShapeName(self: SymbolsProvider, id: SmithyId, format: NameFormat) ![]const u8 {
+        const raw = self.model_names.get(id) orelse return error.NameNotFound;
+        return switch (format) {
+            .type => raw,
+            .field => name_util.snakeCase(self.arena, raw),
+            .function => name_util.camelCase(self.arena, raw),
+            .constant => raw,
+            .title => name_util.titleCase(self.arena, raw),
+        };
+    }
+
+    pub fn getTypeName(self: *SymbolsProvider, id: SmithyId) ![]const u8 {
+        return switch (id) {
+            .str_enum, .int_enum, .list, .map, .structure, .tagged_uinon, .operation, .resource, .service, .apply => unreachable,
+            // A document’s consume should parse it into a meaningful type manually:
+            .document => return error.UnexpectedDocumentShape,
+            // The union type generator assumes a unit is an empty string:
+            .unit => "",
+            .boolean => "bool",
+            .byte => "i8",
+            .short => "i16",
+            .integer => "i32",
+            .long => "i64",
+            .float => "f32",
+            .double => "f64",
+            .timestamp => "u64",
+            .string, .blob => "[]const u8",
+            .big_integer, .big_decimal => "[]const u8",
+            _ => |shape_id| blk: {
+                const shape = self.model_shapes.get(id) orelse {
+                    return error.ShapeNotFound;
+                };
+                switch (shape) {
+                    .target => |target| {
+                        break :blk try self.getTypeName(target);
+                    },
+                    inline .unit,
+                    .blob,
+                    .boolean,
+                    .string,
+                    .byte,
+                    .short,
+                    .integer,
+                    .long,
+                    .float,
+                    .double,
+                    .big_integer,
+                    .big_decimal,
+                    .timestamp,
+                    .document,
+                    => |_, g| {
+                        const type_id = std.enums.nameCast(SmithyId, g);
+                        break :blk try self.getTypeName(type_id);
+                    },
+                    else => {
+                        const name = try self.getShapeName(shape_id, .type);
+                        try self.enqueue(shape_id);
+                        break :blk name;
+                    },
+                }
+            },
+        };
+    }
+};
+
+test "SymbolsProvider: queue" {
+    var self = SymbolsProvider{
+        .arena = test_alloc,
+        .service_id = SmithyId.NULL,
+        .model_meta = undefined,
+        .model_shapes = undefined,
+        .model_names = undefined,
+        .model_traits = undefined,
+        .model_mixins = undefined,
+    };
+    defer self.deinit();
+
+    try self.enqueue(SmithyId.of("A"));
+    try testing.expectEqualDeep(SmithyId.of("A"), self.next());
+    try self.enqueue(SmithyId.of("A"));
+    try testing.expectEqual(null, self.next());
+    try self.enqueue(SmithyId.of("B"));
+    try self.enqueue(SmithyId.of("A"));
+    try self.enqueue(SmithyId.of("C"));
+    try testing.expectEqualDeep(SmithyId.of("B"), self.next());
+    try testing.expectEqualDeep(SmithyId.of("C"), self.next());
+    try self.markVisited(SmithyId.of("D"));
+    try self.enqueue(SmithyId.of("D"));
+    try testing.expectEqual(null, self.next());
+
+    try testing.expect(self.didVisit(SmithyId.of("A")));
+    try testing.expect(self.didVisit(SmithyId.of("B")));
+    try testing.expect(self.didVisit(SmithyId.of("C")));
+    try testing.expect(self.didVisit(SmithyId.of("D")));
+    try testing.expect(!self.didVisit(SmithyId.of("E")));
+}
+
+test "SymbolsProvider.getSharedErrors" {
+    var shapes = std.AutoHashMapUnmanaged(SmithyId, SmithyType){};
+    try shapes.put(test_alloc, SmithyId.of("test.serve#Service"), .{
+        .service = &.{ .errors = &.{SmithyId.of("test.error#ServiceError")} },
+    });
+
+    var self = SymbolsProvider{
+        .arena = test_alloc,
+        .service_id = SmithyId.of("test.serve#Service"),
+        .model_shapes = shapes,
+        .model_meta = undefined,
+        .model_names = undefined,
+        .model_traits = undefined,
+        .model_mixins = undefined,
+    };
+    defer self.deinit();
+
+    const expected = .{SmithyId.of("test.error#ServiceError")};
+    try testing.expectEqualDeep(&expected, try self.getServiceErrors());
+    try testing.expectEqualDeep(&expected, self.service_errors);
+}
+
+test "SymbolsProvider: model" {
+    const int: u8 = 108;
+    const shape_foo = SmithyId.of("test.simple#Foo");
+    const shape_bar = SmithyId.of("test.simple#Bar");
+    const trait_void = SmithyId.of("test.trait#Void");
+    const trait_int = SmithyId.of("test.trait#Int");
+
+    var symbols: SymbolsProvider = blk: {
+        var meta: std.AutoHashMapUnmanaged(SmithyId, SmithyMeta) = .{};
+        errdefer meta.deinit(test_alloc);
+        try meta.put(test_alloc, shape_foo, .{ .integer = 108 });
+
+        var shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType) = .{};
+        errdefer shapes.deinit(test_alloc);
+        try shapes.put(test_alloc, shape_foo, .blob);
+        try shapes.put(test_alloc, shape_bar, .{ .target = shape_foo });
+
+        var names: std.AutoHashMapUnmanaged(SmithyId, []const u8) = .{};
+        errdefer names.deinit(test_alloc);
+        try names.put(test_alloc, shape_foo, "Foo");
+
+        var traits: std.AutoHashMapUnmanaged(SmithyId, []const SmithyTaggedValue) = .{};
+        errdefer traits.deinit(test_alloc);
+        try traits.put(test_alloc, shape_foo, &.{
+            .{ .id = trait_void, .value = null },
+            .{ .id = trait_int, .value = &int },
+        });
+
+        var mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId) = .{};
+        errdefer mixins.deinit(test_alloc);
+        try mixins.put(test_alloc, shape_foo, &.{
+            SmithyId.of("test.mixin#Foo"),
+            SmithyId.of("test.mixin#Bar"),
+        });
+
+        break :blk SymbolsProvider{
+            .arena = test_alloc,
+            .service_id = SmithyId.NULL,
+            .model_meta = meta,
+            .model_shapes = shapes,
+            .model_names = names,
+            .model_traits = traits,
+            .model_mixins = mixins,
+        };
+    };
+    defer symbols.deinit();
+
+    try testing.expectEqualDeep(
+        SmithyMeta{ .integer = 108 },
+        symbols.getMeta(shape_foo),
+    );
+
+    try testing.expectEqual(.blob, symbols.getShape(shape_foo));
+    try testing.expectError(
+        error.ShapeNotFound,
+        symbols.getShape(SmithyId.of("test#undefined")),
+    );
+
+    try testing.expectEqual(.blob, symbols.getShapeUnwrap(shape_bar));
+    try testing.expectError(
+        error.ShapeNotFound,
+        symbols.getShapeUnwrap(SmithyId.of("test#undefined")),
+    );
+
+    try testing.expectEqualStrings("Foo", try symbols.getShapeName(shape_foo, .type));
+    const field_name = try symbols.getShapeName(shape_foo, .field);
+    defer test_alloc.free(field_name);
+    try testing.expectEqualStrings("foo", field_name);
+    try testing.expectError(
+        error.NameNotFound,
+        symbols.getShapeName(SmithyId.of("test#undefined"), .type),
+    );
+
+    try testing.expectEqualDeep(
+        &.{ SmithyId.of("test.mixin#Foo"), SmithyId.of("test.mixin#Bar") },
+        symbols.getMixins(shape_foo),
+    );
+
+    try testing.expectEqualDeep(TraitsProvider{ .values = &.{
+        SmithyTaggedValue{ .id = trait_void, .value = null },
+        SmithyTaggedValue{ .id = trait_int, .value = &int },
+    } }, symbols.getTraits(shape_foo));
+}
+
+test "SymbolsProvider: names" {
+    var arena = std.heap.ArenaAllocator.init(test_alloc);
+    const arena_alloc = arena.allocator();
+    defer arena.deinit();
+
+    const foobar_id = SmithyId.of("test.simple#FooBar");
+    var symbols: SymbolsProvider = blk: {
+        var shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType) = .{};
+        errdefer shapes.deinit(arena_alloc);
+        try shapes.put(arena_alloc, foobar_id, .boolean);
+
+        var names: std.AutoHashMapUnmanaged(SmithyId, []const u8) = .{};
+        errdefer names.deinit(arena_alloc);
+        try names.put(arena_alloc, foobar_id, "FooBar");
+
+        break :blk SymbolsProvider{
+            .arena = arena_alloc,
+            .service_id = SmithyId.NULL,
+            .model_meta = .{},
+            .model_shapes = shapes,
+            .model_names = names,
+            .model_traits = .{},
+            .model_mixins = .{},
+        };
+    };
+    defer symbols.deinit();
+
+    try testing.expectEqualStrings("foo_bar", try symbols.getShapeName(foobar_id, .field));
+    try testing.expectEqualStrings("fooBar", try symbols.getShapeName(foobar_id, .function));
+    try testing.expectEqualStrings("FooBar", try symbols.getShapeName(foobar_id, .type));
+    // try testing.expectEqualStrings("FOO_BAR", try symbols.getShapeName(foobar_id, .constant));
+    try testing.expectEqualStrings("Foo Bar", try symbols.getShapeName(foobar_id, .title));
+    try testing.expectError(
+        error.NameNotFound,
+        symbols.getShapeName(SmithyId.of("test#undefined"), .type),
+    );
+
+    try testing.expectError(
+        error.UnexpectedDocumentShape,
+        symbols.getTypeName(SmithyId.document),
+    );
+    try testing.expectEqualStrings("", try symbols.getTypeName(.unit));
+    try testing.expectEqualStrings("bool", try symbols.getTypeName(.boolean));
+    try testing.expectEqualStrings("i8", try symbols.getTypeName(.byte));
+    try testing.expectEqualStrings("i16", try symbols.getTypeName(.short));
+    try testing.expectEqualStrings("i32", try symbols.getTypeName(.integer));
+    try testing.expectEqualStrings("i64", try symbols.getTypeName(.long));
+    try testing.expectEqualStrings("f32", try symbols.getTypeName(.float));
+    try testing.expectEqualStrings("f64", try symbols.getTypeName(.double));
+    try testing.expectEqualStrings("u64", try symbols.getTypeName(.timestamp));
+    try testing.expectEqualStrings("[]const u8", try symbols.getTypeName(.string));
+    try testing.expectEqualStrings("[]const u8", try symbols.getTypeName(.blob));
+    try testing.expectEqualStrings("[]const u8", try symbols.getTypeName(.big_integer));
+    try testing.expectEqualStrings("[]const u8", try symbols.getTypeName(.big_decimal));
+    try testing.expectEqualStrings("bool", try symbols.getTypeName(foobar_id));
+}

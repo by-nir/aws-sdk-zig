@@ -9,16 +9,50 @@ const SmithyService = symbols.SmithyService;
 const SmithyResource = symbols.SmithyResource;
 const SmithyOperation = symbols.SmithyOperation;
 const TaggedValue = symbols.SmithyTaggedValue;
+const SymbolsProvider = symbols.SymbolsProvider;
 const trt_behave = @import("../traits/behavior.zig");
 const trt_constr = @import("../traits/constraint.zig");
 const trt_http = @import("../traits/http.zig");
 const trt_refine = @import("../traits/refine.zig");
 
-pub fn setupUnit(model: *SmithyModel) !void {
+pub fn setup(arena: std.mem.Allocator, shapes: []const Shape) !SymbolsProvider {
+    var model = SmithyModel.init(test_alloc);
+    errdefer model.deinit();
+
+    for (shapes) |s| switch (s) {
+        .unit => try setupUnit(&model),
+        .root_child => try setupRootAndChild(&model),
+        .list => try setupList(&model),
+        .map => try setupMap(&model),
+        .enums_str => try setupEnums(&model),
+        .enum_int => try setupIntEnum(&model),
+        .union_str => try setupUnion(&model),
+        .structure => try setupStruct(&model),
+        .err => try setupError(&model),
+        .service => try setupServiceAndDeps(&model),
+    };
+
+    return model.consume(arena);
+}
+
+pub const Shape = enum {
+    unit,
+    root_child,
+    list,
+    map,
+    enums_str,
+    enum_int,
+    union_str,
+    structure,
+    err,
+    service,
+};
+
+fn setupUnit(model: *SmithyModel) !void {
     try model.shapes.put(test_alloc, SmithyId.of("test#Unit"), .unit);
 }
 
-pub fn setupRootAndChild(model: *SmithyModel) !void {
+fn setupRootAndChild(model: *SmithyModel) !void {
     try model.names.put(test_alloc, SmithyId.of("test#Root"), "Root");
     try model.shapes.put(test_alloc, SmithyId.of("test#Root"), .{
         .list = SmithyId.of("test#Root$child"),
@@ -34,7 +68,7 @@ pub fn setupRootAndChild(model: *SmithyModel) !void {
     });
 }
 
-pub fn setupList(model: *SmithyModel) !void {
+fn setupList(model: *SmithyModel) !void {
     try model.names.put(test_alloc, SmithyId.of("test#List"), "List");
     try model.shapes.put(test_alloc, SmithyId.of("test#List"), .{
         .list = .integer,
@@ -52,7 +86,7 @@ pub fn setupList(model: *SmithyModel) !void {
     });
 }
 
-pub fn setupMap(model: *SmithyModel) !void {
+fn setupMap(model: *SmithyModel) !void {
     try model.names.put(test_alloc, SmithyId.of("test#Map"), "Map");
     try model.shapes.put(test_alloc, SmithyId.of("test#Map"), .{
         .map = .{ .integer, .integer },
@@ -64,7 +98,7 @@ pub fn setupMap(model: *SmithyModel) !void {
 
 const ENUM_TRT: trt_constr.Enum.Sentinel = &.{ .{ .value = "FOO_BAR" }, .{ .value = "baz$qux", .name = "BAZ_QUX" } };
 const ENUM_STR = &.{ SmithyId.of("test#Enum$FOO_BAR"), SmithyId.of("test#Enum$BAZ_QUX") };
-pub fn setupEnum(model: *SmithyModel) !void {
+fn setupEnums(model: *SmithyModel) !void {
     try model.names.put(test_alloc, SmithyId.of("test#Enum"), "Enum");
     try model.shapes.put(test_alloc, SmithyId.of("test#Enum"), .{
         .str_enum = ENUM_STR,
@@ -86,7 +120,7 @@ pub fn setupEnum(model: *SmithyModel) !void {
     }});
 }
 
-pub fn setupIntEnum(model: *SmithyModel) !void {
+fn setupIntEnum(model: *SmithyModel) !void {
     const Static = struct {
         const shape = &.{ SmithyId.of("test#IntEnum$FOO_BAR"), SmithyId.of("test#IntEnum$BAZ_QUX") };
         const doc: []const u8 = "<p>An <b>integer-based</b> enumeration.</p>";
@@ -121,7 +155,7 @@ const UNION = &.{
     SmithyId.of("test#Union$BAR"),
     SmithyId.of("test#Union$BAZ"),
 };
-pub fn setupUnion(model: *SmithyModel) !void {
+fn setupUnion(model: *SmithyModel) !void {
     try model.names.put(test_alloc, SmithyId.of("test#Union"), "Union");
     try model.shapes.put(test_alloc, SmithyId.of("test#Union"), .{
         .tagged_uinon = UNION,
@@ -134,7 +168,7 @@ pub fn setupUnion(model: *SmithyModel) !void {
     try model.shapes.put(test_alloc, SmithyId.of("test#Union$BAZ"), .string);
 }
 
-pub fn setupStruct(model: *SmithyModel) !void {
+fn setupStruct(model: *SmithyModel) !void {
     const Static = struct {
         const structure = &.{ SmithyId.of("test#Struct$fooBar"), SmithyId.of("test#Struct$bazQux") };
         const mixins = &.{SmithyId.of("test#Mixin")};
@@ -181,7 +215,7 @@ pub fn setupStruct(model: *SmithyModel) !void {
 
 const ERROR_CODE: u10 = 429;
 const ERROR_SOURCE = trt_refine.Error.Source.client;
-pub fn setupError(model: *SmithyModel) !void {
+fn setupError(model: *SmithyModel) !void {
     try model.names.put(test_alloc, SmithyId.of("test#Error"), "Error");
     try model.shapes.put(test_alloc, SmithyId.of("test#Error"), .{
         .structure = &.{},
@@ -193,7 +227,7 @@ pub fn setupError(model: *SmithyModel) !void {
     });
 }
 
-pub fn setupServiceShapes(model: *SmithyModel) !void {
+fn setupServiceAndDeps(model: *SmithyModel) !void {
     const Static = struct {
         const service = SmithyService{
             .version = "2017-02-11",

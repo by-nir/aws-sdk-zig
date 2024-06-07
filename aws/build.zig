@@ -9,7 +9,7 @@ pub fn build(b: *std.Build) void {
     // Dependencies
     //
 
-    const smithy = b.dependency("smithy-zig", .{
+    const smithy = b.dependency("smithy", .{
         .target = target,
         .optimize = optimize,
     }).module("smithy");

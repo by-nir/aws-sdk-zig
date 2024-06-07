@@ -10,7 +10,7 @@ const testing = std.testing;
 const test_alloc = testing.allocator;
 const smithy = @import("smithy");
 const SmithyId = smithy.SmithyId;
-const SmithyModel = smithy.SmithyModel;
+const SymbolsProvider = smithy.SymbolsProvider;
 const TraitsList = smithy.TraitsRegistry;
 const JsonReader = smithy.JsonReader;
 
@@ -86,8 +86,8 @@ pub const Service = struct {
         return service;
     }
 
-    pub fn get(model: *const SmithyModel, shape_id: SmithyId) ?*const Value {
-        return model.getTrait(Value, shape_id, id);
+    pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?*const Value {
+        return symbols.getTrait(Value, shape_id, id);
     }
 };
 

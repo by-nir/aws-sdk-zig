@@ -256,16 +256,10 @@ fn flushTextBuffer(buffer: *std.ArrayList(u8), remaining: *[]const u8, pos: *usi
 
 fn extractTagAt(string: []const u8, pos: usize) ?Tag {
     var idx = pos;
-    if (idx + 1 == string.len) {
-        std.debug.print("(0) Here...\n", .{});
-        return null;
-    }
+    if (idx + 1 == string.len) return null;
     const is_close: bool = if (string[idx + 1] == '/') blk: {
         idx += 1;
-        if (!hasRemaining(string, idx, 2)) {
-            std.debug.print("(1) Here...\n", .{});
-            return null;
-        }
+        if (!hasRemaining(string, idx, 2)) return null;
         break :blk true;
     } else false;
 
@@ -281,13 +275,9 @@ fn extractTagAt(string: []const u8, pos: usize) ?Tag {
             'b' => .bold,
             'a' => if (!is_close) {
                 log.warn("Anchor missing href attribute", .{});
-                std.debug.print("(2) Here...\n", .{});
                 return null;
             } else .anchor,
-            else => {
-                std.debug.print("(3) Here...\n", .{});
-                return null;
-            },
+            else => return null,
         };
     } else if (hasRemaining(string, idx, 3) and name_start[2] == '>') {
         const name = name_start[0..2];
@@ -300,10 +290,8 @@ fn extractTagAt(string: []const u8, pos: usize) ?Tag {
             .list_item
         else if (mem.eql(u8, "em", name))
             .italic
-        else {
-            std.debug.print("(4) Here...\n", .{});
+        else
             return null;
-        };
     } else if (name_start[0] == 'a' and hasRemaining(string, idx, 0)) {
         len = 2;
         kind = .anchor;

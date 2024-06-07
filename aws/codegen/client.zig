@@ -6,9 +6,9 @@ const smithy = @import("smithy");
 const zig = smithy.codegen_zig;
 const Pipeline = smithy.Pipeline;
 const PipelineHooks = Pipeline.Hooks;
-const SmithyModel = smithy.SmithyModel;
 const SmithyService = smithy.SmithyService;
 const GenerateHooks = smithy.GenerateHooks;
+const SymbolsProvider = smithy.SymbolsProvider;
 const trt_iam = @import("integrate/iam.zig");
 const trt_auth = @import("integrate/auth.zig");
 const trt_core = @import("integrate/core.zig");
@@ -85,11 +85,11 @@ fn filterSourceModel(filename: []const u8) bool {
 fn writeReadme(
     arena: Allocator,
     output: std.io.AnyWriter,
-    model: *const SmithyModel,
+    symbols: *SymbolsProvider,
     src_meta: PipelineHooks.ReadmeMeta,
 ) !void {
     var meta = src_meta;
-    if (trt_core.Service.get(model, model.service)) |service| {
+    if (trt_core.Service.get(symbols, symbols.service_id)) |service| {
         if (std.mem.startsWith(u8, service.sdk_id, "AWS")) {
             meta.title = service.sdk_id;
         } else {
@@ -112,7 +112,7 @@ fn writeReadme(
     });
 }
 
-fn writeScriptHead(arena: Allocator, bld: *zig.ContainerBuild, model: *const SmithyModel) !void {
+fn writeScriptHead(arena: Allocator, bld: *zig.ContainerBuild, symbols: *SymbolsProvider) !void {
     try bld.constant("aws_types").assign(bld.x.import("aws-types"));
     try bld.constant("ErrorSource").assign(bld.x.raw("aws_types.ErrorSource"));
     try bld.constant("Failable").assign(bld.x.raw("aws_types.Failable"));
@@ -122,7 +122,7 @@ fn writeScriptHead(arena: Allocator, bld: *zig.ContainerBuild, model: *const Smi
     try bld.constant("Signer").assign(bld.x.raw("aws_runtime.Signer"));
     try bld.constant("Endpoint").assign(bld.x.raw("aws_runtime.Endpoint"));
 
-    const service = trt_core.Service.get(model, model.service) orelse {
+    const service = trt_core.Service.get(symbols, symbols.service_id) orelse {
         return error.MissingService;
     };
     const service_endpoint = service.endpoint_prefix orelse {
@@ -137,7 +137,7 @@ fn writeScriptHead(arena: Allocator, bld: *zig.ContainerBuild, model: *const Smi
 fn writeServiceHead(
     arena: Allocator,
     bld: *zig.ContainerBuild,
-    model: *const SmithyModel,
+    symbols: *SymbolsProvider,
     shape: *const SmithyService,
 ) !void {
     try bld.field("runtime").typing(bld.x.raw("*Runtime")).end();
@@ -170,13 +170,13 @@ fn writeServiceHead(
     try bld.public().function("deinit").arg("self", bld.x.This()).body(Funcs.deinit);
 
     _ = arena; // autofix
-    _ = model; // autofix
+    _ = symbols; // autofix
     _ = shape; // autofix
 }
 
 fn operationReturnType(
     arena: Allocator,
-    _: *const SmithyModel,
+    _: *SymbolsProvider,
     shape: GenerateHooks.OperationShape,
 ) !?[]const u8 {
     return if (shape.errors_type) |errors|
@@ -191,10 +191,10 @@ fn operationReturnType(
 fn writeOperationBody(
     _: Allocator,
     bld: *zig.BlockBuild,
-    model: *const SmithyModel,
+    symbols: *SymbolsProvider,
     shape: GenerateHooks.OperationShape,
 ) !void {
-    const action = try model.tryGetName(shape.id);
+    const action = try symbols.getShapeName(shape.id, .type);
     _ = action; // autofix
 
     try bld.discard().raw("self").end();
@@ -205,7 +205,7 @@ fn writeOperationBody(
 fn writeErrorShape(
     _: Allocator,
     bld: *zig.ContainerBuild,
-    _: *const SmithyModel,
+    _: *SymbolsProvider,
     shape: GenerateHooks.ErrorShape,
 ) !void {
     try bld.public().constant("source").typing(bld.x.raw("ErrorSource"))

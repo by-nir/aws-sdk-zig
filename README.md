@@ -1,9 +1,15 @@
 # AWS SDK for Zig
 
-![Zig v0.13 (dev)](https://img.shields.io/badge/Zig-v0.13_(dev)_-black?logo=zig&logoColor=F7A41D "Zig v0.13 – master branch")
+![Zig v0.14 (dev)](https://img.shields.io/badge/Zig-v0.14_(dev)_-black?logo=zig&logoColor=F7A41D "Zig v0.14 – master branch")
 [![MIT License](https://img.shields.io/github/license/by-nir/aws-sdk-zig)](/LICENSE)
 
 **The _AWS SDK for Zig_ provides an interface for _Amazon Web Services (AWS)_.**
+
+> [!CAUTION]
+> This project is in early development, DO NOT USE IN PRODUCTION!
+>
+> Support for the remaining services and features will be added as the project
+> matures and stabilize. Till then, **breaking changes are imminent!**.
 
 _Pure Zig implementation,_ from code generation to runtime SDKs.
 Building upon the language’s strong foundation, this project provides a
@@ -14,26 +20,20 @@ increased **platform portability**.
 > Use the [AWS Lambda Runtime for Zig](https://github.com/by-nir/aws-lambda-zig)
 > to deploy Lambda functions written in Zig.
 
-## Getting Started
-
-> [!CAUTION]
-> This project is in early development, DO NOT USE IN PRODUCTION!
->
-> Support for the remaining services and features will be added as the project
-> matures and stabilize. Till then, **breaking changes are imminent!**.
-
 ## Contributing
 
-Parts of this codebase are auto-generated, **do not modify them directly!**
+> 👁️ – Publicly accessible module.
+>
+> 🏭 – Generated source code – **do not modify directly!**
 
-| 📁 | Generated | Description |
-|:-|:-:|:-|
-| [sdk](sdk) | 🏭 | AWS SDKs for Zig |
-| [aws/types](aws/types) | | Common types shared by all _AWS modules_ |
-| [aws/client](aws/client) | | Base client runtime for _AWS SDKs_ |
-| [aws/codegen](aws/codegen) | | SDKs source generation pipeline |
-| [smithy/client](smithy/client) | |[Smithy 2.0](https://smithy.io/2.0) client runtime |
-| [smithy/codegen](smithy/codegen) | | [Smithy 2.0](https://smithy.io/2.0) code generator |
+| 📁 | Description | | |
+|:-|:-|:-:|:-:|
+| [sdk](sdk) | AWS SDKs for Zig | 👁️ | 🏭 |
+| [aws/types](aws/types) | Common types shared by all _AWS modules_ | 👁️ | |
+| [aws/client](aws/client) | Base client runtime for _AWS SDKs_ | | |
+| [aws/codegen](aws/codegen) | SDKs source generation pipeline | | |
+| [smithy/client](smithy/client) | [Smithy 2.0](https://smithy.io/2.0) client runtime | | |
+| [smithy/codegen](smithy/codegen) | [Smithy 2.0](https://smithy.io/2.0) code generator | | |
 
 ### CLI Commands
 

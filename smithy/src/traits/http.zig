@@ -6,9 +6,9 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const symbols = @import("../systems/symbols.zig");
-const SmithyId = symbols.SmithyId;
-const SmithyModel = symbols.SmithyModel;
+const syb = @import("../systems/symbols.zig");
+const SmithyId = syb.SmithyId;
+const SymbolsProvider = syb.SymbolsProvider;
 const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
 const JsonReader = @import("../utils/JsonReader.zig");
 
@@ -39,8 +39,8 @@ pub const HttpError = struct {
         return value;
     }
 
-    pub fn get(model: *const SmithyModel, shape_id: SmithyId) ?u10 {
-        return model.getTrait(u10, shape_id, id);
+    pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?u10 {
+        return symbols.getTrait(u10, shape_id, id);
     }
 };
 

@@ -9,12 +9,11 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const syb_id = @import("../symbols/identity.zig");
-const SmithyId = syb_id.SmithyId;
-const idHash = syb_id.idHash;
-const SmithyModel = @import("../symbols/shapes.zig").SmithyModel;
-
-const RulesBuiltInId = enum(syb_id.IdHashInt) {
+const symbols = @import("../systems/symbols.zig");
+const SmithyId = symbols.SmithyId;
+const SmithyModel = symbols.SmithyModel;
+const idHash = symbols.idHash;
+const RulesBuiltInId = enum(symbols.IdHashInt) {
     pub const NULL: RulesBuiltInId = @enumFromInt(0);
 
     endpoint = idHash("SDK::Endpoint"),
@@ -33,7 +32,7 @@ test "RulesBuiltInId" {
     );
 }
 
-const RulesFunctionId = enum(syb_id.IdHashInt) {
+const RulesFunctionId = enum(symbols.IdHashInt) {
     pub const NULL: RulesFunctionId = @enumFromInt(0);
 
     boolean_equals = idHash("booleanEquals"),
