@@ -349,102 +349,6 @@ pub const SmithyMeta = union(enum) {
     };
 };
 
-/// Parsed symbols (shapes and metadata) from a Smithy model.
-pub const SmithyModel = struct {
-    allocator: Allocator,
-    service: SmithyId = SmithyId.NULL,
-    meta: std.AutoHashMapUnmanaged(SmithyId, SmithyMeta) = .{},
-    shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType) = .{},
-    names: std.AutoHashMapUnmanaged(SmithyId, []const u8) = .{},
-    traits: std.AutoHashMapUnmanaged(SmithyId, []const SmithyTaggedValue) = .{},
-    mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId) = .{},
-
-    pub fn init(allocator: Allocator) SmithyModel {
-        return .{ .allocator = allocator };
-    }
-
-    pub fn deinit(self: *SmithyModel) void {
-        self.meta.deinit(self.allocator);
-        self.shapes.deinit(self.allocator);
-        self.traits.deinit(self.allocator);
-        self.mixins.deinit(self.allocator);
-        self.names.deinit(self.allocator);
-    }
-
-    pub fn consume(self: *SmithyModel, arena: Allocator) !SymbolsProvider {
-        var dupe_meta = try self.meta.clone(arena);
-        errdefer dupe_meta.deinit(arena);
-
-        var dupe_shapes = try self.shapes.clone(arena);
-        errdefer dupe_shapes.deinit(arena);
-
-        var dupe_names = try self.names.clone(arena);
-        errdefer dupe_names.deinit(arena);
-
-        var dupe_traits = try self.traits.clone(arena);
-        errdefer dupe_traits.deinit(arena);
-
-        const dupe_mixins = try self.mixins.clone(arena);
-
-        defer self.deinit();
-        return .{
-            .arena = arena,
-            .service_id = self.service,
-            .model_meta = dupe_meta,
-            .model_shapes = dupe_shapes,
-            .model_names = dupe_names,
-            .model_traits = dupe_traits,
-            .model_mixins = dupe_mixins,
-        };
-    }
-
-    pub fn getName(self: SmithyModel, id: SmithyId) ?[]const u8 {
-        return self.names.get(id);
-    }
-    
-    pub fn tryGetName(self: SmithyModel, id: SmithyId) ![]const u8 {
-        return self.names.get(id) orelse error.NameNotFound;
-    }
-
-    pub fn getMeta(self: SmithyModel, key: SmithyId) ?SmithyMeta {
-        return self.meta.get(key);
-    }
-
-    pub fn getShape(self: SmithyModel, id: SmithyId) ?SmithyType {
-        return self.shapes.get(id);
-    }
-
-    pub fn tryGetShape(self: SmithyModel, id: SmithyId) !SmithyType {
-        return self.shapes.get(id) orelse error.ShapeNotFound;
-    }
-
-    pub fn getMixins(self: SmithyModel, shape_id: SmithyId) ?[]const SmithyId {
-        return self.mixins.get(shape_id) orelse null;
-    }
-
-    pub fn getTraits(self: SmithyModel, shape_id: SmithyId) ?TraitsProvider {
-        const traits = self.traits.get(shape_id) orelse return null;
-        return TraitsProvider{ .values = traits };
-    }
-
-    pub fn hasTrait(self: SmithyModel, shape_id: SmithyId, trait_id: SmithyId) bool {
-        return if (self.getTraits(shape_id)) |t| t.has(trait_id) else false;
-    }
-
-    pub fn getTraitOpaque(self: SmithyModel, shape_id: SmithyId, trait_id: SmithyId) ?*const anyopaque {
-        return if (self.getTraits(shape_id)) |t| t.getOpaque(trait_id) else null;
-    }
-
-    pub fn getTrait(
-        self: SmithyModel,
-        comptime T: type,
-        shape_id: SmithyId,
-        trait_id: SmithyId,
-    ) ?TraitsProvider.TraitReturn(T) {
-        return if (self.getTraits(shape_id)) |t| t.get(T, trait_id) else null;
-    }
-};
-
 pub const SymbolsProvider = struct {
     arena: Allocator,
     service_id: SmithyId,
@@ -609,9 +513,7 @@ pub const SymbolsProvider = struct {
                     return error.ShapeNotFound;
                 };
                 switch (shape) {
-                    .target => |target| {
-                        break :blk try self.getTypeName(target);
-                    },
+                    .target => |target| break :blk try self.getTypeName(target),
                     inline .unit,
                     .blob,
                     .boolean,

@@ -9,17 +9,17 @@ const Timer = std.time.Timer;
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const parse = @import("parse.zig");
+const Parser = @import("parse/Parser.zig");
 const prelude = @import("prelude.zig");
 const codegen = @import("codegen.zig");
 const md = @import("codegen/md.zig");
 const Writer = @import("codegen/CodegenWriter.zig");
-const sys_traits = @import("systems/traits.zig");
+const trt = @import("systems/traits.zig");
+const trt_docs = @import("traits/docs.zig");
 const SymbolsProvider = @import("systems/symbols.zig").SymbolsProvider;
 const name_util = @import("utils/names.zig");
 const IssuesBag = @import("utils/IssuesBag.zig");
 const JsonReader = @import("utils/JsonReader.zig");
-const trt_docs = @import("traits/docs.zig");
 
 const Self = @This();
 
@@ -28,7 +28,7 @@ const Options = struct {
     src_dir_absolute: []const u8,
     /// Relative to the working directory.
     out_dir_relative: []const u8,
-    parse_policy: parse.Policy,
+    parse_policy: Parser.Policy,
     codegen_policy: codegen.Policy,
     process_policy: Policy,
 };
@@ -53,13 +53,12 @@ pub const Hooks = struct {
 
 gpa_alloc: Allocator,
 page_alloc: Allocator,
-issues: IssuesBag,
-traits: sys_traits.TraitsManager,
+traits_manager: trt.TraitsManager,
+parser: Parser,
 process_hooks: Hooks,
 codegen_hooks: codegen.Hooks,
 src_dir: fs.Dir,
 out_dir: fs.Dir,
-parse_policy: parse.Policy,
 codegen_policy: codegen.Policy,
 process_policy: Policy,
 
@@ -75,17 +74,18 @@ pub fn init(
     self.page_alloc = page_alloc;
     self.process_hooks = process_hooks;
     self.codegen_hooks = codegen_hooks;
-    self.parse_policy = options.parse_policy;
     self.codegen_policy = options.codegen_policy;
     self.process_policy = options.process_policy;
     errdefer gpa_alloc.destroy(self);
 
-    self.traits = sys_traits.TraitsManager{};
-    errdefer self.traits.deinit(gpa_alloc);
-    try prelude.registerTraits(gpa_alloc, &self.traits);
+    self.traits_manager = .{};
+    errdefer self.traits_manager.deinit(gpa_alloc);
+    try prelude.registerTraits(gpa_alloc, &self.traits_manager);
 
-    self.issues = IssuesBag.init(gpa_alloc);
-    errdefer self.issues.deinit();
+    self.parser = .{
+        .policy = options.parse_policy,
+        .traits_manager = &self.traits_manager,
+    };
 
     self.src_dir = try fs.openDirAbsolute(options.src_dir_absolute, .{
         .iterate = true,
@@ -97,15 +97,14 @@ pub fn init(
 }
 
 pub fn deinit(self: *Self) void {
-    self.traits.deinit(self.gpa_alloc);
-    self.issues.deinit();
+    self.traits_manager.deinit(self.gpa_alloc);
     self.src_dir.close();
     self.out_dir.close();
     self.gpa_alloc.destroy(self);
 }
 
-pub fn registerTraits(self: *Self, traits: sys_traits.TraitsRegistry) !void {
-    try self.traits.registerAll(self.gpa_alloc, traits);
+pub fn registerTraits(self: *Self, traits: trt.TraitsRegistry) !void {
+    try self.traits_manager.registerAll(self.gpa_alloc, traits);
 }
 
 /// A `filename` is the model’s file name ending with `.json` extension.
@@ -230,8 +229,9 @@ fn parseModel(self: *Self, arena: Allocator, json_name: []const u8, issues: *Iss
     var reader = try JsonReader.initFile(arena, json_file);
     defer reader.deinit();
 
-    var model = try parse.parseJson(arena, self.traits, self.parse_policy, issues, &reader);
+    var model = try self.parser.parseJson(arena, issues, &reader);
     errdefer model.deinit();
+
     return model.consume(arena);
 }
 

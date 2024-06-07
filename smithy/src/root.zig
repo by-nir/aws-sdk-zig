@@ -1,7 +1,7 @@
 pub const Pipeline = @import("Pipeline.zig");
 
-const parse = @import("parse.zig");
-pub const ParsePolicy = parse.Policy;
+const Parser = @import("parse/Parser.zig");
+pub const ParsePolicy = Parser.Policy;
 
 const codegen = @import("codegen.zig");
 pub const GenerateHooks = codegen.Hooks;
@@ -33,7 +33,8 @@ test {
     _ = @import("prelude.zig");
 
     // Parse
-    _ = parse;
+    _ = @import("parse/Model.zig");
+    _ = Parser;
 
     // Codegen
     _ = @import("codegen/CodegenWriter.zig");
