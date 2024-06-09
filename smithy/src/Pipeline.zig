@@ -9,15 +9,12 @@ const Timer = std.time.Timer;
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const Parser = @import("parse/Parser.zig");
 const prelude = @import("prelude.zig");
-const codegen = @import("codegen.zig");
-const md = @import("codegen/md.zig");
+const Parser = @import("parse/Parser.zig");
+const Generator = @import("codegen/Generator.zig");
 const Writer = @import("codegen/CodegenWriter.zig");
-const trt = @import("systems/traits.zig");
-const trt_docs = @import("traits/docs.zig");
 const SymbolsProvider = @import("systems/symbols.zig").SymbolsProvider;
-const name_util = @import("utils/names.zig");
+const trt = @import("systems/traits.zig");
 const IssuesBag = @import("utils/IssuesBag.zig");
 const JsonReader = @import("utils/JsonReader.zig");
 
@@ -29,7 +26,7 @@ const Options = struct {
     /// Relative to the working directory.
     out_dir_relative: []const u8,
     parse_policy: Parser.Policy,
-    codegen_policy: codegen.Policy,
+    codegen_policy: Generator.Policy,
     process_policy: Policy,
 };
 
@@ -38,43 +35,19 @@ pub const Policy = struct {
     readme: IssuesBag.PolicyResolution,
 };
 
-pub const Hooks = struct {
-    writeReadme: ?*const fn (Allocator, std.io.AnyWriter, *SymbolsProvider, ReadmeMeta) anyerror!void = null,
-
-    pub const ReadmeMeta = struct {
-        /// `{[title]s}` service title
-        title: []const u8,
-        /// `{[slug]s}` service SDK ID
-        slug: []const u8,
-        /// `{[intro]s}` introduction description
-        intro: ?[]const u8,
-    };
-};
-
 gpa_alloc: Allocator,
 page_alloc: Allocator,
 traits_manager: trt.TraitsManager,
 parser: Parser,
-process_hooks: Hooks,
-codegen_hooks: codegen.Hooks,
+generator: Generator,
+process_policy: Policy,
 src_dir: fs.Dir,
 out_dir: fs.Dir,
-codegen_policy: codegen.Policy,
-process_policy: Policy,
 
-pub fn init(
-    gpa_alloc: Allocator,
-    page_alloc: Allocator,
-    options: Options,
-    process_hooks: Hooks,
-    codegen_hooks: codegen.Hooks,
-) !*Self {
+pub fn init(gpa_alloc: Allocator, page_alloc: Allocator, options: Options, hooks: Generator.Hooks) !*Self {
     const self = try gpa_alloc.create(Self);
     self.gpa_alloc = gpa_alloc;
     self.page_alloc = page_alloc;
-    self.process_hooks = process_hooks;
-    self.codegen_hooks = codegen_hooks;
-    self.codegen_policy = options.codegen_policy;
     self.process_policy = options.process_policy;
     errdefer gpa_alloc.destroy(self);
 
@@ -85,6 +58,11 @@ pub fn init(
     self.parser = .{
         .policy = options.parse_policy,
         .traits_manager = &self.traits_manager,
+    };
+
+    self.generator = .{
+        .policy = options.codegen_policy,
+        .hooks = hooks,
     };
 
     self.src_dir = try fs.openDirAbsolute(options.src_dir_absolute, .{
@@ -208,18 +186,21 @@ fn processModel(self: *Self, arena: Allocator, report: *Report, json_name: []con
         }
     };
 
-    self.generateReadme(arena, &symbols, out_dir, slug) catch |err| {
-        switch (self.process_policy.readme) {
-            .abort => {
-                log.err("Readme failed: {s}", .{@errorName(err)});
-                return err;
-            },
-            .skip => {
-                try issues.add(.{ .readme_error = err });
-                return;
-            },
-        }
-    };
+    if (self.generator.hooks.writeReadme != null) {
+        self.generateReadme(arena, &symbols, out_dir, slug) catch |err| {
+            switch (self.process_policy.readme) {
+                .abort => {
+                    log.err("Readme failed: {s}", .{@errorName(err)});
+                    return err;
+                },
+                .skip => {
+                    try issues.add(.{ .readme_error = err });
+                    return;
+                },
+            }
+        };
+    }
+
 }
 
 fn parseModel(self: *Self, arena: Allocator, json_name: []const u8, issues: *IssuesBag) !SymbolsProvider {
@@ -235,59 +216,31 @@ fn parseModel(self: *Self, arena: Allocator, json_name: []const u8, issues: *Iss
     return model.consume(arena);
 }
 
-fn generateScript(self: *Self, arena: Allocator, symbols: *SymbolsProvider, dir: fs.Dir, issues: *IssuesBag) !void {
+fn generateScript(
+    self: *Self,
+    arena: Allocator,
+    symbols: *SymbolsProvider,
+    dir: fs.Dir,
+    issues: *IssuesBag,
+) !void {
     var file = try dir.createFile("client.zig", .{});
     var file_buffer = std.io.bufferedWriter(file.writer());
     defer file.close();
 
     const zig_head = @embedFile("codegen/template/head.zig.template") ++ "\n\n";
     try file_buffer.writer().writeAll(zig_head);
-
-    try codegen.writeScript(
-        arena,
-        file_buffer.writer().any(),
-        self.codegen_hooks,
-        self.codegen_policy,
-        issues,
-        symbols,
-    );
-
+    try self.generator.writeScript(arena, symbols, issues, file_buffer.writer().any());
     try file_buffer.flush();
 }
 
 fn generateReadme(self: *Self, arena: Allocator, symbols: *SymbolsProvider, dir: fs.Dir, slug: []const u8) !void {
-    const hook = self.process_hooks.writeReadme orelse return;
-    const title =
-        trt_docs.Title.get(symbols, symbols.service_id) orelse
-        try name_util.titleCase(arena, slug);
-    const intro: ?[]const u8 = if (trt_docs.Documentation.get(symbols, symbols.service_id)) |docs| blk: {
-        var build = md.Document.Build{ .allocator = arena };
-        try md.convertHtml(arena, &build, docs);
-        const markdown = try build.consume();
-        defer markdown.deinit(arena);
-
-        var output = std.ArrayList(u8).init(arena);
-        errdefer output.deinit();
-
-        var writer = Writer.init(arena, output.writer().any());
-        defer writer.deinit();
-
-        try markdown.write(&writer);
-        break :blk try output.toOwnedSlice();
-    } else null;
-
     var file = try dir.createFile("README.md", .{});
     var file_buffer = std.io.bufferedWriter(file.writer());
     defer file.close();
 
     const md_head = @embedFile("codegen/template/head.md.template") ++ "\n\n";
     try file_buffer.writer().writeAll(md_head);
-    try hook(arena, file_buffer.writer().any(), symbols, Hooks.ReadmeMeta{
-        .slug = slug,
-        .title = title,
-        .intro = intro,
-    });
-
+    try self.generator.writeReadme(arena, symbols, slug, file_buffer.writer().any());
     try file_buffer.flush();
 }
 

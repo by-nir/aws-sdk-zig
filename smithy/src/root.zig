@@ -3,9 +3,9 @@ pub const Pipeline = @import("Pipeline.zig");
 const Parser = @import("parse/Parser.zig");
 pub const ParsePolicy = Parser.Policy;
 
-const codegen = @import("codegen.zig");
-pub const GenerateHooks = codegen.Hooks;
-pub const GeneratePolicy = codegen.Policy;
+const Generator = @import("codegen/Generator.zig");
+pub const GenerateHooks = Generator.Hooks;
+pub const GeneratePolicy = Generator.Policy;
 pub const codegen_zig = @import("codegen/zig.zig");
 pub const codegen_md = @import("codegen/md.zig");
 
@@ -40,7 +40,7 @@ test {
     _ = @import("codegen/CodegenWriter.zig");
     _ = codegen_md;
     _ = codegen_zig;
-    _ = codegen;
+    _ = Generator;
 
     // Pipeline
     _ = Pipeline;

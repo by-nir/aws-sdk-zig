@@ -5,7 +5,6 @@ const allocPrint = std.fmt.allocPrint;
 const smithy = @import("smithy");
 const zig = smithy.codegen_zig;
 const Pipeline = smithy.Pipeline;
-const PipelineHooks = Pipeline.Hooks;
 const SmithyService = smithy.SmithyService;
 const GenerateHooks = smithy.GenerateHooks;
 const SymbolsProvider = smithy.SymbolsProvider;
@@ -41,7 +40,6 @@ pub fn main() !void {
         },
     }, .{
         .writeReadme = writeReadme,
-    }, .{
         .writeScriptHead = writeScriptHead,
         .uniqueListType = uniqueListType,
         .writeErrorShape = writeErrorShape,
@@ -86,7 +84,7 @@ fn writeReadme(
     arena: Allocator,
     output: std.io.AnyWriter,
     symbols: *SymbolsProvider,
-    src_meta: PipelineHooks.ReadmeMeta,
+    src_meta: GenerateHooks.ReadmeMeta,
 ) !void {
     var meta = src_meta;
     if (trt_core.Service.get(symbols, symbols.service_id)) |service| {
