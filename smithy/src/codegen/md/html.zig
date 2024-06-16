@@ -27,31 +27,40 @@ const Tag = struct {
     };
 };
 
+pub const CallbackContext = struct {
+    allocator: Allocator,
+    html: []const u8,
+};
+
+pub fn callback(ctx: CallbackContext, b: *md.Document.Build) !void {
+    try convert(ctx.allocator, b, ctx.html);
+}
+
 /// Write Markdown source using an **extremely naive and partial** Markdown parser.
 pub fn convert(allocator: Allocator, bld: *md.Document.Build, source: []const u8) !void {
     var tokens = mem.tokenizeAny(u8, source, &std.ascii.whitespace);
     while (tokens.next()) |token| {
         var remaining = token;
         inner: while (remaining.len > 0) {
-            const open_idx = mem.indexOfScalar(u8, remaining, '<') orelse {
-                log.warn("Missing root tag: `{s}`", .{token});
-                return error.MissingRootTag;
-            };
-            const tag: Tag = extractTagAt(remaining, open_idx) orelse {
-                log.warn("Missing root tag: `{s}`", .{token});
-                return error.MissingRootTag;
+            const tag: ?Tag = blk: {
+                const open_idx = mem.indexOfScalar(u8, remaining, '<') orelse break :blk null;
+                break :blk extractTagAt(remaining, open_idx);
             };
 
-            remaining = remaining[tag.len..remaining.len];
-            if (tag.kind == .UNRECOGNIZED) continue :inner;
-            if (tag.role == .close) return error.UnexpectedClosingTag;
+            if (tag) |g| {
+                remaining = remaining[g.len..remaining.len];
+                if (g.kind == .UNRECOGNIZED) continue :inner;
+                if (g.role == .close) return error.UnexpectedClosingTag;
 
-            remaining = switch (tag.kind) {
-                .paragraph => try processParagraph(allocator, bld, &tokens, remaining),
-                .list => |kind| try processList(allocator, bld, kind, &tokens, remaining),
-                .UNRECOGNIZED => unreachable,
-                else => return error.UnexpectedRootTag,
-            };
+                remaining = switch (g.kind) {
+                    .paragraph => try processParagraph(allocator, bld, &tokens, remaining, true),
+                    .list => |kind| try processList(allocator, bld, kind, &tokens, remaining),
+                    .UNRECOGNIZED => unreachable,
+                    else => return error.UnexpectedRootTag,
+                };
+            } else {
+                remaining = try processParagraph(allocator, bld, &tokens, remaining, false);
+            }
         }
     }
 }
@@ -61,6 +70,7 @@ fn processParagraph(
     bld: *md.Document.Build,
     tokenizer: *mem.TokenIterator(u8, .any),
     initial: []const u8,
+    comptime is_contained: bool,
 ) ![]const u8 {
     var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
@@ -71,7 +81,7 @@ fn processParagraph(
         &buffer,
         &remaining,
         tokenizer,
-        .paragraph,
+        if (is_contained) .paragraph else null,
     )) |formatted| {
         try bld.blocks.append(bld.allocator, .{ .paragraph = formatted });
     }
@@ -143,7 +153,7 @@ fn processFormattedText(
     buffer: *std.ArrayList(u8),
     remaining: *[]const u8,
     tokenizer: *mem.TokenIterator(u8, .any),
-    comptime container: Tag.Kind,
+    comptime container: ?Tag.Kind,
 ) !?md.Formated {
     var segments = std.ArrayList(md.Formated.Segment).init(allocator);
     var interim_style: md.Formated.Style = undefined;
@@ -191,20 +201,42 @@ fn processFormattedText(
                     }
                 },
             },
-            container => {
-                if (tag.role == .open) return error.UnexpectedNestedContainer;
-                if (try flushTextBuffer(buffer, remaining, &pos, tag.len)) |s| {
-                    try segments.append(.{ .text = s, .format = .plain });
+            inline else => |_, g| {
+                // Container
+                if (container) |c| if (c == g) {
+                    if (tag.role == .open) return error.UnexpectedNestedContainer;
+                    if (try flushTextBuffer(buffer, remaining, &pos, tag.len)) |s| {
+                        try segments.append(.{ .text = s, .format = .plain });
+                    }
+
+                    if (segments.items.len > 0) {
+                        return .{ .segments = try segments.toOwnedSlice() };
+                    } else {
+                        return null;
+                    }
+                };
+
+                // Non-container
+                if (tag.role == .open and container == null) {
+                    break;
+                } else {
+                    // Ignore non-container tags, but consume their text
+                    try appendTextBuffer(buffer, remaining, &pos, tag.len);
                 }
-                return if (segments.items.len > 0) .{
-                    .segments = try segments.toOwnedSlice(),
-                } else null;
             },
-            // Ignore non-container tags, but consume their text
-            else => try appendTextBuffer(buffer, remaining, &pos, tag.len),
         }
 
         if (remaining.len == 0) remaining.* = tokenizer.next() orelse "";
+    }
+
+    if (container == null) {
+        if (try flushTextBuffer(buffer, remaining, &pos, 0)) |s| {
+            try segments.append(.{ .text = s, .format = .plain });
+        }
+
+        if (segments.items.len > 0) {
+            return .{ .segments = try segments.toOwnedSlice() };
+        }
     }
 
     return null;
@@ -324,7 +356,11 @@ fn hasRemaining(string: []const u8, after: usize, n: usize) bool {
 }
 
 test "convert" {
-    try expect("    <p>Foo.</p><p></p>\n    <p>Bar baz\n    <qux.</p>",
+    try expect("Uncontained text...", "Uncontained text...");
+
+    try expect("Uncontained text...    <p>Foo.</p><p></p>\n    <p>Bar baz\n    <qux.</p>",
+        \\Uncontained text...
+        \\
         \\Foo.
         \\
         \\Bar baz <qux.

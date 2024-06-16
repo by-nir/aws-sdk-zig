@@ -6,7 +6,7 @@ const SmithyId = symbols.SmithyId;
 const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
 
 // TODO: Remainig traits
-pub const traits: TraitsRegistry = &.{
+pub const registry: TraitsRegistry = &.{
     // smithy.api#idempotencyToken
     // smithy.api#idempotent
     // smithy.api#readonly

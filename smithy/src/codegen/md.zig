@@ -12,8 +12,7 @@ const callClosure = dcl.callClosure;
 const zig = @import("zig.zig");
 const Writer = @import("CodegenWriter.zig");
 
-const html = @import("md/html.zig");
-pub const convertHtml = html.convert;
+pub const html = @import("md/html.zig");
 
 // TODO: Support soft/hard width guidelines
 

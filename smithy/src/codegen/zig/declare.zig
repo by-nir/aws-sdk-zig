@@ -274,17 +274,17 @@ test "Variable" {
 
 pub const Namespace = struct {
     token: ZigToken,
-    backing: ?Expr,
+    type: ?Expr,
     container: scope.Container,
 
     pub fn deinit(self: Namespace, allocator: Allocator) void {
         self.container.deinit(allocator);
-        if (self.backing) |t| t.deinit(allocator);
+        if (self.type) |t| t.deinit(allocator);
     }
 
     pub fn write(self: Namespace, writer: *Writer) !void {
         try writer.appendString(self.token.lexeme().?);
-        if (self.backing) |t| {
+        if (self.type) |t| {
             try writer.appendFmt("({})", .{t});
         } else if (self.token == .keyword_union) {
             try writer.appendString("(enum)");
@@ -322,16 +322,16 @@ pub const Namespace = struct {
             allocator: Allocator,
             callback: Callback,
             token: ZigToken,
-            backing: ?ExprBuild = null,
+            type: ?ExprBuild = null,
 
             pub fn deinit(self: Self) void {
-                if (self.backing) |t| t.deinit();
+                if (self.type) |t| t.deinit();
             }
 
-            pub fn typing(self: Self, expr: ExprBuild) Self {
-                assert(self.backing == null);
+            pub fn backedBy(self: Self, expr: ExprBuild) Self {
+                assert(self.type == null);
                 var dupe = self;
-                dupe.backing = expr;
+                dupe.type = expr;
                 return dupe;
             }
 
@@ -344,18 +344,18 @@ pub const Namespace = struct {
                 ctx: anytype,
                 closure: Closure(@TypeOf(ctx), scope.ContainerClosure),
             ) Callback.Return {
-                const alloc_backing = if (self.backing) |t| t.consume() catch |err| {
+                const alloc_type = if (self.type) |t| t.consume() catch |err| {
                     return self.callback.fail(err);
                 } else null;
 
                 const data = scope.Container.init(self.allocator, ctx, closure) catch |err| {
-                    if (alloc_backing) |t| t.deinit(self.allocator);
+                    if (alloc_type) |t| t.deinit(self.allocator);
                     return self.callback.fail(err);
                 };
 
                 return self.callback.invoke(.{
                     .token = self.token,
-                    .backing = alloc_backing,
+                    .type = alloc_type,
                     .container = data,
                 });
             }
@@ -372,7 +372,7 @@ test "Namespace" {
 
     tester.expected = "enum(u8) {}";
     try Namespace.build(test_alloc, Test.callback, &tester, .keyword_enum)
-        .typing(_xpr("u8")).body(struct {
+        .backedBy(_xpr("u8")).body(struct {
         fn f(_: *scope.ContainerBuild) !void {}
     }.f);
 
@@ -562,7 +562,7 @@ pub const Function = struct {
                 return dupe;
             }
 
-            pub fn returns(self: Self, typing: ?ExprBuild) Self {
+            pub fn returns(self: Self, typing: ExprBuild) Self {
                 assert(self.@"return" == null);
                 var dupe = self;
                 dupe.@"return" = typing;

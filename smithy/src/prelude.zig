@@ -9,23 +9,25 @@
 const std = @import("std");
 const TraitsManager = @import("systems/traits.zig").TraitsManager;
 
-const auth = @import("traits/auth.zig");
-const behavior = @import("traits/behavior.zig");
-const constraint = @import("traits/constraint.zig");
-const docs = @import("traits/docs.zig");
-const endpoint = @import("traits/endpoint.zig");
-const http = @import("traits/http.zig");
-const protocol = @import("traits/protocol.zig");
-const refine = @import("traits/refine.zig");
-const resource = @import("traits/resource.zig");
-const stream = @import("traits/stream.zig");
-const validate = @import("traits/validate.zig");
+pub const traits = struct {
+    pub const auth = @import("traits/auth.zig");
+    pub const behavior = @import("traits/behavior.zig");
+    pub const constraint = @import("traits/constraint.zig");
+    pub const docs = @import("traits/docs.zig");
+    pub const endpoint = @import("traits/endpoint.zig");
+    pub const http = @import("traits/http.zig");
+    pub const protocol = @import("traits/protocol.zig");
+    pub const refine = @import("traits/refine.zig");
+    pub const resource = @import("traits/resource.zig");
+    pub const stream = @import("traits/stream.zig");
+    pub const validate = @import("traits/validate.zig");
 
-const compliance = @import("traits/compliance.zig");
-const smoke = @import("traits/smoke.zig");
-const waiters = @import("traits/waiters.zig");
-const mqtt = @import("traits/mqtt.zig");
-const rules = @import("traits/rules.zig");
+    pub const compliance = @import("traits/compliance.zig");
+    pub const smoke = @import("traits/smoke.zig");
+    pub const waiters = @import("traits/waiters.zig");
+    pub const mqtt = @import("traits/mqtt.zig");
+    pub const rules = @import("traits/rules.zig");
+};
 
 pub const TYPE_UNIT = "smithy.api#Unit";
 pub const TYPE_BLOB = "smithy.api#Blob";
@@ -51,39 +53,40 @@ pub const PRIMITIVE_FLOAT = "smithy.api#PrimitiveFloat";
 pub const PRIMITIVE_DOUBLE = "smithy.api#PrimitiveDouble";
 
 pub fn registerTraits(allocator: std.mem.Allocator, manager: *TraitsManager) !void {
-    try manager.registerAll(allocator, auth.traits);
-    try manager.registerAll(allocator, behavior.traits);
-    try manager.registerAll(allocator, constraint.traits);
-    try manager.registerAll(allocator, docs.traits);
-    try manager.registerAll(allocator, endpoint.traits);
-    try manager.registerAll(allocator, http.traits);
-    try manager.registerAll(allocator, protocol.traits);
-    try manager.registerAll(allocator, refine.traits);
-    try manager.registerAll(allocator, resource.traits);
-    try manager.registerAll(allocator, stream.traits);
-    try manager.registerAll(allocator, validate.traits);
-    try manager.registerAll(allocator, compliance.traits);
-    try manager.registerAll(allocator, smoke.traits);
-    try manager.registerAll(allocator, waiters.traits);
-    try manager.registerAll(allocator, mqtt.traits);
-    try manager.registerAll(allocator, rules.traits);
+    try manager.registerAll(allocator, traits.auth.registry);
+    try manager.registerAll(allocator, traits.behavior.registry);
+    try manager.registerAll(allocator, traits.constraint.registry);
+    try manager.registerAll(allocator, traits.docs.registry);
+    try manager.registerAll(allocator, traits.endpoint.registry);
+    try manager.registerAll(allocator, traits.http.registry);
+    try manager.registerAll(allocator, traits.protocol.registry);
+    try manager.registerAll(allocator, traits.refine.registry);
+    try manager.registerAll(allocator, traits.resource.registry);
+    try manager.registerAll(allocator, traits.stream.registry);
+
+    try manager.registerAll(allocator, traits.validate.registry);
+    try manager.registerAll(allocator, traits.compliance.registry);
+    try manager.registerAll(allocator, traits.smoke.registry);
+    try manager.registerAll(allocator, traits.waiters.registry);
+    try manager.registerAll(allocator, traits.mqtt.registry);
+    try manager.registerAll(allocator, traits.rules.registry);
 }
 
 test {
-    _ = auth;
-    _ = behavior;
-    _ = constraint;
-    _ = docs;
-    _ = endpoint;
-    _ = http;
-    _ = protocol;
-    _ = refine;
-    _ = resource;
-    _ = stream;
-    _ = validate;
-    _ = compliance;
-    _ = smoke;
-    _ = waiters;
-    _ = mqtt;
-    _ = rules;
+    _ = traits.auth;
+    _ = traits.behavior;
+    _ = traits.constraint;
+    _ = traits.docs;
+    _ = traits.endpoint;
+    _ = traits.http;
+    _ = traits.protocol;
+    _ = traits.refine;
+    _ = traits.resource;
+    _ = traits.stream;
+    _ = traits.validate;
+    _ = traits.compliance;
+    _ = traits.smoke;
+    _ = traits.waiters;
+    _ = traits.mqtt;
+    _ = traits.rules;
 }

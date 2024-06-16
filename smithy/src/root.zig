@@ -9,11 +9,19 @@ pub const GeneratePolicy = Generator.Policy;
 pub const codegen_zig = @import("codegen/zig.zig");
 pub const codegen_md = @import("codegen/md.zig");
 
-const symbols = @import("systems/symbols.zig");
-pub usingnamespace symbols;
+const syb = @import("systems/symbols.zig");
+pub usingnamespace syb;
 
-const traits = @import("systems/traits.zig");
-pub const TraitsRegistry = traits.TraitsRegistry;
+const trt = @import("systems/traits.zig");
+pub const TraitsRegistry = trt.TraitsRegistry;
+
+const rls = @import("systems/rules.zig");
+pub const RulesEngine = rls.RulesEngine;
+pub const RulesFunc = rls.RulesEngine.Function;
+pub const RulesBuiltIn = rls.RulesEngine.BuiltIn;
+
+const prelude = @import("prelude.zig");
+pub const traits = prelude.traits;
 
 const IssuesBag = @import("utils/IssuesBag.zig");
 pub const PolicyResolution = IssuesBag.PolicyResolution;
@@ -28,9 +36,9 @@ test {
     _ = JsonReader;
 
     // Systems
-    _ = symbols;
-    _ = traits;
-    _ = @import("prelude.zig");
+    _ = syb;
+    _ = trt;
+    _ = rls;
 
     // Parse
     _ = @import("parse/Model.zig");
@@ -43,5 +51,6 @@ test {
     _ = Generator;
 
     // Pipeline
+    _ = prelude;
     _ = Pipeline;
 }

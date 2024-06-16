@@ -13,7 +13,7 @@ const SymbolsProvider = syb.SymbolsProvider;
 const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
 const JsonReader = @import("../utils/JsonReader.zig");
 
-pub const traits: TraitsRegistry = &.{
+pub const registry: TraitsRegistry = &.{
     .{ Default.id, Default.parse },
     .{ default_added_id, null },
     .{ required_id, null },

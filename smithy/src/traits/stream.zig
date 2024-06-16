@@ -5,7 +5,7 @@
 const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
 
 // TODO: Remainig traits
-pub const traits: TraitsRegistry = &.{
+pub const registry: TraitsRegistry = &.{
     // smithy.api#eventHeader
     // smithy.api#eventPayload
     // smithy.api#requiresLength

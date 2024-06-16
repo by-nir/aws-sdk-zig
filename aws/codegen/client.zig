@@ -5,9 +5,11 @@ const allocPrint = std.fmt.allocPrint;
 const smithy = @import("smithy");
 const zig = smithy.codegen_zig;
 const Pipeline = smithy.Pipeline;
+const RulesEngine = smithy.RulesEngine;
 const SmithyService = smithy.SmithyService;
 const GenerateHooks = smithy.GenerateHooks;
 const SymbolsProvider = smithy.SymbolsProvider;
+const trt_rules = smithy.traits.rules;
 const trt_iam = @import("integrate/iam.zig");
 const trt_auth = @import("integrate/auth.zig");
 const trt_core = @import("integrate/core.zig");
@@ -28,14 +30,17 @@ pub fn main() !void {
     var pipeline = try Pipeline.init(gpa_alloc, std.heap.page_allocator, .{
         .src_dir_absolute = args[1],
         .out_dir_relative = args[2],
-        .parse_policy = .{ .property = .abort, .trait = .skip },
+        .parse_policy = .{
+            .property = .abort,
+            .trait = .skip,
+        },
         .codegen_policy = .{
             .unknown_shape = .abort,
             .invalid_root = .abort,
             .shape_codegen_fail = .abort,
         },
         .process_policy = .{
-            .model = .skip,
+            .model = .abort,
             .readme = .abort,
         },
     }, .{
@@ -136,40 +141,45 @@ fn writeServiceHead(
     arena: Allocator,
     bld: *zig.ContainerBuild,
     symbols: *SymbolsProvider,
+    rules: *const RulesEngine,
     shape: *const SmithyService,
 ) !void {
     try bld.field("runtime").typing(bld.x.raw("*Runtime")).end();
     try bld.field("signer").typing(bld.x.raw("Signer")).end();
     try bld.field("endpoint").typing(bld.x.raw("Endpoint")).end();
 
-    const Funcs = struct {
-        fn init(b: *zig.BlockBuild) !void {
-            try b.discard().raw("region").end();
-            try b.discard().raw("auth").end();
-            try b.constant("runtime").assign(b.x.raw("Runtime.retain()"));
-            try b.constant("signer").assign(b.x.raw("undefined"));
-            try b.constant("endpoint").assign(b.x.raw("undefined"));
-            try b.returns().structLiteral(null, &.{
-                b.x.raw(".runtime = runtime"),
-                b.x.raw(".signer = signer"),
-                b.x.raw(".endpoint = endpoint"),
-            }).end();
-        }
+    try bld.public().function("init")
+        .arg("region", null).arg("auth", null)
+        .returns(bld.x.This())
+        .body(serviceInit);
 
-        fn deinit(b: *zig.BlockBuild) !void {
-            try b.raw("self.runtime.release()");
-            try b.raw("self.endpoint.deinit()");
-        }
-    };
+    try bld.public().function("deinit")
+        .arg("self", bld.x.This())
+        .body(serviceDeinit);
 
-    try bld.public().function("init").arg("region", null).arg("auth", null)
-        .returns(bld.x.This()).body(Funcs.init);
+    if (trt_rules.EndpointRuleSet.get(symbols, symbols.service_id)) |rule_set| {
+        const input_name = "EndpointParams";
+        try rules.generateInputType(arena, bld, input_name, rule_set.parameters);
+        try rules.generateResolveFunc(arena, bld, "resolveEndpoint", input_name, rule_set);
+    }
+}
 
-    try bld.public().function("deinit").arg("self", bld.x.This()).body(Funcs.deinit);
+fn serviceInit(bld: *zig.BlockBuild) !void {
+    try bld.discard().raw("region").end();
+    try bld.discard().raw("auth").end();
+    try bld.constant("runtime").assign(bld.x.raw("Runtime.retain()"));
+    try bld.constant("signer").assign(bld.x.raw("undefined"));
+    try bld.constant("endpoint").assign(bld.x.raw("undefined"));
+    try bld.returns().structLiteral(null, &.{
+        bld.x.raw(".runtime = runtime"),
+        bld.x.raw(".signer = signer"),
+        bld.x.raw(".endpoint = endpoint"),
+    }).end();
+}
 
-    _ = arena; // autofix
-    _ = symbols; // autofix
-    _ = shape; // autofix
+fn serviceDeinit(bld: *zig.BlockBuild) !void {
+    try bld.raw("self.runtime.release()");
+    try bld.raw("self.endpoint.deinit()");
 }
 
 fn operationReturnType(

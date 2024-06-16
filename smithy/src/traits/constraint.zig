@@ -15,7 +15,7 @@ const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
 const JsonReader = @import("../utils/JsonReader.zig");
 
 // TODO: Remainig traits
-pub const traits: TraitsRegistry = &.{
+pub const registry: TraitsRegistry = &.{
     .{ id_ref_id, null },
     // smithy.api#length
     // smithy.api#pattern

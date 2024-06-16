@@ -14,6 +14,7 @@ const Parser = @import("parse/Parser.zig");
 const Generator = @import("codegen/Generator.zig");
 const Writer = @import("codegen/CodegenWriter.zig");
 const SymbolsProvider = @import("systems/symbols.zig").SymbolsProvider;
+const rls = @import("systems/rules.zig");
 const trt = @import("systems/traits.zig");
 const IssuesBag = @import("utils/IssuesBag.zig");
 const JsonReader = @import("utils/JsonReader.zig");
@@ -63,6 +64,7 @@ pub fn init(gpa_alloc: Allocator, page_alloc: Allocator, options: Options, hooks
     self.generator = .{
         .policy = options.codegen_policy,
         .hooks = hooks,
+        .rules = rls.RulesEngine.init(),
     };
 
     self.src_dir = try fs.openDirAbsolute(options.src_dir_absolute, .{
@@ -124,8 +126,18 @@ pub fn processAll(self: *Self, filter: ?*const fn (filename: []const u8) bool) !
         defer _ = arena.reset(.retain_capacity);
 
         self.processModel(arena_alloc, &report, entry.name) catch |err| {
-            log.err("Process failed: {s}", .{@errorName(err)});
-            return err;
+            switch (err) {
+                IssuesBag.PolicyAbortError => return err,
+                else => switch (self.process_policy.model) {
+                    .abort => {
+                        log.err("Process failed: {s}", .{@errorName(err)});
+                        return err;
+                    },
+                    .skip => {
+                        // TODO: Report fail
+                    },
+                },
+            }
         };
     }
 
@@ -151,7 +163,8 @@ fn processModel(self: *Self, arena: Allocator, report: *Report, json_name: []con
             else => switch (self.process_policy.model) {
                 .abort => {
                     log.err("Parse failed: {s}", .{@errorName(err)});
-                    return err;
+                    if (@errorReturnTrace()) |t| std.debug.dumpStackTrace(t.*);
+                    return IssuesBag.PolicyAbortError;
                 },
                 .skip => {
                     try issues.add(.{ .process_error = err });
@@ -176,7 +189,8 @@ fn processModel(self: *Self, arena: Allocator, report: *Report, json_name: []con
             else => switch (self.process_policy.model) {
                 .abort => {
                     log.err("Codegen failed: {s}", .{@errorName(err)});
-                    return err;
+                    if (@errorReturnTrace()) |t| std.debug.dumpStackTrace(t.*);
+                    return IssuesBag.PolicyAbortError;
                 },
                 .skip => {
                     try issues.add(.{ .codegen_error = err });
@@ -191,7 +205,8 @@ fn processModel(self: *Self, arena: Allocator, report: *Report, json_name: []con
             switch (self.process_policy.readme) {
                 .abort => {
                     log.err("Readme failed: {s}", .{@errorName(err)});
-                    return err;
+                    if (@errorReturnTrace()) |t| std.debug.dumpStackTrace(t.*);
+                    return IssuesBag.PolicyAbortError;
                 },
                 .skip => {
                     try issues.add(.{ .readme_error = err });

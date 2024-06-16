@@ -13,7 +13,7 @@ const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
 const JsonReader = @import("../utils/JsonReader.zig");
 
 // TODO: Remainig traits
-pub const traits: TraitsRegistry = &.{
+pub const registry: TraitsRegistry = &.{
     // smithy.api#http
     .{ HttpError.id, HttpError.parse },
     // smithy.api#httpHeader

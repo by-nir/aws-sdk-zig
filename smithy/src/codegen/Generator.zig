@@ -6,11 +6,12 @@ const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const test_symbols = @import("../testing/symbols.zig");
 const syb = @import("../systems/symbols.zig");
 const SmithyId = syb.SmithyId;
 const SmithyType = syb.SmithyType;
 const SymbolsProvider = syb.SymbolsProvider;
+const test_symbols = @import("../testing/symbols.zig");
+const RulesEngine = @import("../systems/rules.zig").RulesEngine;
 const md = @import("md.zig");
 const zig = @import("zig.zig");
 const Writer = @import("CodegenWriter.zig");
@@ -38,7 +39,7 @@ pub const Hooks = struct {
     writeScriptHead: ?*const fn (Allocator, *ContainerBuild, *SymbolsProvider) anyerror!void = null,
     uniqueListType: ?*const fn (Allocator, []const u8) anyerror![]const u8 = null,
     writeErrorShape: *const fn (Allocator, *ContainerBuild, *SymbolsProvider, ErrorShape) anyerror!void,
-    writeServiceHead: ?*const fn (Allocator, *ContainerBuild, *SymbolsProvider, *const syb.SmithyService) anyerror!void = null,
+    writeServiceHead: ?*const fn (Allocator, *ContainerBuild, *SymbolsProvider, *const RulesEngine, *const syb.SmithyService) anyerror!void = null,
     writeResourceHead: ?*const fn (Allocator, *ContainerBuild, *SymbolsProvider, SmithyId, *const syb.SmithyResource) anyerror!void = null,
     operationReturnType: ?*const fn (Allocator, *SymbolsProvider, OperationShape) anyerror!?[]const u8 = null,
     writeOperationBody: *const fn (Allocator, *BlockBuild, *SymbolsProvider, OperationShape) anyerror!void,
@@ -74,6 +75,7 @@ pub const Hooks = struct {
 
 hooks: Hooks,
 policy: Policy,
+rules: RulesEngine,
 
 pub fn writeReadme(
     self: Self,
@@ -87,7 +89,7 @@ pub fn writeReadme(
         try name_util.titleCase(arena, slug);
     const intro: ?[]const u8 = if (trt_docs.Documentation.get(symbols, symbols.service_id)) |docs| blk: {
         var build = md.Document.Build{ .allocator = arena };
-        try md.convertHtml(arena, &build, docs);
+        try md.html.convert(arena, &build, docs);
         const markdown = try build.consume();
         defer markdown.deinit(arena);
 
@@ -122,6 +124,7 @@ pub fn writeScript(
         .policy = self.policy,
         .issues = issues,
         .symbols = symbols,
+        .rules = &self.rules,
     };
     try script.write(output);
 }
@@ -147,6 +150,7 @@ test "writeScript" {
     const generator = Self{
         .hooks = TEST_HOOKS,
         .policy = TEST_POLICY,
+        .rules = undefined,
     };
 
     try generator.writeScript(
@@ -171,6 +175,7 @@ const ScriptGen = struct {
     policy: Policy,
     issues: *IssuesBag,
     symbols: *SymbolsProvider,
+    rules: *const RulesEngine,
 
     pub fn write(
         self: ScriptGen,
@@ -532,7 +537,7 @@ const ScriptGen = struct {
         const shape_name = try self.symbols.getShapeName(id, .type);
         try self.writeDocComment(bld, id, false);
         try bld.public().constant(shape_name).assign(
-            bld.x.@"enum"().typing(bld.x.typeOf(i32)).bodyWith(context, Closures.shape),
+            bld.x.@"enum"().backedBy(bld.x.typeOf(i32)).bodyWith(context, Closures.shape),
         );
     }
 
@@ -944,7 +949,7 @@ const ScriptGen = struct {
             bld.x.@"struct"().bodyWith(context, struct {
                 fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
                     if (ctx.self.hooks.writeServiceHead) |hook| {
-                        try hook(ctx.self.arena, b, ctx.self.symbols, ctx.service);
+                        try hook(ctx.self.arena, b, ctx.self.symbols, ctx.self.rules, ctx.service);
                     }
                     for (ctx.service.operations) |op_id| {
                         try ctx.self.writeOperationFunc(b, op_id);
@@ -1004,14 +1009,12 @@ const ScriptGen = struct {
                 .target => |t| trt_docs.Documentation.get(self.symbols, t),
                 else => null,
             };
-        };
+        } orelse return;
 
-        const context = .{ .arena = self.arena, .html = docs orelse return };
-        try bld.commentMarkdownWith(.doc, context, struct {
-            fn f(ctx: @TypeOf(context), b: *md.Document.Build) !void {
-                try md.convertHtml(ctx.arena, b, ctx.html);
-            }
-        }.f);
+        try bld.commentMarkdownWith(.doc, md.html.CallbackContext{
+            .allocator = self.arena,
+            .html = docs,
+        }, md.html.callback);
     }
 };
 
@@ -1093,6 +1096,7 @@ const ScriptTester = struct {
             .policy = TEST_POLICY,
             .issues = self.issues,
             .symbols = symbols,
+            .rules = undefined,
         };
     }
 

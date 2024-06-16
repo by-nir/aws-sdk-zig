@@ -5,6 +5,6 @@
 const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
 
 // TODO: Remainig traits
-pub const traits: TraitsRegistry = &.{
+pub const registry: TraitsRegistry = &.{
     // smithy.test#smokeTests
 };
