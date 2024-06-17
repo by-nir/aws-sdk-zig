@@ -1,0 +1,49 @@
+{
+  "version": "1.0",
+  "parameters": {
+    "Foo": {
+      "builtIn": "Foo",
+      "required": true,
+      "documentation": "Foo docs...",
+      "default": "Bar",
+      "type": "String",
+      "deprecated": {
+        "message": "Baz",
+        "since": "0.8"
+      }
+    }
+  },
+  "rules": [
+    {
+      "conditions": [
+        {
+          "fn": "foo",
+          "assign": "bar",
+          "argv": [
+            "baz",
+            true,
+            [],
+            { "ref": "qux" },
+            { "fn": "Bar", "argv": [] }
+          ]
+        }
+      ],
+      "rules": [
+        {
+          "conditions": [],
+          "error": "BOOM"
+        },
+        {
+          "conditions": [],
+          "endpoint": {
+            "url": "http://example.com",
+            "properties": { "foo": null },
+            "headers": { "bar": [] }
+          }
+        }
+      ],
+      "documentation": "Tree docs...",
+      "type": "tree"
+    }
+  ]
+}

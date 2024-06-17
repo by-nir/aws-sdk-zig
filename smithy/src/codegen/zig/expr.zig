@@ -10,8 +10,8 @@ const md = @import("../md.zig");
 const Writer = @import("../CodegenWriter.zig");
 const flow = @import("flow.zig");
 const scope = @import("scope.zig");
-const declare = @import("declare.zig");
 const utils = @import("utils.zig");
+const declare = @import("declare.zig");
 
 pub const Expr = union(enum) {
     _empty,
@@ -63,6 +63,7 @@ pub const Expr = union(enum) {
             },
             .id => |name| {
                 try writer.appendFmt("{}", .{std.zig.fmtId(name)});
+                try utils.statementSemicolon(writer, format, null);
             },
             .comment => |t| try t.write(writer),
             inline .flow, .declare => |t| try t.write(writer, format),
@@ -80,27 +81,44 @@ pub const Expr = union(enum) {
             },
         }
     }
+
+    pub fn expect(self: Expr, allocator: Allocator, expected: []const u8) !void {
+        defer self.deinit(allocator);
+        try Writer.expectValue(expected, self);
+    }
 };
 
 const ExprType = union(enum) {
     This,
     optional: *const Expr,
-    array: struct { len: usize, type: *const Expr },
+    array: *const Array,
     slice: struct { mutable: bool, type: *const Expr },
     pointer: struct { mutable: bool, type: *const Expr },
-    val_index: usize,
-    val_from: usize,
-    val_range: [2]usize,
+    val_index: *const Expr,
+    val_from: *const Expr,
+    val_range: *const [2]Expr,
+
+    pub const Array = struct { len: Expr, type: Expr };
 
     pub fn deinit(self: ExprType, allocator: Allocator) void {
         switch (self) {
-            .optional => |t| {
+            .optional, .val_index, .val_from => |t| {
                 t.deinit(allocator);
                 allocator.destroy(t);
             },
-            inline .array, .slice, .pointer => |t| {
+            inline .slice, .pointer => |t| {
                 t.type.deinit(allocator);
                 allocator.destroy(t.type);
+            },
+            .array => |t| {
+                t.len.deinit(allocator);
+                t.type.deinit(allocator);
+                allocator.destroy(t);
+            },
+            .val_range => |t| {
+                t[0].deinit(allocator);
+                t[1].deinit(allocator);
+                allocator.destroy(t);
             },
             else => {},
         }
@@ -109,14 +127,14 @@ const ExprType = union(enum) {
     pub fn write(self: ExprType, writer: *Writer) anyerror!void {
         switch (self) {
             .This => try writer.appendString("@This()"),
-            .val_index => |d| try writer.appendFmt("[{d}]", .{d}),
-            .val_from => |d| try writer.appendFmt("[{d}..]", .{d}),
+            .val_index => |d| try writer.appendFmt("[{}]", .{d}),
+            .val_from => |d| try writer.appendFmt("[{}..]", .{d}),
             .val_range => |r| {
-                try writer.appendFmt("[{d}..{d}]", .{ r[0], r[1] });
+                try writer.appendFmt("[{}..{}]", .{ r[0], r[1] });
             },
             .optional => |t| try writer.appendFmt("?{}", .{t}),
             .array => |t| {
-                try writer.appendFmt("[{d}]{}", .{ t.len, t.type });
+                try writer.appendFmt("[{}]{}", .{ t.len, t.type });
             },
             inline .slice, .pointer => |t, g| {
                 if (g == .pointer)
@@ -307,7 +325,10 @@ const ExprFlow = union(enum) {
     }
 
     pub fn writeChainEnd(self: ExprFlow, writer: *Writer) !void {
-        if (self == .@"switch") try writer.appendChar(';');
+        switch (self) {
+            .@"switch", .block, .block_label => try writer.appendChar(';'),
+            else => {},
+        }
     }
 };
 
@@ -374,6 +395,14 @@ pub const ExprBuild = struct {
         return data;
     }
 
+    fn dupeExpr(self: ExprBuild, expr: ExprBuild) !*Expr {
+        const value = try expr.consume();
+        errdefer value.deinit(expr.allocator);
+        const data = try self.allocator.create(@TypeOf(value));
+        data.* = value;
+        return data;
+    }
+
     pub fn consume(self: ExprBuild) !Expr {
         if (self.exprs.isEmpty()) {
             return ._empty;
@@ -402,7 +431,11 @@ pub const ExprBuild = struct {
         return self.append(.{ .raw = value });
     }
 
-    pub fn rawExpr(self: *const ExprBuild, value: ExprBuild) ExprBuild {
+    pub fn fromExpr(self: *const ExprBuild, value: Expr) ExprBuild {
+        return self.append(value);
+    }
+
+    pub fn buildExpr(self: *const ExprBuild, value: ExprBuild) ExprBuild {
         return self.append(value.consume());
     }
 
@@ -411,7 +444,7 @@ pub const ExprBuild = struct {
     }
 
     test "id" {
-        try ExprBuild.init(test_alloc).id("test").expects("@\"test\"");
+        try ExprBuild.init(test_alloc).id("test").expect("@\"test\"");
     }
 
     pub fn typeOf(self: *const ExprBuild, comptime T: type) ExprBuild {
@@ -419,32 +452,31 @@ pub const ExprBuild = struct {
     }
 
     pub fn typeOptional(self: *const ExprBuild, expr: ExprBuild) ExprBuild {
-        const data = expr.consume() catch |err| return self.append(err);
-        const dupe = self.dupeValue(data) catch |err| {
-            data.deinit(self.allocator);
-            return self.append(err);
-        };
+        const dupe = self.dupeExpr(expr) catch |err| return self.append(err);
         return self.append(.{ .type = .{ .optional = dupe } });
     }
 
-    pub fn typeArray(self: *const ExprBuild, len: usize, expr: ExprBuild) ExprBuild {
-        const data = expr.consume() catch |err| return self.append(err);
-        const dupe = self.dupeValue(data) catch |err| {
-            data.deinit(self.allocator);
+    pub fn typeArray(self: *const ExprBuild, len: ExprBuild, t: ExprBuild) ExprBuild {
+        const alloc_len = len.consume() catch |err| {
+            t.deinit();
             return self.append(err);
         };
-        return self.append(.{ .type = .{ .array = .{
-            .len = len,
-            .type = dupe,
-        } } });
+        const alloc_t = t.consume() catch |err| {
+            alloc_len.deinit(len.allocator);
+            return self.append(err);
+        };
+
+        const array = self.allocator.create(ExprType.Array) catch |err| {
+            alloc_len.deinit(len.allocator);
+            alloc_t.deinit(t.allocator);
+            return self.append(err);
+        };
+        array.* = .{ .len = alloc_len, .type = alloc_t };
+        return self.append(.{ .type = .{ .array = array } });
     }
 
     pub fn typeSlice(self: *const ExprBuild, mutable: bool, expr: ExprBuild) ExprBuild {
-        const data = expr.consume() catch |err| return self.append(err);
-        const dupe = self.dupeValue(data) catch |err| {
-            data.deinit(self.allocator);
-            return self.append(err);
-        };
+        const dupe = self.dupeExpr(expr) catch |err| return self.append(err);
         return self.append(.{ .type = .{ .slice = .{
             .mutable = mutable,
             .type = dupe,
@@ -452,11 +484,7 @@ pub const ExprBuild = struct {
     }
 
     pub fn typePointer(self: *const ExprBuild, mutable: bool, expr: ExprBuild) ExprBuild {
-        const data = expr.consume() catch |err| return self.append(err);
-        const dupe = self.dupeValue(data) catch |err| {
-            data.deinit(self.allocator);
-            return self.append(err);
-        };
+        const dupe = self.dupeExpr(expr) catch |err| return self.append(err);
         return self.append(.{ .type = .{ .pointer = .{
             .mutable = mutable,
             .type = dupe,
@@ -468,14 +496,14 @@ pub const ExprBuild = struct {
     }
 
     test "types" {
-        try ExprBuild.init(test_alloc).typeOf(error{Foo}!*const []u8).expects("error{Foo}!*const []u8");
-        try ExprBuild.init(test_alloc).typeOptional(_raw("foo")).expects("?foo");
-        try ExprBuild.init(test_alloc).typeArray(108, _raw("foo")).expects("[108]foo");
-        try ExprBuild.init(test_alloc).typeSlice(true, _raw("foo")).expects("[]foo");
-        try ExprBuild.init(test_alloc).typeSlice(false, _raw("foo")).expects("[]const foo");
-        try ExprBuild.init(test_alloc).typePointer(true, _raw("foo")).expects("*foo");
-        try ExprBuild.init(test_alloc).typePointer(false, _raw("foo")).expects("*const foo");
-        try ExprBuild.init(test_alloc).This().expects("@This()");
+        try ExprBuild.init(test_alloc).typeOf(error{Foo}!*const []u8).expect("error{Foo}!*const []u8");
+        try ExprBuild.init(test_alloc).typeOptional(_raw("foo")).expect("?foo");
+        try ExprBuild.init(test_alloc).typeArray(_raw("108"), _raw("foo")).expect("[108]foo");
+        try ExprBuild.init(test_alloc).typeSlice(true, _raw("foo")).expect("[]foo");
+        try ExprBuild.init(test_alloc).typeSlice(false, _raw("foo")).expect("[]const foo");
+        try ExprBuild.init(test_alloc).typePointer(true, _raw("foo")).expect("*foo");
+        try ExprBuild.init(test_alloc).typePointer(false, _raw("foo")).expect("*const foo");
+        try ExprBuild.init(test_alloc).This().expect("@This()");
     }
 
     pub fn valueOf(self: *const ExprBuild, v: anytype) ExprBuild {
@@ -483,38 +511,34 @@ pub const ExprBuild = struct {
     }
 
     test "valueOf" {
-        try ExprBuild.init(test_alloc).valueOf({}).expects("{}");
-        try ExprBuild.init(test_alloc).valueOf(null).expects("null");
-        try ExprBuild.init(test_alloc).valueOf(true).expects("true");
-        try ExprBuild.init(test_alloc).valueOf(false).expects("false");
-        try ExprBuild.init(test_alloc).valueOf(@as(i8, -108)).expects("-108");
-        try ExprBuild.init(test_alloc).valueOf(@as(u8, 108)).expects("108");
-        try ExprBuild.init(test_alloc).valueOf(-108).expects("-108");
-        try ExprBuild.init(test_alloc).valueOf(108).expects("108");
-        try ExprBuild.init(test_alloc).valueOf(@as(f64, 1.08)).expects("1.08");
-        try ExprBuild.init(test_alloc).valueOf(1.08).expects("1.08");
-        try ExprBuild.init(test_alloc).valueOf(.foo).expects(".foo");
-        try ExprBuild.init(test_alloc).valueOf(ExprValue.void).expects(".void");
-        // try ExprBuild.init(test_alloc).val(ExprValue{ .int = 108 }).expects(".{ .int = 108 }");
-        try ExprBuild.init(test_alloc).valueOf(@as(error{Foo}!void, error.Foo)).expects("error.Foo");
-        try ExprBuild.init(test_alloc).valueOf(@as(error{Foo}!void, {})).expects("{}");
-        try ExprBuild.init(test_alloc).valueOf(@as(error{Foo}!u8, 108)).expects("108");
-        try ExprBuild.init(test_alloc).valueOf(@as(?u8, 108)).expects("108");
-        try ExprBuild.init(test_alloc).valueOf(@as(?u8, null)).expects("null");
-        try ExprBuild.init(test_alloc).valueOf("foo").expects("\"foo\"");
+        try ExprBuild.init(test_alloc).valueOf({}).expect("{}");
+        try ExprBuild.init(test_alloc).valueOf(null).expect("null");
+        try ExprBuild.init(test_alloc).valueOf(true).expect("true");
+        try ExprBuild.init(test_alloc).valueOf(false).expect("false");
+        try ExprBuild.init(test_alloc).valueOf(@as(i8, -108)).expect("-108");
+        try ExprBuild.init(test_alloc).valueOf(@as(u8, 108)).expect("108");
+        try ExprBuild.init(test_alloc).valueOf(-108).expect("-108");
+        try ExprBuild.init(test_alloc).valueOf(108).expect("108");
+        try ExprBuild.init(test_alloc).valueOf(@as(f64, 1.08)).expect("1.08");
+        try ExprBuild.init(test_alloc).valueOf(1.08).expect("1.08");
+        try ExprBuild.init(test_alloc).valueOf(.foo).expect(".foo");
+        try ExprBuild.init(test_alloc).valueOf(ExprValue.void).expect(".void");
+        // try ExprBuild.init(test_alloc).val(ExprValue{ .int = 108 }).expect(".{ .int = 108 }");
+        try ExprBuild.init(test_alloc).valueOf(@as(error{Foo}!void, error.Foo)).expect("error.Foo");
+        try ExprBuild.init(test_alloc).valueOf(@as(error{Foo}!void, {})).expect("{}");
+        try ExprBuild.init(test_alloc).valueOf(@as(error{Foo}!u8, 108)).expect("108");
+        try ExprBuild.init(test_alloc).valueOf(@as(?u8, 108)).expect("108");
+        try ExprBuild.init(test_alloc).valueOf(@as(?u8, null)).expect("null");
+        try ExprBuild.init(test_alloc).valueOf("foo").expect("\"foo\"");
     }
 
     pub fn group(self: *const ExprBuild, expr: ExprBuild) ExprBuild {
-        const data = expr.consume() catch |err| return self.append(err);
-        const dupe = self.dupeValue(data) catch |err| {
-            data.deinit(self.allocator);
-            return self.append(err);
-        };
+        const dupe = self.dupeExpr(expr) catch |err| return self.append(err);
         return self.append(.{ .value = .{ .group = dupe } });
     }
 
     test "group" {
-        try ExprBuild.init(test_alloc).group(_raw("foo")).expects("(foo)");
+        try ExprBuild.init(test_alloc).group(_raw("foo")).expect("(foo)");
     }
 
     pub fn structLiteral(self: *const ExprBuild, identifier: ?ExprBuild, values: []const ExprBuild) ExprBuild {
@@ -523,11 +547,7 @@ pub const ExprBuild = struct {
             return self.append(err);
         };
 
-        const alloc_id = if (identifier) |t| blk: {
-            const data = t.consume() catch |err| break :blk err;
-            errdefer data.deinit(self.allocator);
-            break :blk self.dupeValue(data) catch |err| err;
-        } catch |err| {
+        const alloc_id = if (identifier) |t| self.dupeExpr(t) catch |err| {
             for (alloc_vals) |v| v.deinit(self.allocator);
             self.allocator.free(alloc_vals);
             return self.append(err);
@@ -541,16 +561,16 @@ pub const ExprBuild = struct {
 
     test "structLiteral" {
         try ExprBuild.init(test_alloc).structLiteral(_raw("Foo"), &.{})
-            .expects("Foo{}");
+            .expect("Foo{}");
 
         try ExprBuild.init(test_alloc).structLiteral(null, &.{
             _raw("foo"),
-        }).expects(".{foo}");
+        }).expect(".{foo}");
 
         try ExprBuild.init(test_alloc).structLiteral(null, &.{
             _raw("foo"),
             _raw("bar"),
-        }).expects(".{ foo, bar }");
+        }).expect(".{ foo, bar }");
     }
 
     pub fn dot(self: *const ExprBuild) ExprBuild {
@@ -573,22 +593,31 @@ pub const ExprBuild = struct {
         return self.append(.{ .keyword_tight = .period_asterisk });
     }
 
-    pub fn valIndexer(self: *const ExprBuild, i: usize) ExprBuild {
-        return self.append(.{ .type = .{
-            .val_index = i,
-        } });
+    pub fn valIndexer(self: *const ExprBuild, i: ExprBuild) ExprBuild {
+        const dupe = self.dupeExpr(i) catch |err| return self.append(err);
+        return self.append(.{ .type = .{ .val_index = dupe } });
     }
 
-    pub fn valFrom(self: *const ExprBuild, i: usize) ExprBuild {
-        return self.append(.{ .type = .{
-            .val_from = i,
-        } });
+    pub fn valFrom(self: *const ExprBuild, i: ExprBuild) ExprBuild {
+        const dupe = self.dupeExpr(i) catch |err| return self.append(err);
+        return self.append(.{ .type = .{ .val_from = dupe } });
     }
 
-    pub fn valRange(self: *const ExprBuild, a: usize, b: usize) ExprBuild {
-        return self.append(.{ .type = .{
-            .val_range = .{ a, b },
-        } });
+    pub fn valRange(self: *const ExprBuild, a: ExprBuild, b: ExprBuild) ExprBuild {
+        const range = self.allocator.create([2]Expr) catch |err| {
+            a.deinit();
+            b.deinit();
+            return self.append(err);
+        };
+        range[0] = a.consume() catch |err| {
+            b.deinit();
+            return self.append(err);
+        };
+        range[1] = b.consume() catch |err| {
+            range[0].deinit(a.allocator);
+            return self.append(err);
+        };
+        return self.append(.{ .type = .{ .val_range = range } });
     }
 
     pub fn assign(self: *const ExprBuild) ExprBuild {
@@ -608,9 +637,9 @@ pub const ExprBuild = struct {
 
     test "separator" {
         try ExprBuild.init(test_alloc).comma().dot().unwrap().addressOf()
-            .valDeref().valIndexer(8).valFrom(8).valRange(6, 8)
+            .valDeref().valIndexer(_raw("8")).valFrom(_raw("8")).valRange(_raw("6"), _raw("8"))
             .orElse().assign().op(.not).op(.@"~").op(.eql)
-            .expects(", ..?&.*[8][8..][6..8] orelse  = !~ == ");
+            .expect(", ..?&.*[8][8..][6..8] orelse  = !~ == ");
     }
 
     pub fn import(self: *const ExprBuild, name: []const u8) ExprBuild {
@@ -623,7 +652,7 @@ pub const ExprBuild = struct {
     }
 
     test "import" {
-        try ExprBuild.init(test_alloc).import("std").expects("@import(\"std\")");
+        try ExprBuild.init(test_alloc).import("std").expect("@import(\"std\")");
     }
 
     pub fn compTime(self: *const ExprBuild) ExprBuild {
@@ -649,7 +678,7 @@ pub const ExprBuild = struct {
 
     test "if" {
         try ExprBuild.init(test_alloc).@"if"(_raw("foo")).body(_raw("bar")).end()
-            .expects("if (foo) bar");
+            .expect("if (foo) bar");
     }
 
     pub fn @"for"(self: *const ExprBuild) flow.For.Build(@TypeOf(endFor)) {
@@ -664,7 +693,7 @@ pub const ExprBuild = struct {
     test "for" {
         try ExprBuild.init(test_alloc)
             .@"for"().iter(_raw("foo"), "_").body(_raw("bar")).end()
-            .expects("for (foo) |_| bar");
+            .expect("for (foo) |_| bar");
     }
 
     pub fn @"while"(self: *const ExprBuild, condition: ExprBuild) flow.While.Build(@TypeOf(endWhile)) {
@@ -682,7 +711,7 @@ pub const ExprBuild = struct {
 
     test "while" {
         try ExprBuild.init(test_alloc).@"while"(_raw("foo")).body(_raw("bar")).end()
-            .expects("while (foo) bar");
+            .expect("while (foo) bar");
     }
 
     pub fn @"switch"(self: *const ExprBuild, value: ExprBuild, closure: flow.SwitchClosure) ExprBuild {
@@ -716,7 +745,7 @@ pub const ExprBuild = struct {
             fn f(ctx: []u8, b: *flow.Switch.Build) !void {
                 try b.branch().case(b.x.raw(ctx)).body(b.x.raw("baz"));
             }
-        }.f).expects(
+        }.f).expect(
             \\switch (foo) {
             \\    bar => baz,
             \\}
@@ -730,7 +759,7 @@ pub const ExprBuild = struct {
 
     test "call" {
         try ExprBuild.init(test_alloc).call("foo", &.{ _raw("bar"), _raw("baz") })
-            .expects("foo(bar, baz)");
+            .expect("foo(bar, baz)");
     }
 
     pub fn @"catch"(self: *const ExprBuild) TokenCaptureExpr.Build(@TypeOf(endCatch)) {
@@ -748,7 +777,7 @@ pub const ExprBuild = struct {
 
     test "catch" {
         try ExprBuild.init(test_alloc).@"catch"().capture("foo").body(_raw("bar"))
-            .expects("catch |foo| bar");
+            .expect("catch |foo| bar");
     }
 
     pub fn label(self: *const ExprBuild, name: []const u8) ExprBuild {
@@ -757,7 +786,7 @@ pub const ExprBuild = struct {
     }
 
     test "label" {
-        try ExprBuild.init(test_alloc).label("foo").expects("foo: ");
+        try ExprBuild.init(test_alloc).label("foo").expect("foo: ");
     }
 
     pub fn block(self: *const ExprBuild, closure: scope.BlockClosure) ExprBuild {
@@ -784,7 +813,7 @@ pub const ExprBuild = struct {
             fn f(ctx: []u8, b: *scope.BlockBuild) !void {
                 try b.defers(b.x.raw(ctx));
             }
-        }.f).expects(
+        }.f).expect(
             \\{
             \\    defer bar;
             \\}
@@ -817,9 +846,9 @@ pub const ExprBuild = struct {
 
     test "reflows" {
         const build = ExprBuild.init(test_alloc);
-        try build.returns().raw("foo").expects("return foo");
-        try build.breaks("foo").raw("bar").expects("break :foo bar");
-        try build.continues("foo").raw("bar").expects("continue :foo bar");
+        try build.returns().raw("foo").expect("return foo");
+        try build.breaks("foo").raw("bar").expect("break :foo bar");
+        try build.continues("foo").raw("bar").expect("continue :foo bar");
     }
 
     //
@@ -846,7 +875,7 @@ pub const ExprBuild = struct {
     test "variables" {
         try ExprBuild.init(test_alloc).variable("foo").comma(
             ExprBuild.init(test_alloc).constant("bar").assign(_raw("baz")),
-        ).expects("var foo, const bar = baz");
+        ).expect("var foo, const bar = baz");
     }
 
     pub fn @"struct"(self: *const ExprBuild) declare.Namespace.Build(@TypeOf(endNamespace)) {
@@ -880,13 +909,13 @@ pub const ExprBuild = struct {
         };
 
         const build = ExprBuild.init(test_alloc);
-        try build.@"struct"().body(Test.f).expects("struct {}");
-        try build.@"enum"().body(Test.f).expects("enum {}");
-        try build.@"union"().body(Test.f).expects("union(enum) {}");
-        try build.@"opaque"().body(Test.f).expects("opaque {}");
+        try build.@"struct"().body(Test.f).expect("struct {}");
+        try build.@"enum"().body(Test.f).expect("enum {}");
+        try build.@"union"().body(Test.f).expect("union(enum) {}");
+        try build.@"opaque"().body(Test.f).expect("opaque {}");
     }
 
-    fn expects(self: ExprBuild, expected: []const u8) !void {
+    pub fn expect(self: ExprBuild, expected: []const u8) !void {
         const expr = try self.consume();
         defer expr.deinit(self.allocator);
         try Writer.expectValue(expected, expr);

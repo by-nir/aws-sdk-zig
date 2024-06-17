@@ -820,6 +820,10 @@ pub const BlockBuild = struct {
         try b.expect("errdefer foo");
     }
 
+    pub fn laebl(self: *BlockBuild, name: []const u8) ExprBuild {
+        return self.startChain().label(name);
+    }
+
     pub fn block(self: *BlockBuild, closure: BlockClosure) !void {
         try self.blockWith({}, closure);
     }
@@ -885,7 +889,7 @@ pub const BlockBuild = struct {
         try b.expect("continue :foo bar");
     }
 
-    fn expect(self: *BlockBuild, expected: []const u8) !void {
+    pub fn expect(self: *BlockBuild, expected: []const u8) !void {
         const data = try self.consume();
         defer data.deinit(test_alloc);
         try Writer.expectValue(expected, data.statements[0]);
