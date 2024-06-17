@@ -160,7 +160,7 @@ fn writeServiceHead(
     if (trt_rules.EndpointRuleSet.get(symbols, symbols.service_id)) |rule_set| {
         const input_name = "EndpointParams";
         try rules.generateInputType(arena, bld, input_name, rule_set.parameters);
-        try rules.generateResolveFunc(arena, bld, "resolveEndpoint", input_name, rule_set);
+        try rules.generateResolver(arena, bld, "resolveEndpoint", input_name, rule_set);
     }
 }
 

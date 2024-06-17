@@ -4,19 +4,16 @@ const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = std.testing.allocator;
 
+const MutString = std.ArrayList(u8);
+
 pub fn snakeCase(allocator: Allocator, input: []const u8) ![]const u8 {
     var retain = true;
     for (input) |c| {
         if (ascii.isUpper(c)) retain = false;
     }
-    if (retain) {
-        if (std.zig.Token.keywords.has(input))
-            return std.fmt.allocPrint(allocator, "@\"{s}\"", .{input})
-        else
-            return input;
-    }
+    if (retain) return input;
 
-    var buffer = try std.ArrayList(u8).initCapacity(allocator, input.len);
+    var buffer = try MutString.initCapacity(allocator, input.len);
     errdefer buffer.deinit();
 
     var prev_upper = false;
@@ -47,11 +44,10 @@ test "snakeCase" {
     try testing.expectEqualStrings("foo_bar", try snakeCase(arena_alloc, "fooBar"));
     try testing.expectEqualStrings("foo_bar", try snakeCase(arena_alloc, "FooBar"));
     try testing.expectEqualStrings("foo_bar", try snakeCase(arena_alloc, "FOO_BAR"));
-    try testing.expectEqualStrings("@\"error\"", try snakeCase(arena_alloc, "error"));
 }
 
 pub fn camelCase(allocator: Allocator, input: []const u8) ![]const u8 {
-    var buffer = try std.ArrayList(u8).initCapacity(allocator, input.len);
+    var buffer = try MutString.initCapacity(allocator, input.len);
     errdefer buffer.deinit();
 
     var prev_lower = false;
@@ -70,10 +66,6 @@ pub fn camelCase(allocator: Allocator, input: []const u8) ![]const u8 {
         }
     }
 
-    if (std.zig.Token.keywords.has(buffer.items)) {
-        try buffer.insertSlice(0, "@\"");
-        try buffer.append('"');
-    }
     return try buffer.toOwnedSlice();
 }
 
@@ -86,11 +78,10 @@ test "camelCase" {
     try testing.expectEqualStrings("fooBar", try camelCase(arena_alloc, "fooBar"));
     try testing.expectEqualStrings("fooBar", try camelCase(arena_alloc, "FooBar"));
     try testing.expectEqualStrings("fooBar", try camelCase(arena_alloc, "FOO_BAR"));
-    try testing.expectEqualStrings("@\"error\"", try camelCase(arena_alloc, "error"));
 }
 
 pub fn titleCase(allocator: Allocator, input: []const u8) ![]const u8 {
-    var buffer = try std.ArrayList(u8).initCapacity(allocator, input.len);
+    var buffer = try MutString.initCapacity(allocator, input.len);
     errdefer buffer.deinit();
 
     var prev_upper = true;
