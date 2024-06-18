@@ -4,7 +4,10 @@ const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const rls = @import("model.zig");
+const lib = @import("library.zig");
 const JsonReader = @import("../../utils/JsonReader.zig");
+
+const ParamKV = rls.StringKV(rls.Parameter);
 
 pub fn parse(arena: Allocator, reader: *JsonReader) !rls.RuleSet {
     var value = rls.RuleSet{};
@@ -13,7 +16,7 @@ pub fn parse(arena: Allocator, reader: *JsonReader) !rls.RuleSet {
     while (try reader.peek() != .object_end) {
         const prop = try reader.nextString();
         if (mem.eql(u8, prop, "parameters")) {
-            var list = std.ArrayList(rls.StringKV(rls.Parameter)).init(arena);
+            var list = std.ArrayList(ParamKV).init(arena);
             errdefer list.deinit();
 
             try reader.nextObjectBegin();
@@ -38,8 +41,8 @@ pub fn parse(arena: Allocator, reader: *JsonReader) !rls.RuleSet {
 }
 
 // Sadly, at the time of writing the models position the type property at the end.
-fn parseParameter(arena: Allocator, reader: *JsonReader) !rls.StringKV(rls.Parameter) {
-    var kv = rls.StringKV(rls.Parameter){
+fn parseParameter(arena: Allocator, reader: *JsonReader) !ParamKV {
+    var kv = ParamKV{
         .value = .{ .type = undefined },
         .key = try reader.nextStringAlloc(arena),
     };
@@ -105,7 +108,7 @@ fn parseParameter(arena: Allocator, reader: *JsonReader) !rls.StringKV(rls.Param
         } else if (mem.eql(u8, prop, "documentation")) {
             kv.value.documentation = try reader.nextStringAlloc(arena);
         } else if (mem.eql(u8, prop, "builtIn")) {
-            kv.value.built_in = rls.RulesBuiltInId.of(try reader.nextStringAlloc(arena));
+            kv.value.built_in = lib.BuiltIn.Id.of(try reader.nextStringAlloc(arena));
         } else if (mem.eql(u8, prop, "required")) {
             kv.value.required = try reader.nextBoolean();
         } else if (mem.eql(u8, prop, "deprecated")) {
@@ -148,7 +151,7 @@ fn parseConditions(arena: Allocator, reader: *JsonReader) ![]const rls.Condition
         while (try reader.peek() != .object_end) {
             const prop = try reader.nextString();
             if (mem.eql(u8, prop, "fn")) {
-                condition.function = rls.RulesFunctionId.of(try reader.nextStringAlloc(arena));
+                condition.function = lib.Function.Id.of(try reader.nextStringAlloc(arena));
             } else if (mem.eql(u8, prop, "argv")) {
                 condition.args = try parseFunctionArgs(arena, reader);
             } else if (mem.eql(u8, prop, "assign")) {
@@ -230,7 +233,7 @@ fn parseFuncOrRef(arena: Allocator, reader: *JsonReader) anyerror!FuncOrRef {
             try reader.nextObjectEnd();
             return value;
         } else if (mem.eql(u8, prop, "fn")) {
-            func.name = rls.RulesFunctionId.of(try reader.nextStringAlloc(arena));
+            func.name = lib.Function.Id.of(try reader.nextStringAlloc(arena));
         } else if (mem.eql(u8, prop, "argv")) {
             func.args = try parseFunctionArgs(arena, reader);
         } else {
@@ -443,7 +446,8 @@ test {
     const arena_alloc = arena.allocator();
     defer arena.deinit();
 
-    var reader = try JsonReader.initFixed(arena_alloc, @embedFile("../../testing/rules.json"));
+    const source = @embedFile("../../testing/rules.json");
+    var reader = try JsonReader.initFixed(arena_alloc, source);
     const value = try parse(arena_alloc, &reader);
     reader.deinit();
 
@@ -453,7 +457,7 @@ test {
                 .key = "Foo",
                 .value = rls.Parameter{
                     .type = .{ .string = "Bar" },
-                    .built_in = rls.RulesBuiltInId.of("Foo"),
+                    .built_in = lib.BuiltIn.Id.of("Foo"),
                     .required = true,
                     .documentation = "Foo docs...",
                     .deprecated = .{
@@ -468,7 +472,7 @@ test {
                 .documentation = "Tree docs...",
                 .conditions = &.{
                     rls.Condition{
-                        .function = rls.RulesFunctionId.of("foo"),
+                        .function = lib.Function.Id.of("foo"),
                         .assign = "bar",
                         .args = &.{
                             .{ .string = "baz" },
@@ -476,7 +480,7 @@ test {
                             .{ .array = &.{} },
                             .{ .reference = "qux" },
                             .{ .function = rls.FunctionCall{
-                                .name = rls.RulesFunctionId.of("Bar"),
+                                .name = lib.Function.Id.of("Bar"),
                                 .args = &.{},
                             } },
                         },

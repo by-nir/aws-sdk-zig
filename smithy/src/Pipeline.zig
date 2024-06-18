@@ -64,7 +64,7 @@ pub fn init(gpa_alloc: Allocator, page_alloc: Allocator, options: Options, hooks
     self.generator = .{
         .policy = options.codegen_policy,
         .hooks = hooks,
-        .rules = rls.RulesEngine.init(),
+        .rules = try rls.RulesEngine.init(gpa_alloc, &.{}, &.{}),
     };
 
     self.src_dir = try fs.openDirAbsolute(options.src_dir_absolute, .{
@@ -78,6 +78,7 @@ pub fn init(gpa_alloc: Allocator, page_alloc: Allocator, options: Options, hooks
 
 pub fn deinit(self: *Self) void {
     self.traits_manager.deinit(self.gpa_alloc);
+    self.generator.rules.deinit(self.gpa_alloc);
     self.src_dir.close();
     self.out_dir.close();
     self.gpa_alloc.destroy(self);

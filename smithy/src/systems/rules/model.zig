@@ -1,54 +1,9 @@
 const std = @import("std");
 const testing = std.testing;
+const lib = @import("library.zig");
 const symbols = @import("../symbols.zig");
 const idHash = symbols.idHash;
 const JsonReader = @import("../../utils/JsonReader.zig");
-
-pub const RulesBuiltInId = enum(symbols.IdHashInt) {
-    pub const NULL: RulesBuiltInId = @enumFromInt(0);
-
-    endpoint = idHash("SDK::Endpoint"),
-    _,
-
-    pub fn of(name: []const u8) RulesBuiltInId {
-        return @enumFromInt(idHash(name));
-    }
-};
-
-test "RulesBuiltInId" {
-    try testing.expectEqual(.endpoint, RulesBuiltInId.of("SDK::Endpoint"));
-    try testing.expectEqual(
-        @as(RulesBuiltInId, @enumFromInt(0x472ff9ea)),
-        RulesBuiltInId.of("FOO::Example"),
-    );
-}
-
-pub const RulesFunctionId = enum(symbols.IdHashInt) {
-    pub const NULL: RulesFunctionId = @enumFromInt(0);
-
-    boolean_equals = idHash("booleanEquals"),
-    get_attr = idHash("getAttr"),
-    is_set = idHash("isSet"),
-    is_valid_host_label = idHash("isValidHostLabel"),
-    not = idHash("not"),
-    parse_url = idHash("parseURL"),
-    string_equals = idHash("stringEquals"),
-    substring = idHash("substring"),
-    uri_encode = idHash("uriEncode"),
-    _,
-
-    pub fn of(name: []const u8) RulesFunctionId {
-        return @enumFromInt(idHash(name));
-    }
-};
-
-test "RulesFunctionId" {
-    try testing.expectEqual(.boolean_equals, RulesFunctionId.of("booleanEquals"));
-    try testing.expectEqual(
-        @as(RulesFunctionId, @enumFromInt(0xdcf4a50d)),
-        RulesFunctionId.of("foo.example"),
-    );
-}
 
 pub const Rule = union(enum) {
     endpoint: EndpointRule,
@@ -87,7 +42,7 @@ pub const Parameter = struct {
     type: ParamValue,
     /// Specifies a named built-in value that is sourced and provided to the
     /// endpoint provider by a caller.
-    built_in: ?RulesBuiltInId = null,
+    built_in: ?lib.BuiltIn.Id = null,
     /// Specifies that the parameter is required to be provided to the endpoint
     /// provider.
     required: ?bool = null,
@@ -162,7 +117,7 @@ pub const TreeRule = struct {
 /// starting from zero.
 pub const Condition = struct {
     /// The name of the function to be executed.
-    function: RulesFunctionId = RulesFunctionId.NULL,
+    function: lib.Function.Id = lib.Function.Id.NULL,
     /// The arguments for the function.
     args: []const ArgValue = &.{},
     /// The destination variable to assign the functions result to.
@@ -172,7 +127,7 @@ pub const Condition = struct {
 /// [Smithy Spec](https://smithy.io/2.0/additional-specs/rules-engine/specification.html#function-object)
 pub const FunctionCall = struct {
     /// The name of the function to be executed.
-    name: RulesFunctionId = RulesFunctionId.NULL,
+    name: lib.Function.Id = lib.Function.Id.NULL,
     /// The arguments for the function.
     args: []const ArgValue = &.{},
 };
