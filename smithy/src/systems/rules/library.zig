@@ -1,5 +1,6 @@
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const mem = std.mem;
+const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = std.testing.allocator;
 const rls = @import("model.zig");
@@ -10,6 +11,7 @@ const zig = @import("../../codegen/zig.zig");
 const Expr = zig.Expr;
 const ExprBuild = zig.ExprBuild;
 const ContainerBuild = zig.ContainerBuild;
+const name_util = @import("../../utils/names.zig");
 
 pub fn Registry(comptime T: type) type {
     return []const struct { T.Id, T };
@@ -106,7 +108,7 @@ pub const std_functions: FunctionsRegistry = &.{
     .{ Function.Id.boolean_equals, Function{ .returns = Expr.typeOf(bool), .genFn = fnBooleanEquals } },
     .{ Function.Id.string_equals, Function{ .returns = Expr.typeOf(bool), .genFn = fnStringEquals } },
     .{ Function.Id.is_valid_host_label, Function{ .returns = Expr.typeOf(bool), .genFn = fnIsValidHostLabel } },
-    .{ Function.Id.parse_url, Function{ .returns = Expr.typeOf(?struct {}), .genFn = fnParseUrl } }, // TODO
+    .{ Function.Id.parse_url, Function{ .returns = Expr.typeOf(?std.Uri), .genFn = fnParseUrl } },
     .{ Function.Id.substring, Function{ .returns = Expr.typeOf(?[]const u8), .genFn = fnSubstring } },
     .{ Function.Id.uri_encode, Function{ .returns = Expr.typeOf([]const u8), .genFn = fnUriEncode } },
 };
@@ -114,14 +116,42 @@ pub const std_functions: FunctionsRegistry = &.{
 fn fnBooleanEquals(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const lhs = try gen.evalArg(x, args[0]);
     const rhs = try gen.evalArg(x, args[1]);
-    return x.fromExpr(lhs).op(.eql).fromExpr(rhs).consume();
+
+    if (unwrapBool(lhs)) |val| {
+        lhs.deinit(x.allocator);
+        return if (val) x.fromExpr(rhs).consume() else x.op(.not).fromExpr(rhs).consume();
+    } else if (unwrapBool(rhs)) |val| {
+        rhs.deinit(x.allocator);
+        return if (val) x.fromExpr(lhs).consume() else x.op(.not).fromExpr(lhs).consume();
+    } else {
+        return x.fromExpr(lhs).op(.eql).fromExpr(rhs).consume();
+    }
+}
+
+fn unwrapBool(expr: Expr) ?bool {
+    if (expr != .value) return null;
+    return switch (expr.value) {
+        .true => true,
+        .false => false,
+        else => null,
+    };
 }
 
 test "fnBooleanEquals" {
     try Function.expect(fnBooleanEquals, &.{
         .{ .boolean = true },
+        .{ .reference = "foo" },
+    }, "foo.?");
+
+    try Function.expect(fnBooleanEquals, &.{
         .{ .boolean = false },
-    }, "true == false");
+        .{ .reference = "foo" },
+    }, "!foo.?");
+
+    try Function.expect(fnBooleanEquals, &.{
+        .{ .reference = "foo" },
+        .{ .reference = "bar" },
+    }, "foo.? == bar.?");
 }
 
 fn fnIsSet(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
@@ -145,8 +175,43 @@ test "fnNot" {
 fn fnGetAttr(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const val = try gen.evalArg(x, args[0]);
     const path = args[1].string;
-    const base = if (path[0] == '[') x.fromExpr(val) else x.fromExpr(val).dot();
-    return base.raw(path).consume();
+
+    if (path[0] == '[') {
+        // Spec only allows indexer as the last part of the path.
+        return x.fromExpr(val).raw(path).consume();
+    }
+
+    const alloc = x.allocator;
+    var buffer = std.ArrayList(u8).init(alloc);
+    errdefer buffer.deinit();
+
+    var pos: usize = 0;
+    while (pos < path.len) {
+        const i = mem.indexOfAnyPos(u8, path, pos, ".[") orelse path.len;
+
+        {
+            const field = try name_util.snakeCase(alloc, path[pos..i]);
+            defer if (!mem.eql(u8, field, path[pos..i])) alloc.free(field);
+            try buffer.appendSlice(field);
+        }
+
+        if (i == path.len) break;
+
+        switch (path[i]) {
+            '.' => {
+                try buffer.append('.');
+                pos = i + 1;
+            },
+            '[' => {
+                const end = mem.indexOfScalarPos(u8, path, i + 2, ']').?;
+                try buffer.appendSlice(path[i .. end + 1]);
+                break;
+            },
+            else => unreachable,
+        }
+    }
+
+    return x.fromExpr(val).dot().raw(try buffer.toOwnedSlice()).consume();
 }
 
 test "fnGetAttr" {
@@ -157,8 +222,8 @@ test "fnGetAttr" {
 
     try Function.expect(fnGetAttr, &.{
         .{ .reference = "foo" },
-        .{ .string = "bar.baz[8]" },
-    }, "foo.?.bar.baz[8]");
+        .{ .string = "bar.bazQux[8]" },
+    }, "foo.?.bar.baz_qux[8]");
 }
 
 fn fnStringEquals(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {

@@ -29,6 +29,8 @@ const Options = struct {
     parse_policy: Parser.Policy,
     codegen_policy: Generator.Policy,
     process_policy: Policy,
+    rules_builtins: rls.BuiltInsRegistry = &.{},
+    rules_funcs: rls.FunctionsRegistry = &.{},
 };
 
 pub const Policy = struct {
@@ -64,7 +66,11 @@ pub fn init(gpa_alloc: Allocator, page_alloc: Allocator, options: Options, hooks
     self.generator = .{
         .policy = options.codegen_policy,
         .hooks = hooks,
-        .rules = try rls.RulesEngine.init(gpa_alloc, &.{}, &.{}),
+        .rules = try rls.RulesEngine.init(
+            gpa_alloc,
+            options.rules_builtins,
+            options.rules_funcs,
+        ),
     };
 
     self.src_dir = try fs.openDirAbsolute(options.src_dir_absolute, .{

@@ -21,6 +21,8 @@ pub const RulesFunc = rls.Function;
 pub const RulesBuiltIn = rls.BuiltIn;
 pub const RulesGenerator = rls.Generator;
 pub const RulesArgValue = rls.ArgValue;
+pub const RulesFuncsRegistry = rls.FunctionsRegistry;
+pub const RulesBuiltInsRegistry = rls.BuiltInsRegistry;
 
 const prelude = @import("prelude.zig");
 pub const traits = prelude.traits;

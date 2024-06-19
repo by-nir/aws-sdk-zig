@@ -230,7 +230,12 @@ fn generateResolverCondition(ctx: ConditionCtx, bld: *BlockBuild) !void {
 
         const func = try self.engine.getFunc(cond.function);
         const typing = func.returns orelse return error.RulesFuncReturnsAny;
-        const opt_typ = bld.x.typeOptional(bld.x.fromExpr(typing));
+        const wrap = switch (typing) {
+            .raw => |s| s[0] != '?',
+            .type => |t| t != .optional,
+            else => true,
+        };
+        const opt_typ = if (wrap) bld.x.typeOptional(bld.x.fromExpr(typing)) else bld.x.fromExpr(typing);
 
         try bld.variable(var_name).typing(opt_typ).assign(bld.x.valueOf(null));
     }
@@ -320,6 +325,7 @@ test "generateErrorRule" {
     );
 }
 
+// TODO: Codegen properties, headers, authShemas
 fn generateEndpointRule(self: Self, bld: *BlockBuild, rule: rls.EndpointRule) !void {
     const template = try self.evalTemplateString(bld.x, rule.endpoint.url);
     try bld.returns().call("std.fmt.allocPrint", &.{
@@ -358,8 +364,7 @@ fn evalTemplateString(self: Self, x: ExprBuild, template: rls.StringValue) !Temp
             while (pos < s.len) {
                 const start = mem.indexOfScalarPos(u8, s, pos, '{') orelse {
                     if (args.items.len > 0) try format.appendSlice(s[pos..s.len]);
-                    pos = s.len;
-                    continue;
+                    break;
                 };
 
                 const end = mem.indexOfAnyPos(u8, s, start + 1, "{}" ++ &std.ascii.whitespace) orelse {

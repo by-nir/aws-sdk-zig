@@ -10,13 +10,13 @@ const SmithyService = smithy.SmithyService;
 const GenerateHooks = smithy.GenerateHooks;
 const SymbolsProvider = smithy.SymbolsProvider;
 const trt_rules = smithy.traits.rules;
-const trt_iam = @import("integrate/iam.zig");
-const trt_auth = @import("integrate/auth.zig");
-const trt_core = @import("integrate/core.zig");
-const trt_gateway = @import("integrate/gateway.zig");
-const trt_endpoint = @import("integrate/endpoints.zig");
-const trt_protocol = @import("integrate/protocols.zig");
-const trt_cloudform = @import("integrate/cloudformation.zig");
+const itg_iam = @import("integrate/iam.zig");
+const itg_auth = @import("integrate/auth.zig");
+const itg_core = @import("integrate/core.zig");
+const itg_gateway = @import("integrate/gateway.zig");
+const itg_endpoint = @import("integrate/endpoints.zig");
+const itg_protocol = @import("integrate/protocols.zig");
+const itg_cloudform = @import("integrate/cloudformation.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -54,13 +54,13 @@ pub fn main() !void {
     });
     defer pipeline.deinit();
 
-    try pipeline.registerTraits(trt_auth.traits);
-    try pipeline.registerTraits(trt_cloudform.traits);
-    try pipeline.registerTraits(trt_core.traits);
-    try pipeline.registerTraits(trt_endpoint.traits);
-    try pipeline.registerTraits(trt_gateway.traits);
-    try pipeline.registerTraits(trt_iam.traits);
-    try pipeline.registerTraits(trt_protocol.traits);
+    try pipeline.registerTraits(itg_auth.traits);
+    try pipeline.registerTraits(itg_cloudform.traits);
+    try pipeline.registerTraits(itg_core.traits);
+    try pipeline.registerTraits(itg_endpoint.traits);
+    try pipeline.registerTraits(itg_gateway.traits);
+    try pipeline.registerTraits(itg_iam.traits);
+    try pipeline.registerTraits(itg_protocol.traits);
 
     const whitelist = args[3..args.len];
     if (whitelist.len == 0) {
@@ -92,7 +92,7 @@ fn writeReadme(
     src_meta: GenerateHooks.ReadmeMeta,
 ) !void {
     var meta = src_meta;
-    if (trt_core.Service.get(symbols, symbols.service_id)) |service| {
+    if (itg_core.Service.get(symbols, symbols.service_id)) |service| {
         if (std.mem.startsWith(u8, service.sdk_id, "AWS")) {
             meta.title = service.sdk_id;
         } else {
@@ -125,7 +125,7 @@ fn writeScriptHead(arena: Allocator, bld: *zig.ContainerBuild, symbols: *Symbols
     try bld.constant("Signer").assign(bld.x.raw("aws_runtime.Signer"));
     try bld.constant("Endpoint").assign(bld.x.raw("aws_runtime.Endpoint"));
 
-    const service = trt_core.Service.get(symbols, symbols.service_id) orelse {
+    const service = itg_core.Service.get(symbols, symbols.service_id) orelse {
         return error.MissingService;
     };
     const service_endpoint = service.endpoint_prefix orelse {
@@ -234,11 +234,11 @@ fn uniqueListType(arena: Allocator, item_type: []const u8) ![]const u8 {
 }
 
 test {
-    _ = trt_auth;
-    _ = trt_cloudform;
-    _ = trt_core;
-    _ = trt_endpoint;
-    _ = trt_gateway;
-    _ = trt_iam;
-    _ = trt_protocol;
+    _ = itg_auth;
+    _ = itg_cloudform;
+    _ = itg_core;
+    _ = itg_endpoint;
+    _ = itg_gateway;
+    _ = itg_iam;
+    _ = itg_protocol;
 }
