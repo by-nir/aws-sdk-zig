@@ -32,8 +32,8 @@ increased **platform portability**.
 | [aws/types](aws/types) | Common types shared by all _AWS modules_ | 👁️ | |
 | [aws/client](aws/client) | Base client runtime for _AWS SDKs_ | | |
 | [aws/codegen](aws/codegen) | SDKs source generation pipeline | | |
-| [smithy/client](smithy/client) | [Smithy 2.0](https://smithy.io/2.0) client runtime | | |
-| [smithy/codegen](smithy/codegen) | [Smithy 2.0](https://smithy.io/2.0) code generator | | |
+| [smithy/runtime](smithy/runtime) | [Smithy 2.0](https://smithy.io/2.0) client runtime | | |
+| [smithy/src](smithy/src) | [Smithy 2.0](https://smithy.io/2.0) code generator | | |
 
 ### CLI Commands
 

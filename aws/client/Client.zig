@@ -1,17 +1,12 @@
 //! Make HTTP requests to AWS services.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const HttpClient = std.http.Client;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const Signer = @import("Signer.zig");
 const Endpoint = @import("Endpoint.zig");
 const transmit = @import("transmit.zig");
-
-// TODO: Use `std.http.Client` once AWS TLS 1.3 support is complete or Zig adds TLS 1.2 support
-// https://aws.amazon.com/blogs/security/faster-aws-cloud-connections-with-tls-1-3
-// https://github.com/ziglang/zig/pull/19308
-// https://github.com/ziglang/zig/issues/17213
-const HttpClient = @import("https12");
 
 var gpa: std.heap.GeneralPurposeAllocator(.{}) = undefined;
 var shared: Self = undefined;
@@ -105,7 +100,7 @@ pub fn send(
     errdefer body_buffer.deinit();
 
     // Filter out headers that are managed by the HTTP client
-    const managed_headers = std.ComptimeStringMap(void, .{
+    const managed_headers = std.StaticStringMap(void).initComptime(.{
         .{"host"},       .{"authorization"},   .{"user-agent"},
         .{"connection"}, .{"accept-encoding"}, .{"content-type"},
     });

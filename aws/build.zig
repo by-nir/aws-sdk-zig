@@ -14,11 +14,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     }).module("smithy");
 
-    const https12 = b.dependency("https12", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
     //
     // Modules
     //
@@ -35,7 +30,6 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("client/root.zig"),
         .imports = &.{
             .{ .name = "aws-types", .module = types_mdl },
-            .{ .name = "https12", .module = https12.module("zig-tls12") },
         },
     });
 
@@ -69,7 +63,6 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("client/root.zig"),
     });
     test_client_mdl.root_module.addImport("aws-types", types_mdl);
-    test_client_mdl.root_module.addImport("https12", https12.module("zig-tls12"));
     test_runtime_step.dependOn(&b.addRunArtifact(test_client_mdl).step);
 
     const test_codegen_step = b.step("test:codegen", "Run codegen unit tests");
