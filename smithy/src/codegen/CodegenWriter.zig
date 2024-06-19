@@ -582,14 +582,14 @@ pub fn expectValue(expected: []const u8, t: anytype) !void {
         return error.MissingWriteMethod;
     }
 
-    var list = std.ArrayList(u8).init(test_alloc);
-    defer list.deinit();
+    var buffer = std.ArrayList(u8).init(test_alloc);
+    defer buffer.deinit();
 
-    var writer = init(test_alloc, list.writer().any());
+    var writer = init(test_alloc, buffer.writer().any());
     defer writer.deinit();
 
     try writer.writeValue(t, "");
-    try testing.expectEqualStrings(expected, list.items);
+    try testing.expectEqualStrings(expected, buffer.items);
 }
 
 test "expectValue" {

@@ -86,6 +86,10 @@ pub const Expr = union(enum) {
         defer self.deinit(allocator);
         try Writer.expectValue(expected, self);
     }
+
+    pub fn typeOf(comptime T: type) Expr {
+        return .{ .raw = @typeName(T) };
+    }
 };
 
 const ExprType = union(enum) {

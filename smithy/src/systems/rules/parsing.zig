@@ -233,7 +233,7 @@ fn parseFuncOrRef(arena: Allocator, reader: *JsonReader) anyerror!FuncOrRef {
             try reader.nextObjectEnd();
             return value;
         } else if (mem.eql(u8, prop, "fn")) {
-            func.name = lib.Function.Id.of(try reader.nextStringAlloc(arena));
+            func.id = lib.Function.Id.of(try reader.nextStringAlloc(arena));
         } else if (mem.eql(u8, prop, "argv")) {
             func.args = try parseFunctionArgs(arena, reader);
         } else {
@@ -480,7 +480,7 @@ test {
                             .{ .array = &.{} },
                             .{ .reference = "qux" },
                             .{ .function = rls.FunctionCall{
-                                .name = lib.Function.Id.of("Bar"),
+                                .id = lib.Function.Id.of("Bar"),
                                 .args = &.{},
                             } },
                         },

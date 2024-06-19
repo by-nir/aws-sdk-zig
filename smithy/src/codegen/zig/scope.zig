@@ -510,9 +510,8 @@ pub const BlockBuild = struct {
     }
 
     pub fn consume(self: *BlockBuild) !Block {
-        return .{
-            .statements = try self.statements.toOwnedSlice(self.allocator),
-        };
+        const statements = try self.statements.toOwnedSlice(self.allocator);
+        return .{ .statements = statements };
     }
 
     fn startChain(self: *BlockBuild) ExprBuild {
@@ -820,7 +819,7 @@ pub const BlockBuild = struct {
         try b.expect("errdefer foo");
     }
 
-    pub fn laebl(self: *BlockBuild, name: []const u8) ExprBuild {
+    pub fn label(self: *BlockBuild, name: []const u8) ExprBuild {
         return self.startChain().label(name);
     }
 
@@ -868,12 +867,12 @@ pub const BlockBuild = struct {
         return self.startChain().returns();
     }
 
-    pub fn breaks(self: *BlockBuild, label: ?[]const u8) ExprBuild {
-        return self.startChain().breaks(label);
+    pub fn breaks(self: *BlockBuild, lbl: ?[]const u8) ExprBuild {
+        return self.startChain().breaks(lbl);
     }
 
-    pub fn continues(self: *BlockBuild, label: ?[]const u8) ExprBuild {
-        return self.startChain().continues(label);
+    pub fn continues(self: *BlockBuild, lbl: ?[]const u8) ExprBuild {
+        return self.startChain().continues(lbl);
     }
 
     test "reflows" {
@@ -889,7 +888,7 @@ pub const BlockBuild = struct {
         try b.expect("continue :foo bar");
     }
 
-    pub fn expect(self: *BlockBuild, expected: []const u8) !void {
+    fn expect(self: *BlockBuild, expected: []const u8) !void {
         const data = try self.consume();
         defer data.deinit(test_alloc);
         try Writer.expectValue(expected, data.statements[0]);

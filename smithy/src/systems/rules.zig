@@ -1,5 +1,6 @@
 const model = @import("rules/model.zig");
 pub const RuleSet = model.RuleSet;
+pub const ArgValue = model.ArgValue;
 
 const parsing = @import("rules/parsing.zig");
 pub const parse = parsing.parse;

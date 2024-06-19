@@ -127,7 +127,7 @@ pub const Condition = struct {
 /// [Smithy Spec](https://smithy.io/2.0/additional-specs/rules-engine/specification.html#function-object)
 pub const FunctionCall = struct {
     /// The name of the function to be executed.
-    name: lib.Function.Id = lib.Function.Id.NULL,
+    id: lib.Function.Id = lib.Function.Id.NULL,
     /// The arguments for the function.
     args: []const ArgValue = &.{},
 };

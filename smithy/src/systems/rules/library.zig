@@ -9,7 +9,6 @@ const idHash = symbols.idHash;
 const zig = @import("../../codegen/zig.zig");
 const Expr = zig.Expr;
 const ExprBuild = zig.ExprBuild;
-const BlockBuild = zig.BlockBuild;
 const ContainerBuild = zig.ContainerBuild;
 
 pub fn Registry(comptime T: type) type {
@@ -52,13 +51,17 @@ test "BuiltIn.Id" {
 }
 
 pub const std_builtins: BuiltInsRegistry = &.{
+    .{ BuiltIn.Id.endpoint, BuiltIn{
+        .type = .{ .string = null },
+        .documentation = "A custom endpoint for a rule set.",
+    } },
 };
 
 pub const Function = struct {
-    returns: Type,
     genFn: GenFn,
+    returns: ?Expr,
 
-    pub const GenFn = *const fn (gen: Generator, bld: *BlockBuild, args: []const rls.ArgValue) anyerror!Expr;
+    pub const GenFn = *const fn (gen: Generator, x: ExprBuild, args: []const rls.ArgValue) anyerror!Expr;
 
     pub const Id = enum(symbols.IdHashInt) {
         pub const NULL: Id = @enumFromInt(0);
@@ -79,55 +82,12 @@ pub const Function = struct {
         }
     };
 
-    /// [Reference](https://github.com/smithy-lang/smithy/blob/main/smithy-rules-engine/src/main/java/software/amazon/smithy/rulesengine/language/evaluation/type/Type.java)
-    pub const Type = union(enum) {
-        any,
-        array: *const Type,
-        boolean,
-        empty,
-        endpoint,
-        integer,
-        optional: *const Type,
-        record: []const rls.StringKV(Type),
-        string,
-        tuple: []const Type,
-
-        pub fn asExpr(self: Type, x: ExprBuild) !Expr {
-            return switch (self) {
-                .any => error.RulesAnyTypeNotSupported,
-                .array => |t| blk: {
-                    const item = x.fromExpr(try t.asExpr(x));
-                    break :blk x.typeSlice(false, item).consume();
-                },
-                .boolean => x.typeOf(bool).consume(),
-                .empty => x.typeOf(void).consume(),
-                .integer => x.typeOf(i32).consume(),
-                .optional => |t| blk: {
-                    const item = try t.asExpr(x);
-                    break :blk x.typeOptional(x.fromExpr(item)).consume();
-                },
-                .string => x.typeOf([]const u8).consume(),
-                .tuple => |t| blk: {
-                    break :blk x.@"struct"().bodyWith(t, struct {
-                        fn f(ctx: @TypeOf(t), b: *ContainerBuild) !void {
-                            for (ctx) |member| {
-                                const item = b.x.fromExpr(try member.asExpr(b.x));
-                                try b.field(null).typing(item).end();
-                            }
-                        }
-                    }.f).consume();
-                },
-                else => error.RulesTypeNotImplemented,
-            };
-        }
-    };
-
     pub fn expect(impl: GenFn, args: []const rls.ArgValue, expected: []const u8) !void {
         var tst = try Generator.Tester.init();
         defer tst.deinit();
 
-        var expr = try impl(tst.gen, tst.bld, args);
-        try expr.expect(tst.alloc(), expected);
+        var expr = try impl(tst.gen, tst.x, args);
+        try expr.expect(tst.alloc, expected);
     }
 };
 
@@ -140,21 +100,21 @@ test "Function.Id" {
 }
 
 pub const std_functions: FunctionsRegistry = &.{
-    .{ Function.Id.get_attr, Function{ .returns = .any, .genFn = fnGetAttr } },
-    .{ Function.Id.not, Function{ .returns = .boolean, .genFn = fnNot } },
-    .{ Function.Id.is_set, Function{ .returns = .boolean, .genFn = fnIsSet } },
-    .{ Function.Id.boolean_equals, Function{ .returns = .boolean, .genFn = fnBooleanEquals } },
-    .{ Function.Id.string_equals, Function{ .returns = .boolean, .genFn = fnStringEquals } },
-    .{ Function.Id.is_valid_host_label, Function{ .returns = .boolean, .genFn = fnNotImplemented } },
-    .{ Function.Id.parse_url, Function{ .returns = .{ .optional = &.any }, .genFn = fnNotImplemented } },
-    .{ Function.Id.substring, Function{ .returns = .{ .optional = &.string }, .genFn = fnNotImplemented } },
-    .{ Function.Id.uri_encode, Function{ .returns = .string, .genFn = fnNotImplemented } },
+    .{ Function.Id.get_attr, Function{ .returns = null, .genFn = fnGetAttr } },
+    .{ Function.Id.not, Function{ .returns = Expr.typeOf(bool), .genFn = fnNot } },
+    .{ Function.Id.is_set, Function{ .returns = Expr.typeOf(bool), .genFn = fnIsSet } },
+    .{ Function.Id.boolean_equals, Function{ .returns = Expr.typeOf(bool), .genFn = fnBooleanEquals } },
+    .{ Function.Id.string_equals, Function{ .returns = Expr.typeOf(bool), .genFn = fnStringEquals } },
+    .{ Function.Id.is_valid_host_label, Function{ .returns = Expr.typeOf(bool), .genFn = fnIsValidHostLabel } },
+    .{ Function.Id.parse_url, Function{ .returns = Expr.typeOf(?struct {}), .genFn = fnParseUrl } }, // TODO
+    .{ Function.Id.substring, Function{ .returns = Expr.typeOf(?[]const u8), .genFn = fnSubstring } },
+    .{ Function.Id.uri_encode, Function{ .returns = Expr.typeOf([]const u8), .genFn = fnUriEncode } },
 };
 
-fn fnBooleanEquals(gen: Generator, bld: *BlockBuild, args: []const rls.ArgValue) !Expr {
-    const lhs = try gen.evalArg(bld, args[0]);
-    const rhs = try gen.evalArg(bld, args[1]);
-    return bld.x.fromExpr(lhs).op(.eql).fromExpr(rhs).consume();
+fn fnBooleanEquals(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
+    const lhs = try gen.evalArg(x, args[0]);
+    const rhs = try gen.evalArg(x, args[1]);
+    return x.fromExpr(lhs).op(.eql).fromExpr(rhs).consume();
 }
 
 test "fnBooleanEquals" {
@@ -164,28 +124,28 @@ test "fnBooleanEquals" {
     }, "true == false");
 }
 
-fn fnIsSet(gen: Generator, bld: *BlockBuild, args: []const rls.ArgValue) !Expr {
-    const arg = try gen.evalArgRaw(bld, args[0]);
-    return bld.x.fromExpr(arg).op(.not_eql).valueOf(null).consume();
+fn fnIsSet(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
+    const arg = try gen.evalArgRaw(x, args[0]);
+    return x.fromExpr(arg).op(.not_eql).valueOf(null).consume();
 }
 
 test "fnIsSet" {
     try Function.expect(fnIsSet, &.{.{ .reference = "foo" }}, "foo != null");
 }
 
-fn fnNot(gen: Generator, bld: *BlockBuild, args: []const rls.ArgValue) !Expr {
-    const arg = try gen.evalArg(bld, args[0]);
-    return bld.x.op(.not).fromExpr(arg).consume();
+fn fnNot(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
+    const arg = try gen.evalArg(x, args[0]);
+    return x.op(.not).fromExpr(arg).consume();
 }
 
 test "fnNot" {
     try Function.expect(fnNot, &.{.{ .boolean = true }}, "!true");
 }
 
-fn fnGetAttr(gen: Generator, bld: *BlockBuild, args: []const rls.ArgValue) !Expr {
-    const val = try gen.evalArg(bld, args[0]);
+fn fnGetAttr(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
+    const val = try gen.evalArg(x, args[0]);
     const path = args[1].string;
-    const base = if (path[0] == '[') bld.x.fromExpr(val) else bld.x.fromExpr(val).dot();
+    const base = if (path[0] == '[') x.fromExpr(val) else x.fromExpr(val).dot();
     return base.raw(path).consume();
 }
 
@@ -201,10 +161,10 @@ test "fnGetAttr" {
     }, "foo.?.bar.baz[8]");
 }
 
-fn fnStringEquals(gen: Generator, bld: *BlockBuild, args: []const rls.ArgValue) !Expr {
-    const lhs = bld.x.fromExpr(try gen.evalArg(bld, args[0]));
-    const rhs = bld.x.fromExpr(try gen.evalArg(bld, args[1]));
-    return bld.x.call("std.mem.eql", &.{ lhs, rhs }).consume();
+fn fnStringEquals(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
+    const lhs = x.fromExpr(try gen.evalArg(x, args[0]));
+    const rhs = x.fromExpr(try gen.evalArg(x, args[1]));
+    return x.call("std.mem.eql", &.{ lhs, rhs }).consume();
 }
 
 test "fnStringEquals" {
@@ -214,14 +174,22 @@ test "fnStringEquals" {
     }, "std.mem.eql(foo.?, \"bar\")");
 }
 
-fn fnNotImplemented(_: Generator, _: *BlockBuild, _: []const rls.ArgValue) !Expr {
+fn fnIsValidHostLabel(_: Generator, _: ExprBuild, _: []const rls.ArgValue) !Expr {
     // TODO
     return error.RulesFuncNotImplemented;
 }
 
-// fn fnSubstring
-// const str = try self.evalArg(arena, bld, args[0], params);
-// const from = try self.evalArg(arena, bld, args[1], params);
-// const to = try self.evalArg(arena, bld, args[2], params);
-// // const reverse = try self.evalArg(arena, bld, args[3], params);
-// return bld.x.buildExpr(str).valRange(from, to).consume();
+fn fnParseUrl(_: Generator, _: ExprBuild, _: []const rls.ArgValue) !Expr {
+    // TODO
+    return error.RulesFuncNotImplemented;
+}
+
+fn fnSubstring(_: Generator, _: ExprBuild, _: []const rls.ArgValue) !Expr {
+    // TODO
+    return error.RulesFuncNotImplemented;
+}
+
+fn fnUriEncode(_: Generator, _: ExprBuild, _: []const rls.ArgValue) !Expr {
+    // TODO
+    return error.RulesFuncNotImplemented;
+}

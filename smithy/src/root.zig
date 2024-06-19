@@ -17,8 +17,10 @@ pub const TraitsRegistry = trt.TraitsRegistry;
 
 const rls = @import("systems/rules.zig");
 pub const RulesEngine = rls.RulesEngine;
-pub const RulesFunc = rls.RulesEngine.Function;
-pub const RulesBuiltIn = rls.RulesEngine.BuiltIn;
+pub const RulesFunc = rls.Function;
+pub const RulesBuiltIn = rls.BuiltIn;
+pub const RulesGenerator = rls.Generator;
+pub const RulesArgValue = rls.ArgValue;
 
 const prelude = @import("prelude.zig");
 pub const traits = prelude.traits;
