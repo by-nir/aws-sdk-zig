@@ -18,6 +18,8 @@ const itg_endpoint = @import("integrate/endpoints.zig");
 const itg_protocol = @import("integrate/protocols.zig");
 const itg_cloudform = @import("integrate/cloudformation.zig");
 
+const CONFIG_TYPE = "Config";
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const gpa_alloc = gpa.allocator();
@@ -141,7 +143,7 @@ fn writeServiceHead(
     arena: Allocator,
     bld: *zig.ContainerBuild,
     symbols: *SymbolsProvider,
-    rules: *const RulesEngine,
+    rules_engine: *const RulesEngine,
     shape: *const SmithyService,
 ) !void {
     try bld.field("runtime").typing(bld.x.raw("*Runtime")).end();
@@ -158,9 +160,14 @@ fn writeServiceHead(
         .body(serviceDeinit);
 
     if (trt_rules.EndpointRuleSet.get(symbols, symbols.service_id)) |rule_set| {
-        const input_name = "EndpointParams";
-        try rules.generateInputType(arena, bld, input_name, rule_set.parameters);
-        try rules.generateFunction(arena, bld, "resolveEndpoint", input_name, rule_set);
+        const context = .{ .arena = arena, .params = rule_set.parameters, .engine = rules_engine };
+        try bld.public().constant(CONFIG_TYPE).assign(bld.x.@"struct"().bodyWith(context, struct {
+            fn f(ctx: @TypeOf(context), b: *zig.ContainerBuild) !void {
+                try ctx.engine.generateConfigFields(ctx.arena, b, ctx.params);
+            }
+        }.f));
+
+        try rules_engine.generateFunction(arena, bld, "resolveEndpoint", CONFIG_TYPE, rule_set);
     }
 }
 

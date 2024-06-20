@@ -69,53 +69,46 @@ pub fn init(arena: Allocator, engine: Engine, params: ParamsList) !Self {
     };
 }
 
-pub fn generateInputType(self: Self, bld: *ContainerBuild, name: []const u8) !void {
-    try bld.constant(name).assign(bld.x.@"struct"().bodyWith(self, struct {
-        fn f(ctx: Self, b: *ContainerBuild) !void {
-            for (ctx.params) |kv| {
-                const param = kv.value;
-                const param_name = kv.key;
+pub fn generateParametersFields(self: Self, bld: *ContainerBuild) !void {
+    for (self.params) |kv| {
+        const param = kv.value;
+        const param_name = kv.key;
 
-                const typing: ExprBuild = switch (param.type) {
-                    .string => b.x.typeOf([]const u8),
-                    .boolean => b.x.typeOf(bool),
-                    .string_array => b.x.typeOf([]const []const u8),
-                };
+        const typing: ExprBuild = switch (param.type) {
+            .string => bld.x.typeOf([]const u8),
+            .boolean => bld.x.typeOf(bool),
+            .string_array => bld.x.typeOf([]const []const u8),
+        };
 
-                if (param.documentation.len > 0) {
-                    try b.commentMarkdownWith(.doc, md.html.CallbackContext{
-                        .allocator = ctx.arena,
-                        .html = param.documentation,
-                    }, md.html.callback);
-                }
-
-                const field = ctx.fields.get(kv.key).?;
-                const base = b.field(try name_util.snakeCase(ctx.arena, param_name));
-                if (field.is_optional or !field.is_direct) {
-                    try base.typing(b.x.typeOptional(typing)).assign(b.x.valueOf(null));
-                } else {
-                    try base.typing(typing).end();
-                }
-            }
+        if (param.documentation.len > 0) {
+            try bld.commentMarkdownWith(.doc, md.html.CallbackContext{
+                .allocator = self.arena,
+                .html = param.documentation,
+            }, md.html.callback);
         }
-    }.f));
+
+        const field = self.fields.get(kv.key).?;
+        const base = bld.field(try name_util.snakeCase(self.arena, param_name));
+        if (field.is_optional or !field.is_direct) {
+            try base.typing(bld.x.typeOptional(typing)).assign(bld.x.valueOf(null));
+        } else {
+            try base.typing(typing).end();
+        }
+    }
 }
 
-test "generateInputType" {
+test "generateParametersFields" {
     var tst = try Tester.init();
     defer tst.deinit();
 
-    try generateInputType(tst.gen, tst.container(), "Input");
-
+    try generateParametersFields(tst.gen, tst.container());
     try tst.expect(
-        \\const Input = struct {
-        \\    /// Optional
-        \\    foo: ?[]const u8 = null,
-        \\    /// Required
-        \\    bar: bool,
-        \\    /// Required with default
-        \\    baz: ?bool = null,
-        \\};
+        \\/// Optional
+        \\foo: ?[]const u8 = null,
+        \\/// Required
+        \\bar: bool,
+        \\/// Required with default
+        \\baz: ?bool = null,
     );
 }
 

@@ -50,15 +50,9 @@ pub fn getFunc(self: Self, id: lib.Function.Id) !lib.Function {
     return self.functions.get(id) orelse error.RulesFuncUnknown;
 }
 
-pub fn generateInputType(
-    self: Self,
-    arena: Allocator,
-    bld: *ContainerBuild,
-    name: []const u8,
-    params: Generator.ParamsList,
-) !void {
+pub fn generateConfigFields(self: Self, arena: Allocator, bld: *ContainerBuild, params: Generator.ParamsList) !void {
     var gen = try Generator.init(arena, self, params);
-    try gen.generateInputType(bld, name);
+    try gen.generateParametersFields(bld);
 }
 
 pub fn generateFunction(
