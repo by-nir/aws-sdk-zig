@@ -162,6 +162,8 @@ test "writeScript" {
     try testing.expectEqualStrings(
         \\const std = @import("std");
         \\
+        \\const Allocator = std.mem.Allocator;
+        \\
         \\pub const Root = []const Child;
         \\
         \\pub const Child = []const i32;
@@ -188,6 +190,7 @@ const ScriptGen = struct {
                 }
 
                 try bld.constant("std").assign(bld.x.import("std"));
+                try bld.constant("Allocator").assign(bld.x.raw("std.mem.Allocator"));
 
                 while (ctx.symbols.next()) |id| {
                     try ctx.writeShape(bld, id);

@@ -21,6 +21,7 @@ pub const BuiltInsRegistry = Registry(BuiltIn);
 pub const FunctionsRegistry = Registry(Function);
 
 pub const BuiltIn = struct {
+    genFn: ?GenFn = null,
     /// Optionally specifies the default value for the parameter if not set.
     type: rls.ParamValue,
     /// Specifies that the parameter is required to be provided to the
@@ -31,6 +32,8 @@ pub const BuiltIn = struct {
     documentation: []const u8 = "",
     /// Specifies whether an endpoint parameter has been deprecated.
     deprecated: ?rls.Deprecated = null,
+
+    pub const GenFn = *const fn (gen: Generator, x: ExprBuild) anyerror!Expr;
 
     pub const Id = enum(symbols.IdHashInt) {
         pub const NULL: Id = @enumFromInt(0);

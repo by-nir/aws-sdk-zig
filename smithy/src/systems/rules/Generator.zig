@@ -15,7 +15,8 @@ const ContainerBuild = zig.ContainerBuild;
 const Writer = @import("../../codegen/CodegenWriter.zig");
 const name_util = @import("../../utils/names.zig");
 
-const CONFIG_ARG = "config";
+const ARG_ALLOC = "allocator";
+const ARG_CONFIG = "config";
 const CONDIT_VAL = "did_pass";
 const CONDIT_LABEL = "pass";
 const ASSIGN_LABEL = "asgn";
@@ -49,13 +50,13 @@ pub fn init(arena: Allocator, engine: Engine, params: ParamsList) !Self {
 
         const param = kv.value;
         const builtin = if (param.built_in) |id| try engine.getBuiltIn(id) else null;
-        const is_direct = !param.type.hasDefault() and builtin == null;
+        const is_direct = !param.type.hasDefault() and (builtin == null or builtin.?.genFn == null);
 
         fields.putAssumeCapacity(kv.key, .{
             .is_direct = is_direct,
             .is_optional = !param.required,
             .name = if (is_direct)
-                try std.fmt.allocPrint(arena, CONFIG_ARG ++ ".{}", .{std.zig.fmtId(name)})
+                try std.fmt.allocPrint(arena, ARG_CONFIG ++ ".{}", .{std.zig.fmtId(name)})
             else
                 try std.fmt.allocPrint(arena, "param_{s}", .{name}),
         });
@@ -123,7 +124,8 @@ pub fn generateResolver(
 
     const context = .{ .self = self, .rules = rules };
     try bld.function(func_name)
-        .arg(CONFIG_ARG, bld.x.raw(config_type))
+        .arg(ARG_ALLOC, bld.x.id("Allocator"))
+        .arg(ARG_CONFIG, bld.x.raw(config_type))
         .returns(bld.x.typeOf(anyerror![]const u8))
         .bodyWith(context, struct {
         fn f(ctx: @TypeOf(context), b: *BlockBuild) !void {
@@ -148,7 +150,7 @@ test "generateResolver" {
     });
 
     try tst.expect(
-        \\fn resolve(config: Config) anyerror![]const u8 {
+        \\fn resolve(allocator: Allocator, config: Config) anyerror![]const u8 {
         \\    const param_baz: bool = config.baz orelse true;
         \\
         \\    var did_pass = false;
@@ -168,11 +170,14 @@ fn generateParamBinding(
     source_name: []const u8,
     param: rls.Parameter,
 ) !void {
-    const builtin_eval: ?ExprBuild = null;
+    var builtin_eval: ?Expr = null;
     var typ: rls.ParamValue = param.type;
     if (param.built_in) |id| {
         const built_in = try self.engine.getBuiltIn(id);
         typ = built_in.type;
+        if (built_in.genFn) |hook| {
+            builtin_eval = try hook(self, bld.x);
+        }
     }
 
     var typing: ExprBuild = undefined;
@@ -197,8 +202,8 @@ fn generateParamBinding(
     }
     if (!param.required) typing = bld.x.typeOptional(typing);
 
-    const val_1 = bld.x.raw(CONFIG_ARG).dot().id(try name_util.camelCase(self.arena, source_name));
-    const val_2 = if (builtin_eval) |eval| val_1.orElse().buildExpr(eval) else val_1;
+    const val_1 = bld.x.raw(ARG_CONFIG).dot().id(try name_util.camelCase(self.arena, source_name));
+    const val_2 = if (builtin_eval) |eval| val_1.orElse().fromExpr(eval) else val_1;
     const val_3 = if (default) |t| val_2.orElse().buildExpr(t) else blk: {
         if (param.required and builtin_eval == null) return error.RulesRequiredParamHasNoValue;
         break :blk val_2;
@@ -410,7 +415,7 @@ test "generateErrorRule" {
 fn generateEndpointRule(self: Self, bld: *BlockBuild, rule: rls.EndpointRule) !void {
     const template = try self.evalTemplateString(bld.x, rule.endpoint.url);
     try bld.returns().call("std.fmt.allocPrint", &.{
-        bld.x.raw("undefined"), // TODO
+        bld.x.id(ARG_ALLOC),
         bld.x.fromExpr(template.format),
         bld.x.fromExpr(template.args),
     }).end();
@@ -426,7 +431,7 @@ test "generateEndpointRule" {
 
     try tst.expect(
         \\{
-        \\    return std.fmt.allocPrint(undefined, "https://{s}.service.com", .{config.foo.?});
+        \\    return std.fmt.allocPrint(allocator, "https://{s}.service.com", .{config.foo.?});
         \\}
     );
 }
