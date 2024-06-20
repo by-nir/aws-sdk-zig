@@ -140,18 +140,18 @@ fn unwrapBool(expr: Expr) ?bool {
 test "fnBooleanEquals" {
     try Function.expect(fnBooleanEquals, &.{
         .{ .boolean = true },
-        .{ .reference = "foo" },
-    }, "foo.?");
+        .{ .reference = "Foo" },
+    }, "config.foo.?");
 
     try Function.expect(fnBooleanEquals, &.{
         .{ .boolean = false },
-        .{ .reference = "foo" },
-    }, "!foo.?");
+        .{ .reference = "Foo" },
+    }, "!config.foo.?");
 
     try Function.expect(fnBooleanEquals, &.{
-        .{ .reference = "foo" },
-        .{ .reference = "bar" },
-    }, "foo.? == bar.?");
+        .{ .reference = "Foo" },
+        .{ .reference = "Bar" },
+    }, "config.foo.? == config.bar");
 }
 
 fn fnIsSet(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
@@ -216,14 +216,14 @@ fn fnGetAttr(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
 
 test "fnGetAttr" {
     try Function.expect(fnGetAttr, &.{
-        .{ .reference = "foo" },
+        .{ .reference = "Foo" },
         .{ .string = "[8]" },
-    }, "foo.?[8]");
+    }, "config.foo.?[8]");
 
     try Function.expect(fnGetAttr, &.{
-        .{ .reference = "foo" },
+        .{ .reference = "Foo" },
         .{ .string = "bar.bazQux[8]" },
-    }, "foo.?.bar.baz_qux[8]");
+    }, "config.foo.?.bar.baz_qux[8]");
 }
 
 fn fnStringEquals(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
@@ -234,9 +234,9 @@ fn fnStringEquals(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Exp
 
 test "fnStringEquals" {
     try Function.expect(fnStringEquals, &.{
-        .{ .reference = "foo" },
+        .{ .reference = "Foo" },
         .{ .string = "bar" },
-    }, "std.mem.eql(foo.?, \"bar\")");
+    }, "std.mem.eql(config.foo.?, \"bar\")");
 }
 
 fn fnIsValidHostLabel(_: Generator, _: ExprBuild, _: []const rls.ArgValue) !Expr {

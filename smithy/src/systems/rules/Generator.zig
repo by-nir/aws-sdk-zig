@@ -15,35 +15,58 @@ const ContainerBuild = zig.ContainerBuild;
 const Writer = @import("../../codegen/CodegenWriter.zig");
 const name_util = @import("../../utils/names.zig");
 
-const Self = @This();
-const ParamFields = std.StringHashMapUnmanaged(void);
-pub const ParamsList = []const rls.StringKV(rls.Parameter);
-
-const INPUT_PARAM = "input";
+const CONFIG_ARG = "config";
 const CONDIT_VAL = "did_pass";
 const CONDIT_LABEL = "pass";
 const ASSIGN_LABEL = "asgn";
 
+const Self = @This();
+pub const ParamsList = []const rls.StringKV(rls.Parameter);
+
+const FieldsMap = std.StringHashMapUnmanaged(Field);
+const Field = struct {
+    name: []const u8,
+    is_direct: bool,
+    is_optional: bool,
+
+    pub fn deinit(self: Field, allocator: Allocator) void {
+        allocator.free(self.name);
+    }
+};
+
 arena: Allocator,
 engine: Engine,
 params: ParamsList,
-param_names: ParamFields = .{},
+fields: FieldsMap = .{},
 
 pub fn init(arena: Allocator, engine: Engine, params: ParamsList) !Self {
-    var names = ParamFields{};
-    try names.ensureTotalCapacity(arena, @intCast(params.len));
-    for (params) |kv| names.putAssumeCapacity(kv.key, {});
+    var fields = FieldsMap{};
+    try fields.ensureTotalCapacity(arena, @intCast(params.len));
+
+    for (params) |kv| {
+        const name = try name_util.snakeCase(arena, kv.key);
+        defer arena.free(name);
+
+        const param = kv.value;
+        const builtin = if (param.built_in) |id| try engine.getBuiltIn(id) else null;
+        const is_direct = !param.type.hasDefault() and builtin == null;
+
+        fields.putAssumeCapacity(kv.key, .{
+            .is_direct = is_direct,
+            .is_optional = !param.required,
+            .name = if (is_direct)
+                try std.fmt.allocPrint(arena, CONFIG_ARG ++ ".{}", .{std.zig.fmtId(name)})
+            else
+                try std.fmt.allocPrint(arena, "param_{s}", .{name}),
+        });
+    }
 
     return .{
         .arena = arena,
         .engine = engine,
         .params = params,
-        .param_names = names,
+        .fields = fields,
     };
-}
-
-pub fn deinit(self: *Self) void {
-    self.param_names.deinit(self.arena);
 }
 
 pub fn generateInputType(self: Self, bld: *ContainerBuild, name: []const u8) !void {
@@ -51,30 +74,13 @@ pub fn generateInputType(self: Self, bld: *ContainerBuild, name: []const u8) !vo
         fn f(ctx: Self, b: *ContainerBuild) !void {
             for (ctx.params) |kv| {
                 const param = kv.value;
-                const field_name = try name_util.snakeCase(ctx.arena, kv.key);
+                const param_name = kv.key;
 
-                var typing: ExprBuild = undefined;
-                var default: ?ExprBuild = null;
-                switch (param.type) {
-                    .string => |d| {
-                        typing = b.x.typeOf([]const u8);
-                        if (d) |t| default = b.x.valueOf(t);
-                    },
-                    .boolean => |d| {
-                        typing = b.x.typeOf(bool);
-                        if (d) |t| default = b.x.valueOf(t);
-                    },
-                    .string_array => |d| {
-                        typing = b.x.typeOf([]const []const u8);
-                        if (d) |t| {
-                            const vals = try ctx.arena.alloc(ExprBuild, t.len);
-                            for (t, 0..) |v, i| vals[i] = b.x.valueOf(v);
-                            default = b.x.structLiteral(null, vals);
-                        }
-                    },
-                }
-                const is_required = param.required orelse false;
-                if (!is_required and default == null) typing = b.x.typeOptional(typing);
+                const typing: ExprBuild = switch (param.type) {
+                    .string => b.x.typeOf([]const u8),
+                    .boolean => b.x.typeOf(bool),
+                    .string_array => b.x.typeOf([]const []const u8),
+                };
 
                 if (param.documentation.len > 0) {
                     try b.commentMarkdownWith(.doc, md.html.CallbackContext{
@@ -83,8 +89,13 @@ pub fn generateInputType(self: Self, bld: *ContainerBuild, name: []const u8) !vo
                     }, md.html.callback);
                 }
 
-                const field = b.field(field_name).typing(typing);
-                try if (default) |t| field.assign(t) else field.end();
+                const field = ctx.fields.get(kv.key).?;
+                const base = b.field(try name_util.snakeCase(ctx.arena, param_name));
+                if (field.is_optional or !field.is_direct) {
+                    try base.typing(b.x.typeOptional(typing)).assign(b.x.valueOf(null));
+                } else {
+                    try base.typing(typing).end();
+                }
             }
         }
     }.f));
@@ -98,8 +109,12 @@ test "generateInputType" {
 
     try tst.expect(
         \\const Input = struct {
-        \\    /// Some param...
-        \\    param: ?[]const u8,
+        \\    /// Optional
+        \\    foo: ?[]const u8 = null,
+        \\    /// Required
+        \\    bar: bool,
+        \\    /// Required with default
+        \\    baz: ?bool = null,
         \\};
     );
 }
@@ -108,20 +123,23 @@ pub fn generateResolver(
     self: Self,
     bld: *ContainerBuild,
     func_name: []const u8,
-    input_type: []const u8,
-    rule_set: *const rls.RuleSet,
+    config_type: []const u8,
+    rules: []const rls.Rule,
 ) !void {
-    if (rule_set.rules.len == 0) return error.EmptyRuleSet;
+    if (rules.len == 0) return error.EmptyRuleSet;
 
-    // TODO: Somehow, in runtime we need to fallback to built-in if no value is set;
-    // generate a function for resolverParams that returns input, if not provided a value fallback to built-in and then default;
-
-    const context = .{ .self = self, .rules = rule_set.rules };
+    const context = .{ .self = self, .rules = rules };
     try bld.function(func_name)
-        .arg(INPUT_PARAM, bld.x.raw(input_type))
+        .arg(CONFIG_ARG, bld.x.raw(config_type))
         .returns(bld.x.typeOf(anyerror![]const u8))
         .bodyWith(context, struct {
         fn f(ctx: @TypeOf(context), b: *BlockBuild) !void {
+            for (ctx.self.params) |kv| {
+                const field = ctx.self.fields.get(kv.key).?;
+                if (field.is_direct) continue;
+                try ctx.self.generateParamBinding(b, field.name, kv.key, kv.value);
+            }
+
             try b.variable(CONDIT_VAL).assign(b.x.valueOf(false));
             try ctx.self.generateResolverRules(b, ctx.rules);
         }
@@ -132,20 +150,90 @@ test "generateResolver" {
     var tst = try Tester.init();
     defer tst.deinit();
 
-    try generateResolver(tst.gen, tst.container(), "resolve", "Input", &.{
-        .parameters = &.{},
-        .rules = &[_]rls.Rule{
-            .{ .err = .{ .message = .{ .string = "baz" } } },
-        },
+    try generateResolver(tst.gen, tst.container(), "resolve", "Config", &[_]rls.Rule{
+        .{ .err = .{ .message = .{ .string = "baz" } } },
     });
 
     try tst.expect(
-        \\fn resolve(input: Input) anyerror![]const u8 {
+        \\fn resolve(config: Config) anyerror![]const u8 {
+        \\    const param_baz: bool = config.baz orelse true;
+        \\
         \\    var did_pass = false;
         \\
         \\    std.log.err("baz", .{});
         \\
         \\    return error.ReachedErrorRule;
+        \\}
+    );
+}
+
+// TODO: Implement traits bindings
+fn generateParamBinding(
+    self: Self,
+    bld: *BlockBuild,
+    field_name: []const u8,
+    source_name: []const u8,
+    param: rls.Parameter,
+) !void {
+    const builtin_eval: ?ExprBuild = null;
+    var typ: rls.ParamValue = param.type;
+    if (param.built_in) |id| {
+        const built_in = try self.engine.getBuiltIn(id);
+        typ = built_in.type;
+    }
+
+    var typing: ExprBuild = undefined;
+    var default: ?ExprBuild = null;
+    switch (typ) {
+        .boolean => |dflt| {
+            typing = bld.x.typeOf(bool);
+            if (dflt) |b| default = bld.x.valueOf(b);
+        },
+        .string => |dflt| {
+            typing = bld.x.typeOf([]const u8);
+            if (dflt) |s| default = bld.x.valueOf(s);
+        },
+        .string_array => |dflt| {
+            typing = bld.x.typeOf([]const []const u8);
+            if (dflt) |t| {
+                const vals = try self.arena.alloc(ExprBuild, t.len);
+                for (t, 0..) |v, i| vals[i] = bld.x.valueOf(v);
+                default = bld.x.structLiteral(null, vals);
+            }
+        },
+    }
+    if (!param.required) typing = bld.x.typeOptional(typing);
+
+    const val_1 = bld.x.raw(CONFIG_ARG).dot().id(try name_util.camelCase(self.arena, source_name));
+    const val_2 = if (builtin_eval) |eval| val_1.orElse().buildExpr(eval) else val_1;
+    const val_3 = if (default) |t| val_2.orElse().buildExpr(t) else blk: {
+        if (param.required and builtin_eval == null) return error.RulesRequiredParamHasNoValue;
+        break :blk val_2;
+    };
+
+    try bld.constant(field_name).typing(typing).assign(val_3);
+}
+
+test "generateParamBinding" {
+    var tst = try Tester.init();
+    defer tst.deinit();
+
+    try tst.gen.generateParamBinding(tst.block(), "foo", "Foo", .{
+        .type = .{ .boolean = null },
+        .documentation = "",
+    });
+
+    try tst.gen.generateParamBinding(tst.block(), "bar", "Bar", .{
+        .type = .{ .boolean = true },
+        .required = true,
+        .documentation = "",
+    });
+
+    try tst.expect(
+        \\{
+        \\    const foo: ?bool = config.foo;
+        \\
+        \\    const bar: bool = config.bar orelse true;
         \\}
     );
 }
@@ -191,7 +279,7 @@ test "generateResolverRules" {
         .{ .err = .{
             .conditions = &[_]rls.Condition{.{
                 .function = lib.Function.Id.not,
-                .args = &.{.{ .reference = "foo" }},
+                .args = &.{.{ .reference = "Foo" }},
             }},
             .message = .{ .string = "bar" },
         } },
@@ -201,7 +289,7 @@ test "generateResolverRules" {
     try tst.expect(
         \\{
         \\    did_pass = pass: {
-        \\        if (!(!foo.?)) break :pass false;
+        \\        if (!(!config.foo.?)) break :pass false;
         \\
         \\        break :pass true;
         \\    };
@@ -263,11 +351,11 @@ test "generateResolverCondition" {
         .conditions = &[_]rls.Condition{
             .{
                 .function = lib.Function.Id.not,
-                .args = &.{.{ .reference = "bar" }},
+                .args = &.{.{ .reference = "Bar" }},
             },
             .{
                 .function = lib.Function.Id.not,
-                .args = &.{.{ .reference = "baz" }},
+                .args = &.{.{ .reference = "Baz" }},
                 .assign = "foo",
             },
         },
@@ -277,10 +365,10 @@ test "generateResolverCondition" {
         \\{
         \\    var foo: ?bool = null;
         \\
-        \\    if (!(!bar.?)) break :pass false;
+        \\    if (!(!config.bar)) break :pass false;
         \\
         \\    if (!(asgn: {
-        \\        foo = !baz.?;
+        \\        foo = !param_baz;
         \\
         \\        break :asgn foo;
         \\    })) break :pass false;
@@ -340,12 +428,12 @@ test "generateEndpointRule" {
     defer tst.deinit();
 
     try tst.gen.generateEndpointRule(tst.block(), .{
-        .endpoint = .{ .url = .{ .string = "https://{linkId}.service.com" } },
+        .endpoint = .{ .url = .{ .string = "https://{Foo}.service.com" } },
     });
 
     try tst.expect(
         \\{
-        \\    return std.fmt.allocPrint(undefined, "https://{s}.service.com", .{link_id.?});
+        \\    return std.fmt.allocPrint(undefined, "https://{s}.service.com", .{config.foo.?});
         \\}
     );
 }
@@ -417,22 +505,22 @@ test "evalTemplateString" {
     defer tst.deinit();
 
     var template = try tst.gen.evalTemplateString(tst.x, .{
-        .reference = "foo",
+        .reference = "Foo",
     });
     try template.format.expect(tst.alloc, "\"{s}\"");
-    try template.args.expect(tst.alloc, ".{foo.?}");
+    try template.args.expect(tst.alloc, ".{config.foo.?}");
 
     template = try tst.gen.evalTemplateString(tst.x, .{
         .function = .{
             .id = lib.Function.Id.get_attr,
             .args = &.{
-                .{ .reference = "foo" },
+                .{ .reference = "Foo" },
                 .{ .string = "bar" },
             },
         },
     });
     try template.format.expect(tst.alloc, "\"{s}\"");
-    try template.args.expect(tst.alloc, ".{foo.?.bar}");
+    try template.args.expect(tst.alloc, ".{config.foo.?.bar}");
 
     template = try tst.gen.evalTemplateString(tst.x, .{
         .string = "foo",
@@ -441,10 +529,10 @@ test "evalTemplateString" {
     try template.args.expect(tst.alloc, ".{}");
 
     template = try tst.gen.evalTemplateString(tst.x, .{
-        .string = "{Param}foo{bar#baz}",
+        .string = "{Foo}bar{baz#qux}",
     });
-    try template.format.expect(tst.alloc, "\"{s}foo{s}\"");
-    try template.args.expect(tst.alloc, ".{ input.param, bar.?.baz }");
+    try template.format.expect(tst.alloc, "\"{s}bar{s}\"");
+    try template.args.expect(tst.alloc, ".{ config.foo.?, baz.qux }");
 }
 
 pub fn evalFunc(
@@ -475,16 +563,16 @@ test "evalFunc" {
     defer tst.deinit();
 
     var expr = try tst.gen.evalFunc(tst.x, lib.Function.Id.is_set, &.{
-        .{ .reference = "foo" },
+        .{ .reference = "Foo" },
     }, null);
-    try expr.expect(tst.alloc, "foo != null");
+    try expr.expect(tst.alloc, "config.foo != null");
 
     expr = try tst.gen.evalFunc(tst.x, lib.Function.Id.is_set, &.{
-        .{ .reference = "bar" },
+        .{ .reference = "Bar" },
     }, "foo");
     try expr.expect(tst.alloc,
         \\asgn: {
-        \\    foo = bar != null;
+        \\    foo = config.bar != null;
         \\
         \\    break :asgn foo;
         \\}
@@ -494,12 +582,12 @@ test "evalFunc" {
 pub fn evalArg(self: Self, x: ExprBuild, arg: rls.ArgValue) anyerror!Expr {
     const expr = try self.evalArgRaw(x, arg);
     switch (arg) {
-        .reference => |s| {
-            if (self.param_names.contains(s)) {
-                return expr;
-            } else {
-                return x.fromExpr(expr).unwrap().consume();
+        .reference => |ref| {
+            if (self.fields.get(ref)) |f| {
+                if (f.is_optional) return x.fromExpr(expr).unwrap().consume();
             }
+
+            return expr;
         },
         else => return expr,
     }
@@ -511,11 +599,11 @@ pub fn evalArgRaw(self: Self, x: ExprBuild, arg: rls.ArgValue) anyerror!Expr {
         .boolean => |t| return x.valueOf(t).consume(),
         .function => |t| return self.evalFunc(x, t.id, t.args, null),
         .reference => |s| {
-            const var_name = try name_util.snakeCase(self.arena, s);
-            if (self.param_names.contains(s)) {
-                return x.id(INPUT_PARAM).dot().id(var_name).consume();
+            if (self.fields.get(s)) |field| {
+                return x.raw(field.name).consume();
             } else {
-                return x.id(var_name).consume();
+                const field_name = try name_util.snakeCase(self.arena, s);
+                return x.id(field_name).consume();
             }
         },
         .array => |t| {
@@ -553,10 +641,13 @@ test "evalArg" {
     try expr.expect(tst.alloc, "&.{ \"foo\", \"bar\" }");
 
     expr = try tst.gen.evalArg(tst.x, .{ .reference = "Foo" });
-    try expr.expect(tst.alloc, "foo.?");
+    try expr.expect(tst.alloc, "config.foo.?");
 
-    expr = try tst.gen.evalArg(tst.x, .{ .reference = "Param" });
-    try expr.expect(tst.alloc, "input.param");
+    expr = try tst.gen.evalArg(tst.x, .{ .reference = "Bar" });
+    try expr.expect(tst.alloc, "config.bar");
+
+    expr = try tst.gen.evalArg(tst.x, .{ .reference = "Baz" });
+    try expr.expect(tst.alloc, "param_baz");
 }
 
 pub const Tester = struct {
@@ -585,13 +676,27 @@ pub const Tester = struct {
         var engine = try Engine.init(test_alloc, &.{}, &.{});
         errdefer engine.deinit(test_alloc);
 
-        var gen = try Self.init(arena_alloc, engine, &.{.{
-            .key = "Param",
+        var gen = try Self.init(arena_alloc, engine, &.{ .{
+            .key = "Foo",
             .value = rls.Parameter{
                 .type = .{ .string = null },
-                .documentation = "Some param...",
+                .documentation = "Optional",
             },
-        }});
+        }, .{
+            .key = "Bar",
+            .value = rls.Parameter{
+                .type = .{ .boolean = null },
+                .required = true,
+                .documentation = "Required",
+            },
+        }, .{
+            .key = "Baz",
+            .value = rls.Parameter{
+                .type = .{ .boolean = true },
+                .required = true,
+                .documentation = "Required with default",
+            },
+        } });
         errdefer gen.deinit();
 
         return .{
@@ -610,21 +715,26 @@ pub const Tester = struct {
             .container => |*bld| bld.deinit(),
         }
 
-        self.gen.deinit();
         self.engine.deinit(test_alloc);
         self.arena.deinit();
         test_alloc.destroy(self.arena);
     }
 
     pub fn block(self: *Tester) *BlockBuild {
-        std.debug.assert(self.bld == .none);
-        self.bld = .{ .block = BlockBuild.init(self.arena.allocator()) };
+        switch (self.bld) {
+            .block => {},
+            .none => self.bld = .{ .block = BlockBuild.init(self.arena.allocator()) },
+            .container => unreachable,
+        }
         return &self.bld.block;
     }
 
     pub fn container(self: *Tester) *ContainerBuild {
-        std.debug.assert(self.bld == .none);
-        self.bld = .{ .container = ContainerBuild.init(self.arena.allocator()) };
+        switch (self.bld) {
+            .container => {},
+            .none => self.bld = .{ .container = ContainerBuild.init(self.arena.allocator()) },
+            .block => unreachable,
+        }
         return &self.bld.container;
     }
 

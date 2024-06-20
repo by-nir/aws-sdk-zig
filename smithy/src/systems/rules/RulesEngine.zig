@@ -16,7 +16,6 @@ fn Map(comptime T: type) type {
 built_ins: Map(lib.BuiltIn),
 functions: Map(lib.Function),
 
-
 pub fn init(allocator: Allocator, built_ins: lib.BuiltInsRegistry, functions: lib.FunctionsRegistry) !Self {
     var map_bi = try initMap(lib.BuiltIn, allocator, lib.std_builtins, built_ins);
     const map_fn = initMap(lib.Function, allocator, lib.std_functions, functions) catch |err| {
@@ -59,7 +58,6 @@ pub fn generateInputType(
     params: Generator.ParamsList,
 ) !void {
     var gen = try Generator.init(arena, self, params);
-    defer gen.deinit();
     try gen.generateInputType(bld, name);
 }
 
@@ -68,10 +66,9 @@ pub fn generateFunction(
     arena: Allocator,
     bld: *ContainerBuild,
     func_name: []const u8,
-    input_type: []const u8,
+    config_type: []const u8,
     rule_set: *const rls.RuleSet,
 ) !void {
     var gen = try Generator.init(arena, self, rule_set.parameters);
-    defer gen.deinit();
-    try gen.generateResolver(bld, func_name, input_type, rule_set);
+    try gen.generateResolver(bld, func_name, config_type, rule_set.rules);
 }

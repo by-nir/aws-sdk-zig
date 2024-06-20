@@ -23,6 +23,12 @@ pub const ParamValue = union(enum) {
     string: ?[]const u8,
     boolean: ?bool,
     string_array: ?[]const []const u8,
+
+    pub fn hasDefault(self: ParamValue) bool {
+        return switch (self) {
+            inline else => |t| t != null,
+        };
+    }
 };
 
 pub const ArgValue = union(enum) {
@@ -45,7 +51,7 @@ pub const Parameter = struct {
     built_in: ?lib.BuiltIn.Id = null,
     /// Specifies that the parameter is required to be provided to the endpoint
     /// provider.
-    required: ?bool = null,
+    required: bool = false,
     /// Specifies a string that will be used to generate API reference
     /// documentation for the endpoint parameter.
     documentation: []const u8 = "",
