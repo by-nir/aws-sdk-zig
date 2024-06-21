@@ -13,6 +13,7 @@ const trt_rules = smithy.traits.rules;
 const itg_iam = @import("integrate/iam.zig");
 const itg_auth = @import("integrate/auth.zig");
 const itg_core = @import("integrate/core.zig");
+const itg_rules = @import("integrate/rules.zig");
 const itg_gateway = @import("integrate/gateway.zig");
 const itg_endpoint = @import("integrate/endpoints.zig");
 const itg_protocol = @import("integrate/protocols.zig");
@@ -45,6 +46,8 @@ pub fn main() !void {
             .model = .abort,
             .readme = .abort,
         },
+        .rules_builtins = itg_rules.std_builtins,
+        .rules_funcs = itg_rules.std_functions,
     }, .{
         .writeReadme = writeReadme,
         .writeScriptHead = writeScriptHead,
@@ -248,4 +251,5 @@ test {
     _ = itg_gateway;
     _ = itg_iam;
     _ = itg_protocol;
+    _ = itg_rules;
 }
