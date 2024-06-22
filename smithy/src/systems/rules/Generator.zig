@@ -14,8 +14,8 @@ const BlockBuild = zig.BlockBuild;
 const ContainerBuild = zig.ContainerBuild;
 const Writer = @import("../../codegen/CodegenWriter.zig");
 const name_util = @import("../../utils/names.zig");
+const config = @import("../../config.zig");
 
-const ARG_ALLOC = "allocator";
 const ARG_CONFIG = "config";
 const CONDIT_VAL = "did_pass";
 const CONDIT_LABEL = "pass";
@@ -124,7 +124,7 @@ pub fn generateResolver(
 
     const context = .{ .self = self, .rules = rules };
     try bld.function(func_name)
-        .arg(ARG_ALLOC, bld.x.id("Allocator"))
+        .arg(config.allocator_arg, bld.x.id("Allocator"))
         .arg(ARG_CONFIG, bld.x.raw(config_type))
         .returns(bld.x.typeOf(anyerror![]const u8))
         .bodyWith(context, struct {
@@ -415,7 +415,7 @@ test "generateErrorRule" {
 fn generateEndpointRule(self: Self, bld: *BlockBuild, rule: rls.EndpointRule) !void {
     const template = try self.evalTemplateString(bld.x, rule.endpoint.url);
     try bld.returns().call("std.fmt.allocPrint", &.{
-        bld.x.id(ARG_ALLOC),
+        bld.x.id(config.allocator_arg),
         bld.x.fromExpr(template.format),
         bld.x.fromExpr(template.args),
     }).end();
@@ -593,8 +593,9 @@ pub fn evalArg(self: Self, x: ExprBuild, arg: rls.ArgValue) anyerror!Expr {
 
 pub fn evalArgRaw(self: Self, x: ExprBuild, arg: rls.ArgValue) anyerror!Expr {
     switch (arg) {
-        .string => |t| return x.valueOf(t).consume(),
-        .boolean => |t| return x.valueOf(t).consume(),
+        .boolean => |b| return x.valueOf(b).consume(),
+        .integer => |d| return x.valueOf(d).consume(),
+        .string => |s| return x.valueOf(s).consume(),
         .function => |t| return self.evalFunc(x, t.id, t.args, null),
         .reference => |s| {
             if (self.fields.get(s)) |field| {

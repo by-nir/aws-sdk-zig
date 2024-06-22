@@ -771,7 +771,9 @@ pub const ExprBuild = struct {
     }
 
     fn endCatch(self: *const ExprBuild, value: anyerror!TokenCaptureExpr) ExprBuild {
-        const data = value catch |err| return self.append(err);
+        var data = value catch |err| return self.append(err);
+        data.padding = true;
+
         const dupe = self.dupeValue(data) catch |err| {
             data.deinit(self.allocator);
             return self.append(err);
@@ -781,7 +783,7 @@ pub const ExprBuild = struct {
 
     test "catch" {
         try ExprBuild.init(test_alloc).@"catch"().capture("foo").body(_raw("bar"))
-            .expect("catch |foo| bar");
+            .expect(" catch |foo| bar");
     }
 
     pub fn label(self: *const ExprBuild, name: []const u8) ExprBuild {
@@ -824,6 +826,14 @@ pub const ExprBuild = struct {
         );
     }
 
+    pub fn @"try"(self: *const ExprBuild) ExprBuild {
+        const data = flow.TokenReflow{
+            .token = .keyword_try,
+            .label = null,
+        };
+        return self.append(.{ .flow = .{ .token_reflow = data } });
+    }
+
     pub fn returns(self: *const ExprBuild) ExprBuild {
         const data = flow.TokenReflow{
             .token = .keyword_return,
@@ -850,6 +860,7 @@ pub const ExprBuild = struct {
 
     test "reflows" {
         const build = ExprBuild.init(test_alloc);
+        try build.@"try"().raw("foo").expect("try foo");
         try build.returns().raw("foo").expect("return foo");
         try build.breaks("foo").raw("bar").expect("break :foo bar");
         try build.continues("foo").raw("bar").expect("continue :foo bar");
@@ -973,6 +984,7 @@ test "TokenExpr" {
 
 pub const TokenCaptureExpr = struct {
     token: ZigToken,
+    padding: bool = false,
     payload: ?[]const u8 = null,
     body: Expr,
 
@@ -981,6 +993,7 @@ pub const TokenCaptureExpr = struct {
     }
 
     pub fn write(self: TokenCaptureExpr, writer: *Writer, comptime format: []const u8) !void {
+        if (self.padding) try writer.appendChar(' ');
         try writer.appendFmt("{s} ", .{self.token.lexeme().?});
         if (self.payload) |p| {
             try writer.appendFmt("|{_}| ", .{std.zig.fmtId(p)});

@@ -12,6 +12,7 @@ const Expr = zig.Expr;
 const ExprBuild = zig.ExprBuild;
 const ContainerBuild = zig.ContainerBuild;
 const name_util = @import("../../utils/names.zig");
+const config = @import("../../config.zig");
 
 pub fn Registry(comptime T: type) type {
     return []const struct { T.Id, T };
@@ -112,8 +113,8 @@ pub const std_functions: FunctionsRegistry = &.{
     .{ Function.Id.string_equals, Function{ .returns = Expr.typeOf(bool), .genFn = fnStringEquals } },
     .{ Function.Id.is_valid_host_label, Function{ .returns = Expr.typeOf(bool), .genFn = fnIsValidHostLabel } },
     .{ Function.Id.parse_url, Function{ .returns = Expr.typeOf(?std.Uri), .genFn = fnParseUrl } },
-    .{ Function.Id.substring, Function{ .returns = Expr.typeOf(?[]const u8), .genFn = fnSubstring } },
     .{ Function.Id.uri_encode, Function{ .returns = Expr.typeOf([]const u8), .genFn = fnUriEncode } },
+    .{ Function.Id.substring, Function{ .returns = Expr.typeOf(?[]const u8), .genFn = fnSubstring } },
 };
 
 fn fnBooleanEquals(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
@@ -242,22 +243,56 @@ test "fnStringEquals" {
     }, "std.mem.eql(config.foo.?, \"bar\")");
 }
 
-fn fnIsValidHostLabel(_: Generator, _: ExprBuild, _: []const rls.ArgValue) !Expr {
-    // TODO
-    return error.RulesFuncNotImplemented;
+fn fnIsValidHostLabel(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
+    const value = try gen.evalArg(x, args[0]);
+    return x.call("smithy.url.isValidHostLabel", &.{x.fromExpr(value)}).consume();
 }
 
-fn fnParseUrl(_: Generator, _: ExprBuild, _: []const rls.ArgValue) !Expr {
-    // TODO
-    return error.RulesFuncNotImplemented;
+test "fnIsValidHostLabel" {
+    try Function.expect(fnIsValidHostLabel, &.{
+        .{ .string = "foo" },
+    }, "smithy.url.isValidHostLabel(\"foo\")");
 }
 
-fn fnSubstring(_: Generator, _: ExprBuild, _: []const rls.ArgValue) !Expr {
-    // TODO
-    return error.RulesFuncNotImplemented;
+fn fnParseUrl(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
+    const value = try gen.evalArg(x, args[0]);
+    return x.call("smithy.url.Url.init", &.{ x.id(config.allocator_arg), x.fromExpr(value) })
+        .@"catch"().body(x.valueOf(null)).consume();
 }
 
-fn fnUriEncode(_: Generator, _: ExprBuild, _: []const rls.ArgValue) !Expr {
-    // TODO
-    return error.RulesFuncNotImplemented;
+test "fnParseUrl" {
+    try Function.expect(fnParseUrl, &.{
+        .{ .string = "http://example.com" },
+    }, "smithy.url.Url.init(allocator, \"http://example.com\") catch null");
+}
+
+fn fnUriEncode(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
+    const value = try gen.evalArg(x, args[0]);
+    return x.@"try"()
+        .call("smithy.url.uriEncode", &.{ x.id(config.allocator_arg), x.fromExpr(value) })
+        .consume();
+}
+
+test "fnUriEncode" {
+    try Function.expect(fnUriEncode, &.{
+        .{ .string = "foo" },
+    }, "try smithy.url.uriEncode(allocator, \"foo\")");
+}
+
+fn fnSubstring(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
+    return x.call("smithy.string.substring", &.{
+        x.fromExpr(try gen.evalArg(x, args[0])),
+        x.fromExpr(try gen.evalArg(x, args[1])),
+        x.fromExpr(try gen.evalArg(x, args[2])),
+        x.fromExpr(try gen.evalArg(x, args[3])),
+    }).@"catch"().body(x.valueOf(null)).consume();
+}
+
+test "fnSubstring" {
+    try Function.expect(fnSubstring, &.{
+        .{ .string = "foo" },
+        .{ .integer = 0 },
+        .{ .integer = 2 },
+        .{ .boolean = false },
+    }, "smithy.string.substring(\"foo\", 0, 2, false) catch null");
 }

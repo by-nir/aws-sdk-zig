@@ -32,8 +32,9 @@ pub const ParamValue = union(enum) {
 };
 
 pub const ArgValue = union(enum) {
-    string: []const u8,
     boolean: bool,
+    integer: i32,
+    string: []const u8,
     array: []const ArgValue,
     reference: []const u8,
     function: FunctionCall,

@@ -1,3 +1,5 @@
+pub const config = @import("config.zig");
+
 pub const Pipeline = @import("Pipeline.zig");
 
 const Parser = @import("parse/Parser.zig");
