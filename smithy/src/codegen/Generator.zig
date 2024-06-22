@@ -160,6 +160,8 @@ test "writeScript" {
         buffer_writer,
     );
     try testing.expectEqualStrings(
+        \\const smithy = @import("smithy");
+        \\
         \\const std = @import("std");
         \\
         \\const Allocator = std.mem.Allocator;
@@ -189,6 +191,7 @@ const ScriptGen = struct {
                     try hook(ctx.arena, bld, ctx.symbols);
                 }
 
+                try bld.constant("smithy").assign(bld.x.import("smithy"));
                 try bld.constant("std").assign(bld.x.import("std"));
                 try bld.constant("Allocator").assign(bld.x.raw("std.mem.Allocator"));
 

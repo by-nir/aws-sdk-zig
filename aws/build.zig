@@ -12,7 +12,9 @@ pub fn build(b: *std.Build) void {
     const smithy = b.dependency("smithy", .{
         .target = target,
         .optimize = optimize,
-    }).module("smithy");
+    });
+    const smithy_runtime = smithy.module("runtime");
+    const smithy_codegen = smithy.module("codegen");
 
     //
     // Modules
@@ -29,6 +31,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .root_source_file = b.path("client/root.zig"),
         .imports = &.{
+            .{ .name = "smithy", .module = smithy_runtime },
             .{ .name = "aws-types", .module = types_mdl },
         },
     });
@@ -43,12 +46,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .root_source_file = b.path("codegen/client.zig"),
     });
-    codegen_exe.root_module.addImport("smithy", smithy);
+    codegen_exe.root_module.addImport("smithy", smithy_codegen);
     b.installArtifact(codegen_exe);
 
     //
     // Tests
     //
+
+    const test_all_step = b.step("test", "Run all unit tests");
 
     const test_runtime_step = b.step("test:runtime", "Run runtime unit tests");
     const test_types_mdl = b.addTest(.{
@@ -62,8 +67,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .root_source_file = b.path("client/root.zig"),
     });
+    test_client_mdl.root_module.addImport("smithy", smithy_runtime);
     test_client_mdl.root_module.addImport("aws-types", types_mdl);
     test_runtime_step.dependOn(&b.addRunArtifact(test_client_mdl).step);
+    test_all_step.dependOn(test_runtime_step);
 
     const test_codegen_step = b.step("test:codegen", "Run codegen unit tests");
     const test_codegen_exe = b.addTest(.{
@@ -71,6 +78,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .root_source_file = b.path("codegen/client.zig"),
     });
-    test_codegen_exe.root_module.addImport("smithy", smithy);
+    test_codegen_exe.root_module.addImport("smithy", smithy_codegen);
     test_codegen_step.dependOn(&b.addRunArtifact(test_codegen_exe).step);
+    test_all_step.dependOn(test_codegen_step);
 }
