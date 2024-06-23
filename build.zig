@@ -29,23 +29,32 @@ pub fn build(b: *std.Build) void {
     };
     defer sdk_dir.close();
 
+    // Partitions
+    const sdk_partitions = b.addModule("sdk-partitions", .{
+        .target = target,
+        .optimize = optimize,
+        .root_source_file = "sdk/partitions.zig",
+    });
+
+    // Clients
     var it = sdk_dir.iterateAssumeFirstIteration();
     while (it.next() catch @panic("Dir iterator error")) |entry| {
         if (entry.kind != .directory) continue;
-        addSdk(b, .{
+        addSdkClient(b, .{
             .target = target,
             .optimize = optimize,
-        }, sdk_path, entry.name, aws_types, aws_client);
+        }, sdk_path, entry.name, aws_types, aws_client, sdk_partitions);
     }
 }
 
-fn addSdk(
+fn addSdkClient(
     b: *std.Build,
     options: Options,
     dir: []const u8,
     name: []const u8,
     aws_types: *Build.Module,
     aws_client: *Build.Module,
+    sdk_partitions: *Build.Module,
 ) void {
     // Client
     const path = b.path(b.fmt("{s}/{s}/client.zig", .{ dir, name }));
@@ -58,6 +67,7 @@ fn addSdk(
             .imports = &.{
                 .{ .name = "aws-types", .module = aws_types },
                 .{ .name = "aws-runtime", .module = aws_client },
+                .{ .name = "sdk-partitions", .module = sdk_partitions },
             },
         },
     );
@@ -74,5 +84,6 @@ fn addSdk(
     });
     unit_tests.root_module.addImport("aws-types", aws_types);
     unit_tests.root_module.addImport("aws-runtime", aws_client);
+    unit_tests.root_module.addImport("sdk-partitions", sdk_partitions);
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 }

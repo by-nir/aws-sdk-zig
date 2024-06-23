@@ -489,7 +489,9 @@ fn evalTemplateString(self: Self, x: ExprBuild, template: rls.StringValue) !Temp
                 .args = try x.structLiteral(null, try args.toOwnedSlice()).consume(),
             } else .{
                 .format = try x.valueOf(s).consume(),
-                .args = Expr{ .value = .{ .@"struct" = .{ .identifier = null, .values = &.{} } } },
+                .args = Expr{ .value = .{
+                    .struct_literal = .{ .identifier = null, .values = &.{} },
+                } },
             };
         },
         .reference => |ref| try self.evalArg(x, .{ .reference = ref }),

@@ -169,12 +169,12 @@ const ExprValue = union(enum) {
     @"error": []const u8,
     @"enum": []const u8,
     @"union": [2][]const u8,
-    @"struct": struct { identifier: ?*const Expr, values: []const Expr },
+    struct_literal: struct { identifier: ?*const Expr, values: []const Expr },
 
     pub fn deinit(self: ExprValue, allocator: Allocator) void {
         switch (self) {
             .group => |t| allocator.destroy(t),
-            .@"struct" => |t| {
+            .struct_literal => |t| {
                 if (t.identifier) |id| {
                     id.deinit(allocator);
                     allocator.destroy(id);
@@ -201,7 +201,7 @@ const ExprValue = union(enum) {
                 0 => try writer.appendFmt(".{s}", .{t[0]}),
                 else => try writer.appendFmt(".{{ .{s} = {s} }}", .{ t[0], t[1] }),
             },
-            .@"struct" => |t| {
+            .struct_literal => |t| {
                 const len = t.values.len;
                 if (t.identifier) |id| {
                     try id.write(writer, "");
@@ -210,15 +210,26 @@ const ExprValue = union(enum) {
                 }
                 switch (len) {
                     0 => return writer.appendString("{}"),
-                    1 => try writer.appendChar('{'),
-                    else => try writer.appendString("{ "),
+                    2 => try writer.appendString("{ "),
+                    else => try writer.appendChar('{'),
                 }
-                try writer.appendList(Expr, t.values, .{
-                    .delimiter = ", ",
-                });
+                switch (len) {
+                    1, 2 => try writer.appendList(Expr, t.values, .{
+                        .delimiter = ", ",
+                        .line = .none,
+                    }),
+                    else => try writer.breakList(Expr, t.values, .{
+                        .delimiter = ",",
+                        .line = .{ .indent = utils.INDENT_STR },
+                    }),
+                }
                 switch (len) {
                     1 => try writer.appendChar('}'),
-                    else => try writer.appendString(" }"),
+                    2 => try writer.appendString(" }"),
+                    else => {
+                        try writer.appendChar(',');
+                        try writer.breakChar('}');
+                    },
                 }
             },
         }
@@ -557,7 +568,7 @@ pub const ExprBuild = struct {
             return self.append(err);
         } else null;
 
-        return self.append(.{ .value = .{ .@"struct" = .{
+        return self.append(.{ .value = .{ .struct_literal = .{
             .identifier = alloc_id,
             .values = alloc_vals,
         } } });
@@ -575,6 +586,18 @@ pub const ExprBuild = struct {
             _raw("foo"),
             _raw("bar"),
         }).expect(".{ foo, bar }");
+
+        try ExprBuild.init(test_alloc).structLiteral(null, &.{
+            _raw("foo"),
+            _raw("bar"),
+            _raw("baz"),
+        }).expect(
+            \\.{
+            \\    foo,
+            \\    bar,
+            \\    baz,
+            \\}
+        );
     }
 
     pub fn dot(self: *const ExprBuild) ExprBuild {

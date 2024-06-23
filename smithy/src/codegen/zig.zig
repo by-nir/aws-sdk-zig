@@ -1,3 +1,5 @@
+const std = @import("std");
+const Writer = @import("CodegenWriter.zig");
 const utils = @import("zig/utils.zig");
 const expr = @import("zig/expr.zig");
 const flow = @import("zig/flow.zig");

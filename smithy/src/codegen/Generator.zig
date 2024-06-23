@@ -181,10 +181,7 @@ const ScriptGen = struct {
     symbols: *SymbolsProvider,
     rules: *const RulesEngine,
 
-    pub fn write(
-        self: ScriptGen,
-        output: std.io.AnyWriter,
-    ) !void {
+    pub fn write(self: ScriptGen, output: std.io.AnyWriter) !void {
         const script = try zig.Container.init(self.arena, self, struct {
             fn f(ctx: ScriptGen, bld: *ContainerBuild) !void {
                 if (ctx.hooks.writeScriptHead) |hook| {
