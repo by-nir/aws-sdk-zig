@@ -129,6 +129,7 @@ fn writeScriptHead(arena: Allocator, bld: *zig.ContainerBuild, symbols: *Symbols
     try bld.constant("Runtime").assign(bld.x.raw("aws_runtime.Client"));
     try bld.constant("Signer").assign(bld.x.raw("aws_runtime.Signer"));
     try bld.constant("Endpoint").assign(bld.x.raw("aws_runtime.Endpoint"));
+    try bld.constant("resolvePartition").assign(bld.x.import("sdk-partitions").dot().id("resolve"));
 
     const service = itg_core.Service.get(symbols, symbols.service_id) orelse {
         return error.MissingService;

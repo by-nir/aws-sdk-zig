@@ -7,8 +7,8 @@ pub const Endpoint = @import("Endpoint.zig");
 
 test {
     _ = @import("format.zig");
-    _ = Signer;
     _ = transmit;
-    _ = Endpoint;
+    _ = Signer;
     _ = Client;
+    _ = Endpoint;
 }

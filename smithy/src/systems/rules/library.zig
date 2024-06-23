@@ -245,13 +245,18 @@ test "fnStringEquals" {
 
 fn fnIsValidHostLabel(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
-    return x.call("smithy.url.isValidHostLabel", &.{x.fromExpr(value)}).consume();
+    const subdomains = try gen.evalArg(x, args[1]);
+    return x.call("smithy.url.isValidHostLabel", &.{
+        x.fromExpr(value),
+        x.fromExpr(subdomains),
+    }).consume();
 }
 
 test "fnIsValidHostLabel" {
     try Function.expect(fnIsValidHostLabel, &.{
         .{ .string = "foo" },
-    }, "smithy.url.isValidHostLabel(\"foo\")");
+        .{ .boolean = false },
+    }, "smithy.url.isValidHostLabel(\"foo\", false)");
 }
 
 fn fnParseUrl(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {

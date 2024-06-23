@@ -13,15 +13,23 @@ pub fn build(b: *std.Build) void {
     );
 
     const sdk_codegen = b.addRunArtifact(aws.artifact("codegen-sdk"));
+    const partitions_codegen = b.addRunArtifact(aws.artifact("codegen-partitions"));
     if (b.lazyDependency("aws-models", .{})) |models| {
-        sdk_codegen.addDirectoryArg(models.path("sdk"));
+        const src_dir = models.path("sdk");
+        sdk_codegen.addDirectoryArg(src_dir);
+        partitions_codegen.addFileArg(src_dir.path(b, "sdk-partitions.json"));
     }
-    const sdk_codegen_output = sdk_codegen.addOutputDirectoryArg("sdk");
+
+    const partitions_out_file = partitions_codegen.addOutputFileArg("partitions.zig");
+    b.getInstallStep().dependOn(&partitions_codegen.step);
+    const partition_install_step = b.addInstallFile(partitions_out_file, "../sdk/partitions.zig");
+    b.getInstallStep().dependOn(&partition_install_step.step);
+
+    const sdk_out_dir = sdk_codegen.addOutputDirectoryArg("sdk");
     sdk_codegen.addArgs(whitelist orelse &default_whitelist);
     b.getInstallStep().dependOn(&sdk_codegen.step);
-
     b.installDirectory(.{
-        .source_dir = sdk_codegen_output,
+        .source_dir = sdk_out_dir,
         .install_dir = .prefix,
         .install_subdir = "../sdk",
     });

@@ -1,4 +1,5 @@
 const smithy = @import("smithy");
+const config = smithy.config;
 const Function = smithy.RulesFunc;
 const BuiltIn = smithy.RulesBuiltIn;
 const FunctionsRegistry = smithy.RulesFuncsRegistry;
@@ -33,7 +34,6 @@ pub const std_builtins: BuiltInsRegistry = &.{
         .type = .{ .string = null },
         .documentation = "The AWS Credential Scope.",
     } },
-    // TODO: .genFn = _; for all the above
     .{ BuiltIn.Id.of("AWS::S3::Accelerate"), BuiltIn{
         .type = .{ .boolean = false },
         .documentation = "If the SDK client is configured to use S3 transfer acceleration.",
@@ -65,20 +65,52 @@ pub const std_builtins: BuiltInsRegistry = &.{
 };
 
 pub const std_functions: FunctionsRegistry = &.{
-    .{ Function.Id.of("aws.partition"), Function{ .returns = Expr{ .raw = "?Partition" }, .genFn = fnPartition } },
-    .{ Function.Id.of("aws.parseArn"), Function{ .returns = Expr{ .raw = "?Arn" }, .genFn = fnParseArn } },
-    .{ Function.Id.of("aws.isVirtualHostableS3Bucket"), Function{ .returns = Expr.typeOf(bool), .genFn = fnIsVirtualHostableS3Bucket } },
+    .{ Function.Id.of("aws.partition"), Function{
+        .returns = Expr{ .raw = "?Endpoint.Partition" },
+        .genFn = fnPartition,
+    } },
+    .{ Function.Id.of("aws.parseArn"), Function{
+        .returns = Expr{ .raw = "?Endpoint.Arn" },
+        .genFn = fnParseArn,
+    } },
+    .{ Function.Id.of("aws.isVirtualHostableS3Bucket"), Function{
+        .returns = Expr.typeOf(bool),
+        .genFn = fnIsVirtualHostableS3Bucket,
+    } },
 };
 
 fn fnPartition(gen: Generator, x: ExprBuild, args: []const ArgValue) !Expr {
-    _ = gen; // autofix
-    _ = args; // autofix
+    const region = try gen.evalArg(x, args[0]);
+    return x.call("resolvePartition", &.{x.fromExpr(region)}).consume();
 }
 
-fn fnParseArn(_: Generator, _: ExprBuild, _: []const ArgValue) !Expr {
-    return error.AwsRulesFuncNotImplemented;
+test "fnPartition" {
+    try Function.expect(fnPartition, &.{
+        .{ .string = "us-east-1" },
+    }, "resolvePartition(\"us-east-1\")");
 }
 
-fn fnIsVirtualHostableS3Bucket(_: Generator, _: ExprBuild, _: []const ArgValue) !Expr {
-    return error.AwsRulesFuncNotImplemented;
+fn fnParseArn(gen: Generator, x: ExprBuild, args: []const ArgValue) !Expr {
+    const value = try gen.evalArg(x, args[0]);
+    return x.call("Endpoint.Arn.init", &.{ x.id(config.allocator_arg), x.fromExpr(value) }).consume();
+}
+
+test "fnParseArn" {
+    try Function.expect(fnParseArn, &.{
+        .{ .string = "arn:aws:iam::012345678910:user/johndoe" },
+    }, "Endpoint.Arn.init(allocator, \"arn:aws:iam::012345678910:user/johndoe\")");
+}
+
+fn fnIsVirtualHostableS3Bucket(gen: Generator, x: ExprBuild, args: []const ArgValue) !Expr {
+    return x.call("Endpoint.isVirtualHostableS3Bucket", &.{
+        x.fromExpr(try gen.evalArg(x, args[0])),
+        x.fromExpr(try gen.evalArg(x, args[1])),
+    }).consume();
+}
+
+test "fnIsVirtualHostableS3Bucket" {
+    try Function.expect(fnIsVirtualHostableS3Bucket, &.{
+        .{ .string = "foo" },
+        .{ .boolean = false },
+    }, "Endpoint.isVirtualHostableS3Bucket(\"foo\", false)");
 }

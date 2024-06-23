@@ -22,6 +22,8 @@ pub const registry: TraitsRegistry = &.{
     // smithy.rules#operationContextParams
     // smithy.rules#staticContextParams
     .{ EndpointRuleSet.id, EndpointRuleSet.parse },
+    // Undocumented
+    // smithy.rules#endpointTests
 };
 
 /// Defines a rule set for deriving service endpoints at runtime.

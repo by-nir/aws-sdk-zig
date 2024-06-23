@@ -252,6 +252,23 @@ fn generateResolverRules(self: Self, bld: *BlockBuild, rules: []const rls.Rule) 
             // No conditions, run the rule.
             try generateRule(body_ctx, bld);
         } else {
+            // Prepare variables for assignments
+            for (conditions) |cond| {
+                const assign = cond.assign orelse continue;
+                const var_name = try name_util.snakeCase(self.arena, assign);
+
+                const func = try self.engine.getFunc(cond.function);
+                const typing = func.returns orelse return error.RulesFuncReturnsAny;
+                const wrap = switch (typing) {
+                    .raw => |s| s[0] != '?',
+                    .type => |t| t != .optional,
+                    else => true,
+                };
+                const opt_typ = if (wrap) bld.x.typeOptional(bld.x.fromExpr(typing)) else bld.x.fromExpr(typing);
+
+                try bld.variable(var_name).typing(opt_typ).assign(bld.x.valueOf(null));
+            }
+
             // Evaluate conditions
             const cond_ctx = ConditionCtx{
                 .self = self,
@@ -278,6 +295,7 @@ test "generateResolverRules" {
             .conditions = &[_]rls.Condition{.{
                 .function = lib.Function.Id.not,
                 .args = &.{.{ .reference = "Foo" }},
+                .assign = "foo",
             }},
             .message = .{ .string = "bar" },
         } },
@@ -286,8 +304,14 @@ test "generateResolverRules" {
 
     try tst.expect(
         \\{
+        \\    var foo: ?bool = null;
+        \\
         \\    did_pass = pass: {
-        \\        if (!(!config.foo.?)) break :pass false;
+        \\        if (!(asgn: {
+        \\            foo = !config.foo.?;
+        \\
+        \\            break :asgn foo;
+        \\        })) break :pass false;
         \\
         \\        break :pass true;
         \\    };
@@ -308,24 +332,6 @@ test "generateResolverRules" {
 const ConditionCtx = struct { self: Self, conditions: []const rls.Condition };
 fn generateResolverCondition(ctx: ConditionCtx, bld: *BlockBuild) !void {
     const self = ctx.self;
-
-    // Prepare variables for assignments
-    for (ctx.conditions) |cond| {
-        const assign = cond.assign orelse continue;
-        const var_name = try name_util.snakeCase(self.arena, assign);
-
-        const func = try self.engine.getFunc(cond.function);
-        const typing = func.returns orelse return error.RulesFuncReturnsAny;
-        const wrap = switch (typing) {
-            .raw => |s| s[0] != '?',
-            .type => |t| t != .optional,
-            else => true,
-        };
-        const opt_typ = if (wrap) bld.x.typeOptional(bld.x.fromExpr(typing)) else bld.x.fromExpr(typing);
-
-        try bld.variable(var_name).typing(opt_typ).assign(bld.x.valueOf(null));
-    }
-
     // Evaluate conditions
     for (ctx.conditions) |cond| {
         const id = cond.function;
@@ -361,8 +367,6 @@ test "generateResolverCondition" {
 
     try tst.expect(
         \\{
-        \\    var foo: ?bool = null;
-        \\
         \\    if (!(!config.bar)) break :pass false;
         \\
         \\    if (!(asgn: {
@@ -411,7 +415,7 @@ test "generateErrorRule" {
     );
 }
 
-// TODO: Codegen properties, headers, authShemas
+// TODO: Codegen properties, headers, authSchemas
 fn generateEndpointRule(self: Self, bld: *BlockBuild, rule: rls.EndpointRule) !void {
     const template = try self.evalTemplateString(bld.x, rule.endpoint.url);
     try bld.returns().call("std.fmt.allocPrint", &.{
