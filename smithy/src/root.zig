@@ -65,4 +65,5 @@ test {
     // Pipeline
     _ = prelude;
     _ = Pipeline;
+    _ = @import("pipeline/task.zig");
 }
