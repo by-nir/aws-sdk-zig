@@ -8,8 +8,13 @@ pub const ParsePolicy = Parser.Policy;
 const Generator = @import("codegen/Generator.zig");
 pub const GenerateHooks = Generator.Hooks;
 pub const GeneratePolicy = Generator.Policy;
-pub const codegen_zig = @import("codegen/zig.zig");
+
+const script = @import("codegen/script.zig");
+pub const Script = script.Script;
+pub const ScriptLang = script.ScriptLang;
+pub const ScriptAlloc = script.ScriptAlloc;
 pub const codegen_md = @import("codegen/md.zig");
+pub const codegen_zig = @import("codegen/zig.zig");
 
 const syb = @import("systems/symbols.zig");
 pub usingnamespace syb;
@@ -54,6 +59,7 @@ test {
     _ = @import("codegen/CodegenWriter.zig");
     _ = codegen_md;
     _ = codegen_zig;
+    _ = script;
     _ = Generator;
 
     // Pipeline

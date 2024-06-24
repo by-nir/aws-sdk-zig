@@ -33,7 +33,7 @@ pub fn build(b: *std.Build) void {
     const sdk_partitions = b.addModule("sdk-partitions", .{
         .target = target,
         .optimize = optimize,
-        .root_source_file = "sdk/partitions.zig",
+        .root_source_file = b.path("sdk/partitions.zig"),
     });
 
     // Clients

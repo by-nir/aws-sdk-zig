@@ -3,6 +3,7 @@ const fs = std.fs;
 const Allocator = std.mem.Allocator;
 const allocPrint = std.fmt.allocPrint;
 const smithy = @import("smithy");
+const Script = smithy.Script;
 const zig = smithy.codegen_zig;
 const Pipeline = smithy.Pipeline;
 const RulesEngine = smithy.RulesEngine;
@@ -90,21 +91,17 @@ fn filterSourceModel(filename: []const u8) bool {
     return !std.mem.startsWith(u8, filename, "sdk-");
 }
 
-fn writeReadme(
-    arena: Allocator,
-    output: std.io.AnyWriter,
-    symbols: *SymbolsProvider,
-    src_meta: GenerateHooks.ReadmeMeta,
-) !void {
+fn writeReadme(document: Script(.md), symbols: *SymbolsProvider, src_meta: GenerateHooks.ReadmeMeta) !void {
     var meta = src_meta;
     if (itg_core.Service.get(symbols, symbols.service_id)) |service| {
         if (std.mem.startsWith(u8, service.sdk_id, "AWS")) {
             meta.title = service.sdk_id;
         } else {
-            meta.title = try allocPrint(arena, "AWS {s}", .{service.sdk_id});
+            meta.title = try allocPrint(document.arena, "AWS {s}", .{service.sdk_id});
         }
     }
 
+    const output = document.writer();
     try output.print(@embedFile("template/README.head.md.template"), .{
         .title = meta.title,
         .slug = meta.slug,

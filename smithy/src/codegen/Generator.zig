@@ -14,10 +14,11 @@ const test_symbols = @import("../testing/symbols.zig");
 const RulesEngine = @import("../systems/rules.zig").RulesEngine;
 const md = @import("md.zig");
 const zig = @import("zig.zig");
-const Writer = @import("CodegenWriter.zig");
 const ExprBuild = zig.ExprBuild;
 const BlockBuild = zig.BlockBuild;
 const ContainerBuild = zig.ContainerBuild;
+const Writer = @import("CodegenWriter.zig");
+const Script = @import("script.zig").Script;
 const name_util = @import("../utils/names.zig");
 const IssuesBag = @import("../utils/IssuesBag.zig");
 const trt_http = @import("../traits/http.zig");
@@ -35,7 +36,7 @@ pub const Policy = struct {
 };
 
 pub const Hooks = struct {
-    writeReadme: ?*const fn (Allocator, std.io.AnyWriter, *SymbolsProvider, ReadmeMeta) anyerror!void = null,
+    writeReadme: ?*const fn (Script(.md), *SymbolsProvider, ReadmeMeta) anyerror!void = null,
     writeScriptHead: ?*const fn (Allocator, *ContainerBuild, *SymbolsProvider) anyerror!void = null,
     uniqueListType: ?*const fn (Allocator, []const u8) anyerror![]const u8 = null,
     writeErrorShape: *const fn (Allocator, *ContainerBuild, *SymbolsProvider, ErrorShape) anyerror!void,
@@ -77,13 +78,12 @@ hooks: Hooks,
 policy: Policy,
 rules: RulesEngine,
 
-pub fn writeReadme(
-    self: Self,
-    arena: Allocator,
-    symbols: *SymbolsProvider,
-    slug: []const u8,
-    output: std.io.AnyWriter,
-) !void {
+pub fn writeReadme(self: Self, document: Script(.md), symbols: *SymbolsProvider, slug: []const u8) !void {
+    const hook = self.hooks.writeReadme orelse {
+        return error.MissingReadmeHook;
+    };
+
+    const arena = document.arena;
     const title =
         trt_docs.Title.get(symbols, symbols.service_id) orelse
         try name_util.titleCase(arena, slug);
@@ -103,48 +103,29 @@ pub fn writeReadme(
         break :blk try str.toOwnedSlice();
     } else null;
 
-    const hook = self.hooks.writeReadme.?;
-    try hook(arena, output, symbols, .{
-        .slug = slug,
-        .title = title,
-        .intro = intro,
-    });
+    try hook(document, symbols, .{ .slug = slug, .title = title, .intro = intro });
 }
 
-pub fn writeScript(
-    self: Self,
-    arena: Allocator,
-    symbols: *SymbolsProvider,
-    issues: *IssuesBag,
-    output: std.io.AnyWriter,
-) !void {
-    const script = ScriptGen{
-        .arena = arena,
+pub fn writeScript(self: Self, script: Script(.zig), symbols: *SymbolsProvider, issues: *IssuesBag) !void {
+    const gen = ScriptGen{
+        .arena = script.arena,
         .hooks = self.hooks,
         .policy = self.policy,
         .issues = issues,
         .symbols = symbols,
         .rules = &self.rules,
     };
-    try script.write(output);
+    try script.writeBody(gen, ScriptGen.run);
 }
 
 test "writeScript" {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    const arena_alloc = arena.allocator();
-    defer arena.deinit();
-
-    var buffer = std.ArrayList(u8).init(test_alloc);
-    const buffer_writer = buffer.writer().any();
-    defer buffer.deinit();
+    const script = try Script(.zig).initEphemeral(.{ .gpa = test_alloc });
+    defer script.deinit();
 
     var issues = IssuesBag.init(test_alloc);
     defer issues.deinit();
 
-    var symbols = try test_symbols.setup(
-        arena_alloc,
-        &.{.root_child},
-    );
+    var symbols = try test_symbols.setup(script.arena, &.{.root_child});
     try symbols.enqueue(SmithyId.of("test#Root"));
 
     const generator = Self{
@@ -153,13 +134,8 @@ test "writeScript" {
         .rules = undefined,
     };
 
-    try generator.writeScript(
-        arena_alloc,
-        &symbols,
-        &issues,
-        buffer_writer,
-    );
-    try testing.expectEqualStrings(
+    try generator.writeScript(script, &symbols, &issues);
+    try script.expect(
         \\const smithy = @import("smithy");
         \\
         \\const std = @import("std");
@@ -169,8 +145,7 @@ test "writeScript" {
         \\pub const Root = []const Child;
         \\
         \\pub const Child = []const i32;
-        \\
-    , buffer.items);
+    );
 }
 
 const ScriptGen = struct {
@@ -181,31 +156,19 @@ const ScriptGen = struct {
     symbols: *SymbolsProvider,
     rules: *const RulesEngine,
 
-    pub fn write(self: ScriptGen, output: std.io.AnyWriter) !void {
-        const script = try zig.Container.init(self.arena, self, struct {
-            fn f(ctx: ScriptGen, bld: *ContainerBuild) !void {
-                if (ctx.hooks.writeScriptHead) |hook| {
-                    try hook(ctx.arena, bld, ctx.symbols);
-                }
+    pub fn run(self: ScriptGen, bld: *ContainerBuild) !void {
+        if (self.hooks.writeScriptHead) |hook| {
+            try hook(self.arena, bld, self.symbols);
+        }
 
-                try bld.constant("smithy").assign(bld.x.import("smithy"));
-                try bld.constant("std").assign(bld.x.import("std"));
-                try bld.constant("Allocator").assign(bld.x.raw("std.mem.Allocator"));
+        try bld.constant("smithy").assign(bld.x.import("smithy"));
+        try bld.constant("std").assign(bld.x.import("std"));
+        try bld.constant("Allocator").assign(bld.x.raw("std.mem.Allocator"));
 
-                while (ctx.symbols.next()) |id| {
-                    try ctx.writeShape(bld, id);
-                }
-            }
-        }.f);
-        defer script.deinit(self.arena);
-
-        var writer = Writer.init(self.arena, output);
-        defer writer.deinit();
-
-        try script.write(&writer);
-        try writer.breakEmpty(1);
+        while (self.symbols.next()) |id| {
+            try self.writeShape(bld, id);
+        }
     }
-
 
     fn writeShape(self: ScriptGen, bld: *ContainerBuild, id: SmithyId) !void {
         const shape = self.symbols.getShape(id) catch switch (self.policy.unknown_shape) {

@@ -13,9 +13,10 @@ const prelude = @import("prelude.zig");
 const Parser = @import("parse/Parser.zig");
 const Generator = @import("codegen/Generator.zig");
 const Writer = @import("codegen/CodegenWriter.zig");
-const SymbolsProvider = @import("systems/symbols.zig").SymbolsProvider;
+const Script = @import("codegen/script.zig").Script;
 const rls = @import("systems/rules.zig");
 const trt = @import("systems/traits.zig");
+const SymbolsProvider = @import("systems/symbols.zig").SymbolsProvider;
 const IssuesBag = @import("utils/IssuesBag.zig");
 const JsonReader = @import("utils/JsonReader.zig");
 
@@ -229,7 +230,7 @@ fn parseModel(self: *Self, arena: Allocator, json_name: []const u8, issues: *Iss
     var json_file = try self.src_dir.openFile(json_name, .{});
     defer json_file.close();
 
-    var reader = try JsonReader.initFile(arena, json_file);
+    var reader = try JsonReader.initPersist(arena, json_file);
     defer reader.deinit();
 
     var model = try self.parser.parseJson(arena, issues, &reader);
@@ -245,25 +246,29 @@ fn generateScript(
     dir: fs.Dir,
     issues: *IssuesBag,
 ) !void {
-    var file = try dir.createFile("client.zig", .{});
-    var file_buffer = std.io.bufferedWriter(file.writer());
-    defer file.close();
+    var script = try Script(.zig).initPersist(.{
+        .arena = arena,
+    }, dir, "client.zig");
+    defer script.deinit();
 
-    const zig_head = @embedFile("codegen/template/head.zig.template") ++ "\n\n";
-    try file_buffer.writer().writeAll(zig_head);
-    try self.generator.writeScript(arena, symbols, issues, file_buffer.writer().any());
-    try file_buffer.flush();
+    try self.generator.writeScript(script, symbols, issues);
+    try script.end();
 }
 
-fn generateReadme(self: *Self, arena: Allocator, symbols: *SymbolsProvider, dir: fs.Dir, slug: []const u8) !void {
-    var file = try dir.createFile("README.md", .{});
-    var file_buffer = std.io.bufferedWriter(file.writer());
-    defer file.close();
+fn generateReadme(
+    self: *Self,
+    arena: Allocator,
+    symbols: *SymbolsProvider,
+    dir: fs.Dir,
+    slug: []const u8,
+) !void {
+    var document = try Script(.md).initPersist(.{
+        .arena = arena,
+    }, dir, "README.md");
+    defer document.deinit();
 
-    const md_head = @embedFile("codegen/template/head.md.template") ++ "\n\n";
-    try file_buffer.writer().writeAll(md_head);
-    try self.generator.writeReadme(arena, symbols, slug, file_buffer.writer().any());
-    try file_buffer.flush();
+    try self.generator.writeReadme(document, symbols, slug);
+    try document.end();
 }
 
 pub const Report = struct {

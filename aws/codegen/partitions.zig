@@ -3,9 +3,9 @@ const fs = std.fs;
 const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
+const test_alloc = testing.allocator;
 const smithy = @import("smithy");
-const codegen = smithy.codegen;
-const Writer = smithy.Writer;
+const Script = smithy.Script;
 const JsonReader = smithy.JsonReader;
 const zig = smithy.codegen_zig;
 const ExprBuild = zig.ExprBuild;
@@ -17,7 +17,7 @@ const log = std.log.scoped(.codegen_partitions);
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const alloc = arena.allocator();
-    defer _ = arena.deinit();
+    defer arena.deinit();
 
     const args = try std.process.argsAlloc(alloc);
     defer std.process.argsFree(alloc, args);
@@ -25,23 +25,19 @@ pub fn main() !void {
 
     var src_file = try fs.cwd().openFile(args[1], .{});
     defer src_file.close();
-    var reader = try JsonReader.initFile(alloc, src_file);
+    var reader = try JsonReader.initPersist(alloc, src_file);
     defer reader.deinit();
 
-    const out_file = try fs.cwd().createFile(args[2], .{});
-    var file_buffer = std.io.bufferedWriter(out_file.writer());
-    errdefer fs.cwd().deleteFile(args[2]) catch |err| {
-        log.err("Deleting output file failed: {s}", .{@errorName(err)});
-    };
-    defer out_file.close();
+    var script = try Script(.zig).initPersist(.{ .arena = alloc }, fs.cwd(), args[2]);
+    defer script.deinit();
 
-    try processSource(alloc, &reader, file_buffer.writer().any());
-    try file_buffer.flush();
+    try processSource(script, &reader);
+    try script.end();
 }
 // https://github.com/smithy-lang/smithy-rs/blob/main/rust-runtime/inlineable/src/endpoint_lib/partition.rs
-fn processSource(arena: Allocator, json: *JsonReader, output: std.io.AnyWriter) !void {
-    const context = .{ .arena = arena, .reader = json };
-    try codegen.zig(arena, output, context, struct {
+fn processSource(script: Script(.zig), source: *JsonReader) !void {
+    const context = .{ .arena = script.arena, .reader = source };
+    try script.writeBody(context, struct {
         fn f(ctx: @TypeOf(context), bld: *ContainerBuild) !void {
             try bld.constant("std").assign(bld.x.import("std"));
             try bld.constant("Partition").assign(bld.x.import("aws_runtime").dot().raw("Endpoint.Partition"));
@@ -159,11 +155,14 @@ fn processPartition(
 }
 
 test "processSource" {
-    var tester = try codegen.Test(.zig).init();
-    errdefer tester.deinit();
+    const script = try Script(.zig).initEphemeral(.{ .gpa = test_alloc });
+    defer script.deinit();
 
-    try processSource(tester.allocator, try tester.jsonReader(TEST_SRC), tester.writer());
-    try tester.expect(TEST_OUT);
+    var reader = try JsonReader.initFixed(script.arena, TEST_SRC);
+    defer reader.deinit();
+
+    try processSource(script, &reader);
+    try script.expect(TEST_OUT);
 }
 
 const TEST_OUT: []const u8 =
