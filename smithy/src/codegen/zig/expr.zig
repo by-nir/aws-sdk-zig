@@ -169,11 +169,16 @@ const ExprValue = union(enum) {
     @"error": []const u8,
     @"enum": []const u8,
     @"union": [2][]const u8,
+    struct_assign: struct { field: []const u8, value: *const Expr },
     struct_literal: struct { identifier: ?*const Expr, values: []const Expr },
 
     pub fn deinit(self: ExprValue, allocator: Allocator) void {
         switch (self) {
             .group => |t| allocator.destroy(t),
+            .struct_assign => |t| {
+                t.value.deinit(allocator);
+                allocator.destroy(t.value);
+            },
             .struct_literal => |t| {
                 if (t.identifier) |id| {
                     id.deinit(allocator);
@@ -189,9 +194,7 @@ const ExprValue = union(enum) {
     pub fn write(self: ExprValue, writer: *Writer) anyerror!void {
         switch (self) {
             .void => try writer.appendString("{}"),
-            inline .undefined, .null, .false, .true => |_, t| {
-                try writer.appendString(@tagName(t));
-            },
+            inline .undefined, .null, .false, .true => |_, t| try writer.appendString(@tagName(t)),
             inline .int, .uint, .float => |t| try writer.appendFmt("{d}", .{t}),
             .string => |s| try writer.appendFmt("\"{s}\"", .{s}),
             .group => |t| try writer.appendFmt("({})", .{t}),
@@ -200,6 +203,9 @@ const ExprValue = union(enum) {
             .@"union" => |t| switch (t[1].len) {
                 0 => try writer.appendFmt(".{s}", .{t[0]}),
                 else => try writer.appendFmt(".{{ .{s} = {s} }}", .{ t[0], t[1] }),
+            },
+            .struct_assign => |t| {
+                try writer.appendFmt(".{s} = {s}", .{ t.field, t.value });
             },
             .struct_literal => |t| {
                 const len = t.values.len;
@@ -556,6 +562,18 @@ pub const ExprBuild = struct {
         try ExprBuild.init(test_alloc).group(_raw("foo")).expect("(foo)");
     }
 
+    pub fn structAssign(self: *const ExprBuild, field: []const u8, value: ExprBuild) ExprBuild {
+        const dupe = self.dupeExpr(value) catch |err| return self.append(err);
+        return self.append(.{ .value = .{ .struct_assign = .{
+            .field = field,
+            .value = dupe,
+        } } });
+    }
+
+    test "structAssign" {
+        try ExprBuild.init(test_alloc).structAssign("foo", _raw("bar")).expect(".foo = bar");
+    }
+
     pub fn structLiteral(self: *const ExprBuild, identifier: ?ExprBuild, values: []const ExprBuild) ExprBuild {
         const alloc_vals = utils.consumeExprBuildList(self.allocator, values) catch |err| {
             if (identifier) |t| t.deinit();
@@ -638,10 +656,12 @@ pub const ExprBuild = struct {
         };
         range[0] = a.consume() catch |err| {
             b.deinit();
+            self.allocator.destroy(range);
             return self.append(err);
         };
         range[1] = b.consume() catch |err| {
             range[0].deinit(a.allocator);
+            self.allocator.destroy(range);
             return self.append(err);
         };
         return self.append(.{ .type = .{ .val_range = range } });

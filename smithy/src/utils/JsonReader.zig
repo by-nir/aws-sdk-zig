@@ -41,7 +41,7 @@ pub fn initFixed(arena: Allocator, slice: []const u8) !Self {
     };
 }
 
-pub fn initFile(arena: Allocator, file: std.fs.File) !Self {
+pub fn initPersist(arena: Allocator, file: std.fs.File) !Self {
     const source = try arena.create(Source);
     source.* = .{ .file = file.reader() };
     return .{

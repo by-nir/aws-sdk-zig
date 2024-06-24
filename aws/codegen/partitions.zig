@@ -145,12 +145,12 @@ fn processPartition(
     }
 
     try bld.constant(id).assign(bld.x.structLiteral(bld.x.id("Partition"), &.{
-        bld.x.dot().id("name").assign().valueOf(out_name),
-        bld.x.dot().id("dns_suffix").assign().valueOf(out_dns_suffix),
-        bld.x.dot().id("dual_stack_dns_suffix").assign().valueOf(out_dual_dns_suffix),
-        bld.x.dot().id("supports_fips").assign().valueOf(out_supports_fips),
-        bld.x.dot().id("supports_dual_stack").assign().valueOf(out_supports_dual_stack),
-        bld.x.dot().id("implicit_global_region").assign().valueOf(out_implicit_region),
+        bld.x.structAssign("name", bld.x.valueOf(out_name)),
+        bld.x.structAssign("dns_suffix", bld.x.valueOf(out_dns_suffix)),
+        bld.x.structAssign("dual_stack_dns_suffix", bld.x.valueOf(out_dual_dns_suffix)),
+        bld.x.structAssign("supports_fips", bld.x.valueOf(out_supports_fips)),
+        bld.x.structAssign("supports_dual_stack", bld.x.valueOf(out_supports_dual_stack)),
+        bld.x.structAssign("implicit_global_region", bld.x.valueOf(out_implicit_region)),
     }));
 }
 

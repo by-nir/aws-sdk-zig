@@ -136,7 +136,7 @@ fn writeScriptHead(arena: Allocator, bld: *zig.ContainerBuild, symbols: *Symbols
     };
 
     try bld.constant("endpoint_config").assign(bld.x.structLiteral(null, &.{
-        bld.x.raw(try allocPrint(arena, ".name = \"{s}\"", .{service_endpoint})),
+        bld.x.structAssign("name", bld.x.valueOf(service_endpoint)),
     }));
 }
 
@@ -179,9 +179,9 @@ fn serviceInit(bld: *zig.BlockBuild) !void {
     try bld.constant("signer").assign(bld.x.raw("undefined"));
     try bld.constant("endpoint").assign(bld.x.raw("undefined"));
     try bld.returns().structLiteral(null, &.{
-        bld.x.raw(".runtime = runtime"),
-        bld.x.raw(".signer = signer"),
-        bld.x.raw(".endpoint = endpoint"),
+        bld.x.structAssign("runtime", bld.x.id("runtime")),
+        bld.x.structAssign("signer", bld.x.id("signer")),
+        bld.x.structAssign("endpoint", bld.x.id("endpoint")),
     }).end();
 }
 
