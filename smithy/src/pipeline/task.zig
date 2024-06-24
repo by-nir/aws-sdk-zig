@@ -2,19 +2,49 @@ const std = @import("std");
 const ZigType = std.builtin.Type;
 const testing = std.testing;
 
-pub const SkipTask = error.TaskPolicySkip;
-
-const ModifyError = union(enum) {
-    retain,
-    strip,
-    expand: anyerror,
-};
-
 pub const Task = struct {
     name: []const u8,
     input: ?[]const type,
     output: type,
     func: *const anyopaque,
+    Fn: type,
+
+    pub const DefineOptions = struct {};
+
+    pub fn define(name: []const u8, comptime options: DefineOptions, comptime func: anytype) Task {
+        _ = options;
+
+        const meta: ZigType.Fn = switch (@typeInfo(@TypeOf(func))) {
+            .Fn => |t| t,
+            .Pointer => |t| blk: {
+                const target = @typeInfo(t.child);
+                if (t.size == .One and target == .Fn)
+                    break :blk target.Fn
+                else
+                    @compileError("Task function must be a function");
+            },
+            else => @compileError("Task function must be a function"),
+        };
+
+        const len = meta.params.len;
+        if (len == 0 or meta.params[0].type != TaskDelegate) {
+            @compileError("Task '" ++ name ++ "' first parameter must be `TaskDelegate`");
+        }
+
+        comptime var input_mut: [len - 1]type = undefined;
+        for (1..len) |i| {
+            input_mut[i - 1] = meta.params[i].type.?;
+        }
+        const input = input_mut;
+
+        return .{
+            .name = name,
+            .input = if (len > 1) &input else null,
+            .output = meta.return_type.?,
+            .func = func,
+            .Fn = *const @Type(.{ .Fn = meta }),
+        };
+    }
 
     pub fn invoke(comptime self: Task, delegate: TaskDelegate, input: self.In(false)) self.Out(.retain) {
         const args = if (self.input) |types| blk: {
@@ -26,37 +56,11 @@ pub const Task = struct {
             break :blk values;
         } else .{delegate};
 
-        const func = @as(self.Func(), @alignCast(@ptrCast(self.func)));
+        const func = @as(self.Fn, @alignCast(@ptrCast(self.func)));
         return @call(.auto, func, args);
     }
 
-    pub fn Func(comptime self: Task) type {
-        const input = self.input orelse {
-            return *const fn (task: TaskDelegate) self.Out(.retain);
-        };
-
-        var params: [1 + input.len]ZigType.Fn.Param = undefined;
-        params[0] = .{
-            .is_generic = false,
-            .is_noalias = false,
-            .type = TaskDelegate,
-        };
-        for (input, 1..) |T, i| {
-            params[i] = .{
-                .is_generic = false,
-                .is_noalias = false,
-                .type = T,
-            };
-        }
-
-        return *const @Type(ZigType{ .Fn = .{
-            .is_generic = false,
-            .is_var_args = false,
-            .calling_convention = .Unspecified,
-            .return_type = self.Out(.retain),
-            .params = &params,
-        } });
-    }
+    pub const ModifyError = union(enum) { retain, strip, expand: anyerror };
 
     pub fn Out(comptime self: Task, err: ModifyError) type {
         switch (err) {
@@ -111,6 +115,40 @@ pub const Task = struct {
     }
 };
 
+test "Task.define" {
+    try testing.expectEqualDeep(Task{
+        .name = "No Op",
+        .input = null,
+        .output = void,
+        .func = test_tasks.noOp,
+        .Fn = *const @TypeOf(test_tasks.noOp),
+    }, test_tasks.NoOp);
+
+    try testing.expectEqualDeep(Task{
+        .name = "Crash",
+        .input = null,
+        .output = error{Fail}!void,
+        .func = test_tasks.crash,
+        .Fn = *const @TypeOf(test_tasks.crash),
+    }, test_tasks.Crash);
+
+    comptime try testing.expectEqualDeep(Task{
+        .name = "Multiply",
+        .input = &.{ usize, usize },
+        .output = usize,
+        .func = test_tasks.multiply,
+        .Fn = *const @TypeOf(test_tasks.multiply),
+    }, test_tasks.Multiply);
+}
+
+test "Task.invoke" {
+    test_tasks.did_call = false;
+    test_tasks.Call.invoke(.{}, .{});
+    try testing.expect(test_tasks.did_call);
+
+    try testing.expectEqual(108, test_tasks.Multiply.invoke(.{}, .{ 2, 54 }));
+}
+
 pub const TaskDelegate = struct {};
 
 pub const TaskTest = struct {
@@ -152,52 +190,41 @@ pub const TaskTest = struct {
     }
 };
 
-test {
-    const tasks = struct {
-        pub var did_call: bool = false;
-
-        pub const Call = Task{
-            .name = "Call",
-            .func = call,
-            .input = null,
-            .output = void,
-        };
-
-        fn call(_: TaskDelegate) void {
-            did_call = true;
-        }
-
-        pub const Multiply = Task{
-            .name = "Multiply",
-            .func = multiply,
-            .input = &.{ usize, usize },
-            .output = usize,
-        };
-
-        fn multiply(_: TaskDelegate, a: usize, b: usize) usize {
-            return a * b;
-        }
-
-        pub const Failable = Task{
-            .name = "Failable",
-            .func = failable,
-            .input = &.{bool},
-            .output = anyerror!void,
-        };
-
-        fn failable(_: TaskDelegate, fail: bool) !void {
-            if (fail) return error.Fail;
-        }
-    };
-
+test "TaskTest" {
     const tester = TaskTest.init(.{});
 
-    tasks.did_call = false;
-    tester.invoke(tasks.Call, .{});
-    try testing.expect(tasks.did_call);
+    test_tasks.did_call = false;
+    tester.invoke(test_tasks.Call, .{});
+    try testing.expect(test_tasks.did_call);
 
-    try tester.expectEqual(tasks.Multiply, 108, .{ 2, 54 });
+    try tester.expectEqual(test_tasks.Multiply, 108, .{ 2, 54 });
 
-    try tester.invoke(tasks.Failable, .{false});
-    try tester.expectError(tasks.Failable, error.Fail, .{true});
+    try tester.invoke(test_tasks.Failable, .{false});
+    try tester.expectError(test_tasks.Failable, error.Fail, .{true});
 }
+
+const test_tasks = struct {
+    const NoOp = Task.define("No Op", .{}, noOp);
+    fn noOp(_: TaskDelegate) void {}
+
+    var did_call: bool = false;
+    const Call = Task.define("Call", .{}, call);
+    fn call(_: TaskDelegate) void {
+        did_call = true;
+    }
+
+    const Crash = Task.define("Crash", .{}, crash);
+    fn crash(_: TaskDelegate) error{Fail}!void {
+        return error.Fail;
+    }
+
+    const Failable = Task.define("Failable", .{}, failable);
+    fn failable(_: TaskDelegate, fail: bool) error{Fail}!void {
+        if (fail) return error.Fail;
+    }
+
+    const Multiply = Task.define("Multiply", .{}, multiply);
+    fn multiply(_: TaskDelegate, a: usize, b: usize) usize {
+        return a * b;
+    }
+};
