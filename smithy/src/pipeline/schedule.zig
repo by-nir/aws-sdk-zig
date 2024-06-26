@@ -14,15 +14,17 @@ pub fn TaskCallback(comptime task: tsk.Task) type {
 pub const Schedule = struct {
     allocator: Allocator,
     queue: Queue(PendingTask) = .{},
-    task_pool: Pool(PendingTask) = .{},
+    task_pool: Pool(PendingTask) = .{
+        .clearValue = clearNode,
+    },
 
     pub fn init(allocator: Allocator) Schedule {
         return .{ .allocator = allocator };
     }
 
     pub fn deinit(self: Schedule) void {
-        self.queue.deinit(self.allocator);
-        self.task_pool.deinit(self.allocator);
+        self.queue.deinit(self.allocator, true);
+        self.task_pool.deinit(self.allocator, true);
     }
 
     pub fn put(self: *Schedule, comptime task: tsk.Task, input: task.In(false)) !void {
@@ -42,11 +44,9 @@ pub const Schedule = struct {
         context: *const anyopaque,
         callback: TaskCallback(task),
     ) !void {
-        var value = try PendingTask.initCallback(self.allocator, task, input, context, callback);
-        errdefer value.deinit(self.allocator);
-
         const node = try self.task_pool.retain(self.allocator);
-        node.value = value;
+        errdefer self.task_pool.release(node);
+        node.value = try PendingTask.initCallback(self.allocator, task, input, context, callback);
         self.queue.put(node);
     }
 
@@ -63,6 +63,10 @@ pub const Schedule = struct {
 
     fn getDelegate(_: *Schedule) tsk.TaskDelegate {
         return .{};
+    }
+
+    fn clearNode(node: *Node(PendingTask)) void {
+        node.value = PendingTask.empty;
     }
 };
 
@@ -126,10 +130,15 @@ test "Schedule: callback" {
 }
 
 const PendingTask = struct {
-    vtable: *const Vtable,
+    vtable: *allowzero const Vtable,
     input: ?*const anyopaque,
     callback_ctx: ?*const anyopaque = null,
     callback_fn: ?*const anyopaque = null,
+
+    pub const empty = PendingTask{
+        .vtable = @ptrFromInt(0),
+        .input = null,
+    };
 
     const Vtable = struct {
         deinit: *const fn (allocator: Allocator, input: *const anyopaque) void,
@@ -172,8 +181,7 @@ const PendingTask = struct {
     }
 
     pub fn deinit(self: PendingTask, allocator: Allocator) void {
-        const input = self.input orelse return;
-        self.vtable.deinit(allocator, input);
+        if (self.input) |in| self.vtable.deinit(allocator, in);
     }
 
     pub fn invoke(self: PendingTask, delegate: tsk.TaskDelegate) !void {
@@ -225,8 +233,9 @@ fn Queue(comptime T: type) type {
         first: ?*Node(T) = null,
         last: ?*Node(T) = null,
 
-        pub fn deinit(self: Self, allocator: Allocator) void {
-            deinitChain(allocator, T, self.first);
+        pub fn deinit(self: Self, allocator: Allocator, comptime values: bool) void {
+            const node = self.first orelse return;
+            if (values) node.deinitChainAndValues(allocator) else node.deinitChain(allocator);
         }
 
         pub fn put(self: *Self, node: *Node(T)) void {
@@ -246,7 +255,7 @@ fn Queue(comptime T: type) type {
 
 test "Queue" {
     var queue = Queue(usize){};
-    defer queue.deinit(test_alloc);
+    defer queue.deinit(test_alloc, false);
 
     try testing.expectEqual(null, queue.take());
 
@@ -285,22 +294,29 @@ fn Pool(comptime T: type) type {
         const Self = @This();
 
         next: ?*Node(T) = null,
+        clearValue: ?*const fn (node: *Node(T)) void = null,
 
-        pub fn deinit(self: Self, allocator: Allocator) void {
-            deinitChain(allocator, T, self.next);
+        pub fn deinit(self: Self, allocator: Allocator, comptime values: bool) void {
+            const node = self.next orelse return;
+            if (values) node.deinitChainAndValues(allocator) else node.deinitChain(allocator);
         }
 
         pub fn retain(self: *Self, allocator: Allocator) !*Node(T) {
             const node = if (self.next) |n| blk: {
                 self.next = n.next;
                 break :blk n;
-            } else try allocator.create(Node(T));
+            } else blk: {
+                const n = try allocator.create(Node(T));
+                if (self.clearValue) |f| f(n);
+                break :blk n;
+            };
 
             node.next = null;
             return node;
         }
 
         pub fn release(self: *Self, node: *Node(T)) void {
+            if (self.clearValue) |f| f(node);
             node.next = self.next;
             self.next = node;
         }
@@ -309,7 +325,7 @@ fn Pool(comptime T: type) type {
 
 test "Pool" {
     var pool = Pool(usize){};
-    defer pool.deinit(test_alloc);
+    defer pool.deinit(test_alloc, false);
 
     var n0: ?*Node(usize) = try pool.retain(test_alloc);
     errdefer if (n0) |n| test_alloc.destroy(n);
@@ -350,18 +366,27 @@ fn Node(comptime T: type) type {
     return struct {
         value: T,
         next: ?*@This() = null,
+
+        pub fn deinitChain(self: *@This(), allocator: Allocator) void {
+            var next: ?*@This() = self;
+            while (next) |node| {
+                next = node.next;
+                allocator.destroy(node);
+            }
+        }
+
+        pub fn deinitChainAndValues(self: *@This(), allocator: Allocator) void {
+            var next: ?*@This() = self;
+            while (next) |node| {
+                next = node.next;
+                node.value.deinit(allocator);
+                allocator.destroy(node);
+            }
+        }
     };
 }
 
-fn deinitChain(allocator: Allocator, comptime T: type, n: ?*Node(T)) void {
-    var next = n;
-    while (next) |node| {
-        next = node.next;
-        allocator.destroy(node);
-    }
-}
-
-test "deinitChain" {
+test "node.deinitChain" {
     var gpa: std.heap.GeneralPurposeAllocator(.{ .safety = true }) = .{};
     const alloc = gpa.allocator();
 
@@ -372,6 +397,31 @@ test "deinitChain" {
         next = node;
     }
 
-    deinitChain(alloc, usize, next);
+    next.?.deinitChain(alloc);
+    try testing.expectEqual(.ok, gpa.deinit());
+}
+
+test "node.deinitChainAndValues" {
+    const Value = struct {
+        id: usize,
+
+        pub fn deinit(self: *const @This(), allocator: Allocator) void {
+            allocator.destroy(self);
+        }
+    };
+
+    var gpa: std.heap.GeneralPurposeAllocator(.{ .safety = true }) = .{};
+    const alloc = gpa.allocator();
+
+    var next: ?*Node(*const Value) = null;
+    for (0..3) |i| {
+        const node = try alloc.create(Node(*const Value));
+        const value = try alloc.create(Value);
+        value.* = Value{ .id = i };
+        node.* = .{ .value = value, .next = next };
+        next = node;
+    }
+
+    next.?.deinitChainAndValues(alloc);
     try testing.expectEqual(.ok, gpa.deinit());
 }
