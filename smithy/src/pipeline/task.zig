@@ -120,33 +120,33 @@ test "Task.define" {
         .name = "No Op",
         .input = null,
         .output = void,
-        .func = test_tasks.noOp,
-        .Fn = *const @TypeOf(test_tasks.noOp),
-    }, test_tasks.NoOp);
+        .func = tests.noOp,
+        .Fn = *const @TypeOf(tests.noOp),
+    }, tests.NoOp);
 
     try testing.expectEqualDeep(Task{
         .name = "Crash",
         .input = null,
         .output = error{Fail}!void,
-        .func = test_tasks.crash,
-        .Fn = *const @TypeOf(test_tasks.crash),
-    }, test_tasks.Crash);
+        .func = tests.crash,
+        .Fn = *const @TypeOf(tests.crash),
+    }, tests.Crash);
 
     comptime try testing.expectEqualDeep(Task{
         .name = "Multiply",
         .input = &.{ usize, usize },
         .output = usize,
-        .func = test_tasks.multiply,
-        .Fn = *const @TypeOf(test_tasks.multiply),
-    }, test_tasks.Multiply);
+        .func = tests.multiply,
+        .Fn = *const @TypeOf(tests.multiply),
+    }, tests.Multiply);
 }
 
 test "Task.invoke" {
-    test_tasks.did_call = false;
-    test_tasks.Call.invoke(.{}, .{});
-    try testing.expect(test_tasks.did_call);
+    tests.did_call = false;
+    tests.Call.invoke(.{}, .{});
+    try testing.expect(tests.did_call);
 
-    try testing.expectEqual(108, test_tasks.Multiply.invoke(.{}, .{ 2, 54 }));
+    try testing.expectEqual(108, tests.Multiply.invoke(.{}, .{ 2, 54 }));
 }
 
 pub const TaskDelegate = struct {};
@@ -193,21 +193,21 @@ pub const TaskTest = struct {
 test "TaskTest" {
     const tester = TaskTest.init(.{});
 
-    test_tasks.did_call = false;
-    tester.invoke(test_tasks.Call, .{});
-    try testing.expect(test_tasks.did_call);
+    tests.did_call = false;
+    tester.invoke(tests.Call, .{});
+    try testing.expect(tests.did_call);
 
-    try tester.expectEqual(test_tasks.Multiply, 108, .{ 2, 54 });
+    try tester.expectEqual(tests.Multiply, 108, .{ 2, 54 });
 
-    try tester.invoke(test_tasks.Failable, .{false});
-    try tester.expectError(test_tasks.Failable, error.Fail, .{true});
+    try tester.invoke(tests.Failable, .{false});
+    try tester.expectError(tests.Failable, error.Fail, .{true});
 }
 
-pub const test_tasks = struct {
+pub const tests = struct {
     pub const NoOp = Task.define("No Op", .{}, noOp);
     fn noOp(_: TaskDelegate) void {}
 
-    var did_call: bool = false;
+    pub var did_call: bool = false;
     pub const Call = Task.define("Call", .{}, call);
     fn call(_: TaskDelegate) void {
         did_call = true;
