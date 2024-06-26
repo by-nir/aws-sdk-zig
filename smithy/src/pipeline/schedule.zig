@@ -3,18 +3,12 @@ const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const tsk = @import("task.zig");
-
-pub fn TaskCallback(comptime task: tsk.Task) type {
-    return if (task.Out(.retain) == void)
-        *const fn (ctx: *const anyopaque) anyerror!void
-    else
-        *const fn (ctx: *const anyopaque, output: task.Out(.retain)) anyerror!void;
-}
+const util = @import("utils.zig");
 
 pub const Schedule = struct {
     allocator: Allocator,
-    queue: Queue(PendingTask) = .{},
-    task_pool: Pool(PendingTask) = .{
+    queue: util.Queue(PendingTask) = .{},
+    task_pool: util.Pool(PendingTask) = .{
         .clearValue = clearNode,
     },
 
@@ -27,7 +21,12 @@ pub const Schedule = struct {
         self.task_pool.deinit(self.allocator, true);
     }
 
-    pub fn put(self: *Schedule, comptime task: tsk.Task, input: task.In(false)) !void {
+    pub fn invokeSync(self: *Schedule, comptime task: tsk.Task, input: task.In(false)) task.Out(.retain) {
+        const delegate = self.getDelegate();
+        return task.invoke(delegate, input);
+    }
+
+    pub fn invokeAsync(self: *Schedule, comptime task: tsk.Task, input: task.In(false)) !void {
         if (task.Out(.strip) != void)
             @compileError("Task '" ++ task.name ++ "' returns a value, use `putCallback` instead.");
 
@@ -37,12 +36,12 @@ pub const Schedule = struct {
         self.queue.put(node);
     }
 
-    pub fn putCallback(
+    pub fn invokeCallback(
         self: *Schedule,
         comptime task: tsk.Task,
         input: task.In(false),
         context: *const anyopaque,
-        callback: TaskCallback(task),
+        callback: tsk.TaskCallback(task),
     ) !void {
         const node = try self.task_pool.retain(self.allocator);
         errdefer self.task_pool.release(node);
@@ -61,73 +60,14 @@ pub const Schedule = struct {
         }
     }
 
-    fn getDelegate(_: *Schedule) tsk.TaskDelegate {
-        return .{};
+    fn getDelegate(self: *Schedule) tsk.TaskDelegate {
+        return .{ .scheduler = self };
     }
 
-    fn clearNode(node: *Node(PendingTask)) void {
+    fn clearNode(node: *util.ChainNode(PendingTask)) void {
         node.value = PendingTask.empty;
     }
 };
-
-test "Schedule: procedure" {
-    var schedule = Schedule.init(test_alloc);
-    defer schedule.deinit();
-
-    try schedule.put(tsk.tests.NoOp, .{});
-    try schedule.run();
-
-    try schedule.put(tsk.tests.Failable, .{false});
-    try schedule.run();
-
-    try schedule.put(tsk.tests.Failable, .{true});
-    try testing.expectError(error.Fail, schedule.run());
-}
-
-test "Schedule: callback" {
-    const callback = struct {
-        pub var context: usize = 0;
-
-        pub fn call(ctx: *const anyopaque) anyerror!void {
-            context = castUsize(ctx);
-        }
-
-        pub fn failable(ctx: *const anyopaque, output: error{Fail}!void) anyerror!void {
-            context = castUsize(ctx);
-            return output;
-        }
-
-        pub fn multiply(ctx: *const anyopaque, output: usize) anyerror!void {
-            try testing.expectEqual(castUsize(ctx), output);
-        }
-
-        fn castUsize(ctx: *const anyopaque) usize {
-            const cast: *const usize = @alignCast(@ptrCast(ctx));
-            return cast.*;
-        }
-    };
-
-    var schedule = Schedule.init(test_alloc);
-    defer schedule.deinit();
-
-    tsk.tests.did_call = false;
-    try schedule.putCallback(tsk.tests.Call, .{}, &@as(usize, 100), callback.call);
-    try schedule.run();
-    try testing.expect(tsk.tests.did_call);
-    try testing.expectEqual(100, callback.context);
-
-    try schedule.putCallback(tsk.tests.Failable, .{false}, &@as(usize, 101), callback.failable);
-    try schedule.run();
-    try testing.expectEqual(101, callback.context);
-
-    try schedule.putCallback(tsk.tests.Failable, .{true}, &@as(usize, 102), callback.failable);
-    try testing.expectError(error.Fail, schedule.run());
-    try testing.expectEqual(102, callback.context);
-
-    callback.context = 108;
-    try schedule.putCallback(tsk.tests.Multiply, .{ 2, 54 }, &callback.context, callback.multiply);
-    try schedule.run();
-}
 
 const PendingTask = struct {
     vtable: *allowzero const Vtable,
@@ -170,7 +110,7 @@ const PendingTask = struct {
         comptime task: tsk.Task,
         input: task.In(false),
         context: *const anyopaque,
-        callback: TaskCallback(task),
+        callback: tsk.TaskCallback(task),
     ) !PendingTask {
         return PendingTask{
             .vtable = &Evaluator(task, .callback).vtable,
@@ -217,7 +157,7 @@ const PendingTask = struct {
                 switch (invocation) {
                     Invocaction.procedure => return out,
                     Invocaction.callback => {
-                        const cb: TaskCallback(task) = @alignCast(@ptrCast(callback.?));
+                        const cb: tsk.TaskCallback(task) = @alignCast(@ptrCast(callback.?));
                         if (task.Out(.retain) == void) try cb(ctx.?) else try cb(ctx.?, out);
                     },
                 }
@@ -226,202 +166,62 @@ const PendingTask = struct {
     }
 };
 
-fn Queue(comptime T: type) type {
-    return struct {
-        const Self = @This();
+test "Schedule: procedures" {
+    var schedule = Schedule.init(test_alloc);
+    defer schedule.deinit();
 
-        first: ?*Node(T) = null,
-        last: ?*Node(T) = null,
+    try schedule.invokeAsync(tsk.tests.NoOp, .{});
+    try schedule.run();
 
-        pub fn deinit(self: Self, allocator: Allocator, comptime values: bool) void {
-            const node = self.first orelse return;
-            if (values) node.deinitChainAndValues(allocator) else node.deinitChain(allocator);
-        }
+    try schedule.invokeAsync(tsk.tests.Failable, .{false});
+    try schedule.run();
 
-        pub fn put(self: *Self, node: *Node(T)) void {
-            if (self.last) |last| last.next = node else self.first = node;
-            self.last = node;
-            node.next = null;
-        }
-
-        pub fn take(self: *Self) ?*Node(T) {
-            const node = self.first orelse return null;
-            self.first = node.next;
-            if (node.next == null) self.last = null else node.next = null;
-            return node;
-        }
-    };
+    try schedule.invokeAsync(tsk.tests.Failable, .{true});
+    try testing.expectError(error.Fail, schedule.run());
 }
 
-test "Queue" {
-    var queue = Queue(usize){};
-    defer queue.deinit(test_alloc, false);
+test "Schedule: callbacks" {
+    var schedule = Schedule.init(test_alloc);
+    defer schedule.deinit();
 
-    try testing.expectEqual(null, queue.take());
+    tests.context = 0;
+    tsk.tests.did_call = false;
+    try schedule.invokeCallback(tsk.tests.Call, .{}, &@as(usize, 101), tests.call);
+    try schedule.run();
+    try testing.expect(tsk.tests.did_call);
+    try testing.expectEqual(101, tests.context);
 
-    const n0 = try test_alloc.create(Node(usize));
-    defer test_alloc.destroy(n0);
-    n0.* = .{ .value = 100 };
-    queue.put(n0);
+    try schedule.invokeCallback(tsk.tests.Failable, .{false}, &@as(usize, 102), tests.failable);
+    try schedule.run();
+    try testing.expectEqual(102, tests.context);
 
-    try testing.expectEqual(100, queue.take().?.value);
-    try testing.expectEqual(null, queue.take());
+    try schedule.invokeCallback(tsk.tests.Failable, .{true}, &@as(usize, 103), tests.failable);
+    try testing.expectError(error.Fail, schedule.run());
+    try testing.expectEqual(103, tests.context);
 
-    const n1 = try test_alloc.create(Node(usize));
-    defer test_alloc.destroy(n1);
-    n1.* = .{ .value = 101 };
-    queue.put(n1);
-
-    queue.put(n0);
-
-    const n2 = try test_alloc.create(Node(usize));
-    defer test_alloc.destroy(n2);
-    n2.* = .{ .value = 102 };
-    queue.put(n2);
-
-    try testing.expectEqual(101, queue.take().?.value);
-    try testing.expectEqual(100, queue.take().?.value);
-    try testing.expectEqual(102, queue.take().?.value);
-    try testing.expectEqual(null, queue.take());
-
-    // Assert the deinit is working:
-    queue.put(try test_alloc.create(Node(usize)));
-    queue.put(try test_alloc.create(Node(usize)));
+    tests.context = 108;
+    try schedule.invokeCallback(tsk.tests.Multiply, .{ 2, 54 }, &tests.context, tests.multiply);
+    try schedule.run();
 }
 
-fn Pool(comptime T: type) type {
-    return struct {
-        const Self = @This();
+const tests = struct {
+    pub var context: usize = 0;
 
-        next: ?*Node(T) = null,
-        clearValue: ?*const fn (node: *Node(T)) void = null,
-
-        pub fn deinit(self: Self, allocator: Allocator, comptime values: bool) void {
-            const node = self.next orelse return;
-            if (values) node.deinitChainAndValues(allocator) else node.deinitChain(allocator);
-        }
-
-        pub fn retain(self: *Self, allocator: Allocator) !*Node(T) {
-            const node = if (self.next) |n| blk: {
-                self.next = n.next;
-                break :blk n;
-            } else blk: {
-                const n = try allocator.create(Node(T));
-                if (self.clearValue) |f| f(n);
-                break :blk n;
-            };
-
-            node.next = null;
-            return node;
-        }
-
-        pub fn release(self: *Self, node: *Node(T)) void {
-            if (self.clearValue) |f| f(node);
-            node.next = self.next;
-            self.next = node;
-        }
-    };
-}
-
-test "Pool" {
-    var pool = Pool(usize){};
-    defer pool.deinit(test_alloc, false);
-
-    var n0: ?*Node(usize) = try pool.retain(test_alloc);
-    errdefer if (n0) |n| test_alloc.destroy(n);
-    n0.?.value = 100;
-
-    var n1: ?*Node(usize) = try pool.retain(test_alloc);
-    errdefer if (n1) |n| test_alloc.destroy(n);
-    n1.?.value = 101;
-
-    pool.release(n0.?);
-    n0 = null;
-
-    n0 = try pool.retain(test_alloc);
-    try testing.expectEqual(100, n0.?.value);
-
-    var n2: ?*Node(usize) = try pool.retain(test_alloc);
-    errdefer if (n2) |n| test_alloc.destroy(n);
-    n2.?.value = 102;
-
-    pool.release(n1.?);
-    n1 = null;
-    pool.release(n0.?);
-    n0 = null;
-    pool.release(n2.?);
-    n2 = null;
-
-    var node = pool.next orelse return error.ExpectedNode;
-    try testing.expectEqualDeep(102, node.value);
-
-    node = node.next orelse return error.ExpectedNode;
-    try testing.expectEqualDeep(100, node.value);
-
-    node = node.next orelse return error.ExpectedNode;
-    try testing.expectEqualDeep(101, node.value);
-}
-
-fn Node(comptime T: type) type {
-    return struct {
-        value: T,
-        next: ?*@This() = null,
-
-        pub fn deinitChain(self: *@This(), allocator: Allocator) void {
-            var next: ?*@This() = self;
-            while (next) |node| {
-                next = node.next;
-                allocator.destroy(node);
-            }
-        }
-
-        pub fn deinitChainAndValues(self: *@This(), allocator: Allocator) void {
-            var next: ?*@This() = self;
-            while (next) |node| {
-                next = node.next;
-                node.value.deinit(allocator);
-                allocator.destroy(node);
-            }
-        }
-    };
-}
-
-test "node.deinitChain" {
-    var gpa: std.heap.GeneralPurposeAllocator(.{ .safety = true }) = .{};
-    const alloc = gpa.allocator();
-
-    var next: ?*Node(usize) = null;
-    for (0..3) |i| {
-        const node = try alloc.create(Node(usize));
-        node.* = .{ .value = i, .next = next };
-        next = node;
+    pub fn call(ctx: *const anyopaque) anyerror!void {
+        context = castUsize(ctx);
     }
 
-    next.?.deinitChain(alloc);
-    try testing.expectEqual(.ok, gpa.deinit());
-}
-
-test "node.deinitChainAndValues" {
-    const Value = struct {
-        id: usize,
-
-        pub fn deinit(self: *const @This(), allocator: Allocator) void {
-            allocator.destroy(self);
-        }
-    };
-
-    var gpa: std.heap.GeneralPurposeAllocator(.{ .safety = true }) = .{};
-    const alloc = gpa.allocator();
-
-    var next: ?*Node(*const Value) = null;
-    for (0..3) |i| {
-        const node = try alloc.create(Node(*const Value));
-        const value = try alloc.create(Value);
-        value.* = Value{ .id = i };
-        node.* = .{ .value = value, .next = next };
-        next = node;
+    pub fn failable(ctx: *const anyopaque, output: error{Fail}!void) anyerror!void {
+        context = castUsize(ctx);
+        try output;
     }
 
-    next.?.deinitChainAndValues(alloc);
-    try testing.expectEqual(.ok, gpa.deinit());
-}
+    pub fn multiply(ctx: *const anyopaque, output: usize) anyerror!void {
+        try testing.expectEqual(castUsize(ctx), output);
+    }
+
+    fn castUsize(ctx: *const anyopaque) usize {
+        const cast: *const usize = @alignCast(@ptrCast(ctx));
+        return cast.*;
+    }
+};

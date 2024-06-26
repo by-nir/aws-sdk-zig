@@ -1,6 +1,14 @@
 const std = @import("std");
 const ZigType = std.builtin.Type;
 const testing = std.testing;
+const Schedule = @import("schedule.zig").Schedule;
+
+pub fn TaskCallback(comptime task: Task) type {
+    return if (task.Out(.retain) == void)
+        *const fn (ctx: *const anyopaque) anyerror!void
+    else
+        *const fn (ctx: *const anyopaque, output: task.Out(.retain)) anyerror!void;
+}
 
 pub const Task = struct {
     name: []const u8,
@@ -18,10 +26,8 @@ pub const Task = struct {
             .Fn => |t| t,
             .Pointer => |t| blk: {
                 const target = @typeInfo(t.child);
-                if (t.size == .One and target == .Fn)
-                    break :blk target.Fn
-                else
-                    @compileError("Task function must be a function");
+                if (t.size != .One or target != .Fn) @compileError("Task function must be a function");
+                break :blk target.Fn;
             },
             else => @compileError("Task function must be a function"),
         };
@@ -143,13 +149,12 @@ test "Task.define" {
 
 test "Task.invoke" {
     tests.did_call = false;
-    tests.Call.invoke(.{}, .{});
+    tests.Call.invoke(NOOP_DELEGATE, .{});
     try testing.expect(tests.did_call);
 
-    try testing.expectEqual(108, tests.Multiply.invoke(.{}, .{ 2, 54 }));
+    const value = tests.Multiply.invoke(NOOP_DELEGATE, .{ 2, 54 });
+    try testing.expectEqual(108, value);
 }
-
-pub const TaskDelegate = struct {};
 
 pub const TaskTest = struct {
     delegate: TaskDelegate,
@@ -191,7 +196,7 @@ pub const TaskTest = struct {
 };
 
 test "TaskTest" {
-    const tester = TaskTest.init(.{});
+    const tester = TaskTest.init(NOOP_DELEGATE);
 
     tests.did_call = false;
     tester.invoke(tests.Call, .{});
@@ -226,5 +231,31 @@ pub const tests = struct {
     pub const Multiply = Task.define("Multiply", .{}, multiply);
     fn multiply(_: TaskDelegate, a: usize, b: usize) usize {
         return a * b;
+    }
+};
+
+const NOOP_DELEGATE = TaskDelegate{
+    .scheduler = undefined,
+};
+
+pub const TaskDelegate = struct {
+    scheduler: *Schedule,
+
+    pub fn invoke(self: TaskDelegate, comptime task: Task, input: task.In(false)) task.Out(.retain) {
+        return self.scheduler.invokeSync(task, input);
+    }
+
+    pub fn scheduleAsync(self: TaskDelegate, comptime task: Task, input: task.In(false)) !void {
+        try self.scheduler.invokeAsync(task, input);
+    }
+
+    pub fn scheduleCallback(
+        self: TaskDelegate,
+        comptime task: Task,
+        input: task.In(false),
+        context: *const anyopaque,
+        callback: TaskCallback(task),
+    ) !void {
+        try self.scheduler.invokeCallback(task, input, context, callback);
     }
 };
