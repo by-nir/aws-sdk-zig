@@ -19,7 +19,7 @@ pub const Task = struct {
 
     pub const DefineOptions = struct {};
 
-    pub fn define(name: []const u8, comptime options: DefineOptions, comptime func: anytype) Task {
+    pub fn define(name: []const u8, comptime func: anytype, comptime options: DefineOptions) Task {
         _ = options;
 
         const meta: ZigType.Fn = switch (@typeInfo(@TypeOf(func))) {
@@ -209,26 +209,26 @@ test "TaskTester" {
 }
 
 pub const tests = struct {
-    pub const NoOp = Task.define("No Op", .{}, noOp);
+    pub const NoOp = Task.define("No Op", noOp, .{});
     pub fn noOp(_: TaskDelegate) void {}
 
     pub var did_call: bool = false;
-    pub const Call = Task.define("Call", .{}, call);
+    pub const Call = Task.define("Call", call, .{});
     fn call(_: TaskDelegate) void {
         did_call = true;
     }
 
-    pub const Crash = Task.define("Crash", .{}, crash);
+    pub const Crash = Task.define("Crash", crash, .{});
     fn crash(_: TaskDelegate) error{Fail}!void {
         return error.Fail;
     }
 
-    pub const Failable = Task.define("Failable", .{}, failable);
+    pub const Failable = Task.define("Failable", failable, .{});
     fn failable(_: TaskDelegate, fail: bool) error{Fail}!void {
         if (fail) return error.Fail;
     }
 
-    pub const Multiply = Task.define("Multiply", .{}, multiply);
+    pub const Multiply = Task.define("Multiply", multiply, .{});
     fn multiply(_: TaskDelegate, a: usize, b: usize) usize {
         return a * b;
     }
