@@ -228,3 +228,31 @@ pub const ComptimeTag = enum(usize) {
         }
     }
 };
+
+/// Returns a `*T` or the unmodified type if it’s already a pointer.
+pub fn Reference(comptime T: type) type {
+    return switch (@typeInfo(T)) {
+        .Pointer => T,
+        else => *T,
+    };
+}
+
+test "Reference" {
+    try testing.expectEqual(*const bool, Reference(*const bool));
+    try testing.expectEqual(*bool, Reference(*bool));
+    try testing.expectEqual([]bool, Reference([]bool));
+    try testing.expectEqual(*bool, Reference(bool));
+}
+
+/// Returns a `?T` or the unmodified type if it’s already optional.
+pub fn Optional(comptime T: type) type {
+    return switch (@typeInfo(T)) {
+        .Optional => T,
+        else => ?T,
+    };
+}
+
+test "Optional" {
+    try testing.expectEqual(?bool, Optional(?bool));
+    try testing.expectEqual(?bool, Optional(bool));
+}
