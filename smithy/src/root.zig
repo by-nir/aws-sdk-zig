@@ -67,5 +67,6 @@ test {
     _ = Pipeline;
     _ = @import("pipeline/utils.zig");
     _ = @import("pipeline/task.zig");
+    _ = @import("pipeline/scope.zig");
     _ = @import("pipeline/schedule.zig");
 }
