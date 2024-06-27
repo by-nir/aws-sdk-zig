@@ -26,10 +26,10 @@ pub const Task = struct {
             .Fn => |t| t,
             .Pointer => |t| blk: {
                 const target = @typeInfo(t.child);
-                if (t.size != .One or target != .Fn) @compileError("Task function must be a function");
+                if (t.size != .One or target != .Fn) @compileError("Task `func` must be a function type");
                 break :blk target.Fn;
             },
-            else => @compileError("Task function must be a function"),
+            else => @compileError("Task `func` must be a function type"),
         };
 
         const len = meta.params.len;
@@ -156,20 +156,20 @@ test "Task.invoke" {
     try testing.expectEqual(108, value);
 }
 
-pub const TaskTest = struct {
+pub const TaskTester = struct {
     delegate: TaskDelegate,
 
-    pub fn init(delegate: TaskDelegate) TaskTest {
+    pub fn init(delegate: TaskDelegate) TaskTester {
         return .{ .delegate = delegate };
     }
 
-    pub fn invoke(self: TaskTest, comptime task: Task, input: task.In(false)) task.Out(.retain) {
+    pub fn invoke(self: TaskTester, comptime task: Task, input: task.In(false)) task.Out(.retain) {
         self.cleanup();
         return task.invoke(self.delegate, input);
     }
 
     pub fn expectEqual(
-        self: TaskTest,
+        self: TaskTester,
         comptime task: Task,
         expected: task.Out(.strip),
         input: task.In(false),
@@ -180,7 +180,7 @@ pub const TaskTest = struct {
     }
 
     pub fn expectError(
-        self: TaskTest,
+        self: TaskTester,
         comptime task: Task,
         expected: anyerror,
         input: task.In(false),
@@ -190,13 +190,13 @@ pub const TaskTest = struct {
         try testing.expectError(expected, value);
     }
 
-    fn cleanup(self: TaskTest) void {
+    fn cleanup(self: TaskTester) void {
         _ = self; // autofix
     }
 };
 
-test "TaskTest" {
-    const tester = TaskTest.init(NOOP_DELEGATE);
+test "TaskTester" {
+    const tester = TaskTester.init(NOOP_DELEGATE);
 
     tests.did_call = false;
     tester.invoke(tests.Call, .{});
@@ -210,7 +210,7 @@ test "TaskTest" {
 
 pub const tests = struct {
     pub const NoOp = Task.define("No Op", .{}, noOp);
-    fn noOp(_: TaskDelegate) void {}
+    pub fn noOp(_: TaskDelegate) void {}
 
     pub var did_call: bool = false;
     pub const Call = Task.define("Call", .{}, call);
@@ -241,15 +241,15 @@ const NOOP_DELEGATE = TaskDelegate{
 pub const TaskDelegate = struct {
     scheduler: *Schedule,
 
-    pub fn invoke(self: TaskDelegate, comptime task: Task, input: task.In(false)) task.Out(.retain) {
+    pub fn invokeSync(self: TaskDelegate, comptime task: Task, input: task.In(false)) task.Out(.retain) {
         return self.scheduler.invokeSync(task, input);
     }
 
-    pub fn scheduleAsync(self: TaskDelegate, comptime task: Task, input: task.In(false)) !void {
+    pub fn invokeAsync(self: TaskDelegate, comptime task: Task, input: task.In(false)) !void {
         try self.scheduler.invokeAsync(task, input);
     }
 
-    pub fn scheduleCallback(
+    pub fn invokeCallback(
         self: TaskDelegate,
         comptime task: Task,
         input: task.In(false),

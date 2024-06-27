@@ -202,3 +202,29 @@ test "node.deinitChainAndValues" {
     next.?.deinitChainAndValues(alloc);
     try testing.expectEqual(.ok, gpa.deinit());
 }
+
+// https://github.com/ziglang/zig/issues/19858#issuecomment-2119335045
+pub const ComptimeTag = enum(usize) {
+    invalid = 0,
+    _,
+
+    pub fn of(input: anytype) ComptimeTag {
+        switch (@typeInfo(@TypeOf(input))) {
+            .Pointer => return @enumFromInt(@intFromPtr(input)),
+            else => {
+                const producer = struct {
+                    inline fn id(comptime value: anytype) *const anyopaque {
+                        const Unique = struct {
+                            var target: u8 = undefined;
+                            comptime {
+                                _ = value;
+                            }
+                        };
+                        return comptime @ptrCast(&Unique.target);
+                    }
+                };
+                return @enumFromInt(@intFromPtr(comptime producer.id(input)));
+            },
+        }
+    }
+};
