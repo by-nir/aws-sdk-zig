@@ -1,14 +1,8 @@
 const std = @import("std");
-const ZigType = std.builtin.Type;
 const testing = std.testing;
-const schdl = @import("schedule.zig");
-
-pub fn TaskCallback(comptime task: Task) type {
-    return if (task.Out(.retain) == void)
-        *const fn (ctx: *const anyopaque) anyerror!void
-    else
-        *const fn (ctx: *const anyopaque, output: task.Out(.retain)) anyerror!void;
-}
+const ZigType = std.builtin.Type;
+const scp = @import("scope.zig");
+const Delegate = scp.Delegate;
 
 pub const Task = struct {
     name: []const u8,
@@ -33,8 +27,8 @@ pub const Task = struct {
         };
 
         const len = meta.params.len;
-        if (len == 0 or meta.params[0].type != TaskDelegate) {
-            @compileError("Task '" ++ name ++ "' first parameter must be `TaskDelegate`");
+        if (len == 0 or meta.params[0].type != *const Delegate) {
+            @compileError("Task '" ++ name ++ "' first parameter must be `*const Delegate`");
         }
 
         comptime var input_mut: [len - 1]type = undefined;
@@ -52,7 +46,7 @@ pub const Task = struct {
         };
     }
 
-    pub fn invoke(comptime self: Task, delegate: TaskDelegate, input: self.In(false)) self.Out(.retain) {
+    pub fn invoke(comptime self: Task, delegate: *const Delegate, input: self.In(false)) self.Out(.retain) {
         const args = if (self.input) |types| blk: {
             var values: self.In(true) = undefined;
             values.@"0" = delegate;
@@ -84,7 +78,7 @@ pub const Task = struct {
 
     pub fn In(comptime self: Task, comptime with_delegate: bool) type {
         const input = self.input orelse if (with_delegate) {
-            return @TypeOf(.{TaskDelegate});
+            return @TypeOf(.{*const Delegate});
         } else {
             return @TypeOf(.{});
         };
@@ -94,10 +88,10 @@ pub const Task = struct {
         if (with_delegate) {
             fields[0] = .{
                 .name = "0",
-                .type = TaskDelegate,
+                .type = *const Delegate,
                 .default_value = null,
                 .is_comptime = false,
-                .alignment = @alignOf(TaskDelegate),
+                .alignment = @alignOf(*const Delegate),
             };
         }
 
@@ -118,6 +112,13 @@ pub const Task = struct {
             .fields = &fields,
             .decls = &.{},
         } });
+    }
+
+    pub fn Callback(comptime task: Task) type {
+        return if (task.Out(.retain) == void)
+            *const fn (ctx: *const anyopaque) anyerror!void
+        else
+            *const fn (ctx: *const anyopaque, output: task.Out(.retain)) anyerror!void;
     }
 };
 
@@ -149,23 +150,23 @@ test "Task.define" {
 
 test "Task.invoke" {
     tests.did_call = false;
-    tests.Call.invoke(NOOP_DELEGATE, .{});
+    tests.Call.invoke(&scp.NOOP_DELEGATE, .{});
     try testing.expect(tests.did_call);
 
-    const value = tests.Multiply.invoke(NOOP_DELEGATE, .{ 2, 54 });
+    const value = tests.Multiply.invoke(&scp.NOOP_DELEGATE, .{ 2, 54 });
     try testing.expectEqual(108, value);
 }
 
 pub const TaskTester = struct {
-    delegate: TaskDelegate,
+    delegate: Delegate,
 
-    pub fn init(delegate: TaskDelegate) TaskTester {
+    pub fn init(delegate: Delegate) TaskTester {
         return .{ .delegate = delegate };
     }
 
     pub fn invoke(self: TaskTester, comptime task: Task, input: task.In(false)) task.Out(.retain) {
         self.cleanup();
-        return task.invoke(self.delegate, input);
+        return task.invoke(&self.delegate, input);
     }
 
     pub fn expectEqual(
@@ -175,7 +176,7 @@ pub const TaskTester = struct {
         input: task.In(false),
     ) !void {
         self.cleanup();
-        const value = task.invoke(self.delegate, input);
+        const value = task.invoke(&self.delegate, input);
         try testing.expectEqual(expected, if (@typeInfo(task.output) == .ErrorUnion) try value else value);
     }
 
@@ -186,7 +187,7 @@ pub const TaskTester = struct {
         input: task.In(false),
     ) !void {
         self.cleanup();
-        const value = task.invoke(self.delegate, input);
+        const value = task.invoke(&self.delegate, input);
         try testing.expectError(expected, value);
     }
 
@@ -196,7 +197,7 @@ pub const TaskTester = struct {
 };
 
 test "TaskTester" {
-    const tester = TaskTester.init(NOOP_DELEGATE);
+    const tester = TaskTester.init(scp.NOOP_DELEGATE);
 
     tests.did_call = false;
     tester.invoke(tests.Call, .{});
@@ -210,53 +211,26 @@ test "TaskTester" {
 
 pub const tests = struct {
     pub const NoOp = Task.define("No Op", noOp, .{});
-    pub fn noOp(_: TaskDelegate) void {}
+    pub fn noOp(_: *const Delegate) void {}
 
     pub var did_call: bool = false;
     pub const Call = Task.define("Call", call, .{});
-    fn call(_: TaskDelegate) void {
+    fn call(_: *const Delegate) void {
         did_call = true;
     }
 
     pub const Crash = Task.define("Crash", crash, .{});
-    fn crash(_: TaskDelegate) error{Fail}!void {
+    fn crash(_: *const Delegate) error{Fail}!void {
         return error.Fail;
     }
 
     pub const Failable = Task.define("Failable", failable, .{});
-    fn failable(_: TaskDelegate, fail: bool) error{Fail}!void {
+    fn failable(_: *const Delegate, fail: bool) error{Fail}!void {
         if (fail) return error.Fail;
     }
 
     pub const Multiply = Task.define("Multiply", multiply, .{});
-    fn multiply(_: TaskDelegate, a: usize, b: usize) usize {
+    fn multiply(_: *const Delegate, a: usize, b: usize) usize {
         return a * b;
-    }
-};
-
-const NOOP_DELEGATE = TaskDelegate{
-    .scheduler = undefined,
-};
-
-pub const TaskDelegate = struct {
-    node: *schdl.ScheduleNode,
-    scheduler: *schdl.Schedule,
-
-    pub fn invokeSync(self: TaskDelegate, comptime task: Task, input: task.In(false)) !task.Out(.strip) {
-        return self.scheduler.invokeSync(task, input);
-    }
-
-    pub fn invokeAsync(self: TaskDelegate, comptime task: Task, input: task.In(false)) !void {
-        try self.scheduler.invokeAsync(self.node, task, input);
-    }
-
-    pub fn invokeCallback(
-        self: TaskDelegate,
-        comptime task: Task,
-        input: task.In(false),
-        context: *const anyopaque,
-        callback: TaskCallback(task),
-    ) !void {
-        try self.scheduler.invokeCallback(self.node, task, input, context, callback);
     }
 };

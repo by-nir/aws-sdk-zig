@@ -2,9 +2,68 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
+const scd = @import("schedule.zig");
+const Task = @import("task.zig").Task;
 const util = @import("utils.zig");
 const ComptimeTag = util.ComptimeTag;
 const Reference = util.Reference;
+
+pub const NOOP_DELEGATE = Delegate{
+    .children = .{},
+    .scope = undefined,
+    .scheduler = undefined,
+};
+
+pub const Delegate = struct {
+    scope: *Scope,
+    scheduler: *scd.Schedule,
+    children: scd.ScheduleQueue,
+    branchScope: ?*const fn (Delegate: *const Delegate) anyerror!void = null,
+
+    pub fn invokeSync(self: *const Delegate, comptime task: Task, input: task.In(false)) !task.Out(.strip) {
+        return self.scheduler.invokeSync(self, task, input);
+    }
+
+    pub fn scheduleAsync(self: *const Delegate, comptime task: Task, input: task.In(false)) !void {
+        try self.scheduler.appendAsync(self, task, input);
+    }
+
+    pub fn scheduleCallback(
+        self: *const Delegate,
+        comptime task: Task,
+        input: task.In(false),
+        context: *const anyopaque,
+        callback: Task.Callback(task),
+    ) !void {
+        try self.scheduler.appendCallback(self, task, input, context, callback);
+    }
+
+    pub fn provide(
+        self: *const Delegate,
+        value: anytype,
+        comptime cleanup: ?*const fn (ctx: Reference(@TypeOf(value)), allocator: Allocator) void,
+    ) !Reference(@TypeOf(value)) {
+        if (self.branchScope) |branch| try branch(self);
+        return self.scope.provideService(value, cleanup);
+    }
+
+    pub fn defineValue(self: *const Delegate, comptime T: type, comptime tag: anytype, value: T) !void {
+        if (self.branchScope) |branch| try branch(self);
+        try self.scope.defineValue(T, tag, value);
+    }
+
+    pub fn writeValue(self: Delegate, comptime T: type, comptime tag: anytype, value: T) !void {
+        try self.scope.writeValue(T, tag, value);
+    }
+
+    pub fn readValue(self: Delegate, comptime T: type, comptime tag: anytype) util.Optional(T) {
+        return self.scope.readValue(T, tag);
+    }
+
+    pub fn hasValue(self: Delegate, comptime tag: anytype) bool {
+        return self.scope.hasValue(tag);
+    }
+};
 
 pub const Scope = struct {
     arena: std.heap.ArenaAllocator,
@@ -49,7 +108,7 @@ pub const Scope = struct {
         return self.arena.allocator();
     }
 
-    pub fn registerService(
+    pub fn provideService(
         self: *Scope,
         value: anytype,
         comptime cleanup: ?*const fn (ctx: Reference(@TypeOf(value)), allocator: Allocator) void,
@@ -57,7 +116,7 @@ pub const Scope = struct {
         const T = @TypeOf(value);
         const meta = @typeInfo(T);
         const id = ComptimeTag.of(Reference(T));
-        if (self.services.contains(id)) return error.ServiceAlreadyRegisteredInScope;
+        if (self.services.contains(id)) return error.ServiceAlreadyProvidedByScope;
 
         const arena_alloc = self.arena.allocator();
         const service: Reference(T) = switch (meta) {
@@ -68,13 +127,13 @@ pub const Scope = struct {
             },
             .Pointer => |t| blk: {
                 if (@typeInfo(t.child) != .Struct or t.size != .One)
-                    @compileError("Only a struct may be registered as a service; trying to register " ++ @typeName(T))
+                    @compileError("Only a struct may be provided as a service; trying to provide " ++ @typeName(T))
                 else if (t.is_const)
-                    @compileError("A service must be mutable; trying to register " ++ @typeName(T))
+                    @compileError("A service must be mutable; trying to provide " ++ @typeName(T))
                 else
                     break :blk value;
             },
-            else => @compileError("Only a struct may be registered as a service; trying to register a " ++ @typeName(T)),
+            else => @compileError("Only a struct may be provided as a service; trying to provide a " ++ @typeName(T)),
         };
         errdefer if (meta == .Struct) arena_alloc.destroy(service);
 
@@ -164,7 +223,7 @@ pub const Scope = struct {
     }
 };
 
-test "scope services" {
+test "Scope: services" {
     const Dummy = struct {
         value: usize,
 
@@ -178,13 +237,13 @@ test "scope services" {
     var scope = Scope.init(test_alloc, null);
     defer scope.deinit();
 
-    // Register value service
-    const dummy = try scope.registerService(Dummy{ .value = 101 }, null);
+    // Provide value service
+    const dummy = try scope.provideService(Dummy{ .value = 101 }, null);
 
     // Prevent overriding services in the same scope
     try testing.expectError(
-        error.ServiceAlreadyRegisteredInScope,
-        scope.registerService(Dummy{ .value = 999 }, null),
+        error.ServiceAlreadyProvidedByScope,
+        scope.provideService(Dummy{ .value = 999 }, null),
     );
 
     // Value type service results in a mutable reference
@@ -207,8 +266,8 @@ test "scope services" {
         // Get parent service
         try testing.expectEqualDeep(dummy, child.getService(Dummy));
 
-        // Register with cleanup
-        const override = try child.registerService(Dummy{ .value = 201 }, Dummy.deinit);
+        // Provide with cleanup
+        const override = try child.provideService(Dummy{ .value = 201 }, Dummy.deinit);
         try testing.expectEqual(201, override.value);
 
         // Overrides parent services
@@ -232,13 +291,13 @@ test "scope services" {
     var ref_dummy = Dummy{ .value = 301 };
     try testing.expectEqual(
         &ref_dummy,
-        try scope.registerService(&ref_dummy, Dummy.deinit),
+        try scope.provideService(&ref_dummy, Dummy.deinit),
     );
     try testing.expectEqual(&ref_dummy, scope.getService(Dummy));
     scope.reset();
 }
 
-test "scope blackboard" {
+test "Scope: blackboard" {
     var scope = Scope.init(test_alloc, null);
     defer scope.deinit();
 

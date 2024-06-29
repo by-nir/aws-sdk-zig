@@ -22,6 +22,10 @@ pub fn Queue(comptime T: type) type {
             node.children = .{};
         }
 
+        pub fn isEmpty(self: *Self) bool {
+            return self.first == null;
+        }
+
         pub fn peek(self: *Self) ?*Node(T) {
             return self.first;
         }
@@ -47,6 +51,7 @@ test "Queue" {
 
     try testing.expectEqual(null, queue.peek());
     try testing.expectEqual(null, queue.take());
+    try testing.expectEqual(true, queue.isEmpty());
 
     const n0 = try test_alloc.create(Node(usize));
     defer test_alloc.destroy(n0);
@@ -54,9 +59,12 @@ test "Queue" {
     queue.put(n0);
 
     try testing.expectEqual(100, queue.peek().?.value);
+    try testing.expectEqual(false, queue.isEmpty());
+
     try testing.expectEqual(100, queue.take().?.value);
     try testing.expectEqual(null, queue.peek());
     try testing.expectEqual(null, queue.take());
+    try testing.expectEqual(true, queue.isEmpty());
 
     const n1 = try test_alloc.create(Node(usize));
     defer test_alloc.destroy(n1);
