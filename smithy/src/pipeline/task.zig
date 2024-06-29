@@ -1,7 +1,7 @@
 const std = @import("std");
 const ZigType = std.builtin.Type;
 const testing = std.testing;
-const Schedule = @import("schedule.zig").Schedule;
+const schdl = @import("schedule.zig");
 
 pub fn TaskCallback(comptime task: Task) type {
     return if (task.Out(.retain) == void)
@@ -242,12 +242,12 @@ pub const TaskDelegate = struct {
     node: *schdl.ScheduleNode,
     scheduler: *schdl.Schedule,
 
-    pub fn invokeSync(self: TaskDelegate, comptime task: Task, input: task.In(false)) task.Out(.retain) {
+    pub fn invokeSync(self: TaskDelegate, comptime task: Task, input: task.In(false)) !task.Out(.strip) {
         return self.scheduler.invokeSync(task, input);
     }
 
     pub fn invokeAsync(self: TaskDelegate, comptime task: Task, input: task.In(false)) !void {
-        try self.scheduler.invokeAsync(task, input);
+        try self.scheduler.invokeAsync(self.node, task, input);
     }
 
     pub fn invokeCallback(
@@ -257,6 +257,6 @@ pub const TaskDelegate = struct {
         context: *const anyopaque,
         callback: TaskCallback(task),
     ) !void {
-        try self.scheduler.invokeCallback(task, input, context, callback);
+        try self.scheduler.invokeCallback(self.node, task, input, context, callback);
     }
 };

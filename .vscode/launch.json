@@ -1,0 +1,71 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Smithy: Codegen",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/smithy/zig-out/test/codegen",
+      "args": [],
+      "cwd": "${workspaceFolder}/smithy",
+      "preLaunchTask": "smithy:build-tests"
+    },
+    {
+      "name": "Smithy: Runtime",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/smithy/zig-out/test/runtime",
+      "args": [],
+      "cwd": "${workspaceFolder}/smithy",
+      "preLaunchTask": "smithy:build-tests"
+    },
+    {
+      "name": "AWS: Codegen SDK",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/aws/zig-out/test/codegen-sdk",
+      "args": [],
+      "cwd": "${workspaceFolder}/aws",
+      "preLaunchTask": "aws:build-tests"
+    },
+    {
+      "name": "AWS: Codegen Partitions",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/aws/zig-out/test/codegen-partitions",
+      "args": [],
+      "cwd": "${workspaceFolder}/aws",
+      "preLaunchTask": "aws:build-tests"
+    },
+    {
+      "name": "AWS: Runtime Types",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/aws/zig-out/test/runtime-types",
+      "args": [],
+      "cwd": "${workspaceFolder}/aws",
+      "preLaunchTask": "aws:build-tests"
+    },
+    {
+      "name": "AWS: Runtime Client",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/aws/zig-out/test/runtime-client",
+      "args": [],
+      "cwd": "${workspaceFolder}/aws",
+      "preLaunchTask": "aws:build-tests"
+    }
+  ]
+}
+
+// {
+//   "name": "Smithy: Codegen",
+//   "type": "cppdbg",
+//   "request": "launch",
+//   "program": "${workspaceFolder}/smithy/zig-out/test/codegen",
+//   "args": [],
+//   "stopAtEntry": false,
+//   "cwd": "${workspaceFolder}/smithy",
+//   "osx": { "MIMode": "lldb" },
+//   "preLaunchTask": "smithy:build-tests"
+// },

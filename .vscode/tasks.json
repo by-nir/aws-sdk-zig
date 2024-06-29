@@ -1,0 +1,168 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    //
+    // Smithy
+    //
+
+    {
+      "label": "smithy:test",
+      "dependsOrder": "sequence",
+      "dependsOn": ["smithy:test:runtime", "smithy:test:codegen"],
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      }
+    },
+    {
+      "type": "shell",
+      "label": "smithy:test:runtime",
+      "command": "zig",
+      "args": ["build", "test:runtime"],
+      "options": {
+        "cwd": "${workspaceRoot}/smithy"
+      },
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": true,
+        "panel": "shared",
+        "showReuseMessage": false,
+        "clear": false
+      },
+      "problemMatcher": [],
+      "group": {
+        "kind": "test",
+        "isDefault": false
+      }
+    },
+    {
+      "type": "shell",
+      "label": "smithy:test:codegen",
+      "command": "zig",
+      "args": ["build", "test:codegen"],
+      "options": {
+        "cwd": "${workspaceRoot}/smithy"
+      },
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": true,
+        "panel": "shared",
+        "showReuseMessage": false,
+        "clear": false
+      },
+      "problemMatcher": [],
+      "group": {
+        "kind": "test",
+        "isDefault": false
+      }
+    },
+
+    // Install unit tests for debugging
+    {
+      "type": "shell",
+      "label": "smithy:build-tests",
+      "command": "zig",
+      "args": ["build", "install", "test"],
+      "options": {
+        "cwd": "${workspaceRoot}/smithy"
+      },
+      "presentation": {
+        "echo": true,
+        "reveal": "silent",
+        "focus": false,
+        "panel": "shared",
+        "showReuseMessage": false,
+        "close": true
+      },
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": "false"
+      }
+    },
+
+    //
+    // AWS
+    //
+
+    {
+      "label": "aws:test",
+      "dependsOrder": "sequence",
+      "dependsOn": ["aws:test:runtime", "aws:test:codegen"],
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      }
+    },
+    {
+      "type": "shell",
+      "label": "aws:test:runtime",
+      "command": "zig",
+      "args": ["build", "test:runtime"],
+      "options": {
+        "cwd": "${workspaceRoot}/aws"
+      },
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": true,
+        "panel": "shared",
+        "showReuseMessage": false,
+        "clear": false
+      },
+      "problemMatcher": [],
+      "group": {
+        "kind": "test",
+        "isDefault": false
+      }
+    },
+    {
+      "type": "shell",
+      "label": "aws:test:codegen",
+      "command": "zig",
+      "args": ["build", "test:codegen"],
+      "options": {
+        "cwd": "${workspaceRoot}/aws"
+      },
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": true,
+        "panel": "shared",
+        "showReuseMessage": false,
+        "clear": false
+      },
+      "problemMatcher": [],
+      "group": {
+        "kind": "test",
+        "isDefault": false
+      }
+    },
+
+    // Install unit tests for debugging
+    {
+      "type": "shell",
+      "label": "aws:build-tests",
+      "command": "zig",
+      "args": ["build", "install", "test"],
+      "options": {
+        "cwd": "${workspaceRoot}/aws"
+      },
+      "presentation": {
+        "echo": true,
+        "reveal": "silent",
+        "focus": false,
+        "panel": "shared",
+        "showReuseMessage": false,
+        "close": true
+      },
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": "false"
+      }
+    }
+  ]
+}
