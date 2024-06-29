@@ -3,27 +3,29 @@ const testing = std.testing;
 const ZigType = std.builtin.Type;
 const scp = @import("scope.zig");
 const Delegate = scp.Delegate;
+const Reference = @import("utils.zig").Reference;
 
 pub const Task = struct {
     name: []const u8,
     input: ?[]const type,
+    inject: ?[]const type,
     output: type,
     func: *const anyopaque,
     Fn: type,
 
-    pub const DefineOptions = struct {};
+    pub const DefineOptions = struct {
+        inject: ?[]const type = null,
+    };
 
     pub fn define(name: []const u8, comptime func: anytype, comptime options: DefineOptions) Task {
-        _ = options;
-
         const meta: ZigType.Fn = switch (@typeInfo(@TypeOf(func))) {
             .Fn => |t| t,
             .Pointer => |t| blk: {
                 const target = @typeInfo(t.child);
-                if (t.size != .One or target != .Fn) @compileError("Task `func` must be a function type");
+                if (t.size != .One or target != .Fn) @compileError("Task '" ++ name ++ "' expects a function type");
                 break :blk target.Fn;
             },
-            else => @compileError("Task `func` must be a function type"),
+            else => @compileError("Task '" ++ name ++ "' expects a function type"),
         };
 
         const len = meta.params.len;
@@ -31,15 +33,59 @@ pub const Task = struct {
             @compileError("Task '" ++ name ++ "' first parameter must be `*const Delegate`");
         }
 
-        comptime var input_mut: [len - 1]type = undefined;
-        for (1..len) |i| {
-            input_mut[i - 1] = meta.params[i].type.?;
-        }
-        const input = input_mut;
+        const inject_len = comptime if (options.inject) |inj| inj.len else 0;
+        const inject = comptime if (options.inject) |inj| blk: {
+            std.debug.assert(inject_len > 0);
+            var types: [inject_len]type = undefined;
+            for (0..inj.len) |i| {
+                const T = inj[i];
+                switch (@typeInfo(T)) {
+                    .Struct => {},
+                    .Pointer, .Optional => @compileError(std.fmt.comptimePrint(
+                        "Task '{s}' options.inject[{d}] expects a plain struct type, without modifiers",
+                        .{ name, i },
+                    )),
+                    else => if (@typeInfo(T) != .Struct) @compileError(std.fmt.comptimePrint(
+                        "Task '{s}' options.inject[{d}] expects a struct type",
+                        .{ name, i },
+                    )),
+                }
+
+                var is_optional = false;
+                var Param = meta.params[i + 1].type.?;
+                if (@typeInfo(Param) == .Optional) {
+                    is_optional = true;
+                    Param = @typeInfo(Param).Optional.child;
+                }
+
+                if (Param != *T) @compileError(std.fmt.comptimePrint(
+                    if (is_optional)
+                        "Task '{s}' parameter #{d} expects type ?*{s}"
+                    else
+                        "Task '{s}' parameter #{d} expects type *{s}",
+                    .{ name, i + 1, @typeName(T) },
+                ));
+
+                types[i] = if (is_optional) ?*T else *T;
+            }
+            const static = types;
+            break :blk &static;
+        } else null;
+
+        const input_len = len - inject_len - 1;
+        const input = comptime if (input_len > 0) blk: {
+            var types: [input_len]type = undefined;
+            for (0..input_len) |i| {
+                types[i] = meta.params[i + 1 + inject_len].type.?;
+            }
+            const static = types;
+            break :blk &static;
+        } else null;
 
         return .{
             .name = name,
-            .input = if (len > 1) &input else null,
+            .inject = inject,
+            .input = input,
             .output = meta.return_type.?,
             .func = func,
             .Fn = *const @Type(.{ .Fn = meta }),
@@ -50,8 +96,28 @@ pub const Task = struct {
         const args = if (self.input) |types| blk: {
             var values: self.In(true) = undefined;
             values.@"0" = delegate;
+
+            comptime var shift: usize = 1;
+            if (self.inject) |inj| inline for (inj) |T| {
+                const Ref = switch (@typeInfo(T)) {
+                    .Optional => |t| t.child,
+                    else => T,
+                };
+                const optional = T != Ref;
+                const value = delegate.scope.getService(Ref) orelse if (optional) null else {
+                    const message = "Task '{s}' requires injectable service `{s}`";
+                    if (std.debug.runtime_safety)
+                        std.log.err(message, .{ self.name, @typeName(T) })
+                    else
+                        std.debug.panic(message, .{ self.name, @typeName(T) });
+                    unreachable;
+                };
+                @field(values, std.fmt.comptimePrint("{d}", .{shift})) = value;
+                shift += 1;
+            };
+
             inline for (0..types.len) |i| {
-                @field(values, std.fmt.comptimePrint("{d}", .{i + 1})) = input[i];
+                @field(values, std.fmt.comptimePrint("{d}", .{i + shift})) = input[i];
             }
             break :blk values;
         } else .{delegate};
@@ -76,16 +142,19 @@ pub const Task = struct {
         }
     }
 
-    pub fn In(comptime self: Task, comptime with_delegate: bool) type {
-        const input = self.input orelse if (with_delegate) {
-            return @TypeOf(.{*const Delegate});
-        } else {
-            return @TypeOf(.{});
-        };
+    pub fn In(comptime self: Task, comptime with_inject: bool) type {
+        const input_len = if (self.input) |t| t.len else 0;
+        const inject_len = if (self.inject) |t| t.len else 0;
+        if (input_len + inject_len == 0) {
+            return if (with_inject) struct { *const Delegate } else return @TypeOf(.{});
+        }
 
-        const len = if (with_delegate) input.len + 1 else input.len;
+        var shift: usize = 0;
+        const len = if (with_inject) 1 + inject_len + input_len else input_len;
         var fields: [len]ZigType.StructField = undefined;
-        if (with_delegate) {
+
+        if (with_inject) {
+            shift = 1;
             fields[0] = .{
                 .name = "0",
                 .type = *const Delegate,
@@ -93,10 +162,20 @@ pub const Task = struct {
                 .is_comptime = false,
                 .alignment = @alignOf(*const Delegate),
             };
+
+            if (self.inject) |in| for (in) |T| {
+                fields[shift] = .{
+                    .name = std.fmt.comptimePrint("{d}", .{shift}),
+                    .type = T,
+                    .default_value = null,
+                    .is_comptime = false,
+                    .alignment = @alignOf(T),
+                };
+                shift += 1;
+            };
         }
 
-        const start_i = if (with_delegate) 1 else 0;
-        for (input, start_i..) |T, i| {
+        if (self.input) |in| for (in, shift..) |T, i| {
             fields[i] = .{
                 .name = std.fmt.comptimePrint("{d}", .{i}),
                 .type = T,
@@ -104,7 +183,7 @@ pub const Task = struct {
                 .is_comptime = false,
                 .alignment = @alignOf(T),
             };
-        }
+        };
 
         return @Type(ZigType{ .Struct = .{
             .is_tuple = true,
@@ -125,6 +204,7 @@ pub const Task = struct {
 test "Task.define" {
     try testing.expectEqualDeep(Task{
         .name = "No Op",
+        .inject = null,
         .input = null,
         .output = void,
         .func = tests.noOp,
@@ -133,6 +213,7 @@ test "Task.define" {
 
     try testing.expectEqualDeep(Task{
         .name = "Crash",
+        .inject = null,
         .input = null,
         .output = error{Fail}!void,
         .func = tests.crash,
@@ -141,11 +222,30 @@ test "Task.define" {
 
     comptime try testing.expectEqualDeep(Task{
         .name = "Multiply",
+        .inject = null,
         .input = &.{ usize, usize },
         .output = usize,
         .func = tests.multiply,
         .Fn = *const @TypeOf(tests.multiply),
     }, tests.Multiply);
+
+    comptime try testing.expectEqualDeep(Task{
+        .name = "InjectMultiply",
+        .inject = &.{*tests.Service},
+        .input = &.{usize},
+        .output = usize,
+        .func = tests.injectMultiply,
+        .Fn = *const @TypeOf(tests.injectMultiply),
+    }, tests.InjectMultiply);
+
+    comptime try testing.expectEqualDeep(Task{
+        .name = "OptInjectMultiply",
+        .inject = &.{?*tests.Service},
+        .input = &.{usize},
+        .output = usize,
+        .func = tests.optInjectMultiply,
+        .Fn = *const @TypeOf(tests.optInjectMultiply),
+    }, tests.OptInjectMultiply);
 }
 
 test "Task.invoke" {
@@ -232,5 +332,22 @@ pub const tests = struct {
     pub const Multiply = Task.define("Multiply", multiply, .{});
     fn multiply(_: *const Delegate, a: usize, b: usize) usize {
         return a * b;
+    }
+
+    pub const Service = struct { value: usize };
+
+    pub const InjectMultiply = Task.define("InjectMultiply", injectMultiply, .{
+        .inject = &.{Service},
+    });
+    fn injectMultiply(_: *const Delegate, service: *Service, n: usize) usize {
+        return n * service.value;
+    }
+
+    pub const OptInjectMultiply = Task.define("OptInjectMultiply", optInjectMultiply, .{
+        .inject = &.{Service},
+    });
+    fn optInjectMultiply(_: *const Delegate, service: ?*Service, n: usize) usize {
+        const m: usize = if (service) |t| t.value else 1;
+        return n * m;
     }
 };

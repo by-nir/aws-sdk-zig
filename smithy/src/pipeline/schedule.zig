@@ -666,6 +666,17 @@ test "scopes" {
     try tester.scheduleAsync(tests.MultiplySubScope, .{2});
     try tester.evaluate();
     try tester.expectScopeValue(usize, .mult, 108);
+
+    var value = try tester.invokeSync(tsk.tests.OptInjectMultiply, .{54});
+    try testing.expectEqual(54, value);
+
+    _ = try tester.provideService(tsk.tests.Service{ .value = 2 });
+
+    value = try tester.invokeSync(tsk.tests.OptInjectMultiply, .{54});
+    try testing.expectEqual(108, value);
+
+    value = try tester.invokeSync(tsk.tests.InjectMultiply, .{54});
+    try testing.expectEqual(108, value);
 }
 
 const tests = struct {
