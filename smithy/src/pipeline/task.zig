@@ -239,7 +239,8 @@ const NOOP_DELEGATE = TaskDelegate{
 };
 
 pub const TaskDelegate = struct {
-    scheduler: *Schedule,
+    node: *schdl.ScheduleNode,
+    scheduler: *schdl.Schedule,
 
     pub fn invokeSync(self: TaskDelegate, comptime task: Task, input: task.In(false)) task.Out(.retain) {
         return self.scheduler.invokeSync(task, input);
