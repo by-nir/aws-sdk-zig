@@ -1,9 +1,11 @@
 const std = @import("std");
 const testing = std.testing;
 const ZigType = std.builtin.Type;
+const Allocator = std.mem.Allocator;
 const scp = @import("scope.zig");
-const Delegate = scp.Delegate;
-const Reference = @import("utils.zig").Reference;
+const util = @import("utils.zig");
+const scd = @import("schedule.zig");
+const tests = @import("tests.zig");
 
 pub const Task = struct {
     name: []const u8,
@@ -13,11 +15,11 @@ pub const Task = struct {
     func: *const anyopaque,
     Fn: type,
 
-    pub const DefineOptions = struct {
+    pub const Options = struct {
         inject: ?[]const type = null,
     };
 
-    pub fn define(name: []const u8, comptime func: anytype, comptime options: DefineOptions) Task {
+    pub fn define(name: []const u8, comptime func: anytype, comptime options: Options) Task {
         const meta: ZigType.Fn = switch (@typeInfo(@TypeOf(func))) {
             .Fn => |t| t,
             .Pointer => |t| blk: {
@@ -92,7 +94,7 @@ pub const Task = struct {
         };
     }
 
-    pub fn invoke(comptime self: Task, delegate: *const Delegate, input: self.In(false)) self.Out(.retain) {
+    pub fn evaluate(comptime self: Task, delegate: *const Delegate, input: self.In(false)) self.Out(.retain) {
         const args = if (self.input) |types| blk: {
             var values: self.In(true) = undefined;
             values.@"0" = delegate;
@@ -201,14 +203,74 @@ pub const Task = struct {
     }
 };
 
+pub const NOOP_DELEGATE = Delegate{
+    .children = .{},
+    .scope = undefined,
+    .scheduler = undefined,
+};
+
+pub const Delegate = struct {
+    scope: *scp.Scope,
+    scheduler: *scd.Schedule,
+    children: scd.ScheduleQueue,
+    branchScope: ?*const fn (Delegate: *const Delegate) anyerror!void = null,
+
+    pub fn evaluate(self: *const Delegate, comptime task: Task, input: task.In(false)) !task.Out(.strip) {
+        return self.scheduler.evaluateSync(self, task, input);
+    }
+
+    pub fn schedule(self: *const Delegate, comptime task: Task, input: task.In(false)) !void {
+        if (task.Out(.strip) != void)
+            @compileError("Task '" ++ task.name ++ "' returns a value, use `scheduleCallback` instead.");
+
+        try self.scheduler.appendAsync(self, task, input);
+    }
+
+    pub fn scheduleCallback(
+        self: *const Delegate,
+        comptime task: Task,
+        input: task.In(false),
+        context: *const anyopaque,
+        callback: Task.Callback(task),
+    ) !void {
+        try self.scheduler.appendCallback(self, task, input, context, callback);
+    }
+
+    pub fn provide(
+        self: *const Delegate,
+        value: anytype,
+        comptime cleanup: ?*const fn (ctx: util.Reference(@TypeOf(value)), allocator: Allocator) void,
+    ) !util.Reference(@TypeOf(value)) {
+        if (self.branchScope) |branch| try branch(self);
+        return self.scope.provideService(value, cleanup);
+    }
+
+    pub fn defineValue(self: *const Delegate, comptime T: type, comptime tag: anytype, value: T) !void {
+        if (self.branchScope) |branch| try branch(self);
+        try self.scope.defineValue(T, tag, value);
+    }
+
+    pub fn writeValue(self: Delegate, comptime T: type, comptime tag: anytype, value: T) !void {
+        try self.scope.writeValue(T, tag, value);
+    }
+
+    pub fn readValue(self: Delegate, comptime T: type, comptime tag: anytype) util.Optional(T) {
+        return self.scope.readValue(T, tag);
+    }
+
+    pub fn hasValue(self: Delegate, comptime tag: anytype) bool {
+        return self.scope.hasValue(tag);
+    }
+};
+
 test "Task.define" {
     try testing.expectEqualDeep(Task{
-        .name = "No Op",
+        .name = "NoOp",
         .inject = null,
         .input = null,
         .output = void,
-        .func = tests.noOp,
-        .Fn = *const @TypeOf(tests.noOp),
+        .func = tests.noOpFn,
+        .Fn = *const @TypeOf(tests.noOpFn),
     }, tests.NoOp);
 
     try testing.expectEqualDeep(Task{
@@ -216,8 +278,8 @@ test "Task.define" {
         .inject = null,
         .input = null,
         .output = error{Fail}!void,
-        .func = tests.crash,
-        .Fn = *const @TypeOf(tests.crash),
+        .func = tests.crashFn,
+        .Fn = *const @TypeOf(tests.crashFn),
     }, tests.Crash);
 
     comptime try testing.expectEqualDeep(Task{
@@ -225,8 +287,8 @@ test "Task.define" {
         .inject = null,
         .input = &.{ usize, usize },
         .output = usize,
-        .func = tests.multiply,
-        .Fn = *const @TypeOf(tests.multiply),
+        .func = tests.multiplyFn,
+        .Fn = *const @TypeOf(tests.multiplyFn),
     }, tests.Multiply);
 
     comptime try testing.expectEqualDeep(Task{
@@ -234,8 +296,8 @@ test "Task.define" {
         .inject = &.{*tests.Service},
         .input = &.{usize},
         .output = usize,
-        .func = tests.injectMultiply,
-        .Fn = *const @TypeOf(tests.injectMultiply),
+        .func = tests.injectMultiplyFn,
+        .Fn = *const @TypeOf(tests.injectMultiplyFn),
     }, tests.InjectMultiply);
 
     comptime try testing.expectEqualDeep(Task{
@@ -243,17 +305,17 @@ test "Task.define" {
         .inject = &.{?*tests.Service},
         .input = &.{usize},
         .output = usize,
-        .func = tests.optInjectMultiply,
-        .Fn = *const @TypeOf(tests.optInjectMultiply),
+        .func = tests.optInjectMultiplyFn,
+        .Fn = *const @TypeOf(tests.optInjectMultiplyFn),
     }, tests.OptInjectMultiply);
 }
 
-test "Task.invoke" {
+test "Task.evaluate" {
     tests.did_call = false;
-    tests.Call.invoke(&scp.NOOP_DELEGATE, .{});
+    tests.Call.evaluate(&NOOP_DELEGATE, .{});
     try testing.expect(tests.did_call);
 
-    const value = tests.Multiply.invoke(&scp.NOOP_DELEGATE, .{ 2, 54 });
+    const value = tests.Multiply.evaluate(&NOOP_DELEGATE, .{ 2, 54 });
     try testing.expectEqual(108, value);
 }
 
@@ -264,9 +326,9 @@ pub const TaskTester = struct {
         return .{ .delegate = delegate };
     }
 
-    pub fn invoke(self: TaskTester, comptime task: Task, input: task.In(false)) task.Out(.retain) {
+    pub fn evaluate(self: TaskTester, comptime task: Task, input: task.In(false)) task.Out(.retain) {
         self.cleanup();
-        return task.invoke(&self.delegate, input);
+        return task.evaluate(&self.delegate, input);
     }
 
     pub fn expectEqual(
@@ -276,8 +338,8 @@ pub const TaskTester = struct {
         input: task.In(false),
     ) !void {
         self.cleanup();
-        const value = task.invoke(&self.delegate, input);
-        try testing.expectEqual(expected, if (@typeInfo(task.output) == .ErrorUnion) try value else value);
+        const value = task.evaluate(&self.delegate, input);
+        try testing.expectEqualDeep(expected, if (@typeInfo(task.output) == .ErrorUnion) try value else value);
     }
 
     pub fn expectError(
@@ -287,7 +349,7 @@ pub const TaskTester = struct {
         input: task.In(false),
     ) !void {
         self.cleanup();
-        const value = task.invoke(&self.delegate, input);
+        const value = task.evaluate(&self.delegate, input);
         try testing.expectError(expected, value);
     }
 
@@ -297,57 +359,14 @@ pub const TaskTester = struct {
 };
 
 test "TaskTester" {
-    const tester = TaskTester.init(scp.NOOP_DELEGATE);
+    const tester = TaskTester.init(NOOP_DELEGATE);
 
     tests.did_call = false;
-    tester.invoke(tests.Call, .{});
+    tester.evaluate(tests.Call, .{});
     try testing.expect(tests.did_call);
 
     try tester.expectEqual(tests.Multiply, 108, .{ 2, 54 });
 
-    try tester.invoke(tests.Failable, .{false});
+    try tester.evaluate(tests.Failable, .{false});
     try tester.expectError(tests.Failable, error.Fail, .{true});
 }
-
-pub const tests = struct {
-    pub const NoOp = Task.define("No Op", noOp, .{});
-    pub fn noOp(_: *const Delegate) void {}
-
-    pub var did_call: bool = false;
-    pub const Call = Task.define("Call", call, .{});
-    fn call(_: *const Delegate) void {
-        did_call = true;
-    }
-
-    pub const Crash = Task.define("Crash", crash, .{});
-    fn crash(_: *const Delegate) error{Fail}!void {
-        return error.Fail;
-    }
-
-    pub const Failable = Task.define("Failable", failable, .{});
-    fn failable(_: *const Delegate, fail: bool) error{Fail}!void {
-        if (fail) return error.Fail;
-    }
-
-    pub const Multiply = Task.define("Multiply", multiply, .{});
-    fn multiply(_: *const Delegate, a: usize, b: usize) usize {
-        return a * b;
-    }
-
-    pub const Service = struct { value: usize };
-
-    pub const InjectMultiply = Task.define("InjectMultiply", injectMultiply, .{
-        .inject = &.{Service},
-    });
-    fn injectMultiply(_: *const Delegate, service: *Service, n: usize) usize {
-        return n * service.value;
-    }
-
-    pub const OptInjectMultiply = Task.define("OptInjectMultiply", optInjectMultiply, .{
-        .inject = &.{Service},
-    });
-    fn optInjectMultiply(_: *const Delegate, service: ?*Service, n: usize) usize {
-        const m: usize = if (service) |t| t.value else 1;
-        return n * m;
-    }
-};

@@ -4,22 +4,22 @@ const testing = std.testing;
 const test_alloc = testing.allocator;
 const tsk = @import("task.zig");
 const Task = tsk.Task;
-const scp = @import("scope.zig");
-const Scope = scp.Scope;
-const Delegate = scp.Delegate;
+const Delegate = tsk.Delegate;
+const ivk = @import("invoke.zig");
+const Scope = @import("scope.zig").Scope;
 const util = @import("utils.zig");
 const ComptimeTag = util.ComptimeTag;
+const tests = @import("tests.zig");
 
-const ScheduleNode = util.Node(Invocation);
-pub const ScheduleQueue = util.Queue(Invocation);
-const InvokeMethod = enum { sync, asyncd, callback };
+const ScheduleNode = util.Node(ivk.AsyncInvocation);
+pub const ScheduleQueue = util.Queue(ivk.AsyncInvocation);
 
 pub const Schedule = struct {
     allocator: Allocator,
     resources: *ScheduleResources,
     root_scope: *Scope,
     queue: ScheduleQueue = .{},
-    tracer: ScheduleTracer = NoOpTracer.any,
+    tracer: ivk.InvokeTracer = ivk.NOOP_TRACER,
 
     pub fn init(allocator: Allocator, resources: *ScheduleResources, scope: *Scope) Schedule {
         return .{
@@ -33,7 +33,7 @@ pub const Schedule = struct {
         self.resources.releaseQueue(&self.queue);
     }
 
-    pub fn invokeSync(
+    pub fn evaluateSync(
         self: *Schedule,
         parent: ?*const Delegate,
         comptime task: Task,
@@ -43,11 +43,7 @@ pub const Schedule = struct {
         defer if (delegate.branchScope == null) self.resources.releaseScope(delegate.scope);
         errdefer self.resources.releaseQueue(&delegate.children);
 
-        const output = blk: {
-            const sample = self.tracer.begin();
-            defer sample.didInvoke(.sync, ComptimeTag.of(task));
-            break :blk task.invoke(&delegate, input);
-        };
+        const output = delegate.scope.invoker.evaluateSync(task, self.tracer, &delegate, input);
         if (task.Out(.strip) != task.Out(.retain)) try output;
 
         try self.evaluateQueue(delegate.scope, &delegate.children);
@@ -58,9 +54,11 @@ pub const Schedule = struct {
         if (task.Out(.strip) != void)
             @compileError("Task '" ++ task.name ++ "' returns a value, use `appendAsync` instead.");
 
+        const scope = if (parent) |p| p.scope else self.root_scope;
+
         const node = try self.resources.retainInvocation();
         errdefer self.resources.releaseInvocation(node);
-        node.value = try Invocation.initAsync(self.allocator, task, input);
+        node.value = try scope.invoker.prepareAsync(scope.alloc(), task, input);
 
         const queue = if (parent) |p| @constCast(&p.children) else &self.queue;
         queue.put(node);
@@ -71,12 +69,14 @@ pub const Schedule = struct {
         parent: ?*const Delegate,
         comptime task: Task,
         input: task.In(false),
-        context: *const anyopaque,
-        callback: Task.Callback(task),
+        callbackCtx: *const anyopaque,
+        callbackFn: Task.Callback(task),
     ) !void {
+        const scope = if (parent) |p| p.scope else self.root_scope;
+
         const node = try self.resources.retainInvocation();
         errdefer self.resources.releaseInvocation(node);
-        node.value = try Invocation.initCallback(self.allocator, task, input, context, callback);
+        node.value = try scope.invoker.prepareCallback(scope.alloc(), task, input, callbackCtx, callbackFn);
 
         const queue = if (parent) |p| @constCast(&p.children) else &self.queue;
         queue.put(node);
@@ -92,7 +92,6 @@ pub const Schedule = struct {
             const invocation = node.value;
             defer {
                 queue.dropNext();
-                invocation.cleanup(self.allocator);
                 self.resources.releaseInvocation(node);
             }
             errdefer self.resources.releaseQueue(&node.children);
@@ -115,186 +114,18 @@ pub const Schedule = struct {
     }
 
     fn branchScope(delegate: *const Delegate) !void {
-        const child = try delegate.scheduler.resources.retainScope();
-        child.parent = delegate.scope;
+        const parent = delegate.scope;
+        const self = delegate.scheduler;
+
+        const child = try self.resources.retainScope();
+        child.parent = parent;
+        child.invoker = parent.invoker;
 
         const mutable: *Delegate = @constCast(delegate);
         mutable.scope = child;
         mutable.branchScope = null;
     }
 };
-
-const Invocation = union(enum) {
-    invalid,
-    task_async: Async,
-    task_callback: Callback,
-
-    pub const Async = struct {
-        vtable: *const VTable,
-        input: ?*const anyopaque,
-
-        const VTable = struct {
-            deinit: ?*const fn (allocator: Allocator, input: *const anyopaque) void,
-            invoke: *const fn (
-                tracer: ScheduleTracer,
-                delegate: *const Delegate,
-                input: ?*const anyopaque,
-            ) anyerror!void,
-        };
-    };
-
-    pub const Callback = struct {
-        vtable: *const VTable,
-        input: ?*const anyopaque,
-        context: *const anyopaque,
-        callback: *const anyopaque,
-
-        const VTable = struct {
-            deinit: ?*const fn (allocator: Allocator, input: *const anyopaque) void,
-            invoke: *const fn (
-                tracer: ScheduleTracer,
-                delegate: *const Delegate,
-                input: ?*const anyopaque,
-                ctx: *const anyopaque,
-                cb: *const anyopaque,
-            ) anyerror!void,
-        };
-    };
-
-    pub fn initAsync(allocator: Allocator, comptime task: Task, input: task.In(false)) !Invocation {
-        return .{ .task_async = .{
-            .vtable = &AsyncInvoker(task, .asyncd).vtable,
-            .input = try AsyncInput(task.In(false)).allocate(allocator, input),
-        } };
-    }
-
-    pub fn initCallback(
-        allocator: Allocator,
-        comptime task: Task,
-        input: task.In(false),
-        context: *const anyopaque,
-        callback: Task.Callback(task),
-    ) !Invocation {
-        return .{ .task_callback = .{
-            .vtable = &AsyncInvoker(task, .callback).vtable,
-            .input = try AsyncInput(task.In(false)).allocate(allocator, input),
-            .context = context,
-            .callback = callback,
-        } };
-    }
-
-    pub fn deinit(self: Invocation, allocator: Allocator) void {
-        switch (self) {
-            inline .task_async, .task_callback => |t| {
-                if (t.input) |in| t.vtable.deinit.?(allocator, in);
-            },
-            .invalid => {},
-        }
-    }
-
-    pub fn evaluate(self: Invocation, tracer: ScheduleTracer, delegate: *const Delegate) !void {
-        switch (self) {
-            .task_async => |t| try t.vtable.invoke(tracer, delegate, t.input),
-            .task_callback => |t| try t.vtable.invoke(tracer, delegate, t.input, t.context, t.callback),
-            .invalid => unreachable,
-        }
-    }
-
-    pub fn cleanup(self: Invocation, allocator: Allocator) void {
-        switch (self) {
-            inline .task_async, .task_callback => |t| {
-                if (t.input) |in| t.vtable.deinit.?(allocator, in);
-            },
-            .invalid => unreachable,
-        }
-    }
-};
-
-fn AsyncInput(comptime T: type) type {
-    return struct {
-        pub fn allocate(allocator: Allocator, input: T) !?*const anyopaque {
-            if (T == @TypeOf(.{})) return null else {
-                const dupe = try allocator.create(T);
-                dupe.* = input;
-                return dupe;
-            }
-        }
-
-        pub fn deallocate(alloc: Allocator, input: *const anyopaque) void {
-            if (T == @TypeOf(.{})) @compileError("Unexpected call to deallocate on void input.");
-            alloc.destroy(cast(input));
-        }
-
-        pub fn cast(input: *const anyopaque) *const T {
-            return @alignCast(@ptrCast(input));
-        }
-    };
-}
-
-test "AsyncInput" {
-    const T = struct { usize };
-    const input = try AsyncInput(T).allocate(test_alloc, T{108});
-    defer AsyncInput(T).deallocate(test_alloc, input.?);
-    try testing.expectEqualDeep(&T{108}, AsyncInput(T).cast(input.?));
-}
-
-fn AsyncInvoker(comptime task: Task, comptime method: InvokeMethod) type {
-    const deinitFn = if (task.input != null) &AsyncInput(task.In(false)).deallocate else null;
-    return struct {
-        pub const vtable = switch (method) {
-            .sync => unreachable,
-            .asyncd => Invocation.Async.VTable{ .deinit = deinitFn, .invoke = invokeAsync },
-            .callback => Invocation.Callback.VTable{ .deinit = deinitFn, .invoke = invokeCallback },
-        };
-
-        fn invokeAsync(tracer: ScheduleTracer, delegate: *const Delegate, in: ?*const anyopaque) anyerror!void {
-            return invokeTask(tracer, delegate, in);
-        }
-
-        fn invokeTask(tracer: ScheduleTracer, delegate: *const Delegate, in: ?*const anyopaque) task.Out(.retain) {
-            const sample = tracer.begin();
-            defer sample.didInvoke(method, ComptimeTag.of(task));
-            const input = if (task.input != null) AsyncInput(task.In(false)).cast(in.?).* else .{};
-            return task.invoke(delegate, input);
-        }
-
-        fn invokeCallback(
-            tracer: ScheduleTracer,
-            delegate: *const Delegate,
-            input: ?*const anyopaque,
-            ctx: *const anyopaque,
-            callback: *const anyopaque,
-        ) anyerror!void {
-            // If the inocation fails we pass the error to the callback to handle it (or return it).
-            const output = invokeTask(tracer, delegate, input);
-
-            const sample = tracer.begin();
-            defer sample.didCallback(ComptimeTag.of(callback), ctx);
-            const cb: Task.Callback(task) = @alignCast(@ptrCast(callback));
-            if (task.Out(.retain) == void) try cb(ctx) else try cb(ctx, output);
-        }
-    };
-}
-
-test "AsyncInvoker" {
-    tsk.tests.did_call = false;
-    const IvkAsync = AsyncInvoker(tsk.tests.Call, .asyncd);
-    try IvkAsync.invokeAsync(NoOpTracer.any, &scp.NOOP_DELEGATE, null);
-    try testing.expect(tsk.tests.did_call);
-
-    const InpCb = AsyncInput(tsk.tests.Multiply.In(false));
-    const input = try InpCb.allocate(test_alloc, .{ 2, 54 });
-    defer InpCb.deallocate(test_alloc, input.?);
-
-    const IvkCb = AsyncInvoker(tsk.tests.Multiply, .callback);
-    try IvkCb.invokeCallback(
-        NoOpTracer.any,
-        &scp.NOOP_DELEGATE,
-        input,
-        &@as(usize, 108),
-        tests.multiplyCb,
-    );
-}
 
 pub const ScheduleResources = struct {
     allocator: Allocator,
@@ -336,7 +167,7 @@ pub const ScheduleResources = struct {
 
     pub fn releaseQueue(self: *ScheduleResources, queue: *ScheduleQueue) void {
         while (queue.take()) |node| {
-            node.value.cleanup(self.allocator);
+            // node.value.cleanup(self.allocator);
             self.releaseQueue(&node.children);
             self.releaseInvocation(node);
         }
@@ -359,7 +190,7 @@ pub const ScheduleResources = struct {
     }
 
     fn createInvocation(allocator: Allocator) !*ScheduleNode {
-        return ScheduleNode.init(allocator, .invalid);
+        return ScheduleNode.init(allocator, undefined);
     }
 
     fn destroyInvocation(allocator: Allocator, node: *ScheduleNode) void {
@@ -367,64 +198,8 @@ pub const ScheduleResources = struct {
     }
 
     fn resetInvocation(node: *ScheduleNode) void {
-        node.value = .invalid;
+        node.value = undefined;
     }
-};
-
-pub const ScheduleTracer = struct {
-    ctx: *anyopaque,
-    vtable: *const VTable,
-
-    pub const VTable = struct {
-        didInvoke: *const fn (ctx: *anyopaque, method: InvokeMethod, task: ComptimeTag, elapsed_ns: u64) void,
-        didCallback: *const fn (ctx: *anyopaque, callback: ComptimeTag, context: *const anyopaque, elapsed_ns: u64) void,
-    };
-
-    pub fn begin(self: ScheduleTracer) Sample {
-        return .{
-            .ctx = self.ctx,
-            .vtable = self.vtable,
-            .start = std.time.Instant.now() catch unreachable,
-        };
-    }
-
-    pub const Sample = struct {
-        ctx: *anyopaque,
-        vtable: *const VTable,
-        start: std.time.Instant,
-
-        pub fn didInvoke(self: Sample, method: InvokeMethod, task: ComptimeTag) void {
-            const elapsed_ns = self.sample().since(self.start);
-            self.vtable.didInvoke(self.ctx, method, task, elapsed_ns);
-        }
-
-        pub fn didCallback(self: Sample, callback: ComptimeTag, context: *const anyopaque) void {
-            const elapsed_ns = self.sample().since(self.start);
-            self.vtable.didCallback(self.ctx, callback, context, elapsed_ns);
-        }
-
-        fn sample(self: Sample) std.time.Instant {
-            const current = std.time.Instant.now() catch unreachable;
-            return if (current.order(self.start) == .gt) current else self.start;
-        }
-    };
-};
-
-const NoOpTracer = struct {
-    var noop = .{};
-    pub const any = ScheduleTracer{
-        .ctx = &noop,
-        .vtable = &vtable,
-    };
-
-    const vtable = ScheduleTracer.VTable{
-        .didInvoke = didInvoke,
-        .didCallback = didCallback,
-    };
-
-    fn didInvoke(_: *anyopaque, _: InvokeMethod, _: ComptimeTag, _: u64) void {}
-
-    fn didCallback(_: *anyopaque, _: ComptimeTag, _: *const anyopaque, _: u64) void {}
 };
 
 pub const ScheduleTester = struct {
@@ -434,15 +209,15 @@ pub const ScheduleTester = struct {
     invoke_records: std.ArrayListUnmanaged(InvokeRecord) = .{},
     callback_records: std.ArrayListUnmanaged(CallbackRecord) = .{},
 
-    const InvokeRecord = struct { method: InvokeMethod, task: ComptimeTag };
+    const InvokeRecord = struct { method: ivk.InvokeMethod, task: ComptimeTag };
     const CallbackRecord = struct { callback: ComptimeTag, context: *const anyopaque };
 
-    const tracer = ScheduleTracer.VTable{
-        .didInvoke = didInvoke,
+    const tracer = ivk.InvokeTracer.VTable{
+        .didEvaluate = didInvoke,
         .didCallback = didCallback,
     };
 
-    fn didInvoke(ctx: *anyopaque, method: InvokeMethod, task: ComptimeTag, _: u64) void {
+    fn didInvoke(ctx: *anyopaque, method: ivk.InvokeMethod, task: ComptimeTag, _: u64) void {
         const self: *ScheduleTester = @alignCast(@ptrCast(ctx));
         const record = .{ .method = method, .task = task };
         self.invoke_records.append(test_alloc, record) catch unreachable;
@@ -505,17 +280,17 @@ pub const ScheduleTester = struct {
         try self.root_scope.writeValue(T, tag, value);
     }
 
-    pub fn invokeSync(self: *ScheduleTester, comptime task: Task, input: task.In(false)) !task.Out(.strip) {
-        return self.schedule.invokeSync(null, task, input);
+    pub fn evaluateSync(self: *ScheduleTester, comptime task: Task, input: task.In(false)) !task.Out(.strip) {
+        return self.schedule.evaluateSync(null, task, input);
     }
 
-    pub inline fn invokeSyncExpectError(
+    pub inline fn evaluateSyncExpectError(
         self: *ScheduleTester,
         expected: anyerror,
         comptime task: Task,
         input: task.In(false),
     ) !void {
-        const output = self.schedule.invokeSync(null, task, input);
+        const output = self.schedule.evaluateSync(null, task, input);
         try testing.expectError(expected, output);
     }
 
@@ -527,10 +302,10 @@ pub const ScheduleTester = struct {
         self: *ScheduleTester,
         comptime task: Task,
         input: task.In(false),
-        context: *const anyopaque,
-        callback: Task.Callback(task),
+        callbackCtx: *const anyopaque,
+        callbackFn: Task.Callback(task),
     ) !void {
-        try self.schedule.appendCallback(null, task, input, context, callback);
+        try self.schedule.appendCallback(null, task, input, callbackCtx, callbackFn);
     }
 
     pub fn evaluate(self: *ScheduleTester) !void {
@@ -544,7 +319,7 @@ pub const ScheduleTester = struct {
     pub fn expectInvoke(
         self: ScheduleTester,
         order: usize,
-        method: InvokeMethod,
+        method: ivk.InvokeMethod,
         comptime task: Task,
     ) !void {
         if (self.invoke_records.items.len <= order) return error.OrderOutOfBounds;
@@ -571,50 +346,50 @@ pub const ScheduleTester = struct {
     }
 };
 
-test "invokeSync" {
+test "evaluateSync" {
     var tester = try ScheduleTester.init();
     defer tester.deinit();
 
-    try tester.invokeSync(tsk.tests.Call, .{});
-    try tester.invokeSync(tsk.tests.Failable, .{false});
-    try tester.invokeSyncExpectError(error.Fail, tsk.tests.Failable, .{true});
+    try tester.evaluateSync(tests.Call, .{});
+    try tester.evaluateSync(tests.Failable, .{false});
+    try tester.evaluateSyncExpectError(error.Fail, tests.Failable, .{true});
 
-    try tester.expectInvoke(0, .sync, tsk.tests.Call);
-    try tester.expectInvoke(1, .sync, tsk.tests.Failable);
-    try tester.expectInvoke(2, .sync, tsk.tests.Failable);
+    try tester.expectInvoke(0, .sync, tests.Call);
+    try tester.expectInvoke(1, .sync, tests.Failable);
+    try tester.expectInvoke(2, .sync, tests.Failable);
 }
 
 test "appendAsync" {
     var tester = try ScheduleTester.init();
     defer tester.deinit();
 
-    try tester.scheduleAsync(tsk.tests.Call, .{});
-    try tester.scheduleAsync(tsk.tests.Failable, .{false});
-    try tester.scheduleAsync(tsk.tests.Failable, .{true});
+    try tester.scheduleAsync(tests.Call, .{});
+    try tester.scheduleAsync(tests.Failable, .{false});
+    try tester.scheduleAsync(tests.Failable, .{true});
     try tester.runExpectError(error.Fail);
 
-    try tester.expectInvoke(0, .asyncd, tsk.tests.Call);
-    try tester.expectInvoke(1, .asyncd, tsk.tests.Failable);
-    try tester.expectInvoke(2, .asyncd, tsk.tests.Failable);
+    try tester.expectInvoke(0, .asyncd, tests.Call);
+    try tester.expectInvoke(1, .asyncd, tests.Failable);
+    try tester.expectInvoke(2, .asyncd, tests.Failable);
 }
 
 test "appendCallback" {
     var tester = try ScheduleTester.init();
     defer tester.deinit();
 
-    try tester.scheduleCallback(tsk.tests.Multiply, .{ 2, 54 }, &@as(usize, 108), tests.multiplyCb);
-    try tester.scheduleCallback(tsk.tests.Call, .{}, &@as(usize, 101), tests.noopCb);
-    try tester.scheduleCallback(tsk.tests.Failable, .{false}, &@as(usize, 102), tests.failableCb);
-    try tester.scheduleCallback(tsk.tests.Failable, .{true}, &@as(usize, 103), tests.failableCb);
+    try tester.scheduleCallback(tests.Multiply, .{ 2, 54 }, &@as(usize, 108), tests.multiplyCb);
+    try tester.scheduleCallback(tests.Call, .{}, &@as(usize, 101), tests.noopCb);
+    try tester.scheduleCallback(tests.Failable, .{false}, &@as(usize, 102), tests.failableCb);
+    try tester.scheduleCallback(tests.Failable, .{true}, &@as(usize, 103), tests.failableCb);
     try tester.runExpectError(error.Fail);
 
-    try tester.expectInvoke(0, .callback, tsk.tests.Multiply);
+    try tester.expectInvoke(0, .callback, tests.Multiply);
     try tester.expectCallback(0, tests.multiplyCb, &@as(usize, 108));
-    try tester.expectInvoke(1, .callback, tsk.tests.Call);
+    try tester.expectInvoke(1, .callback, tests.Call);
     try tester.expectCallback(1, tests.noopCb, &@as(usize, 101));
-    try tester.expectInvoke(2, .callback, tsk.tests.Failable);
+    try tester.expectInvoke(2, .callback, tests.Failable);
     try tester.expectCallback(2, tests.failableCb, &@as(usize, 102));
-    try tester.expectInvoke(3, .callback, tsk.tests.Failable);
+    try tester.expectInvoke(3, .callback, tests.Failable);
     try tester.expectCallback(3, tests.failableCb, &@as(usize, 103));
 }
 
@@ -622,14 +397,14 @@ test "sub-tasks scheduling" {
     const tasks = struct {
         pub const Root = Task.define("Root", root, .{});
         pub fn root(task: *const Delegate) anyerror!void {
-            try task.scheduleAsync(Bar, .{});
-            try task.invokeSync(Foo, .{});
+            try task.schedule(Bar, .{});
+            try task.evaluate(Foo, .{});
             try task.scheduleCallback(Baz, .{}, undefined, tests.noopCb);
         }
 
-        pub const Foo = Task.define("Foo", tsk.tests.noOp, .{});
-        pub const Bar = Task.define("Bar", tsk.tests.noOp, .{});
-        pub const Baz = Task.define("Baz", tsk.tests.noOp, .{});
+        pub const Foo = Task.define("Foo", tests.noOpFn, .{});
+        pub const Bar = Task.define("Bar", tests.noOpFn, .{});
+        pub const Baz = Task.define("Baz", tests.noOpFn, .{});
     };
 
     var tester = try ScheduleTester.init();
@@ -649,7 +424,7 @@ test "scopes" {
     defer tester.deinit();
 
     try tester.defineScopeValue(usize, .num, 54);
-    try tester.invokeSync(tests.MultiplyScope, .{2});
+    try tester.evaluateSync(tests.MultiplyScope, .{2});
     try tester.expectScopeValue(usize, .num, 108);
 
     try tester.writeScopeValue(usize, .num, 267);
@@ -667,53 +442,14 @@ test "scopes" {
     try tester.evaluate();
     try tester.expectScopeValue(usize, .mult, 108);
 
-    var value = try tester.invokeSync(tsk.tests.OptInjectMultiply, .{54});
+    var value = try tester.evaluateSync(tests.OptInjectMultiply, .{54});
     try testing.expectEqual(54, value);
 
-    _ = try tester.provideService(tsk.tests.Service{ .value = 2 });
+    _ = try tester.provideService(tests.Service{ .value = 2 });
 
-    value = try tester.invokeSync(tsk.tests.OptInjectMultiply, .{54});
+    value = try tester.evaluateSync(tests.OptInjectMultiply, .{54});
     try testing.expectEqual(108, value);
 
-    value = try tester.invokeSync(tsk.tests.InjectMultiply, .{54});
+    value = try tester.evaluateSync(tests.InjectMultiply, .{54});
     try testing.expectEqual(108, value);
 }
-
-const tests = struct {
-    pub const MultiplyScope = Task.define("MultiplyScope", multiplyScope, .{});
-    fn multiplyScope(task: *const Delegate, n: usize) !void {
-        const m = task.readValue(usize, .num) orelse return error.MissingValue;
-        try task.writeValue(usize, .num, m * n);
-    }
-
-    pub const ExponentScope = Task.define("ExponentScope", exponentScope, .{});
-    fn exponentScope(task: *const Delegate, n: usize) !void {
-        try task.scheduleAsync(MultiplyScope, .{n});
-        const m = task.readValue(usize, .num) orelse return error.MissingValue;
-        try task.writeValue(usize, .num, m * n);
-    }
-
-    pub const MultiplySubScope = Task.define("MultiplySubScope", multiplySubScope, .{});
-    fn multiplySubScope(task: *const Delegate, n: usize) !void {
-        const m = task.readValue(usize, .mult) orelse return error.MissingValue;
-        try task.defineValue(usize, .num, n);
-        try task.invokeSync(MultiplyScope, .{m});
-        const prod = task.readValue(usize, .num) orelse return error.MissingValue;
-        try task.writeValue(usize, .mult, prod);
-    }
-
-    pub fn noopCb(_: *const anyopaque) anyerror!void {}
-
-    pub fn failableCb(_: *const anyopaque, output: error{Fail}!void) anyerror!void {
-        try output;
-    }
-
-    pub fn multiplyCb(ctx: *const anyopaque, output: usize) anyerror!void {
-        try testing.expectEqual(castUsize(ctx), output);
-    }
-
-    fn castUsize(ctx: *const anyopaque) usize {
-        const cast: *const usize = @alignCast(@ptrCast(ctx));
-        return cast.*;
-    }
-};

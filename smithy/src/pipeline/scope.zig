@@ -2,72 +2,17 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const scd = @import("schedule.zig");
 const Task = @import("task.zig").Task;
+const ivk = @import("invoke.zig");
 const util = @import("utils.zig");
 const ComptimeTag = util.ComptimeTag;
 const Reference = util.Reference;
 
-pub const NOOP_DELEGATE = Delegate{
-    .children = .{},
-    .scope = undefined,
-    .scheduler = undefined,
-};
-
-pub const Delegate = struct {
-    scope: *Scope,
-    scheduler: *scd.Schedule,
-    children: scd.ScheduleQueue,
-    branchScope: ?*const fn (Delegate: *const Delegate) anyerror!void = null,
-
-    pub fn invokeSync(self: *const Delegate, comptime task: Task, input: task.In(false)) !task.Out(.strip) {
-        return self.scheduler.invokeSync(self, task, input);
-    }
-
-    pub fn scheduleAsync(self: *const Delegate, comptime task: Task, input: task.In(false)) !void {
-        try self.scheduler.appendAsync(self, task, input);
-    }
-
-    pub fn scheduleCallback(
-        self: *const Delegate,
-        comptime task: Task,
-        input: task.In(false),
-        context: *const anyopaque,
-        callback: Task.Callback(task),
-    ) !void {
-        try self.scheduler.appendCallback(self, task, input, context, callback);
-    }
-
-    pub fn provide(
-        self: *const Delegate,
-        value: anytype,
-        comptime cleanup: ?*const fn (ctx: Reference(@TypeOf(value)), allocator: Allocator) void,
-    ) !Reference(@TypeOf(value)) {
-        if (self.branchScope) |branch| try branch(self);
-        return self.scope.provideService(value, cleanup);
-    }
-
-    pub fn defineValue(self: *const Delegate, comptime T: type, comptime tag: anytype, value: T) !void {
-        if (self.branchScope) |branch| try branch(self);
-        try self.scope.defineValue(T, tag, value);
-    }
-
-    pub fn writeValue(self: Delegate, comptime T: type, comptime tag: anytype, value: T) !void {
-        try self.scope.writeValue(T, tag, value);
-    }
-
-    pub fn readValue(self: Delegate, comptime T: type, comptime tag: anytype) util.Optional(T) {
-        return self.scope.readValue(T, tag);
-    }
-
-    pub fn hasValue(self: Delegate, comptime tag: anytype) bool {
-        return self.scope.hasValue(tag);
-    }
-};
 
 pub const Scope = struct {
     arena: std.heap.ArenaAllocator,
     parent: ?*Scope = null,
+    invoker: ivk.Invoker = .{},
     services: std.AutoArrayHashMapUnmanaged(ComptimeTag, Service) = .{},
     blackboard: std.AutoArrayHashMapUnmanaged(ComptimeTag, *anyopaque) = .{},
 
