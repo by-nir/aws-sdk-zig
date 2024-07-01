@@ -8,7 +8,6 @@ const util = @import("utils.zig");
 const ComptimeTag = util.ComptimeTag;
 const Reference = util.Reference;
 
-
 pub const Scope = struct {
     arena: std.heap.ArenaAllocator,
     parent: ?*Scope = null,

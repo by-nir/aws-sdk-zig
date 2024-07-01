@@ -94,7 +94,30 @@ pub const Task = struct {
         };
     }
 
+    /// A special unimplemented-task, used as a placeholder that may be overridden by the pipeline.
+    pub fn hook(name: []const u8, comptime input: ?[]const type, comptime Output: type) Task {
+        return .{
+            .name = name,
+            .inject = null,
+            .input = if (input) |in| (if (in.len > 0) in else null) else input,
+            .output = Output,
+            .func = undefined,
+            .Fn = @TypeOf(.hook_unimplemented),
+        };
+    }
+
     pub fn evaluate(comptime self: Task, delegate: *const Delegate, input: self.In(false)) self.Out(.retain) {
+        if (comptime self.Fn == @TypeOf(.hook_unimplemented)) {
+            const message = "Hook '{s}' is not implemented";
+            if (std.debug.runtime_safety) {
+                std.log.err(message, .{self.name});
+                unreachable;
+            } else {
+                std.debug.panic(message, .{self.name});
+            }
+            return;
+        }
+
         const args = if (self.input) |types| blk: {
             var values: self.In(true) = undefined;
             values.@"0" = delegate;
@@ -236,6 +259,10 @@ pub const Delegate = struct {
         try self.scheduler.appendCallback(self, task, input, context, callback);
     }
 
+    pub fn hasOverride(self: Delegate, comptime task: Task) bool {
+        return self.scope.invoker.hasOverride(task);
+    }
+
     pub fn provide(
         self: *const Delegate,
         value: anytype,
@@ -308,6 +335,11 @@ test "Task.define" {
         .func = tests.optInjectMultiplyFn,
         .Fn = *const @TypeOf(tests.optInjectMultiplyFn),
     }, tests.OptInjectMultiply);
+
+    try testing.expectEqual("NoOp Hook", tests.NoOpHook.name);
+    try testing.expectEqual(null, tests.NoOpHook.inject);
+    comptime try testing.expectEqual(&.{bool}, tests.NoOpHook.input);
+    try testing.expectEqual(void, tests.NoOpHook.output);
 }
 
 test "Task.evaluate" {

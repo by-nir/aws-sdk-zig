@@ -10,10 +10,10 @@ const tests = @import("tests.zig");
 
 pub const InvokeMethod = enum { sync, asyncd, callback };
 
-pub const Invoker = struct {
-    overrides: OverrideFn = noOverides,
+pub const InvokeOverrideFn = *const fn (tag: ComptimeTag) ?OpaqueEvaluator;
 
-    const OverrideFn = *const fn (tag: ComptimeTag) ?OpaqueEvaluator;
+pub const Invoker = struct {
+    overrides: InvokeOverrideFn = noOverides,
 
     pub fn evaluateSync(
         self: Invoker,
@@ -49,6 +49,11 @@ pub const Invoker = struct {
     ) !AsyncInvocation {
         const evalFn = self.getOpaqueEval(task, .callback);
         return AsyncInvocation.allocCallback(arena, input, evalFn, callbackCtx, callbackFn);
+    }
+
+    pub fn hasOverride(self: Invoker, comptime task: Task) bool {
+        const tag = ComptimeTag.of(task);
+        return self.overrides(tag) != null;
     }
 
     fn getOpaqueEval(self: Invoker, comptime task: Task, comptime method: InvokeMethod) OpaqueEvaluator.Func(method) {
@@ -132,7 +137,7 @@ pub const AsyncInvocation = struct {
     }
 };
 
-const OpaqueEvaluator = struct {
+pub const OpaqueEvaluator = struct {
     evalSyncFn: SyncFn,
     evalAsyncFn: AsyncFn,
     evalCallbackFn: CallbackFn,
@@ -276,83 +281,26 @@ const NoOpTracer = struct {
     fn didCallback(_: *anyopaque, _: ComptimeTag, _: *const anyopaque, _: u64) void {}
 };
 
-pub const InvokeOverrider = struct {
-    comptime len: usize = 0,
-    comptime map: [128]Mapping = undefined,
-
-    const Mapping = struct {
-        task: Task,
-        evaluator: OpaqueEvaluator,
-    };
-
-    pub fn override(
-        comptime self: *InvokeOverrider,
-        comptime task: Task,
-        comptime name: []const u8,
-        comptime func: anytype,
-        comptime options: Task.Options,
-    ) void {
-        const ovrd = Task.define("[OVERRIDE] " ++ name, func, options);
-        if (ovrd.output != task.output) {
-            @compileError("Override '" ++ name ++ "' expects output type " ++ @typeName(task.output));
-        } else if (task.input != null or ovrd.input != null) {
-            const task_len = if (task.input) |in| in.len else 0;
-            const ovrd_len = if (ovrd.input) |in| in.len else 0;
-            if (task_len != ovrd_len) {
-                const message = "Override '{s}' expects {d} input parameters";
-                @compileError(std.fmt.comptimePrint(message, .{ name, task.input.len }));
-            } else if (task.input) |in| for (in) |i| {
-                const message = "Override '{s}' input #{d} expects type {s}";
-                @compileError(std.fmt.comptimePrint(message, .{ name, i, @typeName(task.input[i]) }));
-            };
-        }
-
-        self.map[self.len] = .{
-            .task = task,
-            .evaluator = OpaqueEvaluator.of(ovrd),
-        };
-        self.len += 1;
-    }
-
-    pub fn consume(comptime self: *InvokeOverrider) Invoker.OverrideFn {
-        const map = self.pack();
-        return struct {
-            fn provide(tag: ComptimeTag) ?OpaqueEvaluator {
-                inline for (map) |item| {
-                    const actual = ComptimeTag.of(item.task);
-                    if (actual == tag) return item.evaluator;
-                }
-                return null;
-            }
-        }.provide;
-    }
-
-    fn pack(comptime self: *InvokeOverrider) []const Mapping {
-        const static: [self.len]Mapping = self.map[0..self.len].*;
-        return &static;
-    }
-};
-
 test "invoke sync" {
     const invoker = Invoker{};
 
-    TestTracer.reset();
-    invoker.evaluateSync(tests.Call, TestTracer.shared, &tsk.NOOP_DELEGATE, .{});
-    try testing.expectEqual(InvokeMethod.sync, TestTracer.last_method);
-    try testing.expectEqual(ComptimeTag.of(tests.Call), TestTracer.last_invoke);
+    TracerTester.reset();
+    invoker.evaluateSync(tests.Call, TracerTester.shared, &tsk.NOOP_DELEGATE, .{});
+    try testing.expectEqual(InvokeMethod.sync, TracerTester.last_method);
+    try testing.expectEqual(ComptimeTag.of(tests.Call), TracerTester.last_invoke);
 
-    TestTracer.reset();
-    try invoker.evaluateSync(tests.Failable, TestTracer.shared, &tsk.NOOP_DELEGATE, .{false});
-    try testing.expectEqual(InvokeMethod.sync, TestTracer.last_method);
-    try testing.expectEqual(ComptimeTag.of(tests.Failable), TestTracer.last_invoke);
+    TracerTester.reset();
+    try invoker.evaluateSync(tests.Failable, TracerTester.shared, &tsk.NOOP_DELEGATE, .{false});
+    try testing.expectEqual(InvokeMethod.sync, TracerTester.last_method);
+    try testing.expectEqual(ComptimeTag.of(tests.Failable), TracerTester.last_invoke);
 
-    TestTracer.reset();
+    TracerTester.reset();
     try testing.expectError(
         error.Fail,
-        invoker.evaluateSync(tests.Failable, TestTracer.shared, &tsk.NOOP_DELEGATE, .{true}),
+        invoker.evaluateSync(tests.Failable, TracerTester.shared, &tsk.NOOP_DELEGATE, .{true}),
     );
-    try testing.expectEqual(InvokeMethod.sync, TestTracer.last_method);
-    try testing.expectEqual(ComptimeTag.of(tests.Failable), TestTracer.last_invoke);
+    try testing.expectEqual(InvokeMethod.sync, TracerTester.last_method);
+    try testing.expectEqual(ComptimeTag.of(tests.Failable), TracerTester.last_invoke);
 }
 
 test "invoke async" {
@@ -362,82 +310,55 @@ test "invoke async" {
 
     const invoker = Invoker{};
 
-    TestTracer.reset();
+    TracerTester.reset();
     var invocation = try invoker.prepareAsync(arena_alloc, tests.Call, .{});
-    try invocation.evaluate(TestTracer.shared, &tsk.NOOP_DELEGATE);
-    try testing.expectEqual(InvokeMethod.asyncd, TestTracer.last_method);
-    try testing.expectEqual(ComptimeTag.of(tests.Call), TestTracer.last_invoke);
+    try invocation.evaluate(TracerTester.shared, &tsk.NOOP_DELEGATE);
+    try testing.expectEqual(InvokeMethod.asyncd, TracerTester.last_method);
+    try testing.expectEqual(ComptimeTag.of(tests.Call), TracerTester.last_invoke);
 
-    TestTracer.reset();
+    TracerTester.reset();
     invocation = try invoker.prepareAsync(arena_alloc, tests.Failable, .{false});
-    try invocation.evaluate(TestTracer.shared, &tsk.NOOP_DELEGATE);
-    try testing.expectEqual(InvokeMethod.asyncd, TestTracer.last_method);
-    try testing.expectEqual(ComptimeTag.of(tests.Failable), TestTracer.last_invoke);
+    try invocation.evaluate(TracerTester.shared, &tsk.NOOP_DELEGATE);
+    try testing.expectEqual(InvokeMethod.asyncd, TracerTester.last_method);
+    try testing.expectEqual(ComptimeTag.of(tests.Failable), TracerTester.last_invoke);
 
     invocation = try invoker.prepareAsync(arena_alloc, tests.Failable, .{true});
     try testing.expectError(
         error.Fail,
-        invocation.evaluate(TestTracer.shared, &tsk.NOOP_DELEGATE),
+        invocation.evaluate(TracerTester.shared, &tsk.NOOP_DELEGATE),
     );
-    try testing.expectEqual(InvokeMethod.asyncd, TestTracer.last_method);
-    try testing.expectEqual(ComptimeTag.of(tests.Failable), TestTracer.last_invoke);
+    try testing.expectEqual(InvokeMethod.asyncd, TracerTester.last_method);
+    try testing.expectEqual(ComptimeTag.of(tests.Failable), TracerTester.last_invoke);
 
-    TestTracer.reset();
+    TracerTester.reset();
     invocation = try invoker.prepareCallback(arena_alloc, tests.Call, .{}, "foo", tests.noopCb);
-    try invocation.evaluate(TestTracer.shared, &tsk.NOOP_DELEGATE);
-    try testing.expectEqual(InvokeMethod.callback, TestTracer.last_method);
-    try testing.expectEqual(ComptimeTag.of(tests.Call), TestTracer.last_invoke);
-    try testing.expectEqual(ComptimeTag.of(&tests.noopCb), TestTracer.last_callback);
-    try testing.expectEqualDeep(@as(*const anyopaque, "foo"), TestTracer.last_context);
+    try invocation.evaluate(TracerTester.shared, &tsk.NOOP_DELEGATE);
+    try testing.expectEqual(InvokeMethod.callback, TracerTester.last_method);
+    try testing.expectEqual(ComptimeTag.of(tests.Call), TracerTester.last_invoke);
+    try testing.expectEqual(ComptimeTag.of(&tests.noopCb), TracerTester.last_callback);
+    try testing.expectEqualDeep(@as(*const anyopaque, "foo"), TracerTester.last_context);
 
-    TestTracer.reset();
+    TracerTester.reset();
     invocation = try invoker.prepareCallback(arena_alloc, tests.Failable, .{false}, "bar", tests.failableCb);
-    try invocation.evaluate(TestTracer.shared, &tsk.NOOP_DELEGATE);
-    try testing.expectEqual(InvokeMethod.callback, TestTracer.last_method);
-    try testing.expectEqual(ComptimeTag.of(tests.Failable), TestTracer.last_invoke);
-    try testing.expectEqual(ComptimeTag.of(&tests.failableCb), TestTracer.last_callback);
-    try testing.expectEqualDeep(@as(*const anyopaque, "bar"), TestTracer.last_context);
+    try invocation.evaluate(TracerTester.shared, &tsk.NOOP_DELEGATE);
+    try testing.expectEqual(InvokeMethod.callback, TracerTester.last_method);
+    try testing.expectEqual(ComptimeTag.of(tests.Failable), TracerTester.last_invoke);
+    try testing.expectEqual(ComptimeTag.of(&tests.failableCb), TracerTester.last_callback);
+    try testing.expectEqualDeep(@as(*const anyopaque, "bar"), TracerTester.last_context);
 
-    TestTracer.reset();
+    TracerTester.reset();
     invocation = try invoker.prepareCallback(arena_alloc, tests.Failable, .{true}, "baz", tests.failableCb);
     try testing.expectError(
         error.Fail,
-        invocation.evaluate(TestTracer.shared, &tsk.NOOP_DELEGATE),
+        invocation.evaluate(TracerTester.shared, &tsk.NOOP_DELEGATE),
     );
-    try testing.expectEqual(InvokeMethod.callback, TestTracer.last_method);
-    try testing.expectEqual(ComptimeTag.of(tests.Failable), TestTracer.last_invoke);
-    try testing.expectEqual(ComptimeTag.of(&tests.failableCb), TestTracer.last_callback);
-    try testing.expectEqualDeep(@as(*const anyopaque, "baz"), TestTracer.last_context);
+    try testing.expectEqual(InvokeMethod.callback, TracerTester.last_method);
+    try testing.expectEqual(ComptimeTag.of(tests.Failable), TracerTester.last_invoke);
+    try testing.expectEqual(ComptimeTag.of(&tests.failableCb), TracerTester.last_callback);
+    try testing.expectEqualDeep(@as(*const anyopaque, "baz"), TracerTester.last_context);
 }
 
-test "override" {
-    const overrides = comptime blk: {
-        var overrider: InvokeOverrider = .{};
-        overrider.override(tests.NoOp, "Alt NoOp", struct {
-            pub fn f(_: *const Delegate) void {}
-        }.f, .{});
-        break :blk overrider.consume();
-    };
-
-    const invoker = Invoker{ .overrides = overrides };
-
-    TestTracer.reset();
-    invoker.evaluateSync(tests.NoOp, TestTracer.shared, &tsk.NOOP_DELEGATE, .{});
-    try testing.expectEqual(InvokeMethod.sync, TestTracer.last_method);
-    try testing.expect(ComptimeTag.of(tests.NoOp) != TestTracer.last_invoke);
-
-    var arena = std.heap.ArenaAllocator.init(test_alloc);
-    const arena_alloc = arena.allocator();
-    defer _ = arena.deinit();
-
-    TestTracer.reset();
-    var invocation = try invoker.prepareAsync(arena_alloc, tests.NoOp, .{});
-    try invocation.evaluate(TestTracer.shared, &tsk.NOOP_DELEGATE);
-    try testing.expectEqual(InvokeMethod.asyncd, TestTracer.last_method);
-    try testing.expect(ComptimeTag.of(tests.NoOp) != TestTracer.last_invoke);
-}
-
-const TestTracer = struct {
+pub const TracerTester = struct {
     pub var last_method: ?InvokeMethod = null;
     pub var last_invoke: ComptimeTag = .invalid;
     pub var last_callback: ComptimeTag = .invalid;

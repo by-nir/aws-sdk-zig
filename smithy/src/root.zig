@@ -70,4 +70,5 @@ test {
     _ = @import("pipeline/invoke.zig");
     _ = @import("pipeline/scope.zig");
     _ = @import("pipeline/schedule.zig");
+    _ = @import("pipeline/pipeline.zig");
 }

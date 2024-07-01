@@ -72,6 +72,12 @@ pub fn multiplySubScopeFn(task: *const Delegate, n: usize) !void {
 }
 
 //
+// Hooks
+//
+
+pub const NoOpHook = Task.hook("NoOp Hook", &.{bool}, void);
+
+//
 // Callbacks
 //
 
