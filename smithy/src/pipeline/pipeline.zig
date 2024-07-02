@@ -2,12 +2,12 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const ivk = @import("invoke.zig");
-const scd = @import("schedule.zig");
-const Scope = @import("scope.zig").Scope;
 const tsk = @import("task.zig");
 const Task = tsk.Task;
 const Delegate = tsk.Delegate;
+const ivk = @import("invoke.zig");
+const scd = @import("schedule.zig");
+const Scope = @import("scope.zig").Scope;
 const ComptimeTag = @import("utils.zig").ComptimeTag;
 const tests = @import("tests.zig");
 
@@ -75,8 +75,7 @@ pub const Pipeline = struct {
 };
 
 pub const TasksOverrider = struct {
-    comptime len: usize = 0,
-    comptime map: [128]Mapping = undefined,
+    comptime map: std.BoundedArray(Mapping, 128) = .{},
 
     const Mapping = struct {
         task: Task,
@@ -107,11 +106,10 @@ pub const TasksOverrider = struct {
             }
         }
 
-        self.map[self.len] = .{
+        self.map.append(.{
             .task = task,
             .evaluator = ivk.OpaqueEvaluator.of(ovrd),
-        };
-        self.len += 1;
+        }) catch @compileError("Overflow");
     }
 
     pub fn consume(comptime self: *TasksOverrider) ivk.InvokeOverrideFn {
@@ -128,7 +126,8 @@ pub const TasksOverrider = struct {
     }
 
     fn pack(comptime self: *TasksOverrider) []const Mapping {
-        const static: [self.len]Mapping = self.map[0..self.len].*;
+        const len = self.map.len;
+        const static: [len]Mapping = self.map.slice()[0..len].*;
         return &static;
     }
 };
@@ -136,9 +135,11 @@ pub const TasksOverrider = struct {
 test "TasksOverrider" {
     const overrides = comptime blk: {
         var overrider: TasksOverrider = .{};
+
         overrider.override(tests.NoOpHook, "Alt NoOp", struct {
             pub fn f(_: *const Delegate, _: bool) void {}
         }.f, .{});
+
         break :blk overrider.consume();
     };
 

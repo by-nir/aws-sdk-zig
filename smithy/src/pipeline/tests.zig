@@ -50,25 +50,25 @@ pub fn optInjectMultiplyFn(_: *const Delegate, service: ?*Service, n: usize) usi
 }
 
 pub const MultiplyScope = Task.define("MultiplyScope", multiplyScopeFn, .{});
-pub fn multiplyScopeFn(task: *const Delegate, n: usize) !void {
-    const m = task.readValue(usize, .num) orelse return error.MissingValue;
-    try task.writeValue(usize, .num, m * n);
+pub fn multiplyScopeFn(self: *const Delegate, n: usize) !void {
+    const m = self.readValue(usize, .num) orelse return error.MissingValue;
+    try self.writeValue(usize, .num, m * n);
 }
 
 pub const ExponentScope = Task.define("ExponentScope", exponentScopeFn, .{});
-pub fn exponentScopeFn(task: *const Delegate, n: usize) !void {
-    try task.schedule(MultiplyScope, .{n});
-    const m = task.readValue(usize, .num) orelse return error.MissingValue;
-    try task.writeValue(usize, .num, m * n);
+pub fn exponentScopeFn(self: *const Delegate, n: usize) !void {
+    try self.schedule(MultiplyScope, .{n});
+    const m = self.readValue(usize, .num) orelse return error.MissingValue;
+    try self.writeValue(usize, .num, m * n);
 }
 
 pub const MultiplySubScope = Task.define("MultiplySubScope", multiplySubScopeFn, .{});
-pub fn multiplySubScopeFn(task: *const Delegate, n: usize) !void {
-    const m = task.readValue(usize, .mult) orelse return error.MissingValue;
-    try task.defineValue(usize, .num, n);
-    try task.evaluate(MultiplyScope, .{m});
-    const prod = task.readValue(usize, .num) orelse return error.MissingValue;
-    try task.writeValue(usize, .mult, prod);
+pub fn multiplySubScopeFn(self: *const Delegate, n: usize) !void {
+    const m = self.readValue(usize, .mult) orelse return error.MissingValue;
+    try self.defineValue(usize, .num, n);
+    try self.evaluate(MultiplyScope, .{m});
+    const prod = self.readValue(usize, .num) orelse return error.MissingValue;
+    try self.writeValue(usize, .mult, prod);
 }
 
 //

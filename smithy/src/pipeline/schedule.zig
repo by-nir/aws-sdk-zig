@@ -396,10 +396,10 @@ test "appendCallback" {
 test "sub-tasks scheduling" {
     const tasks = struct {
         pub const Root = Task.define("Root", root, .{});
-        pub fn root(task: *const Delegate) anyerror!void {
-            try task.schedule(Bar, .{});
-            try task.evaluate(Foo, .{});
-            try task.scheduleCallback(Baz, .{}, undefined, tests.noopCb);
+        pub fn root(self: *const Delegate) anyerror!void {
+            try self.schedule(Bar, .{});
+            try self.evaluate(Foo, .{});
+            try self.scheduleCallback(Baz, .{}, undefined, tests.noopCb);
         }
 
         pub const Foo = Task.define("Foo", tests.noOpFn, .{});
