@@ -67,10 +67,10 @@ pub const Task = struct {
         const args = if (self.input) |types| blk: {
             comptime var shift: usize = 0;
             var tuple = ArgsValueBuilder(self.In(true)){};
-            tuple.appendValue(comptime &shift, delegate);
+            tuple.appendValue(&shift, delegate);
 
             if (self.inject) |inj| {
-                inline for (inj) |T| tuple.appendInjectable(comptime &shift, delegate, T) catch {
+                inline for (inj) |T| tuple.appendInjectable(&shift, delegate, T) catch {
                     const message = "Task '{s}' requires injectable service `{s}`";
                     logOrPanic(message, .{ self.name, @typeName(T) });
                 };
@@ -128,37 +128,38 @@ pub const Task = struct {
     }
 };
 
-pub const GenericTaskOptions = struct {
+pub const AbstractTaskOptions = struct {
     /// Services that are provided by the scope.
     inject: []const type = &.{},
     /// Input passed from the wrapper to the child task.
     varyings: []const type = &.{},
 };
 
-pub fn GenericTask(comptime wrapperFn: anytype, comptime wrap_options: GenericTaskOptions) type {
+pub fn AbstractTask(comptime wrapperFn: anytype, comptime wrap_options: AbstractTaskOptions) type {
     const varyings_len = wrap_options.varyings.len;
-    const wrap_meta = DestructFunc.from("Generic task", wrapperFn, wrap_options.inject);
+    const wrap_meta = DestructFunc.from("Abstract task", wrapperFn, wrap_options.inject);
 
+    comptime var wrap_input: []const type = &.{};
     const WrapOut: type = wrap_meta.output;
     const Varyings: type, const ChildOut: type = blk: {
-        const len = wrap_meta.input.len;
-        if (len > 1) @compileError("Generic task does not support input parameters");
-
         var eval_meta: ?ZigType.Fn = null;
-        if (len == 1) switch (@typeInfo(wrap_meta.input[len - 1])) {
-            .Pointer => |t| {
-                const target = @typeInfo(t.child);
-                if (t.size == .One and target == .Fn) eval_meta = target.Fn;
-            },
-            else => {},
-        };
-
-        const meta = eval_meta orelse @compileError("Generic task’s last parameter must be a pointer to a function");
+        const in_len = wrap_meta.input.len;
+        if (in_len > 0) {
+            wrap_input = wrap_meta.input[0 .. in_len - 1];
+            switch (@typeInfo(wrap_meta.input[in_len - 1])) {
+                .Pointer => |t| {
+                    const target = @typeInfo(t.child);
+                    if (t.size == .One and target == .Fn) eval_meta = target.Fn;
+                },
+                else => {},
+            }
+        }
+        const meta = eval_meta orelse @compileError("Abstract task’s last parameter must be a pointer to a function");
         const Out = meta.return_type.?;
 
         const params_len = meta.params.len;
-        if (varyings_len == 0) {
-            if (params_len > 0) @compileError("Generic child-task evaluator expects no parameters");
+        if (wrap_input.len + varyings_len == 0) {
+            if (params_len > 0) @compileError("Abstract child-task evaluator expects no parameters");
             break :blk .{ void, Out };
         }
 
@@ -167,39 +168,40 @@ pub fn GenericTask(comptime wrapperFn: anytype, comptime wrap_options: GenericTa
                 .Struct => |t| if (t.is_tuple) break :fld t.fields,
                 else => {},
             };
-            @compileError("Generic child-task evaluator expects a single tuple parameter");
+            @compileError("Abstract child-task evaluator expects a single tuple parameter");
         };
 
         if (tuple_fields.len > varyings_len) {
-            @compileError("Generic child-task evaluator tuple exceeds the options.varyings definition");
+            @compileError("Abstract child-task evaluator tuple exceeds the options.varyings definition");
         }
 
         var tuple = ArgsTypeBuilder(varyings_len){};
         for (wrap_options.varyings, 0..) |T, i| {
             if (tuple_fields.len < i + 1) @compileError(std.fmt.comptimePrint(
-                "Generic child-task evaluator is missing varying parameter #{d} of type {s}",
+                "Abstract child-task evaluator is missing varying parameter #{d} of type {s}",
                 .{ i, @typeName(T) },
             )) else if (T != tuple_fields[i].type) @compileError(std.fmt.comptimePrint(
-                "Generic child-task evaluator’s parameter #{d} expects type {s}",
+                "Abstract child-task evaluator’s parameter #{d} expects type {s}",
                 .{ i, @typeName(T) },
             ));
             tuple.append(T);
         }
+        const zibi_dibi_foo_bar_baz = tuple.Define();
 
-        break :blk .{ tuple.Define(), Out };
+        break :blk .{ zibi_dibi_foo_bar_baz, Out };
     };
 
-    return struct {
-        pub const EvalTaskFn = *const @Type(ZigType{ .Fn = .{
-            .calling_convention = .Unspecified,
-            .is_generic = false,
-            .is_var_args = false,
-            .return_type = ChildOut,
-            .params = if (varyings_len == 0) &.{} else &.{
-                .{ .type = Varyings, .is_generic = false, .is_noalias = false },
-            },
-        } });
+    const EvalTaskFn = *const @Type(ZigType{ .Fn = .{
+        .calling_convention = .Unspecified,
+        .is_generic = false,
+        .is_var_args = false,
+        .return_type = ChildOut,
+        .params = if (varyings_len == 0) &.{} else &.{
+            .{ .type = Varyings, .is_generic = false, .is_noalias = false },
+        },
+    } });
 
+    return struct {
         pub fn define(name: []const u8, comptime func: anytype, comptime options: Task.Options) Task {
             const name_err = "Task '" ++ name ++ "'";
             const child_meta = DestructFunc.from(name_err, func, options.inject);
@@ -218,18 +220,25 @@ pub fn GenericTask(comptime wrapperFn: anytype, comptime wrap_options: GenericTa
                 ));
             }
 
-            const wrap_input_len = child_meta.input.len - varyings_len;
-            const child_input = if (wrap_input_len > 0) child_meta.input[varyings_len..][0..wrap_input_len] else &.{};
-            const WrapIn: type = if (wrap_input_len == 0) @TypeOf(.{}) else blk: {
-                var tuple = ArgsTypeBuilder(wrap_input_len){};
+            const child_input_len = child_meta.input.len - varyings_len;
+            const invoke_in_len = wrap_input.len + child_input_len;
+            const child_input = if (child_input_len > 0) child_meta.input[varyings_len..child_meta.input.len] else &.{};
+            const InvokeIn: type, const invoke_input: []const type = if (invoke_in_len == 0)
+                .{ @TypeOf(.{}), &.{} }
+            else blk: {
+                var tuple = ArgsTypeBuilder(invoke_in_len){};
+                tuple.appendMany(wrap_input);
                 tuple.appendMany(child_input);
-                break :blk tuple.Define();
+                break :blk .{ tuple.Define(), wrap_input ++ child_input };
             };
 
-            const WrapArgs = if (wrap_meta.inject.len == 0) struct { *const Delegate, EvalTaskFn } else blk: {
-                var tuple = ArgsTypeBuilder(2 + child_meta.inject){};
+            const WrapArgs = if (wrap_input.len + wrap_meta.inject.len == 0)
+                struct { *const Delegate, EvalTaskFn }
+            else blk: {
+                var tuple = ArgsTypeBuilder(2 + wrap_meta.inject.len + wrap_input.len){};
                 tuple.append(*const Delegate);
-                tuple.appendMany(child_meta.inject);
+                tuple.appendMany(wrap_meta.inject);
+                tuple.appendMany(wrap_input);
                 tuple.append(EvalTaskFn);
                 break :blk tuple.Define();
             };
@@ -246,24 +255,29 @@ pub fn GenericTask(comptime wrapperFn: anytype, comptime wrap_options: GenericTa
 
             const evals = struct {
                 threadlocal var child_delegate: *const Delegate = undefined;
-                threadlocal var child_input_passthrough: *const WrapIn = undefined;
+                threadlocal var invoke_inputs: *const InvokeIn = undefined;
 
-                fn evaluateWrapper(delegate: *const Delegate, input: WrapIn) WrapOut {
+                fn evaluateWrapper(delegate: *const Delegate, input: InvokeIn) WrapOut {
                     const childFn: EvalTaskFn = if (varyings_len == 0) evaluateChildParamless else evaluateChild;
-                    const args: WrapArgs = if (wrap_meta.inject.len == 0) .{ delegate, childFn } else blk: {
+                    const args: WrapArgs = if (wrap_input.len + wrap_meta.inject.len == 0)
+                        .{ delegate, childFn }
+                    else blk: {
                         comptime var shift: usize = 0;
                         var tuple = ArgsValueBuilder(WrapArgs){};
-                        tuple.appendValue(comptime &shift, delegate);
-                        inline for (wrap_meta.inject) |T| tuple.appendInjectable(comptime &shift, delegate, T) catch {
+                        tuple.appendValue(&shift, delegate);
+                        inline for (wrap_meta.inject) |T| tuple.appendInjectable(&shift, delegate, T) catch {
                             const message = "Task '{s}' requires injectable service `{s}`";
                             logOrPanic(message, .{ name, @typeName(T) });
                         };
-                        tuple.appendValue(comptime &shift, childFn);
+                        inline for (0..wrap_input.len) |i| {
+                            tuple.appendValue(&shift, input[i]);
+                        }
+                        tuple.appendValue(&shift, childFn);
                         break :blk tuple.consume(&shift);
                     };
 
                     child_delegate = delegate;
-                    child_input_passthrough = &input;
+                    invoke_inputs = &input;
                     return @call(.auto, wrapperFn, args);
                 }
 
@@ -275,13 +289,19 @@ pub fn GenericTask(comptime wrapperFn: anytype, comptime wrap_options: GenericTa
                     const child_args = if (child_args_len == 1) .{child_delegate} else blk: {
                         comptime var shift: usize = 0;
                         var tuple = ArgsValueBuilder(ChildArgs){};
-                        tuple.appendValue(comptime &shift, child_delegate);
-                        inline for (child_meta.inject) |T| tuple.appendInjectable(comptime &shift, child_delegate, T) catch {
-                            const message = "Task '{s}' requires injectable service `{s}`";
-                            logOrPanic(message, .{ name, @typeName(T) });
-                        };
-                        inline for (0..varyings.len) |i| tuple.appendValue(&shift, varyings[i]);
-                        inline for (0..child_input_passthrough.len) |i| tuple.appendValue(&shift, child_input_passthrough[i]);
+                        tuple.appendValue(&shift, child_delegate);
+                        inline for (child_meta.inject) |T| {
+                            tuple.appendInjectable(&shift, child_delegate, T) catch {
+                                const message = "Task '{s}' requires injectable service `{s}`";
+                                logOrPanic(message, .{ name, @typeName(T) });
+                            };
+                        }
+                        inline for (0..varyings.len) |i| {
+                            tuple.appendValue(&shift, varyings[i]);
+                        }
+                        inline for (wrap_input.len..invoke_inputs.len) |i| {
+                            tuple.appendValue(&shift, invoke_inputs[i]);
+                        }
                         break :blk tuple.consume(&shift);
                     };
 
@@ -292,11 +312,11 @@ pub fn GenericTask(comptime wrapperFn: anytype, comptime wrap_options: GenericTa
             return .{
                 .name = name,
                 .inject = null,
-                .input = if (child_input.len > 0) child_input else null,
+                .input = if (invoke_in_len > 0) invoke_input else null,
                 .output = WrapOut,
                 .func = func,
                 .evalFn = evals.evaluateWrapper,
-                .Fn = *const fn (delegate: *const Delegate, input: WrapIn) WrapOut,
+                .Fn = *const fn (delegate: *const Delegate, input: InvokeIn) WrapOut,
             };
         }
 
@@ -305,7 +325,7 @@ pub fn GenericTask(comptime wrapperFn: anytype, comptime wrap_options: GenericTa
             return .{
                 .name = name,
                 .inject = null,
-                .input = if (input) |in| (if (in.len > 0) in else null) else input,
+                .input = if (input != null and input.?.len > 0) input else null,
                 .output = WrapOut,
                 .evalFn = null,
                 .func = undefined,
@@ -336,7 +356,7 @@ const DestructFunc = struct {
 
         const params_len = meta.params.len;
         if (params_len == 0 or meta.params[0].type != *const Delegate) {
-            @compileError("Task '" ++ name ++ "' first parameter must be `*const Delegate`");
+            @compileError(name ++ " first parameter must be `*const Delegate`");
         }
 
         const inject_len = inject_types.len;
@@ -348,17 +368,17 @@ const DestructFunc = struct {
                 switch (@typeInfo(T)) {
                     .Struct => {},
                     .Pointer, .Optional => @compileError(std.fmt.comptimePrint(
-                        "Task '{s}' options.inject[{d}] expects a plain struct type, without modifiers",
+                        "{s} options.inject[{d}] expects a plain struct type, without modifiers",
                         .{ name, i },
                     )),
                     else => if (@typeInfo(T) != .Struct) @compileError(std.fmt.comptimePrint(
-                        "Task '{s}' options.inject[{d}] expects a struct type",
+                        "{s} options.inject[{d}] expects a struct type",
                         .{ name, i },
                     )),
                 }
 
                 if (params_len < i + 2) @compileError(std.fmt.comptimePrint(
-                    "Task '{s}' missing parameter #{d} of type *{2s} or ?*{2s}",
+                    "{s} missing parameter #{d} of type *{2s} or ?*{2s}",
                     .{ name, i + 1, @typeName(T) },
                 ));
 
@@ -370,7 +390,7 @@ const DestructFunc = struct {
                 }
 
                 if (Param != *T) @compileError(std.fmt.comptimePrint(
-                    "Task '{s}' parameter #{d} expects type {s}{s}",
+                    "{s} parameter #{d} expects type {s}*{s}",
                     .{ name, i + 1, if (is_optional) "?" else "", @typeName(T) },
                 ));
 
@@ -541,14 +561,18 @@ test "Task.evaluate" {
     try testing.expectEqual(108, value);
 }
 
-test "GenericTask" {
+test "AbstractTask" {
     const GenericEval = struct {
         fn wrapperCall(_: *const Delegate, task: *const fn () void) void {
             return task();
         }
 
-        fn wrapperVarying(_: *const Delegate, task: *const fn (struct { usize }) usize) usize {
-            return task(.{100});
+        fn wrapperVarying(
+            _: *const Delegate,
+            n: usize,
+            task: *const fn (struct { usize }) usize,
+        ) usize {
+            return task(.{n});
         }
 
         fn childVarying(_: *const Delegate, a: usize, b: usize) usize {
@@ -557,16 +581,16 @@ test "GenericTask" {
     };
 
     tests.did_call = false;
-    const GenericCall = GenericTask(GenericEval.wrapperCall, .{});
-    const Call = GenericCall.define("Generic Call", tests.callFn, .{});
+    const GenericCall = AbstractTask(GenericEval.wrapperCall, .{});
+    const Call = GenericCall.define("Abstract Call", tests.callFn, .{});
     Call.evaluate(&NOOP_DELEGATE, .{});
     try testing.expect(tests.did_call);
 
-    const GenericVarying = GenericTask(GenericEval.wrapperVarying, .{
+    const GenericVarying = AbstractTask(GenericEval.wrapperVarying, .{
         .varyings = &.{usize},
     });
-    const Varying = GenericVarying.define("Generic Varying", GenericEval.childVarying, .{});
-    try testing.expectEqual(108, Varying.evaluate(&NOOP_DELEGATE, .{8}));
+    const Varying = GenericVarying.define("Abstract Varying", GenericEval.childVarying, .{});
+    try testing.expectEqual(108, Varying.evaluate(&NOOP_DELEGATE, .{ 100, 8 }));
 }
 
 /// Evaluate a task with a no-op delegate.
