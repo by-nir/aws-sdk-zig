@@ -329,6 +329,23 @@ pub fn AbstractTask(comptime wrapperFn: anytype, comptime wrap_options: Abstract
                 .Fn = @TypeOf(.hook_unimplemented),
             };
         }
+
+        pub fn childInput(comptime task: Task, input: task.In(false)) ChildInput(task) {
+            var value: ChildInput(task) = undefined;
+            inline for (wrap_input.len..input.len, 0..) |i, v| value[v] = input[i];
+            return value;
+        }
+
+        pub fn ChildInput(comptime task: Task) type {
+            const input = task.input orelse @TypeOf(.{});
+
+            const child_len = input.len - wrap_input.len;
+            if (child_len == 0) return @TypeOf(.{});
+
+            var tuple = ArgsTypeBuilder(child_len){};
+            for (wrap_input.len..input.len) |i| tuple.append(input[i]);
+            return tuple.Define();
+        }
     };
 }
 
@@ -555,11 +572,11 @@ test "Task.evaluate" {
 
 test "AbstractTask" {
     const AbstractEval = struct {
-        fn wrapperCall(_: *const Delegate, task: *const fn () void) void {
+        fn callWrapper(_: *const Delegate, task: *const fn () void) void {
             return task();
         }
 
-        fn wrapperVarying(
+        fn varyingWrapper(
             _: *const Delegate,
             n: usize,
             task: *const fn (struct { usize }) usize,
@@ -567,22 +584,27 @@ test "AbstractTask" {
             return task(.{n});
         }
 
-        fn childVarying(_: *const Delegate, a: usize, b: usize) usize {
+        fn varyingChild(_: *const Delegate, a: usize, b: usize) usize {
             return a + b;
         }
     };
 
     tests.did_call = false;
-    const AbstractCall = AbstractTask(AbstractEval.wrapperCall, .{});
+    const AbstractCall = AbstractTask(AbstractEval.callWrapper, .{});
     const Call = AbstractCall.define("Abstract Call", tests.callFn, .{});
     Call.evaluate(&NOOP_DELEGATE, .{});
     try testing.expect(tests.did_call);
 
-    const AbstractVarying = AbstractTask(AbstractEval.wrapperVarying, .{
+    const AbstractVarying = AbstractTask(AbstractEval.varyingWrapper, .{
         .varyings = &.{usize},
     });
-    const Varying = AbstractVarying.define("Abstract Varying", AbstractEval.childVarying, .{});
+    const Varying = AbstractVarying.define("Abstract Varying", AbstractEval.varyingChild, .{});
     try testing.expectEqual(108, Varying.evaluate(&NOOP_DELEGATE, .{ 100, 8 }));
+
+    const fields = @typeInfo(AbstractVarying.ChildInput(Varying)).Struct.fields;
+    try testing.expectEqual(1, fields.len);
+    try testing.expectEqual(usize, fields[0].type);
+    try testing.expectEqualDeep(.{8}, AbstractVarying.childInput(Varying, .{ 100, 8 }));
 }
 
 pub const NOOP_DELEGATE = Delegate{
