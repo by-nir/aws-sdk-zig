@@ -2,10 +2,11 @@ const std = @import("std");
 const fs = std.fs;
 const mem = std.mem;
 const Allocator = mem.Allocator;
-const testing = std.testing;
-const test_alloc = testing.allocator;
 const smithy = @import("smithy");
-const Script = smithy.Script;
+const pipez = smithy.pipez;
+const Delegate = pipez.Delegate;
+const FilesTasks = smithy.FilesTasks;
+const CodegenTasks = smithy.CodegenTasks;
 const JsonReader = smithy.JsonReader;
 const zig = smithy.codegen_zig;
 const ExprBuild = zig.ExprBuild;
@@ -15,67 +16,78 @@ const ContainerBuild = zig.ContainerBuild;
 const log = std.log.scoped(.codegen_partitions);
 
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    const alloc = arena.allocator();
-    defer arena.deinit();
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const alloc = gpa.allocator();
+    defer _ = gpa.deinit();
 
     const args = try std.process.argsAlloc(alloc);
     defer std.process.argsFree(alloc, args);
     if (args.len < 3) return error.MissingPathsArgs;
 
-    var src_file = try fs.cwd().openFile(args[1], .{});
+    const input_path = args[1];
+    const output_path = args[2];
+
+    var pipeline = try pipez.Pipeline.init(alloc, .{});
+    defer pipeline.deinit();
+
+    try pipeline.evaluateSync(Partitions, .{
+        output_path,
+        FilesTasks.FileOptions{ .delete_on_error = true },
+        input_path,
+    });
+}
+
+const Partitions = FilesTasks.WriteFile.define("Partitions", partitionsTask, .{});
+
+fn partitionsTask(self: *const Delegate, writer: std.io.AnyWriter, src_path: []const u8) anyerror!void {
+    const cwd = FilesTasks.getWorkDir(self);
+    const src_file = try cwd.openFile(src_path, .{});
     defer src_file.close();
-    var reader = try JsonReader.initPersist(alloc, src_file);
+
+    var reader = try JsonReader.initPersist(self.alloc(), src_file);
     defer reader.deinit();
 
-    var script = try Script(.zig).initPersist(.{ .arena = alloc }, fs.cwd(), args[2]);
-    defer script.deinit();
-
-    try processSource(script, &reader);
-    try script.end();
+    try self.evaluate(PartitionsCodegen, .{ writer, &reader });
 }
+
+const PartitionsCodegen = CodegenTasks.ZigScript.define("Partitions Codegen", partitionsCodegenTask, .{});
+
 // https://github.com/smithy-lang/smithy-rs/blob/main/rust-runtime/inlineable/src/endpoint_lib/partition.rs
-fn processSource(script: Script(.zig), source: *JsonReader) !void {
-    const context = .{ .arena = script.arena, .reader = source };
-    try script.writeBody(context, struct {
-        fn f(ctx: @TypeOf(context), bld: *ContainerBuild) !void {
-            try bld.constant("std").assign(bld.x.import("std"));
-            try bld.constant("Partition").assign(bld.x.import("aws_runtime").dot().raw("Endpoint.Partition"));
+fn partitionsCodegenTask(self: *const Delegate, bld: *ContainerBuild, reader: *JsonReader) anyerror!void {
+    try bld.constant("std").assign(bld.x.import("std"));
+    try bld.constant("Partition").assign(bld.x.import("aws_runtime").dot().raw("Endpoint.Partition"));
 
-            try bld.public().function("resolve")
-                .arg("region", bld.x.typeOf([]const u8))
-                .returns(bld.x.raw("?*const Partition"))
-                .body(struct {
-                fn f(b: *BlockBuild) !void {
-                    try b.returns().raw("partitions.get(region) orelse null").end();
-                }
-            }.f);
-
-            const reader = ctx.reader;
-            var regions = std.ArrayList(ExprBuild).init(ctx.arena);
-
-            try reader.nextObjectBegin();
-            while (try reader.peek() == .string) {
-                const key = try reader.nextString();
-                if (mem.eql(u8, "version", key)) {
-                    try reader.nextStringEql("1.1");
-                } else if (mem.eql(u8, "partitions", key)) {
-                    try reader.nextArrayBegin();
-                    while (try reader.next() != .array_end) {
-                        try processPartition(ctx.arena, bld, reader, &regions);
-                    }
-                } else {
-                    return error.UnexpectedKey;
-                }
-            }
-            try reader.nextObjectEnd();
-
-            try bld.constant("partitions").assign(bld.x.call(
-                "std.StaticStringMap(*const Partition).initComptime",
-                &.{bld.x.structLiteral(null, regions.items)},
-            ));
+    try bld.public().function("resolve")
+        .arg("region", bld.x.typeOf([]const u8))
+        .returns(bld.x.raw("?*const Partition"))
+        .body(struct {
+        fn f(b: *BlockBuild) !void {
+            try b.returns().raw("partitions.get(region) orelse null").end();
         }
     }.f);
+
+    var regions = std.ArrayList(ExprBuild).init(self.alloc());
+
+    try reader.nextObjectBegin();
+    while (try reader.peek() == .string) {
+        const key = try reader.nextString();
+        if (mem.eql(u8, "version", key)) {
+            try reader.nextStringEql("1.1");
+        } else if (mem.eql(u8, "partitions", key)) {
+            try reader.nextArrayBegin();
+            while (try reader.next() != .array_end) {
+                try processPartition(self.alloc(), bld, reader, &regions);
+            }
+        } else {
+            return error.UnexpectedKey;
+        }
+    }
+    try reader.nextObjectEnd();
+
+    try bld.constant("partitions").assign(bld.x.call(
+        "std.StaticStringMap(*const Partition).initComptime",
+        &.{bld.x.structLiteral(null, regions.items)},
+    ));
 }
 
 fn processPartition(
@@ -154,15 +166,15 @@ fn processPartition(
     }));
 }
 
-test "processSource" {
-    const script = try Script(.zig).initEphemeral(.{ .gpa = test_alloc });
-    defer script.deinit();
+test "PartitionsCodegen" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    const arena_alloc = arena.allocator();
+    defer arena.deinit();
 
-    var reader = try JsonReader.initFixed(script.arena, TEST_SRC);
+    var reader = try JsonReader.initFixed(arena_alloc, TEST_SRC);
     defer reader.deinit();
 
-    try processSource(script, &reader);
-    try script.expect(TEST_OUT);
+    try CodegenTasks.expectZigScript(PartitionsCodegen, TEST_OUT, .{&reader});
 }
 
 const TEST_OUT: []const u8 =

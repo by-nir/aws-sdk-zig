@@ -1,7 +1,7 @@
 pub const config = @import("config.zig");
 
-pub const Pipeline = @import("Pipeline.zig");
 pub const pipez = @import("pipeline/root.zig");
+pub const OLD_Pipeline = @import("Pipeline.zig");
 
 const Parser = @import("parse/Parser.zig");
 pub const ParsePolicy = Parser.Policy;
@@ -71,6 +71,6 @@ test {
     _ = CodegenTasks;
 
     _ = prelude;
-    _ = Pipeline;
     _ = pipez;
+    _ = OLD_Pipeline;
 }

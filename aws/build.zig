@@ -44,7 +44,7 @@ pub fn build(b: *std.Build) void {
         .name = "codegen-partitions",
         .target = target,
         .optimize = optimize,
-        .root_source_file = b.path("codegen/partitions.zig"),
+        .root_source_file = b.path("codegen/tasks/partitions.zig"),
     });
     partitions_exe.root_module.addImport("smithy", smithy_codegen);
     b.installArtifact(partitions_exe);
@@ -97,7 +97,7 @@ pub fn build(b: *std.Build) void {
     const test_gen_partitions_exe = b.addTest(.{
         .target = target,
         .optimize = optimize,
-        .root_source_file = b.path("codegen/partitions.zig"),
+        .root_source_file = b.path("codegen/tasks/partitions.zig"),
     });
     test_gen_partitions_exe.root_module.addImport("smithy", smithy_codegen);
     test_codegen_step.dependOn(&b.addRunArtifact(test_gen_partitions_exe).step);
