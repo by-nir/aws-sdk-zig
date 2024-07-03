@@ -2,39 +2,38 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const tsk = @import("task.zig");
-const Task = tsk.Task;
-const Delegate = tsk.Delegate;
 const ivk = @import("invoke.zig");
-const scd = @import("schedule.zig");
+const Task = @import("task.zig").Task;
 const Scope = @import("scope.zig").Scope;
-const ComptimeTag = @import("utils.zig").ComptimeTag;
-const tests = @import("tests.zig");
+const scd = @import("schedule.zig");
+const Schedule = scd.Schedule;
+const ScheduleResources = scd.ScheduleResources;
+const util = @import("utils.zig");
 
 pub const Pipeline = struct {
     scope: *Scope,
-    schedule: scd.Schedule,
-    resources: scd.ScheduleResources,
+    schedule: Schedule,
+    resources: ScheduleResources,
 
     pub const Options = struct {
         tracer: ?ivk.InvokeTracer = null,
-        overrides: ?ivk.InvokeOverrideFn = null,
+        invoker: ?ivk.Invoker = null,
     };
 
     pub fn init(allocator: Allocator, options: Options) !*Pipeline {
         const self = try allocator.create(Pipeline);
         errdefer allocator.destroy(self);
 
-        self.resources = scd.ScheduleResources.init(allocator);
+        self.resources = ScheduleResources.init(allocator);
         errdefer self.resources.deinit();
 
         const scope = try self.resources.retainScope();
         errdefer self.resources.releaseScope(scope);
         scope.parent = null;
-        if (options.overrides) |t| scope.invoker = .{ .overrides = t };
+        if (options.invoker) |invoker| scope.invoker = invoker;
         self.scope = scope;
 
-        self.schedule = scd.Schedule.init(allocator, &self.resources, scope);
+        self.schedule = Schedule.init(allocator, &self.resources, scope, .{});
         if (options.tracer) |t| self.schedule.tracer = t;
 
         return self;
@@ -74,96 +73,128 @@ pub const Pipeline = struct {
     }
 };
 
-pub const TasksOverrider = struct {
-    comptime map: std.BoundedArray(Mapping, 128) = .{},
-
-    const Mapping = struct {
-        task: Task,
-        evaluator: ivk.OpaqueEvaluator,
-    };
-
-    pub fn override(
-        comptime self: *TasksOverrider,
-        comptime task: Task,
-        comptime name: []const u8,
-        comptime func: anytype,
-        comptime options: Task.Options,
-    ) void {
-        const ovrd = Task.define("[OVERRIDE] " ++ name, func, options);
-        if (ovrd.output != task.output) {
-            @compileError("Override '" ++ name ++ "' expects output type " ++ @typeName(task.output));
-        } else if (task.input != null or ovrd.input != null) {
-            const task_len = if (task.input) |in| in.len else 0;
-            const ovrd_len = if (ovrd.input) |in| in.len else 0;
-            if (task_len != ovrd_len) {
-                const message = "Override '{s}' expects {d} input parameters";
-                @compileError(std.fmt.comptimePrint(message, .{ name, task_len }));
-            } else if (task.input) |in| {
-                for (in, 0..) |T, i| if (T != ovrd.input.?[i]) {
-                    const message = "Override '{s}' input #{d} expects type {s}";
-                    @compileError(std.fmt.comptimePrint(message, .{ name, i, @typeName(T) }));
-                };
-            }
-        }
-
-        self.map.append(.{
-            .task = task,
-            .evaluator = ivk.OpaqueEvaluator.of(ovrd),
-        }) catch @compileError("Overflow");
-    }
-
-    pub fn consume(comptime self: *TasksOverrider) ivk.InvokeOverrideFn {
-        const map = self.pack();
-        return struct {
-            fn provide(tag: ComptimeTag) ?ivk.OpaqueEvaluator {
-                inline for (map) |item| {
-                    const actual = ComptimeTag.of(item.task);
-                    if (actual == tag) return item.evaluator;
-                }
-                return null;
-            }
-        }.provide;
-    }
-
-    fn pack(comptime self: *TasksOverrider) []const Mapping {
-        const len = self.map.len;
-        const static: [len]Mapping = self.map.slice()[0..len].*;
-        return &static;
-    }
+pub const PipelineTesterOptions = struct {
+    invoker: ?ivk.Invoker = null,
 };
 
-test "TasksOverrider" {
-    const overrides = comptime blk: {
-        var overrider: TasksOverrider = .{};
+pub const PipelineTester = struct {
+    pipeline: *Pipeline,
+    root_scope: *Scope,
+    recorder: *ivk.InvokeTracerRecorder,
 
-        overrider.override(tests.NoOpHook, "Alt NoOp", struct {
-            pub fn f(_: *const Delegate, _: bool) void {}
-        }.f, .{});
+    pub fn init(options: PipelineTesterOptions) !PipelineTester {
+        const recorder = try test_alloc.create(ivk.InvokeTracerRecorder);
+        recorder.* = ivk.InvokeTracerRecorder.init(test_alloc);
+        errdefer test_alloc.destroy(recorder);
 
-        break :blk overrider.consume();
-    };
+        const pipeline = try Pipeline.init(test_alloc, .{
+            .tracer = recorder.tracer(),
+            .invoker = options.invoker,
+        });
+        errdefer test_alloc.destroy(pipeline);
 
-    const tracer = ivk.TracerTester;
+        return .{
+            .pipeline = pipeline,
+            .root_scope = pipeline.scope,
+            .recorder = recorder,
+        };
+    }
 
-    const pipeline = try Pipeline.init(test_alloc, .{
-        .tracer = tracer.shared,
-        .overrides = overrides,
-    });
-    defer pipeline.deinit();
+    pub fn deinit(self: *PipelineTester) void {
+        self.pipeline.deinit();
+        self.recorder.deinit();
+        test_alloc.destroy(self.recorder);
+    }
 
-    const invoker = pipeline.scope.invoker;
-    try testing.expectEqual(false, invoker.hasOverride(tests.Call));
-    try testing.expectEqual(true, invoker.hasOverride(tests.NoOpHook));
+    pub fn reset(self: *PipelineTester) void {
+        self.resetScope();
+        self.resetRecorder();
+    }
 
-    tracer.reset();
-    try pipeline.evaluateSync(tests.NoOpHook, .{true});
-    try testing.expectEqual(.sync, tracer.last_method);
-    try testing.expect(ComptimeTag.of(tests.NoOpHook) != tracer.last_invoke);
+    pub fn resetScope(self: *PipelineTester) void {
+        self.root_scope.reset();
+    }
 
-    tracer.reset();
-    try pipeline.scheduleAsync(tests.NoOpHook, .{true});
-    try pipeline.run();
-    try pipeline.scheduleAsync(tests.NoOpHook, .{true});
-    try testing.expectEqual(.asyncd, tracer.last_method);
-    try testing.expect(ComptimeTag.of(tests.NoOpHook) != tracer.last_invoke);
-}
+    pub fn resetRecorder(self: *PipelineTester) void {
+        self.recorder.clear();
+    }
+
+    //
+    // Schedule
+    //
+
+    pub fn evaluateSync(self: *PipelineTester, comptime task: Task, input: task.In(false)) !task.Out(.strip) {
+        return self.pipeline.evaluateSync(task, input);
+    }
+
+    pub inline fn expectEvaluateSyncError(
+        self: *PipelineTester,
+        expected: anyerror,
+        comptime task: Task,
+        input: task.In(false),
+    ) !void {
+        const output = self.pipeline.evaluateSync(task, input);
+        try testing.expectError(expected, output);
+    }
+
+    pub fn scheduleAsync(self: *PipelineTester, comptime task: Task, input: task.In(false)) !void {
+        try self.pipeline.scheduleAsync(task, input);
+    }
+
+    pub fn scheduleCallback(
+        self: *PipelineTester,
+        comptime task: Task,
+        input: task.In(false),
+        callbackCtx: *const anyopaque,
+        callbackFn: Task.Callback(task),
+    ) !void {
+        try self.pipeline.scheduleCallback(task, input, callbackCtx, callbackFn);
+    }
+
+    pub fn run(self: *PipelineTester) !void {
+        try self.pipeline.run();
+    }
+
+    pub inline fn expectRunError(self: *PipelineTester, expected: anyerror) !void {
+        try testing.expectError(expected, self.pipeline.run());
+    }
+
+    pub fn expectDidInvoke(
+        self: PipelineTester,
+        order: usize,
+        method: ivk.InvokeMethod,
+        comptime task: Task,
+    ) !void {
+        self.recorder.expectInvoke(order, method, task);
+    }
+
+    pub fn expectDidCallback(
+        self: PipelineTester,
+        order: usize,
+        callback: *const anyopaque,
+        context: ?*const anyopaque,
+    ) !void {
+        self.recorder.expectCallback(order, callback, context);
+    }
+
+    //
+    // Scope
+    //
+
+    pub fn provideService(self: *PipelineTester, service: anytype) !util.Reference(@TypeOf(service)) {
+        return self.root_scope.provideService(service, null);
+    }
+
+    pub fn defineValue(self: *PipelineTester, comptime T: type, comptime tag: anytype, value: T) !void {
+        try self.root_scope.defineValue(T, tag, value);
+    }
+
+    pub fn writeValue(self: *PipelineTester, comptime T: type, comptime tag: anytype, value: T) !void {
+        try self.root_scope.writeValue(T, tag, value);
+    }
+
+    pub fn expectScopeValue(self: PipelineTester, comptime T: type, comptime tag: anytype, expected: T) !void {
+        const actual = self.root_scope.readValue(usize, tag);
+        try testing.expectEqualDeep(expected, actual);
+    }
+};

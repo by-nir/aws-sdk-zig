@@ -12,9 +12,9 @@ pub const Task = struct {
     input: ?[]const type,
     inject: ?[]const type,
     output: type,
-    func: *const anyopaque,
-    evalFn: ?*const anyopaque,
     Fn: type,
+    func: *const anyopaque,
+    evalFn: ?*const anyopaque = null,
 
     pub const Options = struct {
         /// Services that are provided by the scope.
@@ -29,7 +29,6 @@ pub const Task = struct {
             .inject = if (fn_meta.inject.len > 0) fn_meta.inject else null,
             .input = if (fn_meta.input.len > 0) fn_meta.input else null,
             .output = fn_meta.output,
-            .evalFn = null,
             .func = func,
             .Fn = fn_meta.Fn,
         };
@@ -42,7 +41,6 @@ pub const Task = struct {
             .inject = null,
             .input = if (input) |in| (if (in.len > 0) in else null) else input,
             .output = Output,
-            .evalFn = null,
             .func = undefined,
             .Fn = @TypeOf(.hook_unimplemented),
         };
@@ -222,7 +220,7 @@ pub fn AbstractTask(comptime wrapperFn: anytype, comptime wrap_options: Abstract
 
             const child_input_len = child_meta.input.len - varyings_len;
             const invoke_in_len = wrap_input.len + child_input_len;
-            const child_input = if (child_input_len > 0) child_meta.input[varyings_len..child_meta.input.len] else &.{};
+            const child_input: []const type = if (child_input_len == 0) &.{} else child_meta.input[varyings_len..][0..child_input_len];
             const InvokeIn: type, const invoke_input: []const type = if (invoke_in_len == 0)
                 .{ @TypeOf(.{}), &.{} }
             else blk: {
@@ -327,7 +325,6 @@ pub fn AbstractTask(comptime wrapperFn: anytype, comptime wrap_options: Abstract
                 .inject = null,
                 .input = if (input != null and input.?.len > 0) input else null,
                 .output = WrapOut,
-                .evalFn = null,
                 .func = undefined,
                 .Fn = @TypeOf(.hook_unimplemented),
             };
@@ -501,7 +498,6 @@ test "Task.define" {
         .inject = null,
         .input = null,
         .output = void,
-        .evalFn = null,
         .func = tests.noOpFn,
         .Fn = *const @TypeOf(tests.noOpFn),
     }, tests.NoOp);
@@ -511,7 +507,6 @@ test "Task.define" {
         .inject = null,
         .input = null,
         .output = error{Fail}!void,
-        .evalFn = null,
         .func = tests.crashFn,
         .Fn = *const @TypeOf(tests.crashFn),
     }, tests.Crash);
@@ -521,7 +516,6 @@ test "Task.define" {
         .inject = null,
         .input = &.{ usize, usize },
         .output = usize,
-        .evalFn = null,
         .func = tests.multiplyFn,
         .Fn = *const @TypeOf(tests.multiplyFn),
     }, tests.Multiply);
@@ -531,7 +525,6 @@ test "Task.define" {
         .inject = &.{*tests.Service},
         .input = &.{usize},
         .output = usize,
-        .evalFn = null,
         .func = tests.injectMultiplyFn,
         .Fn = *const @TypeOf(tests.injectMultiplyFn),
     }, tests.InjectMultiply);
@@ -541,7 +534,6 @@ test "Task.define" {
         .inject = &.{?*tests.Service},
         .input = &.{usize},
         .output = usize,
-        .evalFn = null,
         .func = tests.optInjectMultiplyFn,
         .Fn = *const @TypeOf(tests.optInjectMultiplyFn),
     }, tests.OptInjectMultiply);
@@ -562,7 +554,7 @@ test "Task.evaluate" {
 }
 
 test "AbstractTask" {
-    const GenericEval = struct {
+    const AbstractEval = struct {
         fn wrapperCall(_: *const Delegate, task: *const fn () void) void {
             return task();
         }
@@ -581,32 +573,16 @@ test "AbstractTask" {
     };
 
     tests.did_call = false;
-    const GenericCall = AbstractTask(GenericEval.wrapperCall, .{});
-    const Call = GenericCall.define("Abstract Call", tests.callFn, .{});
+    const AbstractCall = AbstractTask(AbstractEval.wrapperCall, .{});
+    const Call = AbstractCall.define("Abstract Call", tests.callFn, .{});
     Call.evaluate(&NOOP_DELEGATE, .{});
     try testing.expect(tests.did_call);
 
-    const GenericVarying = AbstractTask(GenericEval.wrapperVarying, .{
+    const AbstractVarying = AbstractTask(AbstractEval.wrapperVarying, .{
         .varyings = &.{usize},
     });
-    const Varying = GenericVarying.define("Abstract Varying", GenericEval.childVarying, .{});
+    const Varying = AbstractVarying.define("Abstract Varying", AbstractEval.childVarying, .{});
     try testing.expectEqual(108, Varying.evaluate(&NOOP_DELEGATE, .{ 100, 8 }));
-}
-
-/// Evaluate a task with a no-op delegate.
-pub fn tester(comptime task: Task, input: task.In(false)) task.Out(.retain) {
-    return task.evaluate(&NOOP_DELEGATE, input);
-}
-
-test "tester" {
-    tests.did_call = false;
-    tester(tests.Call, .{});
-    try testing.expect(tests.did_call);
-
-    try testing.expectEqual(108, tester(tests.Multiply, .{ 2, 54 }));
-
-    try tester(tests.Failable, .{false});
-    try testing.expectError(error.Fail, tester(tests.Failable, .{true}));
 }
 
 pub const NOOP_DELEGATE = Delegate{

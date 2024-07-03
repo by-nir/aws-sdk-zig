@@ -1,6 +1,7 @@
 pub const config = @import("config.zig");
 
 pub const Pipeline = @import("Pipeline.zig");
+pub const pipez = @import("pipeline/root.zig");
 
 const Parser = @import("parse/Parser.zig");
 pub const ParsePolicy = Parser.Policy;
@@ -62,13 +63,7 @@ test {
     _ = script;
     _ = Generator;
 
-    // Pipeline
     _ = prelude;
     _ = Pipeline;
-    _ = @import("pipeline/utils.zig");
-    _ = @import("pipeline/task.zig");
-    _ = @import("pipeline/invoke.zig");
-    _ = @import("pipeline/scope.zig");
-    _ = @import("pipeline/schedule.zig");
-    _ = @import("pipeline/pipeline.zig");
+    _ = pipez;
 }

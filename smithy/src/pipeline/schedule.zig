@@ -19,13 +19,18 @@ pub const Schedule = struct {
     resources: *ScheduleResources,
     root_scope: *Scope,
     queue: ScheduleQueue = .{},
-    tracer: ivk.InvokeTracer = ivk.NOOP_TRACER,
+    tracer: ivk.InvokeTracer,
 
-    pub fn init(allocator: Allocator, resources: *ScheduleResources, scope: *Scope) Schedule {
+    pub const Options = struct {
+        tracer: ivk.InvokeTracer = ivk.NOOP_TRACER,
+    };
+
+    pub fn init(allocator: Allocator, resources: *ScheduleResources, scope: *Scope, options: Options) Schedule {
         return .{
             .allocator = allocator,
             .resources = resources,
             .root_scope = scope,
+            .tracer = options.tracer,
         };
     }
 
@@ -202,199 +207,95 @@ pub const ScheduleResources = struct {
     }
 };
 
-pub const ScheduleTester = struct {
-    schedule: Schedule,
-    resources: *ScheduleResources,
-    root_scope: *Scope,
-    invoke_records: std.ArrayListUnmanaged(InvokeRecord) = .{},
-    callback_records: std.ArrayListUnmanaged(CallbackRecord) = .{},
+test "tasks" {
+    var resources = ScheduleResources.init(test_alloc);
+    defer resources.deinit();
 
-    const InvokeRecord = struct { method: ivk.InvokeMethod, task: ComptimeTag };
-    const CallbackRecord = struct { callback: ComptimeTag, context: *const anyopaque };
+    const scope = try resources.retainScope();
+    defer resources.releaseScope(scope);
 
-    const tracer = ivk.InvokeTracer.VTable{
-        .didEvaluate = didInvoke,
-        .didCallback = didCallback,
-    };
+    var recorder = ivk.InvokeTracerRecorder.init(test_alloc);
+    defer recorder.deinit();
 
-    fn didInvoke(ctx: *anyopaque, method: ivk.InvokeMethod, task: ComptimeTag, _: u64) void {
-        const self: *ScheduleTester = @alignCast(@ptrCast(ctx));
-        const record = .{ .method = method, .task = task };
-        self.invoke_records.append(test_alloc, record) catch unreachable;
-    }
+    var schedule = Schedule.init(test_alloc, &resources, scope, .{
+        .tracer = recorder.tracer(),
+    });
+    defer schedule.deinit();
 
-    fn didCallback(ctx: *anyopaque, callback: ComptimeTag, context: *const anyopaque, _: u64) void {
-        const self: *ScheduleTester = @alignCast(@ptrCast(ctx));
-        const record = .{ .callback = callback, .context = context };
-        self.callback_records.append(test_alloc, record) catch unreachable;
-    }
+    //
+    // Sync
+    //
 
-    pub fn init() !*ScheduleTester {
-        const tester = try test_alloc.create(ScheduleTester);
-        errdefer test_alloc.destroy(tester);
+    try schedule.evaluateSync(null, tests.Call, .{});
+    try recorder.expectInvoke(0, .sync, tests.Call);
 
-        const resource = try test_alloc.create(ScheduleResources);
-        resource.* = ScheduleResources.init(test_alloc);
-        errdefer test_alloc.destroy(resource);
+    try schedule.evaluateSync(null, tests.Failable, .{false});
+    try recorder.expectInvoke(1, .sync, tests.Failable);
 
-        const scope = try resource.retainScope();
-        errdefer resource.releaseScope(scope);
+    try testing.expectError(
+        error.Fail,
+        schedule.evaluateSync(null, tests.Failable, .{true}),
+    );
+    try recorder.expectInvoke(2, .sync, tests.Failable);
 
-        tester.* = .{
-            .schedule = Schedule.init(test_alloc, resource, scope),
-            .resources = resource,
-            .root_scope = scope,
-        };
-        tester.schedule.tracer = .{ .ctx = tester, .vtable = &tracer };
-        return tester;
-    }
+    recorder.clear();
 
-    pub fn deinit(self: *ScheduleTester) void {
-        self.schedule.deinit();
-        self.resources.releaseScope(self.root_scope);
-        self.resources.deinit();
-        self.invoke_records.deinit(test_alloc);
-        self.callback_records.deinit(test_alloc);
-        test_alloc.destroy(self.resources);
-        test_alloc.destroy(self);
-    }
+    //
+    // Async
+    //
 
-    pub fn resetScope(self: *ScheduleTester) void {
-        self.root_scope.reset();
-    }
+    try schedule.appendAsync(null, tests.Call, .{});
+    try schedule.appendAsync(null, tests.Failable, .{false});
+    try schedule.appendAsync(null, tests.Failable, .{true});
 
-    pub fn resetTrace(self: *ScheduleTester) void {
-        self.invoke_records.clearRetainingCapacity();
-        self.callback_records.clearRetainingCapacity();
-    }
+    try testing.expectError(error.Fail, schedule.evaluate());
 
-    pub fn provideService(self: *ScheduleTester, service: anytype) !util.Reference(@TypeOf(service)) {
-        return self.root_scope.provideService(service, null);
-    }
+    try recorder.expectInvoke(0, .asyncd, tests.Call);
+    try recorder.expectInvoke(1, .asyncd, tests.Failable);
+    try recorder.expectInvoke(2, .asyncd, tests.Failable);
 
-    pub fn defineScopeValue(self: *ScheduleTester, comptime T: type, comptime tag: anytype, value: T) !void {
-        try self.root_scope.defineValue(T, tag, value);
-    }
+    recorder.clear();
 
-    pub fn writeScopeValue(self: *ScheduleTester, comptime T: type, comptime tag: anytype, value: T) !void {
-        try self.root_scope.writeValue(T, tag, value);
-    }
+    //
+    // Callback
+    //
 
-    pub fn evaluateSync(self: *ScheduleTester, comptime task: Task, input: task.In(false)) !task.Out(.strip) {
-        return self.schedule.evaluateSync(null, task, input);
-    }
+    try schedule.appendCallback(null, tests.Multiply, .{ 2, 54 }, &@as(usize, 108), tests.multiplyCb);
+    try schedule.appendCallback(null, tests.Call, .{}, &@as(usize, 101), tests.noopCb);
+    try schedule.appendCallback(null, tests.Failable, .{false}, &@as(usize, 102), tests.failableCb);
+    try schedule.appendCallback(null, tests.Failable, .{true}, &@as(usize, 103), tests.failableCb);
 
-    pub inline fn evaluateSyncExpectError(
-        self: *ScheduleTester,
-        expected: anyerror,
-        comptime task: Task,
-        input: task.In(false),
-    ) !void {
-        const output = self.schedule.evaluateSync(null, task, input);
-        try testing.expectError(expected, output);
-    }
+    try testing.expectError(error.Fail, schedule.evaluate());
 
-    pub fn scheduleAsync(self: *ScheduleTester, comptime task: Task, input: task.In(false)) !void {
-        try self.schedule.appendAsync(null, task, input);
-    }
+    try recorder.expectInvoke(0, .callback, tests.Multiply);
+    try recorder.expectCallback(0, tests.multiplyCb, &@as(usize, 108));
 
-    pub fn scheduleCallback(
-        self: *ScheduleTester,
-        comptime task: Task,
-        input: task.In(false),
-        callbackCtx: *const anyopaque,
-        callbackFn: Task.Callback(task),
-    ) !void {
-        try self.schedule.appendCallback(null, task, input, callbackCtx, callbackFn);
-    }
+    try recorder.expectInvoke(1, .callback, tests.Call);
+    try recorder.expectCallback(1, tests.noopCb, &@as(usize, 101));
 
-    pub fn evaluate(self: *ScheduleTester) !void {
-        try self.schedule.evaluate();
-    }
+    try recorder.expectInvoke(2, .callback, tests.Failable);
+    try recorder.expectCallback(2, tests.failableCb, &@as(usize, 102));
 
-    pub inline fn runExpectError(self: *ScheduleTester, expected: anyerror) !void {
-        try testing.expectError(expected, self.schedule.evaluate());
-    }
-
-    pub fn expectInvoke(
-        self: ScheduleTester,
-        order: usize,
-        method: ivk.InvokeMethod,
-        comptime task: Task,
-    ) !void {
-        if (self.invoke_records.items.len <= order) return error.OrderOutOfBounds;
-        const record = self.invoke_records.items[order];
-        try testing.expectEqual(method, record.method);
-        try testing.expectEqual(ComptimeTag.of(task), record.task);
-    }
-
-    pub fn expectCallback(
-        self: ScheduleTester,
-        order: usize,
-        callback: *const anyopaque,
-        context: ?*const anyopaque,
-    ) !void {
-        if (self.callback_records.items.len <= order) return error.OrderOutOfBounds;
-        const record = self.callback_records.items[order];
-        try testing.expectEqual(ComptimeTag.of(callback), record.callback);
-        if (context) |expected| try testing.expectEqual(expected, record.context);
-    }
-
-    pub fn expectScopeValue(self: ScheduleTester, comptime T: type, comptime tag: anytype, expected: T) !void {
-        const actual = self.root_scope.readValue(usize, tag);
-        try testing.expectEqualDeep(expected, actual);
-    }
-};
-
-test "evaluateSync" {
-    var tester = try ScheduleTester.init();
-    defer tester.deinit();
-
-    try tester.evaluateSync(tests.Call, .{});
-    try tester.evaluateSync(tests.Failable, .{false});
-    try tester.evaluateSyncExpectError(error.Fail, tests.Failable, .{true});
-
-    try tester.expectInvoke(0, .sync, tests.Call);
-    try tester.expectInvoke(1, .sync, tests.Failable);
-    try tester.expectInvoke(2, .sync, tests.Failable);
+    try recorder.expectInvoke(3, .callback, tests.Failable);
+    try recorder.expectCallback(3, tests.failableCb, &@as(usize, 103));
 }
 
-test "appendAsync" {
-    var tester = try ScheduleTester.init();
-    defer tester.deinit();
+test "sub-tasks" {
+    var resources = ScheduleResources.init(test_alloc);
+    defer resources.deinit();
 
-    try tester.scheduleAsync(tests.Call, .{});
-    try tester.scheduleAsync(tests.Failable, .{false});
-    try tester.scheduleAsync(tests.Failable, .{true});
-    try tester.runExpectError(error.Fail);
+    const scope = try resources.retainScope();
+    defer resources.releaseScope(scope);
 
-    try tester.expectInvoke(0, .asyncd, tests.Call);
-    try tester.expectInvoke(1, .asyncd, tests.Failable);
-    try tester.expectInvoke(2, .asyncd, tests.Failable);
-}
+    var recorder = ivk.InvokeTracerRecorder.init(test_alloc);
+    defer recorder.deinit();
 
-test "appendCallback" {
-    var tester = try ScheduleTester.init();
-    defer tester.deinit();
+    var schedule = Schedule.init(test_alloc, &resources, scope, .{
+        .tracer = recorder.tracer(),
+    });
+    defer schedule.deinit();
 
-    try tester.scheduleCallback(tests.Multiply, .{ 2, 54 }, &@as(usize, 108), tests.multiplyCb);
-    try tester.scheduleCallback(tests.Call, .{}, &@as(usize, 101), tests.noopCb);
-    try tester.scheduleCallback(tests.Failable, .{false}, &@as(usize, 102), tests.failableCb);
-    try tester.scheduleCallback(tests.Failable, .{true}, &@as(usize, 103), tests.failableCb);
-    try tester.runExpectError(error.Fail);
-
-    try tester.expectInvoke(0, .callback, tests.Multiply);
-    try tester.expectCallback(0, tests.multiplyCb, &@as(usize, 108));
-    try tester.expectInvoke(1, .callback, tests.Call);
-    try tester.expectCallback(1, tests.noopCb, &@as(usize, 101));
-    try tester.expectInvoke(2, .callback, tests.Failable);
-    try tester.expectCallback(2, tests.failableCb, &@as(usize, 102));
-    try tester.expectInvoke(3, .callback, tests.Failable);
-    try tester.expectCallback(3, tests.failableCb, &@as(usize, 103));
-}
-
-test "sub-tasks scheduling" {
-    const tasks = struct {
+    const sub = struct {
         pub const Root = Task.define("Root", root, .{});
         pub fn root(self: *const Delegate) anyerror!void {
             try self.schedule(Bar, .{});
@@ -407,49 +308,60 @@ test "sub-tasks scheduling" {
         pub const Baz = Task.define("Baz", tests.noOpFn, .{});
     };
 
-    var tester = try ScheduleTester.init();
-    defer tester.deinit();
+    try schedule.appendAsync(null, sub.Root, .{});
+    try schedule.evaluate();
 
-    try tester.scheduleAsync(tasks.Root, .{});
-    try tester.evaluate();
-
-    try tester.expectInvoke(0, .sync, tasks.Foo);
-    try tester.expectInvoke(1, .asyncd, tasks.Root);
-    try tester.expectInvoke(2, .asyncd, tasks.Bar);
-    try tester.expectInvoke(3, .callback, tasks.Baz);
+    try recorder.expectInvoke(0, .sync, sub.Foo);
+    try recorder.expectInvoke(1, .asyncd, sub.Root);
+    try recorder.expectInvoke(2, .asyncd, sub.Bar);
+    try recorder.expectInvoke(3, .callback, sub.Baz);
 }
 
 test "scopes" {
-    var tester = try ScheduleTester.init();
-    defer tester.deinit();
+    var resources = ScheduleResources.init(test_alloc);
+    defer resources.deinit();
 
-    try tester.defineScopeValue(usize, .num, 54);
-    try tester.evaluateSync(tests.MultiplyScope, .{2});
-    try tester.expectScopeValue(usize, .num, 108);
+    const scope = try resources.retainScope();
+    defer resources.releaseScope(scope);
 
-    try tester.writeScopeValue(usize, .num, 267);
-    try tester.scheduleAsync(tests.MultiplyScope, .{3});
-    try tester.evaluate();
-    try tester.expectScopeValue(usize, .num, 801);
+    var schedule = Schedule.init(test_alloc, &resources, scope, .{});
+    defer schedule.deinit();
 
-    try tester.writeScopeValue(usize, .num, 27);
-    try tester.scheduleAsync(tests.ExponentScope, .{2});
-    try tester.evaluate();
-    try tester.expectScopeValue(usize, .num, 108);
+    try scope.defineValue(usize, .num, 54);
+    try schedule.evaluateSync(null, tests.MultiplyScope, .{2});
+    try testing.expectEqualDeep(108, scope.readValue(usize, .num));
 
-    try tester.defineScopeValue(usize, .mult, 54);
-    try tester.scheduleAsync(tests.MultiplySubScope, .{2});
-    try tester.evaluate();
-    try tester.expectScopeValue(usize, .mult, 108);
+    scope.reset();
 
-    var value = try tester.evaluateSync(tests.OptInjectMultiply, .{54});
+    try scope.defineValue(usize, .num, 267);
+    try schedule.appendAsync(null, tests.MultiplyScope, .{3});
+    try schedule.evaluate();
+    try testing.expectEqualDeep(801, scope.readValue(usize, .num));
+
+    scope.reset();
+
+    try scope.defineValue(usize, .num, 27);
+    try schedule.appendAsync(null, tests.ExponentScope, .{2});
+    try schedule.evaluate();
+    try testing.expectEqualDeep(108, scope.readValue(usize, .num));
+
+    scope.reset();
+
+    try scope.defineValue(usize, .mult, 54);
+    try schedule.appendAsync(null, tests.MultiplySubScope, .{2});
+    try schedule.evaluate();
+    try testing.expectEqualDeep(108, scope.readValue(usize, .mult));
+
+    scope.reset();
+
+    var value = try schedule.evaluateSync(null, tests.OptInjectMultiply, .{54});
     try testing.expectEqual(54, value);
 
-    _ = try tester.provideService(tests.Service{ .value = 2 });
+    _ = try scope.provideService(tests.Service{ .value = 2 }, null);
 
-    value = try tester.evaluateSync(tests.OptInjectMultiply, .{54});
+    value = try schedule.evaluateSync(null, tests.OptInjectMultiply, .{54});
     try testing.expectEqual(108, value);
 
-    value = try tester.evaluateSync(tests.InjectMultiply, .{54});
+    value = try schedule.evaluateSync(null, tests.InjectMultiply, .{54});
     try testing.expectEqual(108, value);
 }

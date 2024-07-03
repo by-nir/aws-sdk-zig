@@ -10,10 +10,10 @@ const tests = @import("tests.zig");
 
 pub const InvokeMethod = enum { sync, asyncd, callback };
 
-pub const InvokeOverrideFn = *const fn (tag: ComptimeTag) ?OpaqueEvaluator;
-
 pub const Invoker = struct {
-    overrides: InvokeOverrideFn = noOverides,
+    overrides: OverrideFn = noOverides,
+
+    pub const OverrideFn = *const fn (tag: ComptimeTag) ?OpaqueEvaluator;
 
     pub fn evaluateSync(
         self: Invoker,
@@ -284,108 +284,225 @@ const NoOpTracer = struct {
 test "invoke sync" {
     const invoker = Invoker{};
 
-    TracerTester.reset();
-    invoker.evaluateSync(tests.Call, TracerTester.shared, &tsk.NOOP_DELEGATE, .{});
-    try testing.expectEqual(InvokeMethod.sync, TracerTester.last_method);
-    try testing.expectEqual(ComptimeTag.of(tests.Call), TracerTester.last_invoke);
+    var recorder = InvokeTracerRecorder.init(test_alloc);
+    defer recorder.deinit();
 
-    TracerTester.reset();
-    try invoker.evaluateSync(tests.Failable, TracerTester.shared, &tsk.NOOP_DELEGATE, .{false});
-    try testing.expectEqual(InvokeMethod.sync, TracerTester.last_method);
-    try testing.expectEqual(ComptimeTag.of(tests.Failable), TracerTester.last_invoke);
+    invoker.evaluateSync(tests.Call, recorder.tracer(), &tsk.NOOP_DELEGATE, .{});
+    try recorder.expectInvoke(0, .sync, tests.Call);
 
-    TracerTester.reset();
+    recorder.clear();
+    try invoker.evaluateSync(tests.Failable, recorder.tracer(), &tsk.NOOP_DELEGATE, .{false});
+    try recorder.expectInvoke(0, .sync, tests.Failable);
+
+    recorder.clear();
     try testing.expectError(
         error.Fail,
-        invoker.evaluateSync(tests.Failable, TracerTester.shared, &tsk.NOOP_DELEGATE, .{true}),
+        invoker.evaluateSync(tests.Failable, recorder.tracer(), &tsk.NOOP_DELEGATE, .{true}),
     );
-    try testing.expectEqual(InvokeMethod.sync, TracerTester.last_method);
-    try testing.expectEqual(ComptimeTag.of(tests.Failable), TracerTester.last_invoke);
+    try recorder.expectInvoke(0, .sync, tests.Failable);
 }
 
 test "invoke async" {
+    const invoker = Invoker{};
+
     var arena = std.heap.ArenaAllocator.init(test_alloc);
     const arena_alloc = arena.allocator();
     defer _ = arena.deinit();
 
-    const invoker = Invoker{};
+    var recorder = InvokeTracerRecorder.init(test_alloc);
+    defer recorder.deinit();
 
-    TracerTester.reset();
     var invocation = try invoker.prepareAsync(arena_alloc, tests.Call, .{});
-    try invocation.evaluate(TracerTester.shared, &tsk.NOOP_DELEGATE);
-    try testing.expectEqual(InvokeMethod.asyncd, TracerTester.last_method);
-    try testing.expectEqual(ComptimeTag.of(tests.Call), TracerTester.last_invoke);
+    try invocation.evaluate(recorder.tracer(), &tsk.NOOP_DELEGATE);
+    try recorder.expectInvoke(0, .asyncd, tests.Call);
 
-    TracerTester.reset();
+    recorder.clear();
     invocation = try invoker.prepareAsync(arena_alloc, tests.Failable, .{false});
-    try invocation.evaluate(TracerTester.shared, &tsk.NOOP_DELEGATE);
-    try testing.expectEqual(InvokeMethod.asyncd, TracerTester.last_method);
-    try testing.expectEqual(ComptimeTag.of(tests.Failable), TracerTester.last_invoke);
+    try invocation.evaluate(recorder.tracer(), &tsk.NOOP_DELEGATE);
+    try recorder.expectInvoke(0, .asyncd, tests.Failable);
 
+    recorder.clear();
     invocation = try invoker.prepareAsync(arena_alloc, tests.Failable, .{true});
     try testing.expectError(
         error.Fail,
-        invocation.evaluate(TracerTester.shared, &tsk.NOOP_DELEGATE),
+        invocation.evaluate(recorder.tracer(), &tsk.NOOP_DELEGATE),
     );
-    try testing.expectEqual(InvokeMethod.asyncd, TracerTester.last_method);
-    try testing.expectEqual(ComptimeTag.of(tests.Failable), TracerTester.last_invoke);
+    try recorder.expectInvoke(0, .asyncd, tests.Failable);
 
-    TracerTester.reset();
+    recorder.clear();
     invocation = try invoker.prepareCallback(arena_alloc, tests.Call, .{}, "foo", tests.noopCb);
-    try invocation.evaluate(TracerTester.shared, &tsk.NOOP_DELEGATE);
-    try testing.expectEqual(InvokeMethod.callback, TracerTester.last_method);
-    try testing.expectEqual(ComptimeTag.of(tests.Call), TracerTester.last_invoke);
-    try testing.expectEqual(ComptimeTag.of(&tests.noopCb), TracerTester.last_callback);
-    try testing.expectEqualDeep(@as(*const anyopaque, "foo"), TracerTester.last_context);
+    try invocation.evaluate(recorder.tracer(), &tsk.NOOP_DELEGATE);
+    try recorder.expectInvoke(0, .callback, tests.Call);
+    try recorder.expectCallback(0, tests.noopCb, "foo");
 
-    TracerTester.reset();
+    recorder.clear();
     invocation = try invoker.prepareCallback(arena_alloc, tests.Failable, .{false}, "bar", tests.failableCb);
-    try invocation.evaluate(TracerTester.shared, &tsk.NOOP_DELEGATE);
-    try testing.expectEqual(InvokeMethod.callback, TracerTester.last_method);
-    try testing.expectEqual(ComptimeTag.of(tests.Failable), TracerTester.last_invoke);
-    try testing.expectEqual(ComptimeTag.of(&tests.failableCb), TracerTester.last_callback);
-    try testing.expectEqualDeep(@as(*const anyopaque, "bar"), TracerTester.last_context);
+    try invocation.evaluate(recorder.tracer(), &tsk.NOOP_DELEGATE);
+    try recorder.expectInvoke(0, .callback, tests.Failable);
+    try recorder.expectCallback(0, tests.failableCb, "bar");
 
-    TracerTester.reset();
+    recorder.clear();
     invocation = try invoker.prepareCallback(arena_alloc, tests.Failable, .{true}, "baz", tests.failableCb);
     try testing.expectError(
         error.Fail,
-        invocation.evaluate(TracerTester.shared, &tsk.NOOP_DELEGATE),
+        invocation.evaluate(recorder.tracer(), &tsk.NOOP_DELEGATE),
     );
-    try testing.expectEqual(InvokeMethod.callback, TracerTester.last_method);
-    try testing.expectEqual(ComptimeTag.of(tests.Failable), TracerTester.last_invoke);
-    try testing.expectEqual(ComptimeTag.of(&tests.failableCb), TracerTester.last_callback);
-    try testing.expectEqualDeep(@as(*const anyopaque, "baz"), TracerTester.last_context);
+    try recorder.expectInvoke(0, .callback, tests.Failable);
+    try recorder.expectCallback(0, tests.failableCb, "baz");
 }
 
-pub const TracerTester = struct {
-    pub var last_method: ?InvokeMethod = null;
-    pub var last_invoke: ComptimeTag = .invalid;
-    pub var last_callback: ComptimeTag = .invalid;
-    pub var last_context: ?*const anyopaque = null;
+pub const InvokeTracerRecorder = struct {
+    allocator: Allocator,
+    invoke_records: std.ArrayListUnmanaged(InvokeRecord) = .{},
+    callback_records: std.ArrayListUnmanaged(CallbackRecord) = .{},
 
-    pub const shared = InvokeTracer{
-        .ctx = undefined,
-        .vtable = &.{
-            .didEvaluate = didInvoke,
-            .didCallback = didCallback,
-        },
-    };
+    const InvokeRecord = struct { method: InvokeMethod, task: ComptimeTag };
+    const CallbackRecord = struct { callback: ComptimeTag, context: *const anyopaque };
 
-    fn didInvoke(_: *anyopaque, method: InvokeMethod, task: ComptimeTag, _: u64) void {
-        last_method = method;
-        last_invoke = task;
+    pub fn init(allocator: Allocator) InvokeTracerRecorder {
+        return .{ .allocator = allocator };
     }
 
-    fn didCallback(_: *anyopaque, callback: ComptimeTag, context: *const anyopaque, _: u64) void {
-        last_callback = callback;
-        last_context = context;
+    pub fn deinit(self: *InvokeTracerRecorder) void {
+        self.invoke_records.deinit(self.allocator);
+        self.callback_records.deinit(self.allocator);
     }
 
-    pub fn reset() void {
-        last_method = null;
-        last_invoke = .invalid;
-        last_callback = .invalid;
-        last_context = null;
+    pub fn tracer(self: *InvokeTracerRecorder) InvokeTracer {
+        return .{
+            .ctx = self,
+            .vtable = &.{
+                .didEvaluate = didInvoke,
+                .didCallback = didCallback,
+            },
+        };
+    }
+
+    fn didInvoke(ctx: *anyopaque, method: InvokeMethod, task: ComptimeTag, _: u64) void {
+        const record = .{ .method = method, .task = task };
+        const self: *InvokeTracerRecorder = @ptrCast(@alignCast(ctx));
+        self.invoke_records.append(self.allocator, record) catch @panic("OOM");
+    }
+
+    fn didCallback(ctx: *anyopaque, callback: ComptimeTag, context: *const anyopaque, _: u64) void {
+        const record = .{ .callback = callback, .context = context };
+        const self: *InvokeTracerRecorder = @ptrCast(@alignCast(ctx));
+        self.callback_records.append(self.allocator, record) catch @panic("OOM");
+    }
+
+    pub fn clear(self: *InvokeTracerRecorder) void {
+        self.invoke_records.clearRetainingCapacity();
+        self.callback_records.clearRetainingCapacity();
+    }
+
+    pub fn expectInvoke(
+        self: *InvokeTracerRecorder,
+        order: usize,
+        method: InvokeMethod,
+        comptime task: Task,
+    ) !void {
+        if (self.invoke_records.items.len <= order) return error.OrderOutOfBounds;
+        const record = self.invoke_records.items[order];
+        try testing.expectEqual(method, record.method);
+        try testing.expectEqual(ComptimeTag.of(task), record.task);
+    }
+
+    pub fn expectCallback(
+        self: *InvokeTracerRecorder,
+        order: usize,
+        callback: *const anyopaque,
+        context: ?*const anyopaque,
+    ) !void {
+        if (self.callback_records.items.len <= order) return error.OrderOutOfBounds;
+        const record = self.callback_records.items[order];
+        try testing.expectEqual(ComptimeTag.of(callback), record.callback);
+        if (context) |expected| try testing.expectEqual(expected, record.context);
     }
 };
+
+pub const TasksOverrider = struct {
+    comptime map: std.BoundedArray(Mapping, 128) = .{},
+
+    const Mapping = struct {
+        task: Task,
+        evaluator: OpaqueEvaluator,
+    };
+
+    pub fn override(
+        comptime self: *TasksOverrider,
+        comptime task: Task,
+        comptime name: []const u8,
+        comptime func: anytype,
+        comptime options: Task.Options,
+    ) Task {
+        const o_task = Task.define("[OVERRIDE] " ++ name, func, options);
+        if (o_task.output != task.output) {
+            @compileError("Override '" ++ name ++ "' expects output type " ++ @typeName(task.output));
+        } else if (task.input != null or o_task.input != null) {
+            const task_len = if (task.input) |in| in.len else 0;
+            const ovrd_len = if (o_task.input) |in| in.len else 0;
+            if (task_len != ovrd_len) {
+                const message = "Override '{s}' expects {d} input parameters";
+                @compileError(std.fmt.comptimePrint(message, .{ name, task_len }));
+            } else if (task.input) |in| {
+                for (in, 0..) |T, i| if (T != o_task.input.?[i]) {
+                    const message = "Override '{s}' input #{d} expects type {s}";
+                    @compileError(std.fmt.comptimePrint(message, .{ name, i, @typeName(T) }));
+                };
+            }
+        }
+
+        self.map.append(.{
+            .task = task,
+            .evaluator = OpaqueEvaluator.of(o_task),
+        }) catch @compileError("Overflow");
+        return o_task;
+    }
+
+    pub fn consume(comptime self: *TasksOverrider) Invoker {
+        const map = self.pack();
+        return .{ .overrides = struct {
+            fn provide(tag: ComptimeTag) ?OpaqueEvaluator {
+                inline for (map) |item| {
+                    const actual = ComptimeTag.of(item.task);
+                    if (actual == tag) return item.evaluator;
+                }
+                return null;
+            }
+        }.provide };
+    }
+
+    fn pack(comptime self: *TasksOverrider) []const Mapping {
+        const len = self.map.len;
+        const static: [len]Mapping = self.map.slice()[0..len].*;
+        return &static;
+    }
+};
+
+test "TasksOverrider" {
+    const invoker, const AltTask = comptime blk: {
+        var overrider: TasksOverrider = .{};
+
+        const AltTask = overrider.override(tests.NoOpHook, "Alt NoOp", struct {
+            pub fn f(_: *const Delegate, _: bool) void {}
+        }.f, .{});
+
+        break :blk .{ overrider.consume(), AltTask };
+    };
+
+    try testing.expectEqual(false, invoker.hasOverride(tests.Call));
+    try testing.expectEqual(true, invoker.hasOverride(tests.NoOpHook));
+
+    var recorder = InvokeTracerRecorder.init(test_alloc);
+    defer recorder.deinit();
+
+    invoker.evaluateSync(tests.NoOpHook, recorder.tracer(), &tsk.NOOP_DELEGATE, .{true});
+    try recorder.expectInvoke(0, .sync, AltTask);
+
+    recorder.clear();
+    var buffer: [32]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&buffer);
+    const invocation = try invoker.prepareAsync(fixed.allocator(), tests.NoOpHook, .{true});
+    try invocation.evaluate(recorder.tracer(), &tsk.NOOP_DELEGATE);
+    try recorder.expectInvoke(0, .asyncd, AltTask);
+}
