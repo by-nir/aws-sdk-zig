@@ -4,6 +4,7 @@ const test_alloc = testing.allocator;
 const pipez = @import("../pipeline/root.zig");
 const Task = pipez.Task;
 const Delegate = pipez.Delegate;
+const AbstractTask = pipez.AbstractTask;
 const md = @import("../codegen/md.zig");
 const zig = @import("../codegen/zig/scope.zig");
 const Writer = @import("../codegen/CodegenWriter.zig");
@@ -11,7 +12,7 @@ const Writer = @import("../codegen/CodegenWriter.zig");
 const MD_HEAD = @embedFile("../codegen/template/head.md.template");
 const ZIG_HEAD = @embedFile("../codegen/template/head.zig.template");
 
-pub const MarkdownDoc = pipez.AbstractTask(markdownDocTask, .{
+pub const MarkdownDoc = AbstractTask(markdownDocTask, .{
     .varyings = &.{*md.Document.Build},
 });
 
@@ -52,7 +53,7 @@ test "markdown document" {
     try expectMarkdownDoc(TestDocument, "## Foo", .{});
 }
 
-pub const ZigScript = pipez.AbstractTask(zigScriptTask, .{
+pub const ZigScript = AbstractTask(zigScriptTask, .{
     .varyings = &.{*zig.ContainerBuild},
 });
 

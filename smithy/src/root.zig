@@ -40,6 +40,7 @@ pub const PolicyResolution = IssuesBag.PolicyResolution;
 
 pub const JsonReader = @import("utils/JsonReader.zig");
 
+pub const FilesTasks = @import("tasks/FilesTasks.zig");
 pub const CodegenTasks = @import("tasks/CodegenTasks.zig");
 
 test {
@@ -66,6 +67,7 @@ test {
     _ = Generator;
 
     // Tasks
+    _ = FilesTasks;
     _ = CodegenTasks;
 
     _ = prelude;
