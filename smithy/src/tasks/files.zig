@@ -3,6 +3,7 @@ const fs = std.fs;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const pipez = @import("../pipeline/root.zig");
+const Task = pipez.Task;
 const Delegate = pipez.Delegate;
 const AbstractTask = pipez.AbstractTask;
 const md = @import("../codegen/md.zig");
@@ -19,21 +20,20 @@ pub fn getWorkDir(delegate: *const Delegate) fs.Dir {
     return delegate.readValue(fs.Dir, FilesScope.work_dir) orelse fs.cwd();
 }
 
-/// Use `FilesTasks.getWorkDir()` to get the opened directory.
-pub const OpenDir = AbstractTask(openDirTask, .{});
-
 pub const OpenDirOptions = struct {
     iterable: bool = false,
     delete_on_error: bool = false,
     create_on_not_found: bool = false,
 };
 
+/// Use `FilesTasks.getWorkDir()` to get the opened directory.
+pub const OpenDir = AbstractTask("Open Directory", openDirTask, .{});
 fn openDirTask(
     self: *const Delegate,
     sub_path: []const u8,
     options: OpenDirOptions,
     task: *const fn () anyerror!void,
-) !void {
+) anyerror!void {
     const cwd = getWorkDir(self);
     var dir = switch (options.create_on_not_found) {
         true => try cwd.makeOpenPath(sub_path, .{ .iterate = options.iterable }),
@@ -48,20 +48,19 @@ fn openDirTask(
     try task();
 }
 
-pub const WriteFile = AbstractTask(writeFileTask, .{
-    .varyings = &.{std.io.AnyWriter},
-});
-
 pub const FileOptions = struct {
     delete_on_error: bool = false,
 };
 
+pub const WriteFile = AbstractTask("Write File", writeFileTask, .{
+    .varyings = &.{std.io.AnyWriter},
+});
 fn writeFileTask(
     self: *const Delegate,
     sub_path: []const u8,
     options: FileOptions,
     task: *const fn (struct { std.io.AnyWriter }) anyerror!void,
-) !void {
+) anyerror!void {
     const cwd = getWorkDir(self);
     const file = try cwd.createFile(sub_path, .{});
     errdefer if (options.delete_on_error) cwd.deleteFile(sub_path) catch |err| {
@@ -72,4 +71,29 @@ fn writeFileTask(
 
     try task(.{buffer.writer().any()});
     try buffer.flush();
+}
+
+pub fn expectWriteFile(
+    comptime task: Task,
+    comptime expected: []const u8,
+    input: WriteFile.ChildInput(task),
+) !void {
+    var tester = try pipez.PipelineTester.init(.{});
+    defer tester.deinit();
+
+    var buffer = std.ArrayList(u8).init(test_alloc);
+    defer buffer.deinit();
+
+    try tester.evaluateSync(WriteFile.extractChildTask(task), .{buffer.writer().any()} ++ input);
+    try testing.expectEqualStrings(expected, buffer.items);
+}
+
+test "expectWriteFile" {
+    const TestWrite = WriteFile.define("Test Write", struct {
+        fn f(_: *const Delegate, writer: std.io.AnyWriter, in: []const u8) anyerror!void {
+            try writer.print("foo {s}", .{in});
+        }
+    }.f, .{});
+
+    try expectWriteFile(TestWrite, "foo bar", .{"bar"});
 }

@@ -35,14 +35,14 @@ pub fn multiplyFn(_: *const Delegate, a: usize, b: usize) usize {
 }
 
 pub const InjectMultiply = Task.define("InjectMultiply", injectMultiplyFn, .{
-    .inject = &.{Service},
+    .injects = &.{Service},
 });
 pub fn injectMultiplyFn(_: *const Delegate, service: *Service, n: usize) usize {
     return n * service.value;
 }
 
 pub const OptInjectMultiply = Task.define("OptInjectMultiply", optInjectMultiplyFn, .{
-    .inject = &.{Service},
+    .injects = &.{Service},
 });
 pub fn optInjectMultiplyFn(_: *const Delegate, service: ?*Service, n: usize) usize {
     const m: usize = if (service) |t| t.value else 1;

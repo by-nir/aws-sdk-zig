@@ -42,21 +42,21 @@ pub const Schedule = struct {
         self: *Schedule,
         parent: ?*const Delegate,
         comptime task: Task,
-        input: task.In(false),
-    ) !task.Out(.strip) {
+        input: task.In,
+    ) !task.Payload() {
         var delegate = self.delegateFor(if (parent) |p| p.scope else self.root_scope);
         defer if (delegate.branchScope == null) self.resources.releaseScope(delegate.scope);
         errdefer self.resources.releaseQueue(&delegate.children);
 
         const output = delegate.scope.invoker.evaluateSync(task, self.tracer, &delegate, input);
-        if (task.Out(.strip) != task.Out(.retain)) try output;
+        if (comptime task.isFailable()) try output;
 
         try self.evaluateQueue(delegate.scope, &delegate.children);
         return output;
     }
 
-    pub fn appendAsync(self: *Schedule, parent: ?*const Delegate, comptime task: Task, input: task.In(false)) !void {
-        if (task.Out(.strip) != void)
+    pub fn appendAsync(self: *Schedule, parent: ?*const Delegate, comptime task: Task, input: task.In) !void {
+        if (task.Payload() != void)
             @compileError("Task '" ++ task.name ++ "' returns a value, use `appendAsync` instead.");
 
         const scope = if (parent) |p| p.scope else self.root_scope;
@@ -73,7 +73,7 @@ pub const Schedule = struct {
         self: *Schedule,
         parent: ?*const Delegate,
         comptime task: Task,
-        input: task.In(false),
+        input: task.In,
         callbackCtx: *const anyopaque,
         callbackFn: Task.Callback(task),
     ) !void {
@@ -214,7 +214,7 @@ test "tasks" {
     const scope = try resources.retainScope();
     defer resources.releaseScope(scope);
 
-    var recorder = ivk.InvokeTracerRecorder.init(test_alloc);
+    var recorder = ivk.InvokeTraceRecorder.init(test_alloc);
     defer recorder.deinit();
 
     var schedule = Schedule.init(test_alloc, &resources, scope, .{
@@ -287,7 +287,7 @@ test "sub-tasks" {
     const scope = try resources.retainScope();
     defer resources.releaseScope(scope);
 
-    var recorder = ivk.InvokeTracerRecorder.init(test_alloc);
+    var recorder = ivk.InvokeTraceRecorder.init(test_alloc);
     defer recorder.deinit();
 
     var schedule = Schedule.init(test_alloc, &resources, scope, .{

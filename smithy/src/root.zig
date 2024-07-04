@@ -3,6 +3,9 @@ pub const config = @import("config.zig");
 pub const pipez = @import("pipeline/root.zig");
 pub const OLD_Pipeline = @import("Pipeline.zig");
 
+pub const files_tasks = @import("tasks/files.zig");
+pub const codegen_tasks = @import("tasks/codegen.zig");
+
 const Parser = @import("parse/Parser.zig");
 pub const ParsePolicy = Parser.Policy;
 
@@ -40,8 +43,6 @@ pub const PolicyResolution = IssuesBag.PolicyResolution;
 
 pub const JsonReader = @import("utils/JsonReader.zig");
 
-pub const FilesTasks = @import("tasks/FilesTasks.zig");
-pub const CodegenTasks = @import("tasks/CodegenTasks.zig");
 
 test {
     // Utils
@@ -66,11 +67,11 @@ test {
     _ = script;
     _ = Generator;
 
-    // Tasks
-    _ = FilesTasks;
-    _ = CodegenTasks;
-
-    _ = prelude;
     _ = pipez;
+    _ = prelude;
     _ = OLD_Pipeline;
+
+    // Tasks
+    _ = files_tasks;
+    _ = codegen_tasks;
 }

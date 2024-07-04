@@ -13,18 +13,18 @@ pub const InvokeMethod = enum { sync, asyncd, callback };
 pub const Invoker = struct {
     overrides: OverrideFn = noOverides,
 
-    pub const OverrideFn = *const fn (tag: ComptimeTag) ?OpaqueEvaluator;
+    pub const OverrideFn = *const fn (tag: ComptimeTag) ?OpaqueInvoker;
 
     pub fn evaluateSync(
         self: Invoker,
         comptime task: Task,
         tracer: InvokeTracer,
         delegate: *const Delegate,
-        input: task.In(false),
-    ) task.Out(.retain) {
+        input: task.In,
+    ) task.Out {
         const evalFn = self.getOpaqueEval(task, .sync);
 
-        var out: task.Out(.retain) = undefined;
+        var out: task.Out = undefined;
         evalFn(tracer, delegate, &input, &out);
         return out;
     }
@@ -33,7 +33,7 @@ pub const Invoker = struct {
         self: Invoker,
         arena: Allocator,
         comptime task: Task,
-        input: task.In(false),
+        input: task.In,
     ) !AsyncInvocation {
         const evalFn = self.getOpaqueEval(task, .asyncd);
         return AsyncInvocation.allocAsync(arena, input, evalFn);
@@ -43,7 +43,7 @@ pub const Invoker = struct {
         self: Invoker,
         arena: Allocator,
         comptime task: Task,
-        input: task.In(false),
+        input: task.In,
         callbackCtx: *const anyopaque,
         callbackFn: Task.Callback(task),
     ) !AsyncInvocation {
@@ -56,13 +56,13 @@ pub const Invoker = struct {
         return self.overrides(tag) != null;
     }
 
-    fn getOpaqueEval(self: Invoker, comptime task: Task, comptime method: InvokeMethod) OpaqueEvaluator.Func(method) {
+    fn getOpaqueEval(self: Invoker, comptime task: Task, comptime method: InvokeMethod) OpaqueInvoker.Func(method) {
         const tag = ComptimeTag.of(task);
-        const vtable = self.overrides(tag) orelse OpaqueEvaluator.of(task);
+        const vtable = self.overrides(tag) orelse OpaqueInvoker.of(task);
         return vtable.func(method);
     }
 
-    fn noOverides(_: ComptimeTag) ?OpaqueEvaluator {
+    fn noOverides(_: ComptimeTag) ?OpaqueInvoker {
         return null;
     }
 };
@@ -84,7 +84,7 @@ pub const AsyncInvocation = struct {
         };
     }
 
-    fn allocAsync(arena: Allocator, input: anytype, evalFn: OpaqueEvaluator.AsyncFn) !AsyncInvocation {
+    fn allocAsync(arena: Allocator, input: anytype, evalFn: OpaqueInvoker.AsyncFn) !AsyncInvocation {
         const In: type = @TypeOf(input);
         const payload: *allowzero const anyopaque = if (In == void) null else blk: {
             const payload = try arena.create(AsyncPaylod(In));
@@ -102,7 +102,7 @@ pub const AsyncInvocation = struct {
     fn allocCallback(
         arena: Allocator,
         input: anytype,
-        evalFn: OpaqueEvaluator.CallbackFn,
+        evalFn: OpaqueInvoker.CallbackFn,
         callbackCtx: *const anyopaque,
         callbackFn: anytype,
     ) !AsyncInvocation {
@@ -126,18 +126,18 @@ pub const AsyncInvocation = struct {
         switch (self.method) {
             .sync => unreachable,
             .asyncd => {
-                const evalFn: OpaqueEvaluator.AsyncFn = @alignCast(@ptrCast(self.evalFn));
+                const evalFn: OpaqueInvoker.AsyncFn = @alignCast(@ptrCast(self.evalFn));
                 return evalFn(tracer, delegate, self.payload);
             },
             .callback => {
-                const evalFn: OpaqueEvaluator.CallbackFn = @alignCast(@ptrCast(self.evalFn));
+                const evalFn: OpaqueInvoker.CallbackFn = @alignCast(@ptrCast(self.evalFn));
                 return evalFn(tracer, delegate, self.payload);
             },
         }
     }
 };
 
-pub const OpaqueEvaluator = struct {
+pub const OpaqueInvoker = struct {
     evalSyncFn: SyncFn,
     evalAsyncFn: AsyncFn,
     evalCallbackFn: CallbackFn,
@@ -154,7 +154,7 @@ pub const OpaqueEvaluator = struct {
         };
     }
 
-    pub fn func(self: OpaqueEvaluator, comptime method: InvokeMethod) Func(method) {
+    pub fn func(self: OpaqueInvoker, comptime method: InvokeMethod) Func(method) {
         return switch (method) {
             .sync => self.evalSyncFn,
             .asyncd => self.evalAsyncFn,
@@ -162,12 +162,12 @@ pub const OpaqueEvaluator = struct {
         };
     }
 
-    pub fn of(comptime task: Task) OpaqueEvaluator {
-        const In = task.In(false);
-        const Out = task.Out(.retain);
+    pub fn of(comptime task: Task) OpaqueInvoker {
+        const In = task.In;
+        const Out = task.Out;
         const Cb = Task.Callback(task);
         const has_output = Out != void;
-        const no_input = task.input == null;
+        const no_input = task.In == @TypeOf(.{});
 
         const eval = struct {
             fn evalSync(tracer: InvokeTracer, delegate: *const Delegate, in: *allowzero const anyopaque, out: *anyopaque) void {
@@ -184,6 +184,8 @@ pub const OpaqueEvaluator = struct {
             }
 
             fn evalAsync(tracer: InvokeTracer, delegate: *const Delegate, async_payload: *allowzero const anyopaque) anyerror!void {
+                comptime if (task.Payload() != void) unreachable;
+
                 const Payload = AsyncInvocation.AsyncPaylod(In);
                 const input = if (no_input) .{} else blk: {
                     const payload: *const Payload = @alignCast(@ptrCast(async_payload));
@@ -216,13 +218,84 @@ pub const OpaqueEvaluator = struct {
             }
         };
 
-        return OpaqueEvaluator{
+        return OpaqueInvoker{
             .evalSyncFn = eval.evalSync,
-            .evalAsyncFn = if (task.Out(.strip) == void) eval.evalAsync else undefined,
+            .evalAsyncFn = if (task.Payload() == void) eval.evalAsync else undefined,
             .evalCallbackFn = eval.evalCallback,
         };
     }
 };
+
+pub const InvokerBuilder = struct {
+    comptime map: std.BoundedArray(Mapping, 128) = .{},
+
+    const Mapping = struct {
+        task: Task,
+        evaluator: OpaqueInvoker,
+    };
+
+    pub fn override(
+        comptime self: *InvokerBuilder,
+        comptime task: Task,
+        name: []const u8,
+        comptime taskFn: anytype,
+        comptime options: Task.Options,
+    ) Task {
+        const new_task = task.evaluator.overrideFn(task, name, taskFn, options);
+        self.map.append(.{
+            .task = task,
+            .evaluator = OpaqueInvoker.of(new_task),
+        }) catch @compileError("Overflow");
+        return new_task;
+    }
+
+    pub fn consume(comptime self: *InvokerBuilder) Invoker {
+        const map = self.pack();
+        return .{ .overrides = struct {
+            fn provide(tag: ComptimeTag) ?OpaqueInvoker {
+                inline for (map) |item| {
+                    const actual = ComptimeTag.of(item.task);
+                    if (actual == tag) return item.evaluator;
+                }
+                return null;
+            }
+        }.provide };
+    }
+
+    fn pack(comptime self: *InvokerBuilder) []const Mapping {
+        const len = self.map.len;
+        const static: [len]Mapping = self.map.slice()[0..len].*;
+        return &static;
+    }
+};
+
+test "InvokerBuilder" {
+    const invoker, const AltTask = comptime blk: {
+        var builder: InvokerBuilder = .{};
+
+        const AltTask = builder.override(tests.NoOpHook, "Alt NoOp", struct {
+            pub fn f(_: *const Delegate, _: bool) void {}
+        }.f, .{});
+
+        break :blk .{ builder.consume(), AltTask };
+    };
+
+    try testing.expectEqual(false, invoker.hasOverride(tests.Call));
+    try testing.expectEqual(true, invoker.hasOverride(tests.NoOpHook));
+
+    var recorder = InvokeTraceRecorder.init(test_alloc);
+    defer recorder.deinit();
+
+    invoker.evaluateSync(tests.NoOpHook, recorder.tracer(), &tsk.NOOP_DELEGATE, .{true});
+    try recorder.expectInvoke(0, .sync, AltTask);
+
+    recorder.clear();
+    var buffer: [32]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&buffer);
+    const invocation = try invoker.prepareAsync(fixed.allocator(), tests.NoOpHook, .{true});
+    try invocation.evaluate(recorder.tracer(), &tsk.NOOP_DELEGATE);
+    try recorder.expectInvoke(0, .asyncd, AltTask);
+}
 
 pub const InvokeTracer = struct {
     ctx: *anyopaque,
@@ -284,7 +357,7 @@ const NoOpTracer = struct {
 test "invoke sync" {
     const invoker = Invoker{};
 
-    var recorder = InvokeTracerRecorder.init(test_alloc);
+    var recorder = InvokeTraceRecorder.init(test_alloc);
     defer recorder.deinit();
 
     invoker.evaluateSync(tests.Call, recorder.tracer(), &tsk.NOOP_DELEGATE, .{});
@@ -309,7 +382,7 @@ test "invoke async" {
     const arena_alloc = arena.allocator();
     defer _ = arena.deinit();
 
-    var recorder = InvokeTracerRecorder.init(test_alloc);
+    var recorder = InvokeTraceRecorder.init(test_alloc);
     defer recorder.deinit();
 
     var invocation = try invoker.prepareAsync(arena_alloc, tests.Call, .{});
@@ -351,7 +424,7 @@ test "invoke async" {
     try recorder.expectCallback(0, tests.failableCb, "baz");
 }
 
-pub const InvokeTracerRecorder = struct {
+pub const InvokeTraceRecorder = struct {
     allocator: Allocator,
     invoke_records: std.ArrayListUnmanaged(InvokeRecord) = .{},
     callback_records: std.ArrayListUnmanaged(CallbackRecord) = .{},
@@ -359,16 +432,16 @@ pub const InvokeTracerRecorder = struct {
     const InvokeRecord = struct { method: InvokeMethod, task: ComptimeTag };
     const CallbackRecord = struct { callback: ComptimeTag, context: *const anyopaque };
 
-    pub fn init(allocator: Allocator) InvokeTracerRecorder {
+    pub fn init(allocator: Allocator) InvokeTraceRecorder {
         return .{ .allocator = allocator };
     }
 
-    pub fn deinit(self: *InvokeTracerRecorder) void {
+    pub fn deinit(self: *InvokeTraceRecorder) void {
         self.invoke_records.deinit(self.allocator);
         self.callback_records.deinit(self.allocator);
     }
 
-    pub fn tracer(self: *InvokeTracerRecorder) InvokeTracer {
+    pub fn tracer(self: *InvokeTraceRecorder) InvokeTracer {
         return .{
             .ctx = self,
             .vtable = &.{
@@ -380,23 +453,23 @@ pub const InvokeTracerRecorder = struct {
 
     fn didInvoke(ctx: *anyopaque, method: InvokeMethod, task: ComptimeTag, _: u64) void {
         const record = .{ .method = method, .task = task };
-        const self: *InvokeTracerRecorder = @ptrCast(@alignCast(ctx));
+        const self: *InvokeTraceRecorder = @ptrCast(@alignCast(ctx));
         self.invoke_records.append(self.allocator, record) catch @panic("OOM");
     }
 
     fn didCallback(ctx: *anyopaque, callback: ComptimeTag, context: *const anyopaque, _: u64) void {
         const record = .{ .callback = callback, .context = context };
-        const self: *InvokeTracerRecorder = @ptrCast(@alignCast(ctx));
+        const self: *InvokeTraceRecorder = @ptrCast(@alignCast(ctx));
         self.callback_records.append(self.allocator, record) catch @panic("OOM");
     }
 
-    pub fn clear(self: *InvokeTracerRecorder) void {
+    pub fn clear(self: *InvokeTraceRecorder) void {
         self.invoke_records.clearRetainingCapacity();
         self.callback_records.clearRetainingCapacity();
     }
 
     pub fn expectInvoke(
-        self: *InvokeTracerRecorder,
+        self: *InvokeTraceRecorder,
         order: usize,
         method: InvokeMethod,
         comptime task: Task,
@@ -408,7 +481,7 @@ pub const InvokeTracerRecorder = struct {
     }
 
     pub fn expectCallback(
-        self: *InvokeTracerRecorder,
+        self: *InvokeTraceRecorder,
         order: usize,
         callback: *const anyopaque,
         context: ?*const anyopaque,
@@ -419,90 +492,3 @@ pub const InvokeTracerRecorder = struct {
         if (context) |expected| try testing.expectEqual(expected, record.context);
     }
 };
-
-pub const TasksOverrider = struct {
-    comptime map: std.BoundedArray(Mapping, 128) = .{},
-
-    const Mapping = struct {
-        task: Task,
-        evaluator: OpaqueEvaluator,
-    };
-
-    pub fn override(
-        comptime self: *TasksOverrider,
-        comptime task: Task,
-        comptime name: []const u8,
-        comptime func: anytype,
-        comptime options: Task.Options,
-    ) Task {
-        const o_task = Task.define("[OVERRIDE] " ++ name, func, options);
-        if (o_task.output != task.output) {
-            @compileError("Override '" ++ name ++ "' expects output type " ++ @typeName(task.output));
-        } else if (task.input != null or o_task.input != null) {
-            const task_len = if (task.input) |in| in.len else 0;
-            const ovrd_len = if (o_task.input) |in| in.len else 0;
-            if (task_len != ovrd_len) {
-                const message = "Override '{s}' expects {d} input parameters";
-                @compileError(std.fmt.comptimePrint(message, .{ name, task_len }));
-            } else if (task.input) |in| {
-                for (in, 0..) |T, i| if (T != o_task.input.?[i]) {
-                    const message = "Override '{s}' input #{d} expects type {s}";
-                    @compileError(std.fmt.comptimePrint(message, .{ name, i, @typeName(T) }));
-                };
-            }
-        }
-
-        self.map.append(.{
-            .task = task,
-            .evaluator = OpaqueEvaluator.of(o_task),
-        }) catch @compileError("Overflow");
-        return o_task;
-    }
-
-    pub fn consume(comptime self: *TasksOverrider) Invoker {
-        const map = self.pack();
-        return .{ .overrides = struct {
-            fn provide(tag: ComptimeTag) ?OpaqueEvaluator {
-                inline for (map) |item| {
-                    const actual = ComptimeTag.of(item.task);
-                    if (actual == tag) return item.evaluator;
-                }
-                return null;
-            }
-        }.provide };
-    }
-
-    fn pack(comptime self: *TasksOverrider) []const Mapping {
-        const len = self.map.len;
-        const static: [len]Mapping = self.map.slice()[0..len].*;
-        return &static;
-    }
-};
-
-test "TasksOverrider" {
-    const invoker, const AltTask = comptime blk: {
-        var overrider: TasksOverrider = .{};
-
-        const AltTask = overrider.override(tests.NoOpHook, "Alt NoOp", struct {
-            pub fn f(_: *const Delegate, _: bool) void {}
-        }.f, .{});
-
-        break :blk .{ overrider.consume(), AltTask };
-    };
-
-    try testing.expectEqual(false, invoker.hasOverride(tests.Call));
-    try testing.expectEqual(true, invoker.hasOverride(tests.NoOpHook));
-
-    var recorder = InvokeTracerRecorder.init(test_alloc);
-    defer recorder.deinit();
-
-    invoker.evaluateSync(tests.NoOpHook, recorder.tracer(), &tsk.NOOP_DELEGATE, .{true});
-    try recorder.expectInvoke(0, .sync, AltTask);
-
-    recorder.clear();
-    var buffer: [32]u8 = undefined;
-    var fixed = std.heap.FixedBufferAllocator.init(&buffer);
-    const invocation = try invoker.prepareAsync(fixed.allocator(), tests.NoOpHook, .{true});
-    try invocation.evaluate(recorder.tracer(), &tsk.NOOP_DELEGATE);
-    try recorder.expectInvoke(0, .asyncd, AltTask);
-}

@@ -12,15 +12,14 @@ const Writer = @import("../codegen/CodegenWriter.zig");
 const MD_HEAD = @embedFile("../codegen/template/head.md.template");
 const ZIG_HEAD = @embedFile("../codegen/template/head.zig.template");
 
-pub const MarkdownDoc = AbstractTask(markdownDocTask, .{
+pub const MarkdownDoc = AbstractTask("Markdown Codegen", markdownDocTask, .{
     .varyings = &.{*md.Document.Build},
 });
-
 fn markdownDocTask(
     self: *const Delegate,
     writer: std.io.AnyWriter,
     task: *const fn (struct { *md.Document.Build }) anyerror!void,
-) !void {
+) anyerror!void {
     var codegen = Writer.init(self.alloc(), writer);
     defer codegen.deinit();
 
@@ -53,15 +52,14 @@ test "markdown document" {
     try expectMarkdownDoc(TestDocument, "## Foo", .{});
 }
 
-pub const ZigScript = AbstractTask(zigScriptTask, .{
+pub const ZigScript = AbstractTask("Zig Codegen", zigScriptTask, .{
     .varyings = &.{*zig.ContainerBuild},
 });
-
 fn zigScriptTask(
     self: *const Delegate,
     writer: std.io.AnyWriter,
     task: *const fn (struct { *zig.ContainerBuild }) anyerror!void,
-) !void {
+) anyerror!void {
     var codegen = Writer.init(self.alloc(), writer);
     defer codegen.deinit();
 

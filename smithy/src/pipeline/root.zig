@@ -3,7 +3,7 @@ pub const Pipeline = pipeline.Pipeline;
 pub const PipelineTester = pipeline.PipelineTester;
 
 const invoke = @import("invoke.zig");
-pub const TasksOverrider = invoke.TasksOverrider;
+pub const InvokerBuilder = invoke.InvokerBuilder;
 
 const task = @import("task.zig");
 pub const Task = task.Task;

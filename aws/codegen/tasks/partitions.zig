@@ -5,8 +5,8 @@ const Allocator = mem.Allocator;
 const smithy = @import("smithy");
 const pipez = smithy.pipez;
 const Delegate = pipez.Delegate;
-const FilesTasks = smithy.FilesTasks;
-const CodegenTasks = smithy.CodegenTasks;
+const files_tasks = smithy.files_tasks;
+const codegen_tasks = smithy.codegen_tasks;
 const JsonReader = smithy.JsonReader;
 const zig = smithy.codegen_zig;
 const ExprBuild = zig.ExprBuild;
@@ -32,15 +32,15 @@ pub fn main() !void {
 
     try pipeline.evaluateSync(Partitions, .{
         output_path,
-        FilesTasks.FileOptions{ .delete_on_error = true },
+        files_tasks.FileOptions{ .delete_on_error = true },
         input_path,
     });
 }
 
-const Partitions = FilesTasks.WriteFile.define("Partitions", partitionsTask, .{});
+const Partitions = files_tasks.WriteFile.define("Partitions", partitionsTask, .{});
 
 fn partitionsTask(self: *const Delegate, writer: std.io.AnyWriter, src_path: []const u8) anyerror!void {
-    const cwd = FilesTasks.getWorkDir(self);
+    const cwd = files_tasks.getWorkDir(self);
     const src_file = try cwd.openFile(src_path, .{});
     defer src_file.close();
 
@@ -50,7 +50,7 @@ fn partitionsTask(self: *const Delegate, writer: std.io.AnyWriter, src_path: []c
     try self.evaluate(PartitionsCodegen, .{ writer, &reader });
 }
 
-const PartitionsCodegen = CodegenTasks.ZigScript.define("Partitions Codegen", partitionsCodegenTask, .{});
+const PartitionsCodegen = codegen_tasks.ZigScript.define("Partitions Codegen", partitionsCodegenTask, .{});
 
 // https://github.com/smithy-lang/smithy-rs/blob/main/rust-runtime/inlineable/src/endpoint_lib/partition.rs
 fn partitionsCodegenTask(self: *const Delegate, bld: *ContainerBuild, reader: *JsonReader) anyerror!void {
@@ -174,7 +174,7 @@ test "PartitionsCodegen" {
     var reader = try JsonReader.initFixed(arena_alloc, TEST_SRC);
     defer reader.deinit();
 
-    try CodegenTasks.expectZigScript(PartitionsCodegen, TEST_OUT, .{&reader});
+    try codegen_tasks.expectZigScript(PartitionsCodegen, TEST_OUT, .{&reader});
 }
 
 const TEST_OUT: []const u8 =

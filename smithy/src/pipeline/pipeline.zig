@@ -50,18 +50,18 @@ pub const Pipeline = struct {
         alloc.destroy(self);
     }
 
-    pub fn evaluateSync(self: *Pipeline, comptime task: Task, input: task.In(false)) !task.Out(.strip) {
+    pub fn evaluateSync(self: *Pipeline, comptime task: Task, input: task.In) !task.Payload() {
         return self.schedule.evaluateSync(null, task, input);
     }
 
-    pub fn scheduleAsync(self: *Pipeline, comptime task: Task, input: task.In(false)) !void {
+    pub fn scheduleAsync(self: *Pipeline, comptime task: Task, input: task.In) !void {
         try self.schedule.appendAsync(null, task, input);
     }
 
     pub fn scheduleCallback(
         self: *Pipeline,
         comptime task: Task,
-        input: task.In(false),
+        input: task.In,
         callbackCtx: *const anyopaque,
         callbackFn: Task.Callback(task),
     ) !void {
@@ -80,11 +80,11 @@ pub const PipelineTesterOptions = struct {
 pub const PipelineTester = struct {
     pipeline: *Pipeline,
     root_scope: *Scope,
-    recorder: *ivk.InvokeTracerRecorder,
+    recorder: *ivk.InvokeTraceRecorder,
 
     pub fn init(options: PipelineTesterOptions) !PipelineTester {
-        const recorder = try test_alloc.create(ivk.InvokeTracerRecorder);
-        recorder.* = ivk.InvokeTracerRecorder.init(test_alloc);
+        const recorder = try test_alloc.create(ivk.InvokeTraceRecorder);
+        recorder.* = ivk.InvokeTraceRecorder.init(test_alloc);
         errdefer test_alloc.destroy(recorder);
 
         const pipeline = try Pipeline.init(test_alloc, .{
@@ -119,11 +119,15 @@ pub const PipelineTester = struct {
         self.recorder.clear();
     }
 
+    pub fn alloc(self: *PipelineTester) Allocator {
+        return self.root_scope.alloc();
+    }
+
     //
     // Schedule
     //
 
-    pub fn evaluateSync(self: *PipelineTester, comptime task: Task, input: task.In(false)) !task.Out(.strip) {
+    pub fn evaluateSync(self: *PipelineTester, comptime task: Task, input: task.In) !task.Payload() {
         return self.pipeline.evaluateSync(task, input);
     }
 
@@ -131,20 +135,20 @@ pub const PipelineTester = struct {
         self: *PipelineTester,
         expected: anyerror,
         comptime task: Task,
-        input: task.In(false),
+        input: task.In,
     ) !void {
         const output = self.pipeline.evaluateSync(task, input);
         try testing.expectError(expected, output);
     }
 
-    pub fn scheduleAsync(self: *PipelineTester, comptime task: Task, input: task.In(false)) !void {
+    pub fn scheduleAsync(self: *PipelineTester, comptime task: Task, input: task.In) !void {
         try self.pipeline.scheduleAsync(task, input);
     }
 
     pub fn scheduleCallback(
         self: *PipelineTester,
         comptime task: Task,
-        input: task.In(false),
+        input: task.In,
         callbackCtx: *const anyopaque,
         callbackFn: Task.Callback(task),
     ) !void {
