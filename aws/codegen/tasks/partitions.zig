@@ -50,7 +50,7 @@ fn partitionsTask(self: *const Delegate, writer: std.io.AnyWriter, src_path: []c
     try self.evaluate(PartitionsCodegen, .{ writer, &reader });
 }
 
-const PartitionsCodegen = codegen_tasks.ZigScript.define("Partitions Codegen", partitionsCodegenTask, .{});
+const PartitionsCodegen = codegen_tasks.ZigScript.Define("Partitions Codegen", partitionsCodegenTask, .{});
 
 // https://github.com/smithy-lang/smithy-rs/blob/main/rust-runtime/inlineable/src/endpoint_lib/partition.rs
 fn partitionsCodegenTask(self: *const Delegate, bld: *ContainerBuild, reader: *JsonReader) anyerror!void {
@@ -171,10 +171,14 @@ test "PartitionsCodegen" {
     const arena_alloc = arena.allocator();
     defer arena.deinit();
 
+    var tester = try pipez.PipelineTester.init(.{});
+    defer tester.deinit();
+
     var reader = try JsonReader.initFixed(arena_alloc, TEST_SRC);
     defer reader.deinit();
 
-    try codegen_tasks.expectZigScript(PartitionsCodegen, TEST_OUT, .{&reader});
+    const output = try codegen_tasks.evaluateZigScript(arena_alloc, tester.pipeline, PartitionsCodegen, .{&reader});
+    try codegen_tasks.expectEqualZigScript(TEST_OUT, output);
 }
 
 const TEST_OUT: []const u8 =

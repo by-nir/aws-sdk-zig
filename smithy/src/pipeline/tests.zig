@@ -3,6 +3,7 @@ const testing = std.testing;
 const tsk = @import("task.zig");
 const Task = tsk.Task;
 const Delegate = tsk.Delegate;
+const AbstractTask = @import("task_abstract.zig").AbstractTask;
 
 pub const Service = struct { value: usize };
 
@@ -10,38 +11,38 @@ pub const Service = struct { value: usize };
 // Tasks
 //
 
-pub const NoOp = Task.define("NoOp", noOpFn, .{});
+pub const NoOp = Task.Define("NoOp", noOpFn, .{});
 pub fn noOpFn(_: *const Delegate) void {}
 
 pub var did_call: bool = false;
-pub const Call = Task.define("Call", callFn, .{});
+pub const Call = Task.Define("Call", callFn, .{});
 pub fn callFn(_: *const Delegate) void {
     did_call = true;
 }
 
-pub const Crash = Task.define("Crash", crashFn, .{});
+pub const Crash = Task.Define("Crash", crashFn, .{});
 pub fn crashFn(_: *const Delegate) error{Fail}!void {
     return error.Fail;
 }
 
-pub const Failable = Task.define("Failable", failableFn, .{});
+pub const Failable = Task.Define("Failable", failableFn, .{});
 pub fn failableFn(_: *const Delegate, fail: bool) error{Fail}!void {
     if (fail) return error.Fail;
 }
 
-pub const Multiply = Task.define("Multiply", multiplyFn, .{});
+pub const Multiply = Task.Define("Multiply", multiplyFn, .{});
 pub fn multiplyFn(_: *const Delegate, a: usize, b: usize) usize {
     return a * b;
 }
 
-pub const InjectMultiply = Task.define("InjectMultiply", injectMultiplyFn, .{
+pub const InjectMultiply = Task.Define("InjectMultiply", injectMultiplyFn, .{
     .injects = &.{Service},
 });
 pub fn injectMultiplyFn(_: *const Delegate, service: *Service, n: usize) usize {
     return n * service.value;
 }
 
-pub const OptInjectMultiply = Task.define("OptInjectMultiply", optInjectMultiplyFn, .{
+pub const OptInjectMultiply = Task.Define("OptInjectMultiply", optInjectMultiplyFn, .{
     .injects = &.{Service},
 });
 pub fn optInjectMultiplyFn(_: *const Delegate, service: ?*Service, n: usize) usize {
@@ -49,20 +50,20 @@ pub fn optInjectMultiplyFn(_: *const Delegate, service: ?*Service, n: usize) usi
     return n * m;
 }
 
-pub const MultiplyScope = Task.define("MultiplyScope", multiplyScopeFn, .{});
+pub const MultiplyScope = Task.Define("MultiplyScope", multiplyScopeFn, .{});
 pub fn multiplyScopeFn(self: *const Delegate, n: usize) !void {
     const m = self.readValue(usize, .num) orelse return error.MissingValue;
     try self.writeValue(usize, .num, m * n);
 }
 
-pub const ExponentScope = Task.define("ExponentScope", exponentScopeFn, .{});
+pub const ExponentScope = Task.Define("ExponentScope", exponentScopeFn, .{});
 pub fn exponentScopeFn(self: *const Delegate, n: usize) !void {
     try self.schedule(MultiplyScope, .{n});
     const m = self.readValue(usize, .num) orelse return error.MissingValue;
     try self.writeValue(usize, .num, m * n);
 }
 
-pub const MultiplySubScope = Task.define("MultiplySubScope", multiplySubScopeFn, .{});
+pub const MultiplySubScope = Task.Define("MultiplySubScope", multiplySubScopeFn, .{});
 pub fn multiplySubScopeFn(self: *const Delegate, n: usize) !void {
     const m = self.readValue(usize, .mult) orelse return error.MissingValue;
     try self.defineValue(usize, .num, n);
@@ -72,10 +73,33 @@ pub fn multiplySubScopeFn(self: *const Delegate, n: usize) !void {
 }
 
 //
+// Abstract
+//
+
+pub const AbstractCall = AbstractTask("Abstract Call", callWrapper, .{});
+pub fn callWrapper(_: *const Delegate, task: *const fn () void) void {
+    return task();
+}
+
+pub const AbstractVarying = AbstractTask("Abstract Varying", varyingWrapper, .{
+    .varyings = &.{usize},
+});
+pub fn varyingWrapper(_: *const Delegate, n: usize, task: *const fn (struct { usize }) usize) usize {
+    return task(.{n});
+}
+
+pub const AbstractChain = AbstractTask("Abstract Chain", chainWrapper, .{
+    .varyings = &.{usize},
+});
+pub fn chainWrapper(_: *const Delegate, n: usize, task: *const fn (struct { usize }) anyerror!usize) !usize {
+    return task(.{n});
+}
+
+//
 // Hooks
 //
 
-pub const NoOpHook = Task.hook("NoOp Hook", &.{bool}, void);
+pub const NoOpHook = Task.Hook("NoOp Hook", void, &.{bool});
 
 //
 // Callbacks

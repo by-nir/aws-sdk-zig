@@ -234,14 +234,18 @@ pub const InvokerBuilder = struct {
         evaluator: OpaqueInvoker,
     };
 
-    pub fn override(
+    pub fn Override(
         comptime self: *InvokerBuilder,
         comptime task: Task,
         name: []const u8,
         comptime taskFn: anytype,
         comptime options: Task.Options,
     ) Task {
-        const new_task = task.evaluator.overrideFn(task, name, taskFn, options);
+        const factoryFn = task.evaluator.overrideFn orelse {
+            return error.NonOverridableTask;
+        };
+
+        const new_task = factoryFn(task, name, taskFn, options);
         self.map.append(.{
             .task = task,
             .evaluator = OpaqueInvoker.of(new_task),
@@ -273,7 +277,7 @@ test "InvokerBuilder" {
     const invoker, const AltTask = comptime blk: {
         var builder: InvokerBuilder = .{};
 
-        const AltTask = builder.override(tests.NoOpHook, "Alt NoOp", struct {
+        const AltTask = builder.Override(tests.NoOpHook, "Alt NoOp", struct {
             pub fn f(_: *const Delegate, _: bool) void {}
         }.f, .{});
 

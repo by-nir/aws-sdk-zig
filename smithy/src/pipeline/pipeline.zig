@@ -119,10 +119,6 @@ pub const PipelineTester = struct {
         self.recorder.clear();
     }
 
-    pub fn alloc(self: *PipelineTester) Allocator {
-        return self.root_scope.alloc();
-    }
-
     //
     // Schedule
     //
@@ -185,8 +181,12 @@ pub const PipelineTester = struct {
     // Scope
     //
 
-    pub fn provideService(self: *PipelineTester, service: anytype) !util.Reference(@TypeOf(service)) {
-        return self.root_scope.provideService(service, null);
+    pub fn provideService(
+        self: *PipelineTester,
+        service: anytype,
+        comptime cleanup: ?*const fn (ctx: util.Reference(@TypeOf(service)), allocator: Allocator) void,
+    ) !util.Reference(@TypeOf(service)) {
+        return self.root_scope.provideService(service, cleanup);
     }
 
     pub fn defineValue(self: *PipelineTester, comptime T: type, comptime tag: anytype, value: T) !void {

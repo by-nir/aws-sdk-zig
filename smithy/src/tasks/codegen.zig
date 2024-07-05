@@ -34,22 +34,32 @@ fn markdownDocTask(
     try codegen.appendFmt(MD_HEAD ++ "\n\n{}\n", .{document});
 }
 
-pub fn expectMarkdownDoc(
+pub fn evaluateMarkdownDoc(
+    allocator: std.mem.Allocator,
+    pipeline: *pipez.Pipeline,
     comptime task: Task,
-    comptime expected: []const u8,
-    input: MarkdownDoc.ChildInput(task),
-) !void {
-    try expectCodegen(task, MD_HEAD, expected, input);
+    input: MarkdownDoc.ExtractChildInput(task),
+) ![]const u8 {
+    return evaluateCodegen(allocator, pipeline, task, input);
+}
+
+pub fn expectEqualMarkdownDoc(comptime expected: []const u8, actual: []const u8) !void {
+    try expectEqualCodegen(MD_HEAD, expected, actual);
 }
 
 test "markdown document" {
-    const TestDocument = MarkdownDoc.define("Test Documen", struct {
+    const TestDocument = MarkdownDoc.Define("Test Documen", struct {
         fn f(_: *const Delegate, bld: *md.Document.Build) anyerror!void {
             try bld.heading(2, "Foo");
         }
     }.f, .{});
 
-    try expectMarkdownDoc(TestDocument, "## Foo", .{});
+    var tester = try pipez.PipelineTester.init(.{});
+    defer tester.deinit();
+
+    const output = try evaluateMarkdownDoc(test_alloc, tester.pipeline, TestDocument, .{});
+    defer test_alloc.free(output);
+    try expectEqualMarkdownDoc("## Foo", output);
 }
 
 pub const ZigScript = AbstractTask("Zig Codegen", zigScriptTask, .{
@@ -74,36 +84,47 @@ fn zigScriptTask(
     try codegen.appendFmt(ZIG_HEAD ++ "\n\n{}\n", .{container});
 }
 
-pub fn expectZigScript(
+pub fn evaluateZigScript(
+    allocator: std.mem.Allocator,
+    pipeline: *pipez.Pipeline,
     comptime task: Task,
-    comptime expected: []const u8,
-    input: ZigScript.ChildInput(task),
-) !void {
-    try expectCodegen(task, ZIG_HEAD, expected, input);
+    input: ZigScript.ExtractChildInput(task),
+) ![]const u8 {
+    return evaluateCodegen(allocator, pipeline, task, input);
+}
+
+pub fn expectEqualZigScript(comptime expected: []const u8, actual: []const u8) !void {
+    try expectEqualCodegen(ZIG_HEAD, expected, actual);
 }
 
 test "zig script" {
-    const TestScript = ZigScript.define("Test Script", struct {
+    const TestScript = ZigScript.Define("Test Script", struct {
         fn f(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
             try bld.constant("foo").assign(bld.x.raw("undefined"));
         }
     }.f, .{});
 
-    try expectZigScript(TestScript, "const foo = undefined;", .{});
-}
-
-fn expectCodegen(
-    comptime task: Task,
-    comptime head: []const u8,
-    comptime expected: []const u8,
-    input: anytype,
-) !void {
     var tester = try pipez.PipelineTester.init(.{});
     defer tester.deinit();
 
-    var buffer = std.ArrayList(u8).init(test_alloc);
-    defer buffer.deinit();
+    const output = try evaluateZigScript(test_alloc, tester.pipeline, TestScript, .{});
+    defer test_alloc.free(output);
+    try expectEqualZigScript("const foo = undefined;", output);
+}
 
-    try tester.evaluateSync(task, .{buffer.writer().any()} ++ input);
-    try testing.expectEqualStrings(head ++ "\n\n" ++ expected ++ "\n", buffer.items);
+fn evaluateCodegen(
+    allocator: std.mem.Allocator,
+    pipeline: *pipez.Pipeline,
+    comptime task: Task,
+    input: anytype,
+) ![]const u8 {
+    var buffer = std.ArrayList(u8).init(allocator);
+    errdefer buffer.deinit();
+
+    try pipeline.evaluateSync(task, .{buffer.writer().any()} ++ input);
+    return buffer.toOwnedSlice();
+}
+
+fn expectEqualCodegen(comptime head: []const u8, comptime expected: []const u8, actual: []const u8) !void {
+    try testing.expectEqualStrings(head ++ "\n\n" ++ expected ++ "\n", actual);
 }

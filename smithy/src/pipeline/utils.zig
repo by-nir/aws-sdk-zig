@@ -285,3 +285,44 @@ test "Optional" {
     try testing.expectEqual(?bool, Optional(?bool));
     try testing.expectEqual(?bool, Optional(bool));
 }
+
+pub fn TupleFiller(comptime Tuple: type) type {
+    const len = @typeInfo(Tuple).Struct.fields.len;
+    return struct {
+        const Self = @This();
+
+        tuple: Tuple = undefined,
+
+        // TODO: Rename to append
+        pub inline fn appendValue(self: *Self, i: *usize, value: anytype) void {
+            comptime std.debug.assert(i.* < len);
+            const field: []const u8 = comptime std.fmt.comptimePrint("{d}", .{i.*});
+            @field(self.tuple, field) = value;
+            comptime i.* += 1;
+        }
+
+        pub inline fn consume(self: Self, i: *usize) Tuple {
+            comptime std.debug.assert(i.* == len);
+            return self.tuple;
+        }
+    };
+}
+
+test "TuppleFiller" {
+    comptime var shift: usize = 0;
+    const Tup = struct { usize, bool, f32 };
+    var tuple = TupleFiller(Tup){};
+    tuple.appendValue(&shift, @as(usize, 108));
+    tuple.appendValue(&shift, true);
+    tuple.appendValue(&shift, @as(f32, 1.08));
+    try testing.expectEqualDeep(Tup{ 108, true, 1.08 }, tuple.consume(&shift));
+}
+
+pub inline fn logOrPanic(comptime fmt: []const u8, args: anytype) void {
+    if (std.debug.runtime_safety) {
+        std.log.err(fmt, args);
+        unreachable;
+    } else {
+        std.debug.panic(fmt, args);
+    }
+}

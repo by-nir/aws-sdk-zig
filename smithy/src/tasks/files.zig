@@ -20,7 +20,7 @@ pub fn getWorkDir(delegate: *const Delegate) fs.Dir {
     return delegate.readValue(fs.Dir, FilesScope.work_dir) orelse fs.cwd();
 }
 
-pub const OpenDirOptions = struct {
+pub const DirOptions = struct {
     iterable: bool = false,
     delete_on_error: bool = false,
     create_on_not_found: bool = false,
@@ -31,7 +31,7 @@ pub const OpenDir = AbstractTask("Open Directory", openDirTask, .{});
 fn openDirTask(
     self: *const Delegate,
     sub_path: []const u8,
-    options: OpenDirOptions,
+    options: DirOptions,
     task: *const fn () anyerror!void,
 ) anyerror!void {
     const cwd = getWorkDir(self);
@@ -73,27 +73,30 @@ fn writeFileTask(
     try buffer.flush();
 }
 
-pub fn expectWriteFile(
+pub fn evaluateWriteFile(
+    allocator: std.mem.Allocator,
+    pipeline: *pipez.Pipeline,
     comptime task: Task,
-    comptime expected: []const u8,
-    input: WriteFile.ChildInput(task),
-) !void {
-    var tester = try pipez.PipelineTester.init(.{});
-    defer tester.deinit();
+    input: WriteFile.ExtractChildInput(task),
+) ![]const u8 {
+    var buffer = std.ArrayList(u8).init(allocator);
+    errdefer buffer.deinit();
 
-    var buffer = std.ArrayList(u8).init(test_alloc);
-    defer buffer.deinit();
-
-    try tester.evaluateSync(WriteFile.extractChildTask(task), .{buffer.writer().any()} ++ input);
-    try testing.expectEqualStrings(expected, buffer.items);
+    try pipeline.evaluateSync(WriteFile.ExtractChildTask(task), .{buffer.writer().any()} ++ input);
+    return buffer.toOwnedSlice();
 }
 
-test "expectWriteFile" {
-    const TestWrite = WriteFile.define("Test Write", struct {
+test "evaluateWriteFile" {
+    const TestWrite = WriteFile.Define("Test Write", struct {
         fn f(_: *const Delegate, writer: std.io.AnyWriter, in: []const u8) anyerror!void {
             try writer.print("foo {s}", .{in});
         }
     }.f, .{});
 
-    try expectWriteFile(TestWrite, "foo bar", .{"bar"});
+    var tester = try pipez.PipelineTester.init(.{});
+    defer tester.deinit();
+
+    const output = try evaluateWriteFile(test_alloc, tester.pipeline, TestWrite, .{"bar"});
+    defer test_alloc.free(output);
+    try testing.expectEqualStrings("foo bar", output);
 }

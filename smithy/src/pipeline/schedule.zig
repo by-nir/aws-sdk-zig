@@ -49,7 +49,7 @@ pub const Schedule = struct {
         errdefer self.resources.releaseQueue(&delegate.children);
 
         const output = delegate.scope.invoker.evaluateSync(task, self.tracer, &delegate, input);
-        if (comptime task.isFailable()) try output;
+        _ = if (comptime task.isFailable()) output catch |err| return err;
 
         try self.evaluateQueue(delegate.scope, &delegate.children);
         return output;
@@ -296,16 +296,16 @@ test "sub-tasks" {
     defer schedule.deinit();
 
     const sub = struct {
-        pub const Root = Task.define("Root", root, .{});
+        pub const Root = Task.Define("Root", root, .{});
         pub fn root(self: *const Delegate) anyerror!void {
             try self.schedule(Bar, .{});
             try self.evaluate(Foo, .{});
             try self.scheduleCallback(Baz, .{}, undefined, tests.noopCb);
         }
 
-        pub const Foo = Task.define("Foo", tests.noOpFn, .{});
-        pub const Bar = Task.define("Bar", tests.noOpFn, .{});
-        pub const Baz = Task.define("Baz", tests.noOpFn, .{});
+        pub const Foo = Task.Define("Foo", tests.noOpFn, .{});
+        pub const Bar = Task.Define("Bar", tests.noOpFn, .{});
+        pub const Baz = Task.Define("Baz", tests.noOpFn, .{});
     };
 
     try schedule.appendAsync(null, sub.Root, .{});
