@@ -76,23 +76,26 @@ pub fn multiplySubScopeFn(self: *const Delegate, n: usize) !void {
 // Abstract
 //
 
-pub const AbstractCall = AbstractTask("Abstract Call", callWrapper, .{});
-pub fn callWrapper(_: *const Delegate, task: *const fn () void) void {
-    return task();
-}
-
-pub const AbstractVarying = AbstractTask("Abstract Varying", varyingWrapper, .{
+pub const AbstractCall = AbstractTask.Define("Call", callWrapper, .{
     .varyings = &.{usize},
 });
-pub fn varyingWrapper(_: *const Delegate, n: usize, task: *const fn (struct { usize }) usize) usize {
+pub fn callWrapper(_: *const Delegate, n: usize, task: *const fn (struct { usize }) usize) usize {
+    did_call = true;
     return task(.{n});
 }
 
-pub const AbstractChain = AbstractTask("Abstract Chain", chainWrapper, .{
+pub const AbstractChain = AbstractTask.Define("Chain", chainWrapper, .{
     .varyings = &.{usize},
 });
 pub fn chainWrapper(_: *const Delegate, n: usize, task: *const fn (struct { usize }) anyerror!usize) !usize {
     return task(.{n});
+}
+
+pub const AbstractCallAdd = AbstractCall.Abstract("Call & Add", addMidWrapper, .{
+    .varyings = &.{usize},
+});
+pub fn addMidWrapper(_: *const Delegate, n: usize, task: *const fn (struct { usize }) usize) usize {
+    return task(.{n + 1});
 }
 
 //

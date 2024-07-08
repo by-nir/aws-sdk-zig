@@ -50,7 +50,7 @@ fn partitionsTask(self: *const Delegate, writer: std.io.AnyWriter, src_path: []c
     try self.evaluate(PartitionsCodegen, .{ writer, &reader });
 }
 
-const PartitionsCodegen = codegen_tasks.ZigScript.Define("Partitions Codegen", partitionsCodegenTask, .{});
+const PartitionsCodegen = codegen_tasks.ZigScript.Task("Partitions Codegen", partitionsCodegenTask, .{});
 
 // https://github.com/smithy-lang/smithy-rs/blob/main/rust-runtime/inlineable/src/endpoint_lib/partition.rs
 fn partitionsCodegenTask(self: *const Delegate, bld: *ContainerBuild, reader: *JsonReader) anyerror!void {

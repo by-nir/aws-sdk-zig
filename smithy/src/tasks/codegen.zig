@@ -12,7 +12,7 @@ const Writer = @import("../codegen/CodegenWriter.zig");
 const MD_HEAD = @embedFile("../codegen/template/head.md.template");
 const ZIG_HEAD = @embedFile("../codegen/template/head.zig.template");
 
-pub const MarkdownDoc = AbstractTask("Markdown Codegen", markdownDocTask, .{
+pub const MarkdownDoc = AbstractTask.Define("Markdown Codegen", markdownDocTask, .{
     .varyings = &.{*md.Document.Build},
 });
 fn markdownDocTask(
@@ -38,7 +38,7 @@ pub fn evaluateMarkdownDoc(
     allocator: std.mem.Allocator,
     pipeline: *pipez.Pipeline,
     comptime task: Task,
-    input: MarkdownDoc.ExtractChildInput(task),
+    input: AbstractTask.ExtractChildInput(task),
 ) ![]const u8 {
     return evaluateCodegen(allocator, pipeline, task, input);
 }
@@ -48,7 +48,7 @@ pub fn expectEqualMarkdownDoc(comptime expected: []const u8, actual: []const u8)
 }
 
 test "markdown document" {
-    const TestDocument = MarkdownDoc.Define("Test Documen", struct {
+    const TestDocument = MarkdownDoc.Task("Test Documen", struct {
         fn f(_: *const Delegate, bld: *md.Document.Build) anyerror!void {
             try bld.heading(2, "Foo");
         }
@@ -62,7 +62,7 @@ test "markdown document" {
     try expectEqualMarkdownDoc("## Foo", output);
 }
 
-pub const ZigScript = AbstractTask("Zig Codegen", zigScriptTask, .{
+pub const ZigScript = AbstractTask.Define("Zig Codegen", zigScriptTask, .{
     .varyings = &.{*zig.ContainerBuild},
 });
 fn zigScriptTask(
@@ -88,7 +88,7 @@ pub fn evaluateZigScript(
     allocator: std.mem.Allocator,
     pipeline: *pipez.Pipeline,
     comptime task: Task,
-    input: ZigScript.ExtractChildInput(task),
+    input: AbstractTask.ExtractChildInput(task),
 ) ![]const u8 {
     return evaluateCodegen(allocator, pipeline, task, input);
 }
@@ -98,7 +98,7 @@ pub fn expectEqualZigScript(comptime expected: []const u8, actual: []const u8) !
 }
 
 test "zig script" {
-    const TestScript = ZigScript.Define("Test Script", struct {
+    const TestScript = ZigScript.Task("Test Script", struct {
         fn f(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
             try bld.constant("foo").assign(bld.x.raw("undefined"));
         }

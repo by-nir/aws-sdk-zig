@@ -32,10 +32,7 @@ pub const Task = struct {
     ) Task;
 
     pub fn Payload(comptime self: Task) type {
-        return switch (@typeInfo(self.Out)) {
-            .ErrorUnion => |t| t.payload,
-            else => self.Out,
-        };
+        return util.StripError(self.Out);
     }
 
     pub fn Define(name: []const u8, comptime taskFn: anytype, comptime options: Options) Task {
@@ -68,14 +65,14 @@ pub const Task = struct {
 
 pub fn StandardTask(comptime taskFn: anytype, comptime options: Task.Options) type {
     const meta = DestructFunc.from("Standard task", taskFn, options.injects);
-    const EvalInput: type = if (meta.inputs.len > 0) std.meta.Tuple(meta.inputs) else @TypeOf(.{});
+    const EvalInput: type = if (meta.inputs.len > 0) std.meta.Tuple(meta.inputs) else struct {};
 
     return struct {
         pub fn Define(name: []const u8) Task {
             return .{
                 .name = name,
                 .In = EvalInput,
-                .Out = meta.Output,
+                .Out = meta.Out,
                 .evaluator = &Task.Evaluator{
                     .evalFn = evaluate,
                     .overrideFn = standardOverride,
@@ -83,16 +80,16 @@ pub fn StandardTask(comptime taskFn: anytype, comptime options: Task.Options) ty
             };
         }
 
-        fn evaluate(name: []const u8, delegate: *const Delegate, input: EvalInput) meta.Output {
+        fn evaluate(name: []const u8, delegate: *const Delegate, input: EvalInput) meta.Out {
             const args = if (meta.injects.len + meta.inputs.len > 0) blk: {
                 comptime var shift: usize = 0;
                 var tuple = util.TupleFiller(meta.Args){};
-                tuple.appendValue(&shift, delegate);
+                tuple.append(&shift, delegate);
                 inline for (meta.injects) |T| {
                     const service = getInjectable(delegate, T, name);
-                    tuple.appendValue(&shift, service);
+                    tuple.append(&shift, service);
                 }
-                inline for (0..meta.inputs.len) |i| tuple.appendValue(&shift, input[i]);
+                inline for (0..meta.inputs.len) |i| tuple.append(&shift, input[i]);
                 break :blk tuple.consume(&shift);
             } else .{delegate};
 
@@ -111,7 +108,7 @@ test "StandardTask" {
 }
 
 pub fn StandardHook(comptime Output: type, comptime inputs: []const type) type {
-    const InvokeInput: type = if (inputs.len > 0) std.meta.Tuple(inputs) else @TypeOf(.{});
+    const InvokeInput: type = if (inputs.len > 0) std.meta.Tuple(inputs) else struct {};
     return struct {
         pub fn Define(name: []const u8) Task {
             return .{
@@ -139,9 +136,9 @@ pub fn StandardHook(comptime Output: type, comptime inputs: []const type) type {
 
 fn standardOverride(comptime task: Task, name: []const u8, comptime taskFn: anytype, comptime options: Task.Options) Task {
     const fn_meta = DestructFunc.from("Overriding '" ++ task.name ++ "'", taskFn, options.injects);
-    if (task.Out != fn_meta.Output) @compileError(std.fmt.comptimePrint(
+    if (task.Out != fn_meta.Out) @compileError(std.fmt.comptimePrint(
         "Overriding '{s}' expects output type `{}`",
-        .{ task.name, @typeName(task.FnOut) },
+        .{ task.name, task.Out },
     ));
 
     const shift = 1 + options.injects.len;
@@ -155,8 +152,8 @@ fn standardOverride(comptime task: Task, name: []const u8, comptime taskFn: anyt
         for (fields, 0..) |field, i| {
             const T = field.type;
             if (T != fn_meta.inputs[i]) @compileError(std.fmt.comptimePrint(
-                "Overriding '{s}' expects parameter #{d} of type `{s}`",
-                .{ task.name, shift + i, @typeName(T) },
+                "Overriding '{s}' expects parameter #{d} of type `{}`",
+                .{ task.name, shift + i, T },
             ));
         }
     }
@@ -171,19 +168,19 @@ pub fn getInjectable(delegate: *const Delegate, comptime T: type, task_name: []c
     };
     const is_optional = T != Ref;
     return delegate.scope.getService(Ref) orelse if (is_optional) null else {
-        const message = "Evaluating task '{s}' expects the scope to provide `{s}`";
-        util.logOrPanic(message, .{ task_name, @typeName(T) });
+        const message = "Evaluating task '{s}' expects the scope to provide `{}`";
+        util.logOrPanic(message, .{ task_name, T });
     };
 }
 
 pub const DestructFunc = struct {
     Fn: type,
     Args: type,
-    Output: type,
+    Out: type,
     injects: []const type,
     inputs: []const type,
 
-    pub fn from(name: []const u8, comptime func: anytype, comptime inject_types: []const type) DestructFunc {
+    pub fn from(factory_name: []const u8, comptime func: anytype, comptime inject_types: []const type) DestructFunc {
         const meta: ZigType.Fn = blk: {
             switch (@typeInfo(@TypeOf(func))) {
                 .Fn => |t| break :blk t,
@@ -193,12 +190,12 @@ pub const DestructFunc = struct {
                 },
                 else => {},
             }
-            @compileError(name ++ " expects a function type");
+            @compileError(factory_name ++ " expects a function type");
         };
 
         const params_len = meta.params.len;
         if (params_len == 0 or meta.params[0].type != *const Delegate) {
-            @compileError(name ++ " first parameter must be `*const Delegate`");
+            @compileError(factory_name ++ " first parameter must be `*const Delegate`");
         }
 
         const inject_len = inject_types.len;
@@ -211,17 +208,17 @@ pub const DestructFunc = struct {
                     .Struct => {},
                     .Pointer, .Optional => @compileError(std.fmt.comptimePrint(
                         "{s} inject options #{d} expects a plain struct type, without modifiers",
-                        .{ name, i },
+                        .{ factory_name, i },
                     )),
                     else => if (@typeInfo(T) != .Struct) @compileError(std.fmt.comptimePrint(
                         "{s} inject options #{d} expects a struct type",
-                        .{ name, i },
+                        .{ factory_name, i },
                     )),
                 }
 
                 if (params_len < i + 2) @compileError(std.fmt.comptimePrint(
-                    "{s} missing parameter #{d} of type `*{2s}` or `?*{2s}`",
-                    .{ name, i + 1, @typeName(T) },
+                    "{s} missing parameter #{d} of type `*{}` or `?*{2}`",
+                    .{ factory_name, i + 1, T },
                 ));
 
                 var is_optional = false;
@@ -232,8 +229,8 @@ pub const DestructFunc = struct {
                 }
 
                 if (Param != *T) @compileError(std.fmt.comptimePrint(
-                    "{s} expects parameter #{d} of type `{s}*{s}`",
-                    .{ name, i + 1, if (is_optional) "?" else "", @typeName(T) },
+                    "{s} expects parameter #{d} of type `{s}*{}`",
+                    .{ factory_name, i + 1, if (is_optional) "?" else "", T },
                 ));
 
                 types[i] = if (is_optional) ?*T else *T;
@@ -255,7 +252,7 @@ pub const DestructFunc = struct {
         return .{
             .Fn = *const @Type(.{ .Fn = meta }),
             .Args = std.meta.ArgsTuple(@Type(.{ .Fn = meta })),
-            .Output = meta.return_type.?,
+            .Out = meta.return_type.?,
             .injects = inject,
             .inputs = input,
         };

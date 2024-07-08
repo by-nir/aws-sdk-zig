@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
+const Delegate = @import("task.zig").Delegate;
 
 pub fn Queue(comptime T: type) type {
     return struct {
@@ -286,6 +287,48 @@ test "Optional" {
     try testing.expectEqual(?bool, Optional(bool));
 }
 
+/// Returns a `anyerror!T` or the unmodified type if it’s already an error union.
+pub fn Failable(comptime T: type) type {
+    return switch (@typeInfo(T)) {
+        .ErrorUnion => T,
+        else => anyerror!T,
+    };
+}
+
+test "Failable" {
+    try testing.expectEqual(error{Boom}!bool, Failable(error{Boom}!bool));
+    try testing.expectEqual(anyerror!bool, Failable(bool));
+}
+
+/// Extracts the payload from an error union or return the unmodified type otherwise.
+pub fn StripError(comptime T: type) type {
+    return switch (@typeInfo(T)) {
+        .ErrorUnion => |t| t.payload,
+        else => T,
+    };
+}
+
+test "StripError" {
+    try testing.expectEqual(bool, StripError(error{Boom}!bool));
+    try testing.expectEqual(bool, StripError(bool));
+}
+
+/// Extracts the payload from an optional, pointer, or error union; otherwise returns the unmodified type.
+pub fn Payload(comptime T: type) type {
+    return switch (@typeInfo(T)) {
+        inline .Pointer, .Optional => |t| t.child,
+        .ErrorUnion => |t| t.payload,
+        else => T,
+    };
+}
+
+test "Payload" {
+    try testing.expectEqual(bool, Payload(anyerror!bool));
+    try testing.expectEqual(bool, Payload(?bool));
+    try testing.expectEqual(bool, Payload(*const bool));
+    try testing.expectEqual(bool, Payload(bool));
+}
+
 pub fn TupleFiller(comptime Tuple: type) type {
     const len = @typeInfo(Tuple).Struct.fields.len;
     return struct {
@@ -293,8 +336,7 @@ pub fn TupleFiller(comptime Tuple: type) type {
 
         tuple: Tuple = undefined,
 
-        // TODO: Rename to append
-        pub inline fn appendValue(self: *Self, i: *usize, value: anytype) void {
+        pub inline fn append(self: *Self, i: *usize, value: anytype) void {
             comptime std.debug.assert(i.* < len);
             const field: []const u8 = comptime std.fmt.comptimePrint("{d}", .{i.*});
             @field(self.tuple, field) = value;
@@ -312,9 +354,9 @@ test "TuppleFiller" {
     comptime var shift: usize = 0;
     const Tup = struct { usize, bool, f32 };
     var tuple = TupleFiller(Tup){};
-    tuple.appendValue(&shift, @as(usize, 108));
-    tuple.appendValue(&shift, true);
-    tuple.appendValue(&shift, @as(f32, 1.08));
+    tuple.append(&shift, @as(usize, 108));
+    tuple.append(&shift, true);
+    tuple.append(&shift, @as(f32, 1.08));
     try testing.expectEqualDeep(Tup{ 108, true, 1.08 }, tuple.consume(&shift));
 }
 

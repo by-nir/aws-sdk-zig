@@ -167,7 +167,7 @@ pub const OpaqueInvoker = struct {
         const Out = task.Out;
         const Cb = Task.Callback(task);
         const has_output = Out != void;
-        const no_input = task.In == @TypeOf(.{});
+        const no_input = task.In == struct {};
 
         const eval = struct {
             fn evalSync(tracer: InvokeTracer, delegate: *const Delegate, in: *allowzero const anyopaque, out: *anyopaque) void {

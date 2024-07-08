@@ -52,7 +52,7 @@ pub const FileOptions = struct {
     delete_on_error: bool = false,
 };
 
-pub const WriteFile = AbstractTask("Write File", writeFileTask, .{
+pub const WriteFile = AbstractTask.Define("Write File", writeFileTask, .{
     .varyings = &.{std.io.AnyWriter},
 });
 fn writeFileTask(
@@ -77,17 +77,17 @@ pub fn evaluateWriteFile(
     allocator: std.mem.Allocator,
     pipeline: *pipez.Pipeline,
     comptime task: Task,
-    input: WriteFile.ExtractChildInput(task),
+    input: AbstractTask.ExtractChildInput(task),
 ) ![]const u8 {
     var buffer = std.ArrayList(u8).init(allocator);
     errdefer buffer.deinit();
 
-    try pipeline.evaluateSync(WriteFile.ExtractChildTask(task), .{buffer.writer().any()} ++ input);
+    try pipeline.evaluateSync(AbstractTask.ExtractChildTask(task), .{buffer.writer().any()} ++ input);
     return buffer.toOwnedSlice();
 }
 
 test "evaluateWriteFile" {
-    const TestWrite = WriteFile.Define("Test Write", struct {
+    const TestWrite = WriteFile.Task("Test Write", struct {
         fn f(_: *const Delegate, writer: std.io.AnyWriter, in: []const u8) anyerror!void {
             try writer.print("foo {s}", .{in});
         }
