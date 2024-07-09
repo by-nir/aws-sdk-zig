@@ -15,6 +15,21 @@ const PipelineTester = @import("pipeline.zig").PipelineTester;
 /// Abstract task can’t invoke sub-task as a callback.
 pub const InvokeMethod = enum { sync, asyncd };
 
+pub fn AbstractEval(comptime varyings: []const type, comptime Out: type) type {
+    const Varyings: type = std.meta.Tuple(varyings);
+    return struct {
+        pub const ProxyOut: type = Out;
+        pub const proxy_varyings: []const type = varyings;
+
+        ctx: *const anyopaque,
+        func: *const fn (*const anyopaque, Varyings) Out,
+
+        pub fn evaluate(self: @This(), in: Varyings) Out {
+            return self.func(self.ctx, in);
+        }
+    };
+}
+
 pub const AbstractOptions = struct {
     /// Services that are provided by the scope.
     injects: []const type = &.{},
@@ -29,8 +44,8 @@ pub const AbstractTask = struct {
     hookFn: *const fn (name: []const u8, comptime input: []const type) TaskType,
 
     pub fn Define(name: []const u8, comptime func: anytype, comptime options: AbstractOptions) AbstractTask {
-        const meta, const ProxyFn = AbstractMeta.fromWrapFn("Abstract task", name, func, options);
-        return AbstractFactory(meta, ProxyFn);
+        const meta = AbstractMeta.fromWrapFn("Abstract task", name, func, options);
+        return AbstractFactory(meta);
     }
 
     pub fn Task(self: AbstractTask, name: []const u8, comptime func: anytype, comptime options: TaskOptions) TaskType {
@@ -53,45 +68,81 @@ pub const AbstractTask = struct {
 
     pub fn ExtractChildInput(comptime task: TaskType) type {
         const meta: *const OpaqueMeta = @ptrCast(@alignCast(task.meta.?));
-        return std.meta.Tuple(meta.child_inputs);
+        const inputs = switch (meta.child) {
+            inline .task_fn, .task_def => |t| t.inputs,
+            else => unreachable,
+        };
+
+        return switch (meta.parent) {
+            .wrap_fn => std.meta.Tuple(inputs),
+            .mid_fn => |parent| std.meta.Tuple(parent.middle_func.inputs ++ inputs),
+            else => unreachable,
+        };
     }
 
     pub fn ExtractChildTask(comptime task: TaskType) TaskType {
         const meta: *const OpaqueMeta = @ptrCast(@alignCast(task.meta.?));
-        return switch (meta.child) {
-            .task => |child| child.task,
-            .func => |child| blk: {
-                const name = "[Child] " ++ task.name;
-                const taskFn: child.Fn = @ptrCast(@alignCast(child.func));
-                break :blk tsk.StandardTask(taskFn, child.options).Define(name);
+        switch (meta.parent) {
+            .wrap_fn => switch (meta.child) {
+                .task_def => |child| return child.task,
+                .task_fn => |child| {
+                    const name = "[Extracted] " ++ task.name;
+                    const taskFn: child.Fn = @ptrCast(@alignCast(child.func));
+                    return tsk.StandardTask(taskFn, meta.options).Define(name);
+                },
+                else => unreachable,
             },
-        };
+            .mid_fn => |parent| {
+                var func = parent.middle_func;
+                func.inputs = parent.parent_func.varyings ++ parent.middle_func.inputs;
+                const factory = AbstractFactory(.{ .wrap_fn = .{
+                    .func = func,
+                    .proxy = parent.middle_proxy,
+                } });
+
+                switch (meta.child) {
+                    .task_def => |child| return factory.Chain(child.task, child.method),
+                    .task_fn => |child| {
+                        const name = "[Extracted] " ++ task.name;
+                        const taskFn: child.Fn = @ptrCast(@alignCast(child.func));
+                        return factory.Task(name, taskFn, meta.options);
+                    },
+                    else => unreachable,
+                }
+            },
+            else => unreachable,
+        }
     }
 };
 
 const OpaqueMeta = struct {
-    child_inputs: []const type,
-    child: Child,
-
-    pub const Child = union(enum) {
-        func: Func,
-        task: TaskType,
-    };
-
-    pub const Func = struct {
-        Fn: type,
-        func: *const anyopaque,
-        options: TaskOptions,
-    };
+    parent: AbstractMeta,
+    child: AbstractMeta,
+    options: TaskOptions,
 };
 
-fn AbstractFactory(comptime parent_meta: AbstractMeta, comptime ProxyFn: type) AbstractTask {
+fn AbstractFactory(comptime parent_meta: AbstractMeta) AbstractTask {
     const parent = switch (parent_meta) {
-        .wrap_fn => |t| t,
-        .mid_fn => |t| t.middle_meta,
+        .wrap_fn => |t| t.func,
+        .mid_fn => |t| t.middle_func,
         else => unreachable,
     };
-    const ProxyOut = @typeInfo(@typeInfo(ProxyFn).Pointer.child).Fn.return_type.?;
+    const ParentOut = switch (parent_meta) {
+        .wrap_fn => |t| t.func.Out,
+        .mid_fn => |t| t.parent_func.Out,
+        else => unreachable,
+    };
+    const proxy_meta = switch (parent_meta) {
+        .wrap_fn => |t| t.proxy,
+        .mid_fn => |t| t.parent_proxy,
+        else => unreachable,
+    };
+
+    const parent_inputs = switch (parent_meta) {
+        .wrap_fn => |t| t.func.inputs,
+        .mid_fn => |t| t.parent_func.varyings ++ t.middle_func.inputs,
+        else => unreachable,
+    };
 
     const Factory = struct {
         fn Task(name: []const u8, comptime func: anytype, comptime options: TaskOptions) TaskType {
@@ -100,27 +151,30 @@ fn AbstractFactory(comptime parent_meta: AbstractMeta, comptime ProxyFn: type) A
                 name,
                 func,
                 options,
-                ProxyOut,
+                proxy_meta.Out,
                 parent.varyings,
-                parent.inputs,
+                parent_inputs,
             );
             const child = child_meta.task_fn;
 
+            const InvokeIn = switch (parent_meta) {
+                .wrap_fn => child.InvokeIn,
+                .mid_fn => |t| std.meta.Tuple(t.parent_func.inputs ++ t.middle_func.inputs ++ child.inputs),
+                else => unreachable,
+            };
+
             return .{
                 .name = name,
-                .In = child.InvokeIn,
-                .Out = parent.Out,
+                .In = InvokeIn,
+                .Out = ParentOut,
                 .evaluator = &TaskType.Evaluator{
-                    .evalFn = taskEvaluator(ProxyFn, parent_meta, child_meta),
+                    .evalFn = taskEvaluator(parent_meta, child_meta),
                     .overrideFn = override,
                 },
                 .meta = &OpaqueMeta{
-                    .child_inputs = child.inputs,
-                    .child = .{ .func = .{
-                        .Fn = child.Fn,
-                        .func = child.func,
-                        .options = options,
-                    } },
+                    .parent = parent_meta,
+                    .child = child_meta,
+                    .options = options,
                 },
             };
         }
@@ -130,36 +184,43 @@ fn AbstractFactory(comptime parent_meta: AbstractMeta, comptime ProxyFn: type) A
                 "Chaining to '" ++ parent.name ++ "'",
                 task,
                 method,
-                ProxyOut,
+                proxy_meta.Out,
                 parent.varyings,
-                parent.inputs,
+                parent_inputs,
             );
             const child = child_meta.task_def;
 
+            const InvokeIn = switch (parent_meta) {
+                .wrap_fn => child.InvokeIn,
+                .mid_fn => |t| std.meta.Tuple(t.parent_func.inputs ++ t.middle_func.inputs ++ child.inputs),
+                else => unreachable,
+            };
+
             return .{
                 .name = parent.name ++ " + " ++ task.name,
-                .In = child.InvokeIn,
-                .Out = parent.Out,
+                .In = InvokeIn,
+                .Out = child.Out,
                 .evaluator = &TaskType.Evaluator{
-                    .evalFn = taskEvaluator(ProxyFn, parent_meta, child_meta),
+                    .evalFn = taskEvaluator(parent_meta, child_meta),
                     .overrideFn = override,
                 },
                 .meta = &OpaqueMeta{
-                    .child_inputs = child.inputs,
-                    .child = .{ .task = task },
+                    .parent = parent_meta,
+                    .child = child_meta,
+                    .options = .{},
                 },
             };
         }
 
         fn Abstract(name: []const u8, comptime func: anytype, comptime options: AbstractOptions) AbstractTask {
-            const meta, const SubProxyFn = AbstractMeta.fromMidFn(
+            const meta = AbstractMeta.fromMidFn(
                 "Sub-abstract of '" ++ parent.name ++ "'",
                 name,
                 func,
                 options,
                 parent_meta,
             );
-            return AbstractFactory(meta, SubProxyFn);
+            return AbstractFactory(meta);
         }
 
         fn Hook(name: []const u8, comptime input: []const type) TaskType {
@@ -169,14 +230,22 @@ fn AbstractFactory(comptime parent_meta: AbstractMeta, comptime ProxyFn: type) A
             return .{
                 .name = name,
                 .In = InvokeIn,
-                .Out = parent.Out,
+                .Out = ParentOut,
                 .evaluator = &TaskType.Evaluator{
-                    .evalFn = tsk.StandardHook(parent.Out, invoke_inputs).evaluate,
+                    .evalFn = tsk.StandardHook(ParentOut, invoke_inputs).evaluate,
                     .overrideFn = override,
                 },
                 .meta = &OpaqueMeta{
-                    .child = undefined,
-                    .child_inputs = input,
+                    .parent = parent_meta,
+                    .child = .{ .task_def = .{
+                        .name = undefined,
+                        .task = undefined,
+                        .method = undefined,
+                        .inputs = input,
+                        .Out = undefined,
+                        .InvokeIn = undefined,
+                    } },
+                    .options = .{},
                 },
             };
         }
@@ -187,18 +256,19 @@ fn AbstractFactory(comptime parent_meta: AbstractMeta, comptime ProxyFn: type) A
             comptime taskFn: anytype,
             comptime options: TaskOptions,
         ) TaskType {
-            const ChildOut = @typeInfo(@typeInfo(ProxyFn).Pointer.child).Fn.return_type.?;
-
-            const fn_meta = DestructFunc.from("Overriding '" ++ task.name ++ "'", taskFn, options.injects);
-            if (task.Out != ChildOut) @compileError(std.fmt.comptimePrint(
+            if (task.Out != proxy_meta.Out) @compileError(std.fmt.comptimePrint(
                 "Overriding '{s}' expects output type `{}`",
                 .{ task.name, task.FnOut },
             ));
 
             const meta: *const OpaqueMeta = @ptrCast(@alignCast(task.meta.?));
-            const args: []const type = parent.varyings ++ meta.child_inputs;
+            const args: []const type = parent.varyings ++ switch (meta.child) {
+                inline .task_fn, .task_def => |t| t.inputs,
+                else => unreachable,
+            };
 
             const shift = 1 + options.injects.len;
+            const fn_meta = DestructFunc.from("Overriding '" ++ task.name ++ "'", taskFn, options.injects);
             if (fn_meta.inputs.len + args.len > 0) {
                 if (args.len != fn_meta.inputs.len) @compileError(std.fmt.comptimePrint(
                     "Overriding '{s}' expects {d} parameters",
@@ -226,39 +296,91 @@ fn AbstractFactory(comptime parent_meta: AbstractMeta, comptime ProxyFn: type) A
     };
 }
 
-fn taskEvaluator(
-    comptime ProxyFn: type,
-    comptime parent_meta: AbstractMeta,
-    comptime child_meta: AbstractMeta,
-) *const anyopaque {
-    const parent = switch (parent_meta) {
-        .wrap_fn => |t| t,
-        .mid_fn => |t| t.middle_meta,
-        else => unreachable,
-    };
+fn taskEvaluator(comptime parent_meta: AbstractMeta, comptime child_meta: AbstractMeta) *const anyopaque {
+    const EvalStandard = struct {
+        const meta = parent_meta.wrap_fn;
 
-    const Varyings: type = if (parent.varyings.len > 0) std.meta.Tuple(parent.varyings) else struct {};
-    const InvokeIn = switch (child_meta) {
-        inline .task_def, .task_fn => |t| t.InvokeIn,
-        .mid_fn => |t| t.middle_meta.InvokeIn,
-        else => unreachable,
-    };
+        const Output = meta.func.Out;
+        const Input = switch (child_meta) {
+            inline .task_def, .task_fn => |t| t.InvokeIn,
+            else => unreachable,
+        };
 
-    const Eval = struct {
-        threadlocal var proxy_delegate: *const Delegate = undefined;
-        threadlocal var proxy_inputs: *const InvokeIn = undefined;
-
-        pub fn evaluate(task_name: []const u8, delegate: *const Delegate, input: InvokeIn) parent.Out {
-            proxy_inputs = &input;
-            proxy_delegate = delegate;
-            const proxyFn: ProxyFn = switch (child_meta) {
-                .task_fn => proxyCall,
-                .task_def => proxyInvoke,
-                else => unreachable,
+        pub fn evaluate(task_name: []const u8, delegate: *const Delegate, input: Input) Output {
+            const parent = meta.func;
+            const proxy = meta.proxy;
+            const child_eval = resolveChildProxy(Input, proxy, child_meta, parent.inputs.len){
+                .delegate = delegate,
+                .inputs = input,
             };
-            const parentFn: parent.Fn = @ptrCast(@alignCast(parent.func));
-            const args = if (parent.injects.len + parent.inputs.len == 0)
-                .{ delegate, proxyFn }
+            const parentEvalFn = EvalWrapper(Input, proxy.Eval(), parent, parent.inputs.len);
+            return parentEvalFn(task_name, delegate, input, child_eval.ref());
+        }
+    };
+
+    const EvalAbstract = struct {
+        const meta = parent_meta.mid_fn;
+        const parent_inputs = meta.parent_func.inputs;
+        const parent_varyings = meta.middle_func.varyings;
+        const mid_inputs = meta.middle_func.inputs;
+        const child_inputs = switch (child_meta) {
+            inline .task_def, .task_fn => |t| t.inputs,
+            else => unreachable,
+        };
+
+        const Output = meta.parent_func.Out;
+        const invoke_inputs = parent_inputs ++ mid_inputs ++ child_inputs;
+        const InvokeInput: type = if (invoke_inputs.len > 0) std.meta.Tuple(invoke_inputs) else @TypeOf(.{});
+        const meta_inputs = parent_varyings ++ mid_inputs ++ child_inputs;
+        const MetaInput: type = if (meta_inputs.len > 0) std.meta.Tuple(meta_inputs) else @TypeOf(.{});
+
+        pub fn evaluate(task_name: []const u8, delegate: *const Delegate, input: InvokeInput) Output {
+            const mid_proxy = meta.middle_proxy;
+            const child_skip = parent_inputs.len + mid_inputs.len;
+            const eval_child = resolveChildProxy(InvokeInput, mid_proxy, child_meta, child_skip){
+                .delegate = delegate,
+                .inputs = input,
+            };
+            const sub_input_len = parent_varyings.len + mid_inputs.len;
+            const subEvalFn = EvalWrapper(MetaInput, mid_proxy.Eval(), meta.middle_func, sub_input_len);
+
+            const eval_parent = ProxyMiddle(
+                InvokeInput,
+                MetaInput,
+                mid_proxy.Eval(),
+                meta.parent_proxy,
+                parent_inputs.len,
+            ){
+                .task_name = task_name,
+                .delegate = delegate,
+                .inputs = input,
+                .subEvalFn = subEvalFn,
+                .eval_child = eval_child.ref(),
+            };
+
+            const parentEvalFn = EvalWrapper(InvokeInput, meta.parent_proxy.Eval(), meta.parent_func, parent_inputs.len);
+            return parentEvalFn(task_name, delegate, input, eval_parent.ref());
+        }
+    };
+
+    return switch (parent_meta) {
+        .wrap_fn => EvalStandard.evaluate,
+        .mid_fn => EvalAbstract.evaluate,
+        .task_fn, .task_def => unreachable,
+    };
+}
+
+fn EvalWrapper(
+    comptime Input: type,
+    comptime ProxyEval: type,
+    comptime parent: AbstractMeta.Func,
+    comptime input_len: usize,
+) *const fn ([]const u8, *const Delegate, Input, ProxyEval) parent.Out {
+    const parentFn: parent.Fn = @ptrCast(@alignCast(parent.func));
+    return struct {
+        pub fn evaluate(task_name: []const u8, delegate: *const Delegate, input: Input, proxy_eval: ProxyEval) parent.Out {
+            const args = if (parent.injects.len + input_len == 0)
+                .{ delegate, proxy_eval }
             else blk: {
                 comptime var shift: usize = 0;
                 var tuple = util.TupleFiller(parent.Args){};
@@ -267,113 +389,159 @@ fn taskEvaluator(
                     const service = getInjectable(&shift, delegate, T, task_name);
                     tuple.append(&shift, service);
                 }
-                inline for (0..parent.inputs.len) |i| tuple.append(&shift, input[i]);
-                tuple.append(&shift, proxyFn);
+                inline for (0..input_len) |i| tuple.append(&shift, input[i]);
+                tuple.append(&shift, proxy_eval);
                 break :blk tuple.consume(&shift);
             };
             return @call(.auto, parentFn, args);
         }
+    }.evaluate;
+}
 
-        pub fn proxyCall(varyings: Varyings) child_meta.task_fn.Out {
-            const child = child_meta.task_fn;
+fn ProxyMiddle(
+    comptime InvokeInput: type,
+    comptime MetaInput: type,
+    comptime ChildProxyEval: type,
+    comptime proxy: AbstractMeta.Proxy,
+    comptime input_skip: usize,
+) type {
+    return struct {
+        subEvalFn: *const fn ([]const u8, *const Delegate, MetaInput, ChildProxyEval) proxy.Out,
+        task_name: []const u8,
+        delegate: *const Delegate,
+        inputs: InvokeInput,
+        eval_child: ChildProxyEval,
+
+        pub fn ref(self: *const @This()) proxy.Eval() {
+            return .{
+                .ctx = self,
+                .func = evaluate,
+            };
+        }
+
+        pub fn evaluate(ctx: *const anyopaque, varyings: proxy.Varyings()) proxy.Out {
+            const self: *const @This() = @ptrCast(@alignCast(ctx));
+
+            comptime var shift: usize = 0;
+            var tuple = util.TupleFiller(MetaInput){};
+            inline for (0..varyings.len) |i| tuple.append(&shift, varyings[i]);
+            inline for (input_skip..self.inputs.len) |i| tuple.append(&shift, self.inputs[i]);
+            const child_inputs = tuple.consume(&shift);
+
+            return @call(
+                .auto,
+                self.subEvalFn,
+                .{ self.task_name, self.delegate, child_inputs, self.eval_child },
+            );
+        }
+    };
+}
+
+fn resolveChildProxy(
+    comptime Input: type,
+    comptime proxy: AbstractMeta.Proxy,
+    comptime child: AbstractMeta,
+    comptime input_skip: usize,
+) type {
+    return switch (child) {
+        .task_fn => |t| ProxyCall(Input, proxy, t, input_skip),
+        .task_def => |t| ProxyInvoke(Input, proxy, t, input_skip),
+        else => unreachable,
+    };
+}
+
+fn ProxyCall(
+    comptime Input: type,
+    comptime proxy: AbstractMeta.Proxy,
+    comptime child: AbstractMeta.Func,
+    comptime input_skip: usize,
+) type {
+    return struct {
+        delegate: *const Delegate,
+        inputs: Input,
+
+        pub fn ref(self: *const @This()) proxy.Eval() {
+            return .{
+                .ctx = self,
+                .func = evaluate,
+            };
+        }
+
+        pub fn evaluate(ctx: *const anyopaque, varyings: proxy.Varyings()) proxy.Out {
+            const self: *const @This() = @ptrCast(@alignCast(ctx));
             const childFn: child.Fn = @ptrCast(@alignCast(child.func));
 
             if (@typeInfo(child.Args).Struct.fields.len == 1) {
-                @call(.auto, childFn, .{proxy_delegate});
+                @call(.auto, childFn, .{self.delegate});
             } else {
                 comptime var shift: usize = 0;
                 var tuple = util.TupleFiller(child.Args){};
-                tuple.append(&shift, proxy_delegate);
+                tuple.append(&shift, self.delegate);
                 inline for (child.injects) |T| {
-                    const service = getInjectable(proxy_delegate, T, child.name);
+                    const service = getInjectable(self.delegate, T, child.name);
                     tuple.append(&shift, service);
                 }
-                inline for (0..parent.varyings.len) |i| tuple.append(&shift, varyings[i]);
-                inline for (parent.inputs.len..proxy_inputs.len) |i| tuple.append(&shift, proxy_inputs[i]);
+                inline for (0..varyings.len) |i| tuple.append(&shift, varyings[i]);
+                inline for (input_skip..self.inputs.len) |i| tuple.append(&shift, self.inputs[i]);
                 const args = tuple.consume(&shift);
 
                 return @call(.auto, childFn, args);
             }
         }
+    };
+}
 
-        pub fn proxyInvoke(varyings: Varyings) child_meta.task_def.Out {
-            const child = child_meta.task_def;
-            const input: child.task.In = if (child.inputs.len == 0) .{} else blk: {
+fn ProxyInvoke(
+    comptime Input: type,
+    comptime proxy: AbstractMeta.Proxy,
+    comptime child: AbstractMeta.Task,
+    comptime input_skip: usize,
+) type {
+    return struct {
+        delegate: *const Delegate,
+        inputs: Input,
+
+        pub fn ref(self: *const @This()) proxy.Eval() {
+            return .{
+                .ctx = self,
+                .func = evaluate,
+            };
+        }
+
+        pub fn evaluate(ctx: *const anyopaque, varyings: proxy.Varyings()) proxy.Out {
+            const self: *const @This() = @ptrCast(@alignCast(ctx));
+            const input: child.task.In = if (child.task.In == @TypeOf(.{})) .{} else blk: {
                 comptime var shift: usize = 0;
                 var tuple = util.TupleFiller(child.task.In){};
                 inline for (0..varyings.len) |i| tuple.append(&shift, varyings[i]);
-                inline for (parent.inputs.len..proxy_inputs.len) |i| tuple.append(&shift, proxy_inputs[i]);
+                inline for (input_skip..self.inputs.len) |i| tuple.append(&shift, self.inputs[i]);
                 break :blk tuple.consume(&shift);
             };
 
             return switch (child.method) {
-                .sync => proxy_delegate.evaluate(child.task, input),
-                .asyncd => proxy_delegate.schedule(child.task, input),
+                .sync => self.delegate.evaluate(child.task, input),
+                .asyncd => self.delegate.schedule(child.task, input),
             };
         }
-    };
-
-    const EvalSubAbstract = struct {
-        const actual_parent = parent_meta.mid_fn.parent_meta;
-        const ParentVaryings: type = if (parent.varyings.len > 0) std.meta.Tuple(parent.varyings) else struct {};
-
-        threadlocal var proxy_name: []const u8 = undefined;
-        threadlocal var proxy_delegate: *const Delegate = undefined;
-        threadlocal var proxy_inputs: *const parent.InvokeIn = undefined;
-
-        pub fn evaluate(task_name: []const u8, delegate: *const Delegate, input: parent.InvokeIn) actual_parent.Out {
-            proxy_inputs = &input;
-            proxy_name = task_name;
-            proxy_delegate = delegate;
-            const parentFn: actual_parent.Fn = @ptrCast(@alignCast(actual_parent.func));
-            const args = if (actual_parent.injects.len + actual_parent.inputs.len == 0)
-                .{ delegate, proxyMid }
-            else blk: {
-                comptime var shift: usize = 0;
-                var tuple = util.TupleFiller(actual_parent.Args){};
-                tuple.append(&shift, delegate);
-                inline for (actual_parent.injects) |T| {
-                    const service = getInjectable(&shift, delegate, T, actual_parent.name);
-                    tuple.append(&shift, service);
-                }
-                inline for (0..actual_parent.inputs.len) |i| tuple.append(&shift, input[i]);
-                tuple.append(&shift, proxyMid);
-                break :blk tuple.consume(&shift);
-            };
-            return @call(.auto, parentFn, args);
-        }
-
-        pub fn proxyMid(varyings: ParentVaryings) parent.Out {
-            if (actual_parent.varyings.len + actual_parent.inputs.len == 0) {
-                return @call(.auto, Eval.evaluate, .{ proxy_name, proxy_delegate, proxy_inputs.* });
-            } else {
-                comptime var shift: usize = 0;
-                var tuple = util.TupleFiller(InvokeIn){};
-                inline for (0..actual_parent.varyings.len) |i| tuple.append(&shift, varyings[i]);
-                inline for (actual_parent.inputs.len..proxy_inputs.len) |i| tuple.append(&shift, proxy_inputs[i]);
-                const args = tuple.consume(&shift);
-
-                return @call(.auto, Eval.evaluate, .{ proxy_name, proxy_delegate, args });
-            }
-        }
-    };
-
-    return switch (parent_meta) {
-        .wrap_fn => Eval.evaluate,
-        .mid_fn => EvalSubAbstract.evaluate,
-        .task_fn, .task_def => unreachable,
     };
 }
 
 const AbstractMeta = union(enum) {
+    wrap_fn: WrapFunc,
     mid_fn: MidFunc,
-    wrap_fn: Func,
     task_fn: Func,
     task_def: Task,
 
+    const WrapFunc = struct {
+        func: Func,
+        proxy: Proxy,
+    };
+
     const MidFunc = struct {
-        parent_meta: Func,
-        middle_meta: Func,
+        parent_func: Func,
+        parent_proxy: Proxy,
+        middle_func: Func,
+        middle_proxy: Proxy,
     };
 
     const Func = struct {
@@ -397,47 +565,66 @@ const AbstractMeta = union(enum) {
         InvokeIn: type,
     };
 
+    const Proxy = struct {
+        Out: type,
+        varyings: []const type,
+
+        pub fn Varyings(comptime self: Proxy) type {
+            return if (self.varyings.len == 0) @TypeOf(.{}) else std.meta.Tuple(self.varyings);
+        }
+
+        pub fn Eval(comptime self: Proxy) type {
+            return AbstractEval(self.varyings, self.Out);
+        }
+
+        pub fn validateProxyVaryings(self: Proxy, varyings: []const type) void {
+            if (self.varyings.len > varyings.len) {
+                @compileError("AbstractEval tuple exceeds the options.varyings definition");
+            }
+
+            for (varyings, 0..) |T, i| {
+                if (self.varyings.len < i + 1) @compileError(std.fmt.comptimePrint(
+                    "AbstractEval is missing varying #{d} of type `{}`",
+                    .{ i, T },
+                )) else if (T != self.varyings[i]) @compileError(std.fmt.comptimePrint(
+                    "AbstractEval expects varying #{d} of type `{}`",
+                    .{ i, T },
+                ));
+            }
+        }
+    };
+
     pub fn fromWrapFn(
         factory_name: []const u8,
         wrap_name: []const u8,
         comptime func: anytype,
         comptime options: AbstractOptions,
-    ) struct { AbstractMeta, type } {
+    ) AbstractMeta {
         const fn_meta = DestructFunc.from(factory_name, func, options.injects);
 
-        const proxy_meta: ZigType.Fn = proxyMeta(fn_meta);
-        const ChildOut = proxy_meta.return_type.?;
+        const proxy: Proxy = proxyMeta(fn_meta);
+        proxy.validateProxyVaryings(options.varyings);
         const inputs = fn_meta.inputs[0 .. fn_meta.inputs.len - 1];
 
-        validateProxyParams(proxy_meta.params, options.varyings);
-        const Varyings = if (options.varyings.len == 0) struct {} else std.meta.Tuple(options.varyings);
-
-        const ProxyFn = *const @Type(ZigType{ .Fn = .{
-            .calling_convention = .Unspecified,
-            .is_generic = false,
-            .is_var_args = false,
-            .return_type = ChildOut,
-            .params = &.{.{ .type = Varyings, .is_generic = false, .is_noalias = false }},
-        } });
-
         const Args = if (inputs.len + options.injects.len == 0)
-            struct { *const Delegate, ProxyFn }
+            struct { *const Delegate, proxy.Eval() }
         else
-            std.meta.Tuple(&[_]type{*const Delegate} ++ options.injects ++ inputs ++ &[_]type{ProxyFn});
+            std.meta.Tuple(&[_]type{*const Delegate} ++ options.injects ++ inputs ++ &[_]type{proxy.Eval()});
 
-        const meta = AbstractMeta{ .wrap_fn = .{
-            .name = wrap_name,
-            .Fn = fn_meta.Fn,
-            .func = func,
-            .Args = Args,
-            .InvokeIn = void,
-            .Out = fn_meta.Out,
-            .inputs = inputs,
-            .injects = options.injects,
-            .varyings = options.varyings,
+        return AbstractMeta{ .wrap_fn = .{
+            .func = .{
+                .name = wrap_name,
+                .Fn = fn_meta.Fn,
+                .func = func,
+                .Args = Args,
+                .InvokeIn = void,
+                .Out = fn_meta.Out,
+                .inputs = inputs,
+                .injects = options.injects,
+                .varyings = options.varyings,
+            },
+            .proxy = proxy,
         } };
-
-        return .{ meta, ProxyFn };
     }
 
     pub fn fromMidFn(
@@ -446,55 +633,37 @@ const AbstractMeta = union(enum) {
         comptime func: anytype,
         comptime options: AbstractOptions,
         parent_meta: AbstractMeta,
-    ) struct { AbstractMeta, type } {
-        const parent = switch (parent_meta) {
-            .wrap_fn => |t| t,
-            .mid_fn => |t| t.middle_meta,
-            else => unreachable,
-        };
-
+    ) AbstractMeta {
+        const parent = parent_meta.wrap_fn.func;
         const fn_meta = DestructFunc.from(factory_name, func, options.injects);
 
-        const proxy_meta: ZigType.Fn = proxyMeta(fn_meta);
-        validateProxyParams(proxy_meta.params, options.varyings);
+        const proxy: Proxy = proxyMeta(fn_meta);
+        proxy.validateProxyVaryings(options.varyings);
 
-        const ChildOut = proxy_meta.return_type.?;
+        const ChildOut = proxy.Out;
         validateChildOutput(ChildOut, fn_meta.Out, factory_name);
         validateChildVaryings(parent.varyings, fn_meta.inputs, 1 + fn_meta.injects.len, factory_name);
 
         const Args = ChildArgs(&.{}, fn_meta.injects, fn_meta.inputs);
-        const Varyings = if (options.varyings.len == 0) struct {} else std.meta.Tuple(options.varyings);
-        const SubProxyFn = *const @Type(ZigType{ .Fn = .{
-            .calling_convention = .Unspecified,
-            .is_generic = false,
-            .is_var_args = false,
-            .return_type = ChildOut,
-            .params = &.{.{ .type = Varyings, .is_generic = false, .is_noalias = false }},
-        } });
-
         const mid_inputs = fn_meta.inputs[0 .. fn_meta.inputs.len - 1];
-        const InvokeIn = if (parent.inputs.len + mid_inputs.len == 0)
-            struct {}
-        else
-            std.meta.Tuple(parent.inputs ++ mid_inputs);
+        const inputs = excludeVaryings(parent.varyings, mid_inputs);
 
-        const mid_meta = AbstractMeta{
-            .mid_fn = .{
-                .parent_meta = parent,
-                .middle_meta = .{
-                    .name = mid_name,
-                    .Fn = fn_meta.Fn,
-                    .func = func,
-                    .Args = Args,
-                    .InvokeIn = InvokeIn,
-                    .Out = fn_meta.Out,
-                    .inputs = mid_inputs,
-                    .injects = options.injects,
-                    .varyings = options.varyings,
-                },
+        return AbstractMeta{ .mid_fn = .{
+            .parent_func = parent,
+            .parent_proxy = parent_meta.wrap_fn.proxy,
+            .middle_func = .{
+                .name = mid_name,
+                .Fn = fn_meta.Fn,
+                .func = func,
+                .Args = Args,
+                .InvokeIn = void,
+                .Out = fn_meta.Out,
+                .inputs = inputs,
+                .injects = options.injects,
+                .varyings = options.varyings,
             },
-        };
-        return .{ mid_meta, SubProxyFn };
+            .middle_proxy = proxy,
+        } };
     }
 
     pub fn fromTaskFn(
@@ -514,7 +683,7 @@ const AbstractMeta = union(enum) {
         const Args = ChildArgs(parent_varyings, fn_meta.injects, child_inputs);
 
         const invoke_inputs = taskInvokeInputs(parent_inputs, child_inputs);
-        const InvokeIn: type = if (invoke_inputs.len > 0) std.meta.Tuple(invoke_inputs) else struct {};
+        const InvokeIn: type = if (invoke_inputs.len > 0) std.meta.Tuple(invoke_inputs) else @TypeOf(.{});
 
         return AbstractMeta{ .task_fn = .{
             .name = task_name,
@@ -545,7 +714,7 @@ const AbstractMeta = union(enum) {
         validateChainInputs(parent_varyings, child_inputs, factory_name, task.name);
 
         const invoke_inputs = chainInvokeInputs(parent_varyings, parent_inputs, child_inputs);
-        const InvokeInput: type = if (invoke_inputs.len == 0) struct {} else std.meta.Tuple(invoke_inputs);
+        const InvokeInput: type = if (invoke_inputs.len == 0) @TypeOf(.{}) else std.meta.Tuple(invoke_inputs);
 
         const inputs = excludeVaryings(parent_varyings, child_inputs);
 
@@ -559,41 +728,22 @@ const AbstractMeta = union(enum) {
         } };
     }
 
-    fn proxyMeta(comptime fn_meta: DestructFunc) ZigType.Fn {
+    fn proxyMeta(comptime fn_meta: DestructFunc) Proxy {
         const input_len = fn_meta.inputs.len;
-        if (input_len > 0) switch (@typeInfo(fn_meta.inputs[input_len - 1])) {
-            .Pointer => |t| {
-                const target = @typeInfo(t.child);
-                if (t.size == .One and target == .Fn) return target.Fn;
-            },
-            else => {},
-        };
-
-        @compileError("Abstract task’s last parameter must be a pointer to a function");
-    }
-
-    fn validateProxyParams(params: []const ZigType.Fn.Param, varyings: []const type) void {
-        const fields = fld: {
-            if (params.len == 1) switch (@typeInfo(params[0].type.?)) {
-                .Struct => |t| if (t.fields.len == 0 or t.is_tuple) break :fld t.fields,
-                else => {},
-            };
-            @compileError("Abstract child–invoker expects a single tuple parameter");
-        };
-
-        if (fields.len > varyings.len) {
-            @compileError("Abstract child–invoker tuple exceeds the options.varyings definition");
+        if (input_len > 0) {
+            const T = fn_meta.inputs[input_len - 1];
+            if (@typeInfo(T) == .Struct and
+                @hasDecl(T, "ProxyOut") and
+                @hasDecl(T, "proxy_varyings"))
+            {
+                return Proxy{
+                    .Out = @field(T, "ProxyOut"),
+                    .varyings = @field(T, "proxy_varyings"),
+                };
+            }
         }
 
-        for (varyings, 0..) |T, i| {
-            if (fields.len < i + 1) @compileError(std.fmt.comptimePrint(
-                "Abstract child–invoker is missing varying parameter #{d} of type `{}`",
-                .{ i, T },
-            )) else if (T != fields[i].type) @compileError(std.fmt.comptimePrint(
-                "Abstract child–invoker’s expects parameter #{d} of type `{}`",
-                .{ i, T },
-            ));
-        }
+        @compileError("Abstract task expects last parameter of type `AbstractEval(varyings, output)`");
     }
 
     fn validateChildOutput(ChildOut: type, T: type, factory_name: []const u8) void {

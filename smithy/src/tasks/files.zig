@@ -6,6 +6,7 @@ const pipez = @import("../pipeline/root.zig");
 const Task = pipez.Task;
 const Delegate = pipez.Delegate;
 const AbstractTask = pipez.AbstractTask;
+const AbstractEval = pipez.AbstractEval;
 const md = @import("../codegen/md.zig");
 const zig = @import("../codegen/zig/scope.zig");
 const Writer = @import("../codegen/CodegenWriter.zig");
@@ -59,7 +60,7 @@ fn writeFileTask(
     self: *const Delegate,
     sub_path: []const u8,
     options: FileOptions,
-    task: *const fn (struct { std.io.AnyWriter }) anyerror!void,
+    task: AbstractEval(&.{std.io.AnyWriter}, anyerror!void),
 ) anyerror!void {
     const cwd = getWorkDir(self);
     const file = try cwd.createFile(sub_path, .{});
@@ -69,7 +70,7 @@ fn writeFileTask(
     defer file.close();
     var buffer = std.io.bufferedWriter(file.writer());
 
-    try task(.{buffer.writer().any()});
+    try task.evaluate(.{buffer.writer().any()});
     try buffer.flush();
 }
 

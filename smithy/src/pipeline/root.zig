@@ -11,6 +11,7 @@ pub const Delegate = task.Delegate;
 
 const task_abst = @import("task_abstract.zig");
 pub const AbstractTask = task_abst.AbstractTask;
+pub const AbstractEval = task_abst.AbstractEval;
 
 test {
     _ = @import("utils.zig");

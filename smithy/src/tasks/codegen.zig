@@ -5,6 +5,7 @@ const pipez = @import("../pipeline/root.zig");
 const Task = pipez.Task;
 const Delegate = pipez.Delegate;
 const AbstractTask = pipez.AbstractTask;
+const AbstractEval = pipez.AbstractEval;
 const md = @import("../codegen/md.zig");
 const zig = @import("../codegen/zig/scope.zig");
 const Writer = @import("../codegen/CodegenWriter.zig");
@@ -18,13 +19,13 @@ pub const MarkdownDoc = AbstractTask.Define("Markdown Codegen", markdownDocTask,
 fn markdownDocTask(
     self: *const Delegate,
     writer: std.io.AnyWriter,
-    task: *const fn (struct { *md.Document.Build }) anyerror!void,
+    task: AbstractEval(&.{*md.Document.Build}, anyerror!void),
 ) anyerror!void {
     var codegen = Writer.init(self.alloc(), writer);
     defer codegen.deinit();
 
     var build = md.Document.Build{ .allocator = self.alloc() };
-    task(.{&build}) catch |err| {
+    task.evaluate(.{&build}) catch |err| {
         build.deinit(self.alloc());
         return err;
     };
@@ -68,13 +69,13 @@ pub const ZigScript = AbstractTask.Define("Zig Codegen", zigScriptTask, .{
 fn zigScriptTask(
     self: *const Delegate,
     writer: std.io.AnyWriter,
-    task: *const fn (struct { *zig.ContainerBuild }) anyerror!void,
+    task: AbstractEval(&.{*zig.ContainerBuild}, anyerror!void),
 ) anyerror!void {
     var codegen = Writer.init(self.alloc(), writer);
     defer codegen.deinit();
 
     var build = zig.ContainerBuild.init(self.alloc());
-    task(.{&build}) catch |err| {
+    task.evaluate(.{&build}) catch |err| {
         build.deinit();
         return err;
     };

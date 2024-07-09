@@ -3,7 +3,9 @@ const testing = std.testing;
 const tsk = @import("task.zig");
 const Task = tsk.Task;
 const Delegate = tsk.Delegate;
-const AbstractTask = @import("task_abstract.zig").AbstractTask;
+const abst = @import("task_abstract.zig");
+const AbstractTask = abst.AbstractTask;
+const AbstractEval = abst.AbstractEval;
 
 pub const Service = struct { value: usize };
 
@@ -79,23 +81,23 @@ pub fn multiplySubScopeFn(self: *const Delegate, n: usize) !void {
 pub const AbstractCall = AbstractTask.Define("Call", callWrapper, .{
     .varyings = &.{usize},
 });
-pub fn callWrapper(_: *const Delegate, n: usize, task: *const fn (struct { usize }) usize) usize {
+pub fn callWrapper(_: *const Delegate, n: usize, task: AbstractEval(&.{usize}, usize)) usize {
     did_call = true;
-    return task(.{n});
+    return task.evaluate(.{n});
 }
 
 pub const AbstractChain = AbstractTask.Define("Chain", chainWrapper, .{
     .varyings = &.{usize},
 });
-pub fn chainWrapper(_: *const Delegate, n: usize, task: *const fn (struct { usize }) anyerror!usize) !usize {
-    return task(.{n});
+pub fn chainWrapper(_: *const Delegate, n: usize, task: AbstractEval(&.{usize}, anyerror!usize)) !usize {
+    return task.evaluate(.{n});
 }
 
 pub const AbstractCallAdd = AbstractCall.Abstract("Call & Add", addMidWrapper, .{
     .varyings = &.{usize},
 });
-pub fn addMidWrapper(_: *const Delegate, n: usize, task: *const fn (struct { usize }) usize) usize {
-    return task(.{n + 1});
+pub fn addMidWrapper(_: *const Delegate, n: usize, task: AbstractEval(&.{usize}, usize)) usize {
+    return task.evaluate(.{n + 1});
 }
 
 //
