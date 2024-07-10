@@ -37,8 +37,7 @@ pub fn main() !void {
     });
 }
 
-const Partitions = files_tasks.WriteFile.define("Partitions", partitionsTask, .{});
-
+const Partitions = files_tasks.WriteFile.Task("Partitions", partitionsTask, .{});
 fn partitionsTask(self: *const Delegate, writer: std.io.AnyWriter, src_path: []const u8) anyerror!void {
     const cwd = files_tasks.getWorkDir(self);
     const src_file = try cwd.openFile(src_path, .{});

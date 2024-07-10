@@ -15,6 +15,10 @@ const FilesScope = enum {
     work_dir,
 };
 
+pub fn defineWorkDir(delegate: *const Delegate, dir: fs.Dir) !void {
+    try delegate.defineValue(fs.Dir, FilesScope.work_dir, dir);
+}
+
 /// Returns the scope’s active directory.
 /// Fallbacks to the executable’s current working directory.
 pub fn getWorkDir(delegate: *const Delegate) fs.Dir {
@@ -28,7 +32,7 @@ pub const DirOptions = struct {
 };
 
 /// Use `FilesTasks.getWorkDir()` to get the opened directory.
-pub const OpenDir = AbstractTask("Open Directory", openDirTask, .{});
+pub const OpenDir = AbstractTask.Define("Open Directory", openDirTask, .{});
 fn openDirTask(
     self: *const Delegate,
     sub_path: []const u8,

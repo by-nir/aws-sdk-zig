@@ -238,24 +238,24 @@ pub const ComptimeTag = enum(usize) {
     invalid = 0,
     _,
 
-    pub fn of(input: anytype) ComptimeTag {
-        switch (@typeInfo(@TypeOf(input))) {
-            .Pointer => return @enumFromInt(@intFromPtr(input)),
-            else => {
-                const producer = struct {
-                    inline fn id(comptime value: anytype) *const anyopaque {
-                        const Unique = struct {
-                            var target: u8 = undefined;
-                            comptime {
-                                _ = value;
-                            }
-                        };
-                        return comptime @ptrCast(&Unique.target);
+    pub fn of(comptime input: anytype) ComptimeTag {
+        const producer = struct {
+            inline fn id(comptime value: anytype) *const anyopaque {
+                const Unique = struct {
+                    var target: u8 = undefined;
+                    comptime {
+                        _ = value;
                     }
                 };
-                return @enumFromInt(@intFromPtr(comptime producer.id(input)));
-            },
-        }
+                return comptime @ptrCast(&Unique.target);
+            }
+        };
+        return @enumFromInt(@intFromPtr(comptime producer.id(input)));
+    }
+
+    pub fn ref(input: anytype) ComptimeTag {
+        if (@typeInfo(@TypeOf(input)) != .Pointer) @compileError("Use ComptimeTag.of instead");
+        return @enumFromInt(@intFromPtr(input));
     }
 };
 

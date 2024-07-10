@@ -209,7 +209,7 @@ pub const OpaqueInvoker = struct {
                 };
 
                 const sample = tracer.begin();
-                defer sample.didCallback(ComptimeTag.of(payload.callbackFn), payload.callbackCtx);
+                defer sample.didCallback(ComptimeTag.ref(payload.callbackFn), payload.callbackCtx);
                 if (has_output) {
                     try payload.callbackFn(payload.callbackCtx, output);
                 } else {
@@ -492,7 +492,7 @@ pub const InvokeTraceRecorder = struct {
     ) !void {
         if (self.callback_records.items.len <= order) return error.OrderOutOfBounds;
         const record = self.callback_records.items[order];
-        try testing.expectEqual(ComptimeTag.of(callback), record.callback);
+        try testing.expectEqual(ComptimeTag.ref(callback), record.callback);
         if (context) |expected| try testing.expectEqual(expected, record.context);
     }
 };

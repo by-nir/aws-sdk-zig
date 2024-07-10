@@ -48,15 +48,29 @@ pub const AbstractTask = struct {
         return AbstractFactory(meta);
     }
 
-    pub fn Task(self: AbstractTask, name: []const u8, comptime func: anytype, comptime options: TaskOptions) TaskType {
+    pub fn Task(
+        self: AbstractTask,
+        name: []const u8,
+        comptime func: anytype,
+        comptime options: TaskOptions,
+    ) TaskType {
         return self.taskFn(name, func, options);
     }
 
-    pub fn Chain(self: AbstractTask, comptime task: TaskType, comptime method: InvokeMethod) TaskType {
+    pub fn Chain(
+        self: AbstractTask,
+        comptime task: TaskType,
+        comptime method: InvokeMethod,
+    ) TaskType {
         return self.chainFn(task, method);
     }
 
-    pub fn Abstract(self: AbstractTask, name: []const u8, comptime func: anytype, comptime options: AbstractOptions) AbstractTask {
+    pub fn Abstract(
+        self: AbstractTask,
+        name: []const u8,
+        comptime func: anytype,
+        comptime options: AbstractOptions,
+    ) AbstractTask {
         return self.abstractFn(name, func, options);
     }
 
@@ -378,7 +392,7 @@ fn EvalWrapper(
 ) *const fn ([]const u8, *const Delegate, Input, ProxyEval) parent.Out {
     const parentFn: parent.Fn = @ptrCast(@alignCast(parent.func));
     return struct {
-        pub fn evaluate(task_name: []const u8, delegate: *const Delegate, input: Input, proxy_eval: ProxyEval) parent.Out {
+        pub fn evaluate(name: []const u8, delegate: *const Delegate, input: Input, proxy_eval: ProxyEval) parent.Out {
             const args = if (parent.injects.len + input_len == 0)
                 .{ delegate, proxy_eval }
             else blk: {
@@ -386,7 +400,7 @@ fn EvalWrapper(
                 var tuple = util.TupleFiller(parent.Args){};
                 tuple.append(&shift, delegate);
                 inline for (parent.injects) |T| {
-                    const service = getInjectable(&shift, delegate, T, task_name);
+                    const service = getInjectable(&shift, delegate, T, name);
                     tuple.append(&shift, service);
                 }
                 inline for (0..input_len) |i| tuple.append(&shift, input[i]);
@@ -753,7 +767,12 @@ const AbstractMeta = union(enum) {
         ));
     }
 
-    fn validateChildVaryings(varyings: []const type, inputs: []const type, param_shift: usize, factory_name: []const u8) void {
+    fn validateChildVaryings(
+        varyings: []const type,
+        inputs: []const type,
+        param_shift: usize,
+        factory_name: []const u8,
+    ) void {
         for (varyings, 0..) |T, i| {
             if (i + 1 > inputs.len) @compileError(std.fmt.comptimePrint(
                 "{s} is missing parameter #{d} of type `{}`",
@@ -835,7 +854,11 @@ const AbstractMeta = union(enum) {
         }
     }
 
-    fn chainInvokeInputs(varyings: []const type, parent_inputs: []const type, child_inputs: []const type) []const type {
+    fn chainInvokeInputs(
+        varyings: []const type,
+        parent_inputs: []const type,
+        child_inputs: []const type,
+    ) []const type {
         const vary_len = varyings.len;
         const inp_len = child_inputs.len;
         const invoke_inputs = if (vary_len == inp_len) &.{} else comptime blk: {

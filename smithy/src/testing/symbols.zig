@@ -9,17 +9,17 @@ const SmithyResource = symbols.SmithyResource;
 const SmithyOperation = symbols.SmithyOperation;
 const TaggedValue = symbols.SmithyTaggedValue;
 const SymbolsProvider = symbols.SymbolsProvider;
-const Model = @import("../parse/Model.zig");
+const Model = @import("../tasks/smithy_parse.zig").Model;
 const trt_behave = @import("../traits/behavior.zig");
 const trt_constr = @import("../traits/constraint.zig");
 const trt_http = @import("../traits/http.zig");
 const trt_refine = @import("../traits/refine.zig");
 
-pub fn setup(arena: std.mem.Allocator, shapes: []const Shape) !SymbolsProvider {
+pub fn setup(arena: std.mem.Allocator, cases: []const Case) !SymbolsProvider {
     var model = Model.init(test_alloc);
     errdefer model.deinit();
 
-    for (shapes) |s| switch (s) {
+    for (cases) |s| switch (s) {
         .unit => try setupUnit(&model),
         .root_child => try setupRootAndChild(&model),
         .list => try setupList(&model),
@@ -35,7 +35,7 @@ pub fn setup(arena: std.mem.Allocator, shapes: []const Shape) !SymbolsProvider {
     return model.consume(arena);
 }
 
-pub const Shape = enum {
+pub const Case = enum {
     unit,
     root_child,
     list,
