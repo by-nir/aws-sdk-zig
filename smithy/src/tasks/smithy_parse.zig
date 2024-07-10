@@ -1,46 +1,50 @@
-//! Smithy parser for [JSON AST](https://smithy.io/2.0/spec/json-ast.html) representation.
 const std = @import("std");
 const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const symbols = @import("../systems/symbols.zig");
-const SmithyId = symbols.SmithyId;
-const SmithyType = symbols.SmithyType;
-const SmithyMeta = symbols.SmithyMeta;
-const TraitsManager = @import("../systems/traits.zig").TraitsManager;
+const pipez = @import("../pipeline/root.zig");
+const Task = pipez.Task;
+const Delegate = pipez.Delegate;
+const syb = @import("../systems/symbols.zig");
+const SmithyId = syb.SmithyId;
+const SmithyType = syb.SmithyType;
+const SmithyMeta = syb.SmithyMeta;
+const SymbolsProvider = syb.SymbolsProvider;
+const SmithyTaggedValue = syb.SmithyTaggedValue;
+const trt = @import("../systems/traits.zig");
+const TraitsManager = trt.TraitsManager;
+const TraitsProvider = trt.TraitsProvider;
 const IssuesBag = @import("../utils/IssuesBag.zig");
 const JsonReader = @import("../utils/JsonReader.zig");
-const trt = @import("../traits/refine.zig");
-const TrtDefault = trt.Default;
-const TrtEnumVal = trt.EnumValue;
-const Model = @import("Model.zig");
+const trt_refine = @import("../traits/refine.zig");
+const ScopeTag = @import("smithy.zig").ScopeTag;
 
-const Self = @This();
-
-pub const Policy = struct {
-    property: IssuesBag.PolicyResolution,
-    trait: IssuesBag.PolicyResolution,
+pub const ParsePolicy = struct {
+    property: IssuesBag.PolicyResolution = .abort,
+    trait: IssuesBag.PolicyResolution = .abort,
 };
 
-policy: Policy,
-traits_manager: *const TraitsManager,
+pub const ServiceParse = Task.Define("Smithy Service Parse", serviceParseTask, .{
+    .injects = &.{ TraitsManager, IssuesBag },
+});
+fn serviceParseTask(
+    self: *const Delegate,
+    traits_manager: *TraitsManager,
+    issues: *IssuesBag,
+    json_reader: *JsonReader,
+) anyerror!Model {
+    const policy = self.readValue(ParsePolicy, ScopeTag.parse_policy) orelse ParsePolicy{};
 
-/// Parse raw JSON into collection of Smithy symbols.
-///
-/// `arena` is used to store the parsed symbols and must be retained as long as
-/// they are needed.
-/// `json_reader` may be disposed immediately after calling this.
-pub fn parseJson(self: Self, arena: Allocator, issues: *IssuesBag, json: *JsonReader) !Model {
-    var model = Model.init(arena);
+    var model = Model.init(self.alloc());
     errdefer model.deinit();
 
     var parser = JsonParser{
-        .arena = arena,
-        .traits_manager = self.traits_manager,
-        .policy = self.policy,
+        .arena = self.alloc(),
+        .traits_manager = traits_manager,
+        .policy = policy,
         .issues = issues,
-        .reader = json,
+        .reader = json_reader,
         .model = &model,
     };
     try parser.parse();
@@ -48,31 +52,37 @@ pub fn parseJson(self: Self, arena: Allocator, issues: *IssuesBag, json: *JsonRe
     return model;
 }
 
-const Context = struct {
-    name: ?[]const u8 = null,
-    id: SmithyId = SmithyId.NULL,
-    target: Target = .none,
-
-    pub const Target = union(enum) {
-        none,
-        service: *symbols.SmithyService,
-        resource: *symbols.SmithyResource,
-        operation: *symbols.SmithyOperation,
-        id_list: *std.ArrayListUnmanaged(SmithyId),
-        ref_map: *std.ArrayListUnmanaged(symbols.SmithyRefMapValue),
-        meta,
-        meta_list: *std.ArrayListUnmanaged(SmithyMeta),
-        meta_map: *std.ArrayListUnmanaged(SmithyMeta.Pair),
-    };
-};
-
+/// Parse raw [Smithy JSON AST](https://smithy.io/2.0/spec/json-ast.html) into a
+/// collection of Smithy symbols;
+///
+/// `arena` is used to store the parsed symbols and must be retained as long as
+/// they are needed.
+/// `json_reader` may be disposed immediately after calling this.
 const JsonParser = struct {
     arena: Allocator,
-    policy: Policy,
+    policy: ParsePolicy,
     traits_manager: *const TraitsManager,
     reader: *JsonReader,
     issues: *IssuesBag,
     model: *Model,
+
+    const Context = struct {
+        name: ?[]const u8 = null,
+        id: SmithyId = SmithyId.NULL,
+        target: Target = .none,
+
+        pub const Target = union(enum) {
+            none,
+            service: *syb.SmithyService,
+            resource: *syb.SmithyResource,
+            operation: *syb.SmithyOperation,
+            id_list: *std.ArrayListUnmanaged(SmithyId),
+            ref_map: *std.ArrayListUnmanaged(syb.SmithyRefMapValue),
+            meta,
+            meta_list: *std.ArrayListUnmanaged(SmithyMeta),
+            meta_map: *std.ArrayListUnmanaged(SmithyMeta.Pair),
+        };
+    };
 
     pub fn parse(self: *JsonParser) !void {
         try self.parseScope(.object, parseProp, .{});
@@ -89,7 +99,7 @@ const JsonParser = struct {
     }
 
     fn parseProp(self: *JsonParser, prop_name: []const u8, ctx: Context) !void {
-        switch (symbols.SmithyProperty.of(prop_name)) {
+        switch (syb.SmithyProperty.of(prop_name)) {
             .smithy => try self.validateSmithyVersion(),
             .mixins => try self.parseMixins(ctx.id),
             .traits => try self.parseTraits(ctx.name.?, ctx.id),
@@ -190,7 +200,7 @@ const JsonParser = struct {
         comptime map: bool,
         parsFn: JsonReader.NextScopeFn(*JsonParser, Context, if (map) .object else .array),
     ) !void {
-        var list = std.ArrayListUnmanaged(if (map) symbols.SmithyRefMapValue else SmithyId){};
+        var list = std.ArrayListUnmanaged(if (map) syb.SmithyRefMapValue else SmithyId){};
         errdefer list.deinit(self.arena);
         if (map)
             try self.parseScope(.object, parsFn, .{ .target = .{ .ref_map = &list } })
@@ -244,7 +254,7 @@ const JsonParser = struct {
     }
 
     fn parseTraits(self: *JsonParser, parent_name: []const u8, parent_id: SmithyId) !void {
-        var traits: std.ArrayListUnmanaged(symbols.SmithyTaggedValue) = .{};
+        var traits: std.ArrayListUnmanaged(syb.SmithyTaggedValue) = .{};
         errdefer traits.deinit(self.arena);
         try self.reader.nextObjectBegin();
         while (try self.reader.peek() == .string) {
@@ -296,18 +306,18 @@ const JsonParser = struct {
                 return;
             },
             .service => .{ .service = blk: {
-                const ptr = try self.arena.create(symbols.SmithyService);
-                ptr.* = mem.zeroInit(symbols.SmithyService, .{});
+                const ptr = try self.arena.create(syb.SmithyService);
+                ptr.* = mem.zeroInit(syb.SmithyService, .{});
                 break :blk ptr;
             } },
             .resource => .{ .resource = blk: {
-                const ptr = try self.arena.create(symbols.SmithyResource);
-                ptr.* = mem.zeroInit(symbols.SmithyResource, .{});
+                const ptr = try self.arena.create(syb.SmithyResource);
+                ptr.* = mem.zeroInit(syb.SmithyResource, .{});
                 break :blk ptr;
             } },
             .operation => .{ .operation = blk: {
-                const ptr = try self.arena.create(symbols.SmithyOperation);
-                ptr.* = mem.zeroInit(symbols.SmithyOperation, .{});
+                const ptr = try self.arena.create(syb.SmithyOperation);
+                ptr.* = mem.zeroInit(syb.SmithyOperation, .{});
                 break :blk ptr;
             } },
             else => blk: {
@@ -342,9 +352,9 @@ const JsonParser = struct {
                     const boolean = JsonReader.Value{ .boolean = false };
                 };
                 if (mem.startsWith(u8, name, "smithy.api#Primitive")) {
-                    const traits = try self.arena.alloc(symbols.SmithyTaggedValue, 1);
+                    const traits = try self.arena.alloc(syb.SmithyTaggedValue, 1);
                     traits[0] = .{
-                        .id = TrtDefault.id,
+                        .id = trt_refine.Default.id,
                         .value = switch (t) {
                             .boolean => &Primitive.boolean,
                             .byte, .short, .integer, .long => &Primitive.int,
@@ -493,27 +503,26 @@ test "parseJson" {
         }
     };
 
-    var traits = TraitsManager{};
-    defer traits.deinit(test_alloc);
-    try traits.registerAll(test_alloc, &.{
-        .{ SmithyId.of("test.trait#Void"), null },
-        .{ SmithyId.of("test.trait#Int"), Traits.parseInt },
-        .{ TrtEnumVal.id, TrtEnumVal.parse },
-    });
-
-    const parser = Self{
-        .traits_manager = &traits,
-        .policy = .{
-            .property = .skip,
-            .trait = .skip,
-        },
-    };
-
-    var output_arena = std.heap.ArenaAllocator.init(test_alloc);
-    defer output_arena.deinit();
+    var tester = try pipez.PipelineTester.init(.{});
+    defer tester.deinit();
 
     var issues = IssuesBag.init(test_alloc);
     defer issues.deinit();
+    _ = try tester.provideService(&issues, null);
+
+    var traits = TraitsManager{};
+    defer traits.deinit(test_alloc);
+    _ = try tester.provideService(&traits, null);
+    try traits.registerAll(test_alloc, &.{
+        .{ SmithyId.of("test.trait#Void"), null },
+        .{ SmithyId.of("test.trait#Int"), Traits.parseInt },
+        .{ trt_refine.EnumValue.id, trt_refine.EnumValue.parse },
+    });
+
+    try tester.defineValue(ParsePolicy, ScopeTag.parse_policy, ParsePolicy{
+        .property = .skip,
+        .trait = .skip,
+    });
 
     var input_arena = std.heap.ArenaAllocator.init(test_alloc);
     errdefer input_arena.deinit();
@@ -523,7 +532,7 @@ test "parseJson" {
     );
     errdefer reader.deinit();
 
-    const model = try parser.parseJson(output_arena.allocator(), &issues, &reader);
+    const model = try tester.runTask(ServiceParse, .{&reader});
 
     // Dispose the reader to make sure the required data is copied.
     reader.deinit();
@@ -592,7 +601,7 @@ test "parseJson" {
         .str_enum = &.{enum_foo},
     });
     try model.expectShape(enum_foo, .unit);
-    try model.expectTrait(enum_foo, TrtEnumVal.id, TrtEnumVal.Val, .{
+    try model.expectTrait(enum_foo, trt_refine.EnumValue.id, trt_refine.EnumValue.Val, .{
         .string = "foo",
     });
     try model.expectName(SmithyId.of("test.simple#Enum"), "Enum");
@@ -603,7 +612,7 @@ test "parseJson" {
         .int_enum = &.{inum_foo},
     });
     try model.expectShape(inum_foo, .unit);
-    try model.expectTrait(inum_foo, TrtEnumVal.id, TrtEnumVal.Val, .{
+    try model.expectTrait(inum_foo, trt_refine.EnumValue.id, trt_refine.EnumValue.Val, .{
         .integer = 1,
     });
     try model.expectName(SmithyId.of("test.simple#IntEnum"), "IntEnum");
@@ -671,43 +680,43 @@ test "parseJson" {
 
     try model.expectTrait(
         SmithyId.of("test.aggregate#Structure$primitiveBool"),
-        TrtDefault.id,
+        trt_refine.Default.id,
         JsonReader.Value,
         JsonReader.Value{ .boolean = false },
     );
     try model.expectTrait(
         SmithyId.of("test.aggregate#Structure$primitiveByte"),
-        TrtDefault.id,
+        trt_refine.Default.id,
         JsonReader.Value,
         JsonReader.Value{ .integer = 0 },
     );
     try model.expectTrait(
         SmithyId.of("test.aggregate#Structure$primitiveShort"),
-        TrtDefault.id,
+        trt_refine.Default.id,
         JsonReader.Value,
         JsonReader.Value{ .integer = 0 },
     );
     try model.expectTrait(
         SmithyId.of("test.aggregate#Structure$primitiveInt"),
-        TrtDefault.id,
+        trt_refine.Default.id,
         JsonReader.Value,
         JsonReader.Value{ .integer = 0 },
     );
     try model.expectTrait(
         SmithyId.of("test.aggregate#Structure$primitiveLong"),
-        TrtDefault.id,
+        trt_refine.Default.id,
         JsonReader.Value,
         JsonReader.Value{ .integer = 0 },
     );
     try model.expectTrait(
         SmithyId.of("test.aggregate#Structure$primitiveFloat"),
-        TrtDefault.id,
+        trt_refine.Default.id,
         JsonReader.Value,
         JsonReader.Value{ .float = 0 },
     );
     try model.expectTrait(
         SmithyId.of("test.aggregate#Structure$primitiveDouble"),
-        TrtDefault.id,
+        trt_refine.Default.id,
         JsonReader.Value,
         JsonReader.Value{ .float = 0 },
     );
@@ -776,4 +785,155 @@ test "parseJson" {
         108,
     );
     try testing.expectEqual(SmithyId.of("test.serve#Service"), model.service_id);
+}
+
+/// Raw symbols (shapes and metadata) of a Smithy model.
+pub const Model = struct {
+    allocator: Allocator,
+    service_id: SmithyId = SmithyId.NULL,
+    meta: std.AutoHashMapUnmanaged(SmithyId, SmithyMeta) = .{},
+    shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType) = .{},
+    names: std.AutoHashMapUnmanaged(SmithyId, []const u8) = .{},
+    traits: std.AutoHashMapUnmanaged(SmithyId, []const SmithyTaggedValue) = .{},
+    mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId) = .{},
+
+    pub fn init(allocator: Allocator) Model {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *Model) void {
+        self.meta.deinit(self.allocator);
+        self.shapes.deinit(self.allocator);
+        self.traits.deinit(self.allocator);
+        self.mixins.deinit(self.allocator);
+        self.names.deinit(self.allocator);
+    }
+
+    pub fn consume(self: *Model, arena: Allocator) !syb.SymbolsProvider {
+        var dupe_meta = try self.meta.clone(arena);
+        errdefer dupe_meta.deinit(arena);
+
+        var dupe_shapes = try self.shapes.clone(arena);
+        errdefer dupe_shapes.deinit(arena);
+
+        var dupe_names = try self.names.clone(arena);
+        errdefer dupe_names.deinit(arena);
+
+        var dupe_traits = try self.traits.clone(arena);
+        errdefer dupe_traits.deinit(arena);
+
+        const dupe_mixins = try self.mixins.clone(arena);
+
+        defer self.deinit();
+        return .{
+            .arena = arena,
+            .service_id = self.service_id,
+            .model_meta = dupe_meta,
+            .model_shapes = dupe_shapes,
+            .model_names = dupe_names,
+            .model_traits = dupe_traits,
+            .model_mixins = dupe_mixins,
+        };
+    }
+
+    pub fn putMeta(self: *Model, key: SmithyId, value: SmithyMeta) !void {
+        try self.meta.put(self.allocator, key, value);
+    }
+
+    pub fn putShape(self: *Model, id: SmithyId, shape: SmithyType) !void {
+        try self.shapes.put(self.allocator, id, shape);
+    }
+
+    pub fn putName(self: *Model, id: SmithyId, name: []const u8) !void {
+        try self.names.put(self.allocator, id, name);
+    }
+
+    /// Returns `true` if expanded an existing traits list.
+    pub fn putTraits(self: *Model, id: SmithyId, traits: []const syb.SmithyTaggedValue) !bool {
+        const result = try self.traits.getOrPut(self.allocator, id);
+        if (!result.found_existing) {
+            result.value_ptr.* = traits;
+            return false;
+        }
+
+        const current = result.value_ptr.*;
+        const all = try self.allocator.alloc(SmithyTaggedValue, current.len + traits.len);
+        @memcpy(all[0..current.len], current);
+        @memcpy(all[current.len..][0..traits.len], traits);
+        self.allocator.free(current);
+        result.value_ptr.* = all;
+        return true;
+    }
+
+    pub fn putMixins(self: *Model, id: SmithyId, mixins: []const SmithyId) !void {
+        try self.mixins.put(self.allocator, id, mixins);
+    }
+
+    pub fn expectMeta(self: Model, id: SmithyId, expected: SmithyMeta) !void {
+        try testing.expectEqualDeep(expected, self.meta.get(id).?);
+    }
+
+    pub fn expectShape(self: Model, id: SmithyId, expected: SmithyType) !void {
+        try testing.expectEqualDeep(expected, self.shapes.get(id).?);
+    }
+
+    pub fn expectName(self: Model, id: SmithyId, expected: []const u8) !void {
+        try testing.expectEqualStrings(expected, self.names.get(id).?);
+    }
+
+    pub fn expectHasTrait(self: Model, shape_id: SmithyId, trait_id: SmithyId) !void {
+        const values = self.traits.get(shape_id) orelse return error.TraitsNotFound;
+        const provider = TraitsProvider{ .values = values };
+        try testing.expect(provider.has(trait_id));
+    }
+
+    pub fn expectTrait(
+        self: Model,
+        shape_id: SmithyId,
+        trait_id: SmithyId,
+        comptime T: type,
+        expected: T,
+    ) !void {
+        const values = self.traits.get(shape_id) orelse return error.TraitsNotFound;
+        const provider = TraitsProvider{ .values = values };
+        const actual = provider.get(T, trait_id) orelse return error.ValueNotFound;
+        try testing.expectEqualDeep(expected, actual);
+    }
+
+    pub fn expectMixins(self: Model, id: SmithyId, expected: []const SmithyId) !void {
+        try testing.expectEqualDeep(expected, self.mixins.get(id));
+    }
+};
+
+test "Model.putTraits" {
+    const foo = "Foo";
+    const bar = "Bar";
+    const baz = "Baz";
+
+    var model = Model.init(test_alloc);
+    defer model.deinit();
+
+    const traits = try test_alloc.alloc(SmithyTaggedValue, 2);
+    traits[0] = .{ .id = SmithyId.of("Foo"), .value = foo };
+    traits[1] = .{ .id = SmithyId.of("Bar"), .value = bar };
+    {
+        errdefer test_alloc.free(traits);
+        try testing.expectEqual(false, try model.putTraits(SmithyId.of("Traits"), traits));
+        try testing.expectEqualDeep(&[_]SmithyTaggedValue{
+            .{ .id = SmithyId.of("Foo"), .value = foo },
+            .{ .id = SmithyId.of("Bar"), .value = bar },
+        }, model.traits.get(SmithyId.of("Traits")));
+
+        try testing.expectEqual(true, try model.putTraits(
+            SmithyId.of("Traits"),
+            &.{.{ .id = SmithyId.of("Baz"), .value = baz }},
+        ));
+    }
+    defer test_alloc.free(model.traits.get(SmithyId.of("Traits")).?);
+
+    try testing.expectEqualDeep(&[_]SmithyTaggedValue{
+        .{ .id = SmithyId.of("Foo"), .value = foo },
+        .{ .id = SmithyId.of("Bar"), .value = bar },
+        .{ .id = SmithyId.of("Baz"), .value = baz },
+    }, model.traits.get(SmithyId.of("Traits")));
 }

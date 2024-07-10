@@ -351,12 +351,12 @@ pub const SmithyMeta = union(enum) {
 
 pub const SymbolsProvider = struct {
     arena: Allocator,
-    service_id: SmithyId,
-    model_meta: std.AutoHashMapUnmanaged(SmithyId, SmithyMeta),
-    model_shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType),
-    model_names: std.AutoHashMapUnmanaged(SmithyId, []const u8),
-    model_traits: std.AutoHashMapUnmanaged(SmithyId, []const SmithyTaggedValue),
-    model_mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId),
+    service_id: SmithyId = SmithyId.NULL,
+    model_meta: std.AutoHashMapUnmanaged(SmithyId, SmithyMeta) = .{},
+    model_shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType) = .{},
+    model_names: std.AutoHashMapUnmanaged(SmithyId, []const u8) = .{},
+    model_traits: std.AutoHashMapUnmanaged(SmithyId, []const SmithyTaggedValue) = .{},
+    model_mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId) = .{},
     shapes_queue: std.DoublyLinkedList(SmithyId) = .{},
     shapes_visited: std.AutoHashMapUnmanaged(SmithyId, void) = .{},
     service_errors: ?[]const SmithyId = null,

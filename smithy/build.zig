@@ -35,6 +35,10 @@ pub fn build(b: *std.Build) void {
     });
     test_runtime_step.dependOn(&b.addRunArtifact(test_runtime_exe).step);
     test_all_step.dependOn(test_runtime_step);
+    test_all_step.dependOn(&b.addInstallArtifact(test_runtime_exe, .{
+        .dest_dir = .{ .override = .{ .custom = "test" } },
+        .dest_sub_path = "runtime",
+    }).step);
 
     const test_codegen_step = b.step("test:codegen", "Run codegen unit tests");
     const test_codegen_exe = b.addTest(.{
@@ -44,4 +48,8 @@ pub fn build(b: *std.Build) void {
     });
     test_codegen_step.dependOn(&b.addRunArtifact(test_codegen_exe).step);
     test_all_step.dependOn(test_codegen_step);
+    test_all_step.dependOn(&b.addInstallArtifact(test_codegen_exe, .{
+        .dest_dir = .{ .override = .{ .custom = "test" } },
+        .dest_sub_path = "codegen",
+    }).step);
 }

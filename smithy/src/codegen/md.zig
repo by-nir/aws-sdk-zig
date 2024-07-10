@@ -62,6 +62,15 @@ pub const Document = struct {
             return .{ .blocks = blocks };
         }
 
+        pub fn raw(self: *Build, text: []const u8) !void {
+            try self.blocks.append(self.allocator, .{ .raw = text });
+        }
+
+        pub fn rawFmt(self: *Build, comptime fmt: []const u8, args: anytype) !void {
+            const text = try std.fmt.allocPrint(self.allocator, fmt, args);
+            try self.blocks.append(self.allocator, .{ .raw_alloc = text });
+        }
+
         pub fn comment(self: *Build, text: []const u8) !void {
             try self.blocks.append(self.allocator, .{ .comment = text });
         }
@@ -141,6 +150,8 @@ pub const Document = struct {
 };
 
 pub const Block = union(enum) {
+    raw: []const u8,
+    raw_alloc: []const u8,
     comment: []const u8,
     heading: Heading,
     paragraph: Formated,
@@ -151,13 +162,15 @@ pub const Block = union(enum) {
 
     pub fn deinit(self: Block, allocator: Allocator) void {
         switch (self) {
-            .comment, .heading => {},
+            .raw, .comment, .heading => {},
+            .raw_alloc => |t| allocator.free(t),
             inline else => |t| t.deinit(allocator),
         }
     }
 
     pub fn write(self: Block, writer: *Writer) !void {
         switch (self) {
+            .raw, .raw_alloc => |text| try writer.appendString(text),
             .comment => |s| {
                 try writer.appendFmt("<!-- {s} -->", .{s});
             },
@@ -291,6 +304,15 @@ pub const Formated = struct {
         };
     }
 };
+
+test "raw" {
+    var build = Document.Build{ .allocator = test_alloc };
+    defer build.deinit(test_alloc);
+    try build.raw("foo");
+    try build.rawFmt("bar {s}", .{"baz"});
+    try Writer.expectValue("foo", build.blocks.items[0]);
+    try Writer.expectValue("bar baz", build.blocks.items[1]);
+}
 
 test "Formated" {
     const Test = struct {
