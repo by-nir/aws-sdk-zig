@@ -50,11 +50,15 @@ pub const Pipeline = struct {
         alloc.destroy(self);
     }
 
-    pub fn evaluateSync(self: *Pipeline, comptime task: Task, input: task.In) !task.Payload() {
-        return self.schedule.evaluateSync(null, task, input);
+    pub fn run(self: *Pipeline) !void {
+        try self.schedule.run();
     }
 
-    pub fn scheduleAsync(self: *Pipeline, comptime task: Task, input: task.In) !void {
+    pub fn runTask(self: *Pipeline, comptime task: Task, input: task.In) !task.Payload() {
+        return self.schedule.evaluate(null, task, input);
+    }
+
+    pub fn schedule(self: *Pipeline, comptime task: Task, input: task.In) !void {
         try self.schedule.appendAsync(null, task, input);
     }
 
@@ -66,10 +70,6 @@ pub const Pipeline = struct {
         callbackFn: Task.Callback(task),
     ) !void {
         try self.schedule.appendCallback(null, task, input, callbackCtx, callbackFn);
-    }
-
-    pub fn run(self: *Pipeline) !void {
-        try self.schedule.evaluate();
     }
 };
 
@@ -123,22 +123,30 @@ pub const PipelineTester = struct {
     // Schedule
     //
 
-    pub fn evaluateSync(self: *PipelineTester, comptime task: Task, input: task.In) !task.Payload() {
-        return self.pipeline.evaluateSync(task, input);
+    pub fn run(self: *PipelineTester) !void {
+        try self.pipeline.run();
     }
 
-    pub inline fn expectEvaluateSyncError(
+    pub inline fn expectRunError(self: *PipelineTester, expected: anyerror) !void {
+        try testing.expectError(expected, self.pipeline.run());
+    }
+
+    pub fn runTask(self: *PipelineTester, comptime task: Task, input: task.In) !task.Payload() {
+        return self.pipeline.runTask(task, input);
+    }
+
+    pub inline fn expectRunTaskError(
         self: *PipelineTester,
         expected: anyerror,
         comptime task: Task,
         input: task.In,
     ) !void {
-        const output = self.pipeline.evaluateSync(task, input);
+        const output = self.pipeline.runTask(task, input);
         try testing.expectError(expected, output);
     }
 
-    pub fn scheduleAsync(self: *PipelineTester, comptime task: Task, input: task.In) !void {
-        try self.pipeline.scheduleAsync(task, input);
+    pub fn schedule(self: *PipelineTester, comptime task: Task, input: task.In) !void {
+        try self.pipeline.schedule(task, input);
     }
 
     pub fn scheduleCallback(
@@ -149,14 +157,6 @@ pub const PipelineTester = struct {
         callbackFn: Task.Callback(task),
     ) !void {
         try self.pipeline.scheduleCallback(task, input, callbackCtx, callbackFn);
-    }
-
-    pub fn run(self: *PipelineTester) !void {
-        try self.pipeline.run();
-    }
-
-    pub inline fn expectRunError(self: *PipelineTester, expected: anyerror) !void {
-        try testing.expectError(expected, self.pipeline.run());
     }
 
     pub fn expectDidInvoke(
@@ -180,6 +180,14 @@ pub const PipelineTester = struct {
     //
     // Scope
     //
+
+    pub fn alloc(self: *PipelineTester) Allocator {
+        return self.root_scope.alloc();
+    }
+
+    pub fn getService(self: *PipelineTester, comptime T: type) ?util.Reference(T) {
+        return self.root_scope.getService(T);
+    }
 
     pub fn provideService(
         self: *PipelineTester,

@@ -37,7 +37,7 @@ fn openDirTask(
     self: *const Delegate,
     sub_path: []const u8,
     options: DirOptions,
-    task: *const fn () anyerror!void,
+    task: AbstractEval(&.{}, anyerror!void),
 ) anyerror!void {
     const cwd = getWorkDir(self);
     var dir = switch (options.create_on_not_found) {
@@ -50,7 +50,7 @@ fn openDirTask(
     defer dir.close();
 
     try self.defineValue(fs.Dir, FilesScope.work_dir, dir);
-    try task();
+    try task.evaluate(.{});
 }
 
 pub const FileOptions = struct {
@@ -87,7 +87,7 @@ pub fn evaluateWriteFile(
     var buffer = std.ArrayList(u8).init(allocator);
     errdefer buffer.deinit();
 
-    try pipeline.evaluateSync(AbstractTask.ExtractChildTask(task), .{buffer.writer().any()} ++ input);
+    try pipeline.runTask(AbstractTask.ExtractChildTask(task), .{buffer.writer().any()} ++ input);
     return buffer.toOwnedSlice();
 }
 

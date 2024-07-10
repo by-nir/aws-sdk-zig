@@ -38,7 +38,7 @@ pub const Schedule = struct {
         self.resources.releaseQueue(&self.queue);
     }
 
-    pub fn evaluateSync(
+    pub fn evaluate(
         self: *Schedule,
         parent: ?*const Delegate,
         comptime task: Task,
@@ -48,7 +48,7 @@ pub const Schedule = struct {
         defer if (delegate.branchScope == null) self.resources.releaseScope(delegate.scope);
         errdefer self.resources.releaseQueue(&delegate.children);
 
-        const output = delegate.scope.invoker.evaluateSync(task, self.tracer, &delegate, input);
+        const output = delegate.scope.invoker.evaluate(task, self.tracer, &delegate, input);
         _ = if (comptime task.isFailable()) output catch |err| return err;
 
         try self.evaluateQueue(delegate.scope, &delegate.children);
@@ -87,7 +87,7 @@ pub const Schedule = struct {
         queue.put(node);
     }
 
-    pub fn evaluate(self: *Schedule) !void {
+    pub fn run(self: *Schedule) !void {
         return self.evaluateQueue(self.root_scope, &self.queue);
     }
 
@@ -226,15 +226,15 @@ test "tasks" {
     // Sync
     //
 
-    try schedule.evaluateSync(null, tests.Call, .{});
+    try schedule.evaluate(null, tests.Call, .{});
     try recorder.expectInvoke(0, .sync, tests.Call);
 
-    try schedule.evaluateSync(null, tests.Failable, .{false});
+    try schedule.evaluate(null, tests.Failable, .{false});
     try recorder.expectInvoke(1, .sync, tests.Failable);
 
     try testing.expectError(
         error.Fail,
-        schedule.evaluateSync(null, tests.Failable, .{true}),
+        schedule.evaluate(null, tests.Failable, .{true}),
     );
     try recorder.expectInvoke(2, .sync, tests.Failable);
 
@@ -248,7 +248,7 @@ test "tasks" {
     try schedule.appendAsync(null, tests.Failable, .{false});
     try schedule.appendAsync(null, tests.Failable, .{true});
 
-    try testing.expectError(error.Fail, schedule.evaluate());
+    try testing.expectError(error.Fail, schedule.run());
 
     try recorder.expectInvoke(0, .asyncd, tests.Call);
     try recorder.expectInvoke(1, .asyncd, tests.Failable);
@@ -265,7 +265,7 @@ test "tasks" {
     try schedule.appendCallback(null, tests.Failable, .{false}, &@as(usize, 102), tests.failableCb);
     try schedule.appendCallback(null, tests.Failable, .{true}, &@as(usize, 103), tests.failableCb);
 
-    try testing.expectError(error.Fail, schedule.evaluate());
+    try testing.expectError(error.Fail, schedule.run());
 
     try recorder.expectInvoke(0, .callback, tests.Multiply);
     try recorder.expectCallback(0, tests.multiplyCb, &@as(usize, 108));
@@ -309,7 +309,7 @@ test "sub-tasks" {
     };
 
     try schedule.appendAsync(null, sub.Root, .{});
-    try schedule.evaluate();
+    try schedule.run();
 
     try recorder.expectInvoke(0, .sync, sub.Foo);
     try recorder.expectInvoke(1, .asyncd, sub.Root);
@@ -328,40 +328,40 @@ test "scopes" {
     defer schedule.deinit();
 
     try scope.defineValue(usize, .num, 54);
-    try schedule.evaluateSync(null, tests.MultiplyScope, .{2});
+    try schedule.evaluate(null, tests.MultiplyScope, .{2});
     try testing.expectEqualDeep(108, scope.readValue(usize, .num));
 
     scope.reset();
 
     try scope.defineValue(usize, .num, 267);
     try schedule.appendAsync(null, tests.MultiplyScope, .{3});
-    try schedule.evaluate();
+    try schedule.run();
     try testing.expectEqualDeep(801, scope.readValue(usize, .num));
 
     scope.reset();
 
     try scope.defineValue(usize, .num, 27);
     try schedule.appendAsync(null, tests.ExponentScope, .{2});
-    try schedule.evaluate();
+    try schedule.run();
     try testing.expectEqualDeep(108, scope.readValue(usize, .num));
 
     scope.reset();
 
     try scope.defineValue(usize, .mult, 54);
     try schedule.appendAsync(null, tests.MultiplySubScope, .{2});
-    try schedule.evaluate();
+    try schedule.run();
     try testing.expectEqualDeep(108, scope.readValue(usize, .mult));
 
     scope.reset();
 
-    var value = try schedule.evaluateSync(null, tests.OptInjectMultiply, .{54});
+    var value = try schedule.evaluate(null, tests.OptInjectMultiply, .{54});
     try testing.expectEqual(54, value);
 
     _ = try scope.provideService(tests.Service{ .value = 2 }, null);
 
-    value = try schedule.evaluateSync(null, tests.OptInjectMultiply, .{54});
+    value = try schedule.evaluate(null, tests.OptInjectMultiply, .{54});
     try testing.expectEqual(108, value);
 
-    value = try schedule.evaluateSync(null, tests.InjectMultiply, .{54});
+    value = try schedule.evaluate(null, tests.InjectMultiply, .{54});
     try testing.expectEqual(108, value);
 }

@@ -15,7 +15,7 @@ pub const Invoker = struct {
 
     pub const OverrideFn = *const fn (tag: ComptimeTag) ?OpaqueInvoker;
 
-    pub fn evaluateSync(
+    pub fn evaluate(
         self: Invoker,
         comptime task: Task,
         tracer: InvokeTracer,
@@ -290,7 +290,7 @@ test "InvokerBuilder" {
     var recorder = InvokeTraceRecorder.init(test_alloc);
     defer recorder.deinit();
 
-    invoker.evaluateSync(tests.NoOpHook, recorder.tracer(), &tsk.NOOP_DELEGATE, .{true});
+    invoker.evaluate(tests.NoOpHook, recorder.tracer(), &tsk.NOOP_DELEGATE, .{true});
     try recorder.expectInvoke(0, .sync, AltTask);
 
     recorder.clear();
@@ -364,17 +364,17 @@ test "invoke sync" {
     var recorder = InvokeTraceRecorder.init(test_alloc);
     defer recorder.deinit();
 
-    invoker.evaluateSync(tests.Call, recorder.tracer(), &tsk.NOOP_DELEGATE, .{});
+    invoker.evaluate(tests.Call, recorder.tracer(), &tsk.NOOP_DELEGATE, .{});
     try recorder.expectInvoke(0, .sync, tests.Call);
 
     recorder.clear();
-    try invoker.evaluateSync(tests.Failable, recorder.tracer(), &tsk.NOOP_DELEGATE, .{false});
+    try invoker.evaluate(tests.Failable, recorder.tracer(), &tsk.NOOP_DELEGATE, .{false});
     try recorder.expectInvoke(0, .sync, tests.Failable);
 
     recorder.clear();
     try testing.expectError(
         error.Fail,
-        invoker.evaluateSync(tests.Failable, recorder.tracer(), &tsk.NOOP_DELEGATE, .{true}),
+        invoker.evaluate(tests.Failable, recorder.tracer(), &tsk.NOOP_DELEGATE, .{true}),
     );
     try recorder.expectInvoke(0, .sync, tests.Failable);
 }

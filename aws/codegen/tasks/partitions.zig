@@ -1,5 +1,4 @@
 const std = @import("std");
-const fs = std.fs;
 const mem = std.mem;
 const Allocator = mem.Allocator;
 const smithy = @import("smithy");
@@ -15,32 +14,9 @@ const ContainerBuild = zig.ContainerBuild;
 
 const log = std.log.scoped(.codegen_partitions);
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const alloc = gpa.allocator();
-    defer _ = gpa.deinit();
-
-    const args = try std.process.argsAlloc(alloc);
-    defer std.process.argsFree(alloc, args);
-    if (args.len < 3) return error.MissingPathsArgs;
-
-    const input_path = args[1];
-    const output_path = args[2];
-
-    var pipeline = try pipez.Pipeline.init(alloc, .{});
-    defer pipeline.deinit();
-
-    try pipeline.evaluateSync(Partitions, .{
-        output_path,
-        files_tasks.FileOptions{ .delete_on_error = true },
-        input_path,
-    });
-}
-
-const Partitions = files_tasks.WriteFile.Task("Partitions", partitionsTask, .{});
-fn partitionsTask(self: *const Delegate, writer: std.io.AnyWriter, src_path: []const u8) anyerror!void {
-    const cwd = files_tasks.getWorkDir(self);
-    const src_file = try cwd.openFile(src_path, .{});
+pub const Partitions = files_tasks.WriteFile.Task("AWS Partitions", partitionsTask, .{});
+fn partitionsTask(self: *const Delegate, writer: std.io.AnyWriter, src_dir: std.fs.Dir) anyerror!void {
+    const src_file = try src_dir.openFile("sdk-partitions.json", .{});
     defer src_file.close();
 
     var reader = try JsonReader.initPersist(self.alloc(), src_file);

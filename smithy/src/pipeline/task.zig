@@ -276,7 +276,7 @@ pub const Delegate = struct {
     }
 
     pub fn evaluate(self: *const Delegate, comptime task: Task, input: task.In) !task.Payload() {
-        return self.scheduler.evaluateSync(self, task, input);
+        return self.scheduler.evaluate(self, task, input);
     }
 
     pub fn schedule(self: *const Delegate, comptime task: Task, input: task.In) !void {

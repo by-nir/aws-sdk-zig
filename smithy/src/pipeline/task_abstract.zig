@@ -486,7 +486,7 @@ fn ProxyCall(
             const childFn: child.Fn = @ptrCast(@alignCast(child.func));
 
             if (@typeInfo(child.Args).Struct.fields.len == 1) {
-                @call(.auto, childFn, .{self.delegate});
+                return @call(.auto, childFn, .{self.delegate});
             } else {
                 comptime var shift: usize = 0;
                 var tuple = util.TupleFiller(child.Args){};
@@ -693,7 +693,7 @@ const AbstractMeta = union(enum) {
         validateChildOutput(ProxyOut, fn_meta.Out, factory_name);
         validateChildVaryings(parent_varyings, fn_meta.inputs, 1 + fn_meta.injects.len, factory_name);
 
-        const child_inputs = excludeVaryings(parent_varyings, fn_meta.inputs);
+        const child_inputs = comptime excludeVaryings(parent_varyings, fn_meta.inputs);
         const Args = ChildArgs(parent_varyings, fn_meta.injects, child_inputs);
 
         const invoke_inputs = taskInvokeInputs(parent_inputs, child_inputs);
@@ -788,8 +788,9 @@ const AbstractMeta = union(enum) {
         return child_inputs[varyings.len..child_inputs.len];
     }
 
-    pub fn taskInvokeInputs(parent_inputs: []const type, child_inputs: []const type) []const type {
-        return if (parent_inputs.len + child_inputs.len > 0) parent_inputs ++ child_inputs else &.{};
+    pub fn taskInvokeInputs(parent_inputs: []const type, comptime child_inputs: []const type) []const type {
+        const child: [child_inputs.len]type = child_inputs[0..child_inputs.len].*;
+        return if (parent_inputs.len + child_inputs.len > 0) parent_inputs ++ &child else &.{};
     }
 
     fn ChildArgs(varyings: []const type, injects: []const type, inputs: []const type) type {
@@ -861,7 +862,7 @@ const AbstractMeta = union(enum) {
     ) []const type {
         const vary_len = varyings.len;
         const inp_len = child_inputs.len;
-        const invoke_inputs = if (vary_len == inp_len) &.{} else comptime blk: {
+        const invoke_inputs: []const type = if (vary_len == inp_len) &.{} else comptime blk: {
             const total_len = inp_len - vary_len;
             var inputs: [total_len]type = undefined;
             for (child_inputs[vary_len..inp_len], 0..) |T, i| inputs[i] = T;
@@ -898,7 +899,7 @@ test "AbstractTask.Chain" {
     var tester = try PipelineTester.init(.{});
     defer tester.deinit();
 
-    try testing.expectEqual(108, try tester.evaluateSync(Chain, .{ 3, 36 }));
+    try testing.expectEqual(108, try tester.runTask(Chain, .{ 3, 36 }));
 }
 
 test "AbstractTask.ExtractChildInput" {

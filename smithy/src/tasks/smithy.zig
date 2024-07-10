@@ -26,7 +26,7 @@ const smithy_parse = @import("smithy_parse.zig");
 const smithy_codegen = @import("smithy_codegen.zig");
 
 pub const ServiceFilterHook = Task.Hook("Smithy Service Filter", bool, &.{[]const u8});
-pub const ScriptCodegenHeadHook = Task.Hook("Smithy Script Codegen Head", anyerror!void, &.{*ContainerBuild});
+pub const ScriptCodegenHeadHook = Task.Hook("Smithy Script Head", anyerror!void, &.{*ContainerBuild});
 pub const ServiceCodegenReadmeHook = codegen_tasks.MarkdownDoc.Hook("Smithy Service Readme Codegen", &.{ReadmeMetadata});
 
 pub const ReadmeMetadata = struct {
@@ -50,19 +50,17 @@ pub const ServicePolicy = struct {
     codegen: IssuesBag.PolicyResolution = .abort,
 };
 
-const SmithyOptions = struct {
+pub const SmithyOptions = struct {
     traits: ?trt.TraitsRegistry = null,
-    rules_builtins: rls.BuiltInsRegistry = .{},
-    rules_funcs: rls.FunctionsRegistry = .{},
+    rules_builtins: rls.BuiltInsRegistry = &.{},
+    rules_funcs: rls.FunctionsRegistry = &.{},
     policy_service: ServicePolicy = .{},
     policy_parse: smithy_parse.ParsePolicy = .{},
     policy_codegen: smithy_codegen.CodegenPolicy = .{},
 };
 
 pub const Smithy = Task.Define("Smithy", smithyTask, .{});
-fn smithyTask(self: *const Delegate, src_dir: fs.Dir, out_dir: fs.Dir, options: SmithyOptions) anyerror!void {
-    try files_tasks.defineWorkDir(self, out_dir);
-
+fn smithyTask(self: *const Delegate, src_dir: fs.Dir, options: SmithyOptions) anyerror!void {
     const policy = options.policy_service;
     try self.defineValue(smithy_parse.ParsePolicy, ScopeTag.parse_policy, options.policy_parse);
     try self.defineValue(smithy_codegen.CodegenPolicy, ScopeTag.codegen_policy, options.policy_codegen);
@@ -72,30 +70,21 @@ fn smithyTask(self: *const Delegate, src_dir: fs.Dir, out_dir: fs.Dir, options: 
             service.deinit(allocator);
         }
     }.clean);
-    try prelude.registerTraits(self.alloc(), &self.traits_manager);
+    try prelude.registerTraits(self.alloc(), traits_manager);
     if (options.traits) |registry| {
         try traits_manager.registerAll(self.alloc(), registry);
     }
 
-    _ = try self.provide(rls.RulesEngine.init(self.alloc(), options.rules_builtins, options.rules_funcs), struct {
+    _ = try self.provide(try rls.RulesEngine.init(self.alloc(), options.rules_builtins, options.rules_funcs), struct {
         fn clean(service: *rls.RulesEngine, allocator: Allocator) void {
             service.deinit(allocator);
         }
     }.clean);
 
-    var models = try fs.openDirAbsolute(src_dir, .{ .iterate = true });
-    defer models.close();
-
-    var it = models.iterate();
+    var it = src_dir.iterate();
     while (try it.next()) |entry| {
         if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".json")) continue;
-        if (self.hasOverride(ServiceFilterHook)) blk: {
-            if (self.evaluate(ServiceFilterHook, .{entry.name})) break :blk;
-            std.log.debug("[Filter] Skipping model `{s}`", .{entry.name});
-            continue;
-        }
-
-        self.evaluate(SmithyService, .{policy}) catch |err| switch (policy.process) {
+        processService(self, src_dir, entry.name, policy) catch |err| switch (policy.process) {
             .abort => {
                 std.log.err("Processing model '{s}' failed: {s}", .{ entry.name, @errorName(err) });
                 if (@errorReturnTrace()) |t| std.debug.dumpStackTrace(t.*);
@@ -107,6 +96,15 @@ fn smithyTask(self: *const Delegate, src_dir: fs.Dir, out_dir: fs.Dir, options: 
             },
         };
     }
+}
+
+fn processService(self: *const Delegate, src_dir: fs.Dir, filename: []const u8, policy: ServicePolicy) !void {
+    if (self.hasOverride(ServiceFilterHook)) {
+        const allowed = try self.evaluate(ServiceFilterHook, .{filename});
+        if (!allowed) return;
+    }
+
+    try self.evaluate(SmithyService, .{ src_dir, filename, policy });
 }
 
 const SmithyService = Task.Define("Smithy Service", smithyServiceTask, .{});
@@ -122,15 +120,16 @@ fn smithyServiceTask(
 
     const issues: *IssuesBag = try self.provide(IssuesBag.init(self.alloc()), null);
 
-    const symbols = serviceReadAndParse(self, src_dir, json_name) catch |err| {
+    var symbols = serviceReadAndParse(self, src_dir, json_name) catch |err| {
         return handlePolicy(issues, policy.parse, err, .parse_error, "Parsing failed", @errorReturnTrace());
     };
     _ = try self.provide(&symbols, null);
 
-    self.evaluate(ServiceCodegen, .{files_tasks.DirOptions{
+    try symbols.enqueue(symbols.service_id);
+    self.evaluate(ServiceCodegen, .{ slug, files_tasks.DirOptions{
         .create_on_not_found = true,
         .delete_on_error = true,
-    }}) catch |err| {
+    } }) catch |err| {
         return handlePolicy(issues, policy.codegen, err, .codegen_error, "Codegen failed", @errorReturnTrace());
     };
 }
@@ -172,12 +171,13 @@ fn handlePolicy(
 
 const ServiceCodegen = files_tasks.OpenDir.Task("Service Codegen", serviceCodegenTask, .{});
 fn serviceCodegenTask(self: *const Delegate) anyerror!void {
-    self.evaluate(files_tasks.WriteFile.Chain(smithy_codegen.ServiceCodegenClient, .{files_tasks.FileOptions{
-        .delete_on_error = true,
-    }}), .{ "client.zig", files_tasks.FileOptions{} });
+    try self.evaluate(
+        files_tasks.WriteFile.Chain(smithy_codegen.ServiceCodegenClient, .sync),
+        .{ "client.zig", files_tasks.FileOptions{ .delete_on_error = true } },
+    );
 
     if (self.hasOverride(ServiceCodegenReadmeHook)) {
-        self.evaluate(ServiceGenReadme, .{ "README.md", .{} });
+        try self.evaluate(ServiceGenReadme, .{ "README.md", .{} });
     } else {
         std.log.warn("Skipped readme generation – missing `CodegenScriptHeadHook` overide.", .{});
     }

@@ -532,7 +532,7 @@ test "parseJson" {
     );
     errdefer reader.deinit();
 
-    const model = try tester.evaluateSync(ServiceParse, .{&reader});
+    const model = try tester.runTask(ServiceParse, .{&reader});
 
     // Dispose the reader to make sure the required data is copied.
     reader.deinit();

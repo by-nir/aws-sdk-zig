@@ -122,7 +122,7 @@ fn evaluateCodegen(
     var buffer = std.ArrayList(u8).init(allocator);
     errdefer buffer.deinit();
 
-    try pipeline.evaluateSync(task, .{buffer.writer().any()} ++ input);
+    try pipeline.runTask(task, .{buffer.writer().any()} ++ input);
     return buffer.toOwnedSlice();
 }
 

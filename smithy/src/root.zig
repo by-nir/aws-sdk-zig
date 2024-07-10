@@ -10,11 +10,13 @@ const prelude = @import("prelude.zig");
 pub const traits = prelude.traits;
 
 const smithy = @import("tasks/smithy.zig");
-pub const Smithy = smithy.Smithy;
+pub const SmithyTask = smithy.Smithy;
+pub const SmithyOptions = smithy.SmithyOptions;
 pub const ServicePolicy = smithy.ServicePolicy;
 pub const ReadmeMetadata = smithy.ReadmeMetadata;
-pub const ScriptHeadHook = smithy.CodegenScriptHeadHook;
-pub const ServiceReadmeHook = smithy.ServiceGenReadmeHook;
+pub const ServiceFilterHook = smithy.ServiceFilterHook;
+pub const ScriptCodegenHeadHook = smithy.ScriptCodegenHeadHook;
+pub const ServiceCodegenReadmeHook = smithy.ServiceCodegenReadmeHook;
 
 const smithy_parse = @import("tasks/smithy_parse.zig");
 pub const ParsePolicy = smithy_parse.ParsePolicy;
@@ -23,6 +25,7 @@ const smithy_codegen = @import("tasks/smithy_codegen.zig");
 pub const CodegenPolicy = smithy_codegen.CodegenPolicy;
 pub const ErrorShape = smithy_codegen.ErrorShape;
 pub const OperationShape = smithy_codegen.OperationShape;
+pub const ClientScriptHeadHook = smithy_codegen.ClientScriptHeadHook;
 pub const ServiceHeadHook = smithy_codegen.ServiceHeadHook;
 pub const ResourceHeadHook = smithy_codegen.ResourceHeadHook;
 pub const ErrorShapeHook = smithy_codegen.ErrorShapeHook;

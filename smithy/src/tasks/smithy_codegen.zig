@@ -34,6 +34,7 @@ pub const CodegenPolicy = struct {
     shape_codegen_fail: IssuesBag.PolicyResolution = .abort,
 };
 
+pub const ClientScriptHeadHook = Task.Hook("Smithy Client Script Head", anyerror!void, &.{*ContainerBuild});
 pub const ServiceHeadHook = Task.Hook("Smithy Service Head", anyerror!void, &.{ *ContainerBuild, *const syb.SmithyService });
 pub const ResourceHeadHook = Task.Hook("Smithy Resource Head", anyerror!void, &.{ *ContainerBuild, SmithyId, *const syb.SmithyResource });
 pub const ErrorShapeHook = Task.Hook("Smithy Error Shape", anyerror!void, &.{ *ContainerBuild, ErrorShape });
@@ -165,11 +166,11 @@ fn writeShapeTask(
 test "WriteShape" {
     try smithyTester(&.{.unit}, struct {
         fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.evaluateSync(WriteShape, .{ bld, SmithyId.of("test#Unit") });
+            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Unit") });
 
             try testing.expectEqualDeep(&.{
                 IssuesBag.Issue{ .codegen_invalid_root = .{ .id = @intFromEnum(SmithyId.of("test#Unit")) } },
-            }, tester.root_scope.getService(IssuesBag).?.all());
+            }, tester.getService(IssuesBag).?.all());
         }
     }.eval, "");
 }
@@ -207,8 +208,8 @@ fn writeListShape(
 test "writeListShape" {
     try smithyTester(&.{.list}, struct {
         fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.evaluateSync(WriteShape, .{ bld, SmithyId.of("test#List") });
-            try tester.evaluateSync(WriteShape, .{ bld, SmithyId.of("test#Set") });
+            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#List") });
+            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Set") });
         }
     }.eval,
         \\pub const List = []const ?i32;
@@ -249,7 +250,7 @@ fn writeMapShape(
 test "writeMapShape" {
     try smithyTester(&.{.map}, struct {
         fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.evaluateSync(WriteShape, .{ bld, SmithyId.of("test#Map") });
+            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Map") });
         }
     }.eval, "pub const Map = *const std.AutoArrayHashMapUnmanaged(i32, ?i32);");
 }
@@ -394,8 +395,8 @@ test "writeEnumShape" {
 
     try smithyTester(&.{.enums_str}, struct {
         fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.evaluateSync(WriteShape, .{ bld, SmithyId.of("test#Enum") });
-            try tester.evaluateSync(WriteShape, .{ bld, SmithyId.of("test#EnumTrt") });
+            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Enum") });
+            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#EnumTrt") });
         }
     }.eval, "pub const Enum = union(enum) {\n" ++ BODY ++ "\n\n" ++
         "pub const EnumTrt = union(enum) {\n" ++ BODY);
@@ -445,7 +446,7 @@ fn writeIntEnumShape(
 test "writeIntEnumShape" {
     try smithyTester(&.{.enum_int}, struct {
         fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.evaluateSync(WriteShape, .{ bld, SmithyId.of("test#IntEnum") });
+            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#IntEnum") });
         }
     }.eval,
         \\/// An **integer-based** enumeration.
@@ -497,7 +498,7 @@ fn writeUnionShape(
 test "writeUnionShape" {
     try smithyTester(&.{.union_str}, struct {
         fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.evaluateSync(WriteShape, .{ bld, SmithyId.of("test#Union") });
+            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Union") });
         }
     }.eval,
         \\pub const Union = union(enum) {
@@ -601,8 +602,8 @@ fn writeStructShapeMember(
 test "writeStructShape" {
     try smithyTester(&.{ .structure, .err }, struct {
         fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.evaluateSync(WriteShape, .{ bld, SmithyId.of("test#Struct") });
-            try tester.evaluateSync(WriteShape, .{ bld, SmithyId.of("test#Error") });
+            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Struct") });
+            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Error") });
         }
     }.eval,
         \\pub const Struct = struct {
@@ -657,7 +658,7 @@ test "writeOperationShapes" {
 
     try smithyTester(&.{.service}, struct {
         fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.evaluateSync(OpTest, .{bld});
+            try tester.runTask(OpTest, .{bld});
         }
     }.eval,
         \\pub const OperationInput = struct {};
@@ -778,7 +779,7 @@ test "writeOperationFunc" {
 
     try smithyTester(&.{.service}, struct {
         fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.evaluateSync(OpFuncTest, .{bld});
+            try tester.runTask(OpFuncTest, .{bld});
         }
     }.eval,
         \\pub const OperationErrors = union(enum) {
@@ -837,7 +838,7 @@ fn writeResourceShape(
 test "writeResourceShape" {
     try smithyTester(&.{.service}, struct {
         fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.evaluateSync(WriteShape, .{ bld, SmithyId.of("test.serve#Resource") });
+            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test.serve#Resource") });
         }
     }.eval,
         \\pub const Resource = struct {
@@ -866,6 +867,10 @@ fn writeServiceShape(
     id: SmithyId,
     service: *const syb.SmithyService,
 ) !void {
+    if (self.hasOverride(ClientScriptHeadHook)) {
+        try self.evaluate(ClientScriptHeadHook, .{bld});
+    }
+
     const service_name = try symbols.getShapeName(id, .type);
     try writeDocComment(self.alloc(), symbols, bld, id, false);
     const context = .{ .self = self, .symbols = symbols, .service = service };
@@ -894,9 +899,9 @@ fn writeServiceShape(
 test "writeServiceShape" {
     try smithyTester(&.{.service}, struct {
         fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.evaluateSync(WriteShape, .{ bld, SmithyId.of("test.serve#Service") });
+            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test.serve#Service") });
 
-            const symbols = tester.root_scope.getService(SymbolsProvider).?;
+            const symbols = tester.getService(SymbolsProvider).?;
             try testing.expect(symbols.didVisit(SmithyId.of("test.serve#Resource")));
             try testing.expect(symbols.didVisit(SmithyId.of("test.error#NotFound")));
             try testing.expect(symbols.didVisit(SmithyId.of("test.error#ServiceError")));
@@ -953,7 +958,7 @@ fn smithyTester(
         }
     }.f);
 
-    _ = try tester.provideService(try test_symbols.setup(tester.root_scope.alloc(), setup_symbols), null);
+    _ = try tester.provideService(try test_symbols.setup(tester.alloc(), setup_symbols), null);
 
     try tester.defineValue(CodegenPolicy, ScopeTag.codegen_policy, .{
         .unknown_shape = .skip,
@@ -964,7 +969,7 @@ fn smithyTester(
     var buffer = std.ArrayList(u8).init(test_alloc);
     defer buffer.deinit();
 
-    var build = zig.ContainerBuild.init(tester.root_scope.alloc());
+    var build = zig.ContainerBuild.init(tester.alloc());
     eval(&tester, &build) catch |err| {
         build.deinit();
         return err;
