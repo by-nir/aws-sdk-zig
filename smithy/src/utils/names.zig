@@ -11,7 +11,7 @@ pub fn snakeCase(allocator: Allocator, input: []const u8) ![]const u8 {
     for (input) |c| {
         if (ascii.isUpper(c)) retain = false;
     }
-    if (retain) return input;
+    if (retain) return allocator.dupe(u8, input);
 
     var buffer = try MutString.initCapacity(allocator, input.len);
     errdefer buffer.deinit();

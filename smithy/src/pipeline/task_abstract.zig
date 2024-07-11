@@ -798,7 +798,8 @@ const AbstractMeta = union(enum) {
             return struct { *const Delegate };
         } else {
             const inj: [injects.len]type = injects[0..injects.len].*;
-            return std.meta.Tuple(&[_]type{*const Delegate} ++ inj ++ varyings ++ inputs);
+            const inp: [inputs.len]type = inputs[0..inputs.len].*;
+            return std.meta.Tuple(&[_]type{*const Delegate} ++ inj ++ varyings ++ inp);
         }
     }
 

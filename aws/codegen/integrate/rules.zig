@@ -66,7 +66,7 @@ pub const std_builtins: BuiltInsRegistry = &.{
 
 pub const std_functions: FunctionsRegistry = &.{
     .{ Function.Id.of("aws.partition"), Function{
-        .returns = Expr{ .raw = "?Endpoint.Partition" },
+        .returns = Expr{ .raw = "?aws_runtime.Endpoint.Partition" },
         .genFn = fnPartition,
     } },
     .{ Function.Id.of("aws.parseArn"), Function{

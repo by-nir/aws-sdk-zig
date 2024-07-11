@@ -26,6 +26,7 @@ pub const Invoker = struct {
 
         var out: task.Out = undefined;
         evalFn(tracer, delegate, &input, &out);
+
         return out;
     }
 
@@ -175,7 +176,7 @@ pub const OpaqueInvoker = struct {
                 defer sample.didEvaluate(.sync, ComptimeTag.of(task));
 
                 const input = if (no_input) .{} else @as(*const In, @alignCast(@ptrCast(in))).*;
-                if (has_output) {
+                if (comptime has_output) {
                     const output: *Out = @alignCast(@ptrCast(out));
                     output.* = task.evaluate(delegate, input);
                 } else {

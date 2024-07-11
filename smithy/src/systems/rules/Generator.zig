@@ -123,7 +123,7 @@ pub fn generateResolver(
     if (rules.len == 0) return error.EmptyRuleSet;
 
     const context = .{ .self = self, .rules = rules };
-    try bld.function(func_name)
+    try bld.public().function(func_name)
         .arg(config.allocator_arg, bld.x.id("Allocator"))
         .arg(ARG_CONFIG, bld.x.raw(config_type))
         .returns(bld.x.typeOf(anyerror![]const u8))
@@ -150,7 +150,7 @@ test "generateResolver" {
     });
 
     try tst.expect(
-        \\fn resolve(allocator: Allocator, config: Config) anyerror![]const u8 {
+        \\pub fn resolve(allocator: Allocator, config: Config) anyerror![]const u8 {
         \\    const param_baz: bool = config.baz orelse true;
         \\
         \\    var did_pass = false;

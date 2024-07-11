@@ -21,22 +21,8 @@ const JsonReader = @import("../utils/JsonReader.zig");
 const prelude = @import("../prelude.zig");
 const trt_docs = @import("../traits/docs.zig");
 const files_tasks = @import("files.zig");
-const codegen_tasks = @import("codegen.zig");
 const smithy_parse = @import("smithy_parse.zig");
 const smithy_codegen = @import("smithy_codegen.zig");
-
-pub const ServiceFilterHook = Task.Hook("Smithy Service Filter", bool, &.{[]const u8});
-pub const ScriptCodegenHeadHook = Task.Hook("Smithy Script Head", anyerror!void, &.{*ContainerBuild});
-pub const ServiceCodegenReadmeHook = codegen_tasks.MarkdownDoc.Hook("Smithy Service Readme Codegen", &.{ReadmeMetadata});
-
-pub const ReadmeMetadata = struct {
-    /// `{[slug]s}` service SDK ID
-    slug: []const u8,
-    /// `{[title]s}` service title
-    title: []const u8,
-    /// `{[intro]s}` introduction description
-    intro: ?[]const u8,
-};
 
 pub const ScopeTag = enum {
     slug,
@@ -58,6 +44,8 @@ pub const SmithyOptions = struct {
     policy_parse: smithy_parse.ParsePolicy = .{},
     policy_codegen: smithy_codegen.CodegenPolicy = .{},
 };
+
+pub const ServiceFilterHook = Task.Hook("Smithy Service Filter", bool, &.{[]const u8});
 
 pub const Smithy = Task.Define("Smithy", smithyTask, .{});
 fn smithyTask(self: *const Delegate, src_dir: fs.Dir, options: SmithyOptions) anyerror!void {
@@ -125,8 +113,7 @@ fn smithyServiceTask(
     };
     _ = try self.provide(&symbols, null);
 
-    try symbols.enqueue(symbols.service_id);
-    self.evaluate(ServiceCodegen, .{ slug, files_tasks.DirOptions{
+    self.evaluate(smithy_codegen.ServiceCodegen, .{ slug, files_tasks.DirOptions{
         .create_on_not_found = true,
         .delete_on_error = true,
     } }) catch |err| {
@@ -167,158 +154,4 @@ fn handlePolicy(
             },
         },
     }
-}
-
-const ServiceCodegen = files_tasks.OpenDir.Task("Service Codegen", serviceCodegenTask, .{});
-fn serviceCodegenTask(self: *const Delegate) anyerror!void {
-    try self.evaluate(
-        files_tasks.WriteFile.Chain(smithy_codegen.ServiceCodegenClient, .sync),
-        .{ "client.zig", files_tasks.FileOptions{ .delete_on_error = true } },
-    );
-
-    if (self.hasOverride(ServiceCodegenReadmeHook)) {
-        try self.evaluate(ServiceGenReadme, .{ "README.md", .{} });
-    } else {
-        std.log.warn("Skipped readme generation – missing `CodegenScriptHeadHook` overide.", .{});
-    }
-}
-
-const ServiceGenReadme = files_tasks.WriteFile.Task("Service Readme Codegen", serviceGenReadmeTask, .{
-    .injects = &.{SymbolsProvider},
-});
-fn serviceGenReadmeTask(
-    self: *const Delegate,
-    symbols: *SymbolsProvider,
-    writer: std.io.AnyWriter,
-) anyerror!void {
-    const service_id = symbols.service_id;
-    const slug = self.readValue([]const u8, ScopeTag.slug) orelse return error.MissingSlug;
-
-    const title =
-        trt_docs.Title.get(symbols, service_id) orelse
-        try name_util.titleCase(self.alloc(), slug);
-
-    const intro: ?[]const u8 = if (trt_docs.Documentation.get(symbols, service_id)) |src|
-        try processIntro(self.alloc(), src)
-    else
-        null;
-
-    try self.evaluate(ServiceCodegenReadmeHook, .{ writer, ReadmeMetadata{
-        .slug = slug,
-        .title = title,
-        .intro = intro,
-    } });
-}
-
-fn processIntro(allocator: Allocator, source: []const u8) ![]const u8 {
-    var build = md.Document.Build{ .allocator = allocator };
-    try md.html.convert(allocator, &build, source);
-    const markdown = try build.consume();
-    defer markdown.deinit(allocator);
-
-    var str = std.ArrayList(u8).init(allocator);
-    errdefer str.deinit();
-
-    var wrt = Writer.init(allocator, str.writer().any());
-    defer wrt.deinit();
-
-    try markdown.write(&wrt);
-    return str.toOwnedSlice();
-}
-
-test "ServiceGenReadme" {
-    const invoker = comptime blk: {
-        var builder = pipez.InvokerBuilder{};
-
-        _ = builder.Override(ServiceCodegenReadmeHook, "Test Readme", struct {
-            fn f(_: *const Delegate, bld: *md.Document.Build, metadata: ReadmeMetadata) anyerror!void {
-                try bld.heading(2, metadata.title);
-            }
-        }.f, .{});
-
-        break :blk builder.consume();
-    };
-
-    var tester = try pipez.PipelineTester.init(.{ .invoker = invoker });
-    defer tester.deinit();
-
-    _ = try tester.provideService(SymbolsProvider{ .arena = test_alloc }, struct {
-        fn f(service: *SymbolsProvider, _: Allocator) void {
-            service.deinit();
-        }
-    }.f);
-
-    try tester.defineValue([]const u8, ScopeTag.slug, "foo_service");
-
-    const output = try files_tasks.evaluateWriteFile(test_alloc, tester.pipeline, ServiceGenReadme, .{});
-    defer test_alloc.free(output);
-    try codegen_tasks.expectEqualMarkdownDoc("## Foo Service", output);
-}
-
-pub const ServiceScriptGen = codegen_tasks.ZigScript.Abstract(
-    "Service Script Codegen",
-    serviceScriptGenTask,
-    .{ .varyings = &.{*ContainerBuild} },
-);
-fn serviceScriptGenTask(
-    self: *const Delegate,
-    bld: *ContainerBuild,
-    task: AbstractEval(&.{*ContainerBuild}, anyerror!void),
-) anyerror!void {
-    try bld.constant("std").assign(bld.x.import("std"));
-    try bld.constant("Allocator").assign(bld.x.raw("std.mem.Allocator"));
-    try bld.constant("smithy").assign(bld.x.import("smithy"));
-
-    if (self.hasOverride(ScriptCodegenHeadHook)) {
-        try self.evaluate(ScriptCodegenHeadHook, .{bld});
-    }
-
-    try task.evaluate(.{bld});
-}
-
-pub fn expectServiceScript(
-    comptime expected: []const u8,
-    comptime task: Task,
-    pipeline: *pipez.Pipeline,
-    input: AbstractTask.ExtractChildInput(task),
-) !void {
-    const output = try codegen_tasks.evaluateZigScript(test_alloc, pipeline, task, input);
-    defer test_alloc.free(output);
-    try codegen_tasks.expectEqualZigScript(
-        \\const std = @import("std");
-        \\
-        \\const Allocator = std.mem.Allocator;
-        \\
-        \\const smithy = @import("smithy");
-        \\
-        \\
-    ++ expected, output);
-}
-
-test "ServiceScriptGen" {
-    const invoker = comptime blk: {
-        var builder = pipez.InvokerBuilder{};
-
-        _ = builder.Override(ScriptCodegenHeadHook, "Test Script Head", struct {
-            fn f(_: *const Delegate, bld: *ContainerBuild) anyerror!void {
-                try bld.comment(.normal, "header");
-            }
-        }.f, .{});
-
-        break :blk builder.consume();
-    };
-
-    var tester = try pipez.PipelineTester.init(.{ .invoker = invoker });
-    defer tester.deinit();
-
-    const TestScript = ServiceScriptGen.Task("Test Script", struct {
-        fn f(_: *const Delegate, bld: *ContainerBuild) anyerror!void {
-            try bld.constant("foo").assign(bld.x.raw("undefined"));
-        }
-    }.f, .{});
-
-    try expectServiceScript(
-        \\// header
-        \\const foo = undefined;
-    , TestScript, tester.pipeline, .{});
 }

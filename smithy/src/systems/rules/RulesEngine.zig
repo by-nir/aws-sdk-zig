@@ -55,7 +55,7 @@ pub fn generateConfigFields(self: Self, arena: Allocator, bld: *ContainerBuild, 
     try gen.generateParametersFields(bld);
 }
 
-pub fn generateFunction(
+pub fn generateResolver(
     self: Self,
     arena: Allocator,
     bld: *ContainerBuild,

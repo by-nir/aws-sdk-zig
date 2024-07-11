@@ -1,5 +1,6 @@
 const std = @import("std");
 const test_alloc = std.testing.allocator;
+const Model = @import("../tasks/smithy_parse.zig").Model;
 const symbols = @import("../systems/symbols.zig");
 const SmithyId = symbols.SmithyId;
 const SmithyType = symbols.SmithyType;
@@ -9,11 +10,12 @@ const SmithyResource = symbols.SmithyResource;
 const SmithyOperation = symbols.SmithyOperation;
 const TaggedValue = symbols.SmithyTaggedValue;
 const SymbolsProvider = symbols.SymbolsProvider;
-const Model = @import("../tasks/smithy_parse.zig").Model;
+const rls = @import("../systems/rules.zig");
 const trt_behave = @import("../traits/behavior.zig");
 const trt_constr = @import("../traits/constraint.zig");
 const trt_http = @import("../traits/http.zig");
 const trt_refine = @import("../traits/refine.zig");
+const trt_rules = @import("../traits/rules.zig");
 
 pub fn setup(arena: std.mem.Allocator, cases: []const Case) !SymbolsProvider {
     var model = Model.init(test_alloc);
@@ -30,6 +32,7 @@ pub fn setup(arena: std.mem.Allocator, cases: []const Case) !SymbolsProvider {
         .structure => try setupStruct(&model),
         .err => try setupError(&model),
         .service => try setupServiceAndDeps(&model),
+        .rules => try setupRulesEngine(&model),
     };
 
     return model.consume(arena);
@@ -46,6 +49,7 @@ pub const Case = enum {
     structure,
     err,
     service,
+    rules,
 };
 
 fn setupUnit(model: *Model) !void {
@@ -292,5 +296,21 @@ fn setupServiceAndDeps(model: *Model) !void {
     });
     try model.traits.put(test_alloc, SmithyId.of("test.error#NotFound"), &.{
         .{ .id = SmithyId.of("smithy.api#error"), .value = "client" },
+    });
+}
+
+fn setupRulesEngine(model: *Model) !void {
+    const rule_set: rls.RuleSet = .{
+        .parameters = &[_]rls.StringKV(rls.Parameter){.{
+            .key = "foo",
+            .value = rls.Parameter{ .type = .{ .boolean = null } },
+        }},
+        .rules = &[_]rls.Rule{
+            .{ .err = .{ .message = .{ .string = "baz" } } },
+        },
+    };
+
+    try model.traits.put(test_alloc, SmithyId.of("test#Root"), &.{
+        .{ .id = trt_rules.EndpointRuleSet.id, .value = &rule_set },
     });
 }
