@@ -22,8 +22,7 @@ pub const registry: TraitsRegistry = &.{
     // smithy.rules#operationContextParams
     // smithy.rules#staticContextParams
     .{ EndpointRuleSet.id, EndpointRuleSet.parse },
-    // Undocumented
-    // smithy.rules#endpointTests
+    .{ EndpointTests.id, EndpointTests.parse },
 };
 
 /// Defines a rule set for deriving service endpoints at runtime.
@@ -40,7 +39,7 @@ pub const EndpointRuleSet = struct {
         const value = try arena.create(rls.RuleSet);
         errdefer arena.destroy(value);
 
-        value.* = try rls.parse(arena, reader);
+        value.* = try rls.parseRuleSet(arena, reader);
         return value;
     }
 };
@@ -63,4 +62,49 @@ test "EndpointRuleSet" {
     }));
     reader.deinit();
     try testing.expectEqualDeep(&rls.RuleSet{}, value);
+}
+
+/// Currently undocumented by the Smithy Spec.
+pub const EndpointTests = struct {
+    pub const id = SmithyId.of("smithy.rules#endpointTests");
+
+    pub fn parse(arena: Allocator, reader: *JsonReader) !*const anyopaque {
+        const tests = try rls.parseTests(arena, reader);
+        return tests.ptr;
+    }
+
+    pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?[]const rls.TestCase {
+        const trait = symbols.getTraitOpaque(shape_id, id);
+        return if (trait) |ptr| cast(ptr) else null;
+    }
+
+    fn cast(ptr: *const anyopaque) ?[]const rls.TestCase {
+        const items: [*:.{}]const rls.TestCase = @alignCast(@ptrCast(ptr));
+        var i: usize = 0;
+        while (true) : (i += 1) {
+            const item = items[i];
+            if (item.expect == .invalid) return items[0..i];
+        }
+        unreachable;
+    }
+};
+
+test "EndpointTests" {
+    var arena = std.heap.ArenaAllocator.init(test_alloc);
+    const arena_alloc = arena.allocator();
+    defer arena.deinit();
+
+    var reader = try JsonReader.initFixed(arena_alloc,
+        \\{
+        \\  "testCases": [],
+        \\  "version": "1.0"
+        \\}
+    );
+    const value: ?[]const rls.TestCase = EndpointTests.cast(EndpointTests.parse(arena_alloc, &reader) catch |e| {
+        reader.deinit();
+        return e;
+    });
+    reader.deinit();
+
+    try testing.expectEqualDeep(&[_]rls.TestCase{}, value);
 }

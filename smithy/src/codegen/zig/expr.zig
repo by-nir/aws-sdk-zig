@@ -869,7 +869,7 @@ pub const ExprBuild = struct {
         );
     }
 
-    pub fn @"try"(self: *const ExprBuild) ExprBuild {
+    pub fn trys(self: *const ExprBuild) ExprBuild {
         const data = flow.TokenReflow{
             .token = .keyword_try,
             .label = null,
@@ -903,7 +903,7 @@ pub const ExprBuild = struct {
 
     test "reflows" {
         const build = ExprBuild.init(test_alloc);
-        try build.@"try"().raw("foo").expect("try foo");
+        try build.trys().raw("foo").expect("try foo");
         try build.returns().raw("foo").expect("return foo");
         try build.breaks("foo").raw("bar").expect("break :foo bar");
         try build.continues("foo").raw("bar").expect("continue :foo bar");

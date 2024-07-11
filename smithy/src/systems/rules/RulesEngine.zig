@@ -2,7 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const rls = @import("model.zig");
+const mdl = @import("model.zig");
 const lib = @import("library.zig");
 const Generator = @import("Generator.zig");
 const ContainerBuild = @import("../../codegen/zig.zig").ContainerBuild;
@@ -50,19 +50,6 @@ pub fn getFunc(self: Self, id: lib.Function.Id) !lib.Function {
     return self.functions.get(id) orelse error.RulesFuncUnknown;
 }
 
-pub fn generateConfigFields(self: Self, arena: Allocator, bld: *ContainerBuild, params: Generator.ParamsList) !void {
-    var gen = try Generator.init(arena, self, params);
-    try gen.generateParametersFields(bld);
-}
-
-pub fn generateResolver(
-    self: Self,
-    arena: Allocator,
-    bld: *ContainerBuild,
-    func_name: []const u8,
-    config_type: []const u8,
-    rule_set: *const rls.RuleSet,
-) !void {
-    var gen = try Generator.init(arena, self, rule_set.parameters);
-    try gen.generateResolver(bld, func_name, config_type, rule_set.rules);
+pub fn getGenerator(self: Self, arena: Allocator, params: Generator.ParamsList) !Generator {
+    return Generator.init(arena, self, params);
 }

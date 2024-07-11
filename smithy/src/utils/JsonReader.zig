@@ -163,7 +163,7 @@ pub fn nextString(self: *Self) ![]const u8 {
     };
 }
 
-/// Get the next token, assuming it’s a string matching the expected value.
+/// Skip the next token, while validating it’s a string matching the expected value.
 pub fn nextStringEql(self: *Self, expectd: []const u8) !void {
     const actual = try self.nextString();
     if (!mem.eql(u8, expectd, actual)) return error.UnexpectedValue;

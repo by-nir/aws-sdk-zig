@@ -863,6 +863,10 @@ pub const BlockBuild = struct {
         );
     }
 
+    pub fn trys(self: *BlockBuild) ExprBuild {
+        return self.startChain().trys();
+    }
+
     pub fn returns(self: *BlockBuild) ExprBuild {
         return self.startChain().returns();
     }
@@ -878,6 +882,9 @@ pub const BlockBuild = struct {
     test "reflows" {
         var b = init(test_alloc);
         errdefer b.deinit();
+        try b.trys().raw("foo").end();
+        try b.expect("try foo");
+
         try b.returns().raw("foo").end();
         try b.expect("return foo");
 

@@ -1,0 +1,32 @@
+{
+  "testCases": [
+    {
+      "documentation": "Test 1",
+      "expect": {
+        "endpoint": {
+          "url": "https://example.com"
+        }
+      },
+      "params": {
+        "Foo": "bar",
+        "Baz": true
+      }
+    },
+    {
+      "documentation": "Test 2",
+      "expect": {
+        "error": "Fail..."
+      },
+      "params": {
+        "Foo": "bar"
+      }
+    },
+    {
+      "documentation": "Test 3",
+      "expect": {
+        "error": "Boom!"
+      }
+    }
+  ],
+  "version": "1.0"
+}

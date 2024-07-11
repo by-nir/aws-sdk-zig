@@ -273,7 +273,7 @@ test "fnParseUrl" {
 
 fn fnUriEncode(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
-    return x.@"try"()
+    return x.trys()
         .call("smithy.url.uriEncode", &.{ x.id(config.allocator_arg), x.fromExpr(value) })
         .consume();
 }

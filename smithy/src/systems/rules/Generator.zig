@@ -3,7 +3,7 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const rls = @import("model.zig");
+const mdl = @import("model.zig");
 const lib = @import("library.zig");
 const Engine = @import("RulesEngine.zig");
 const md = @import("../../codegen/md.zig");
@@ -22,7 +22,7 @@ const CONDIT_LABEL = "pass";
 const ASSIGN_LABEL = "asgn";
 
 const Self = @This();
-pub const ParamsList = []const rls.StringKV(rls.Parameter);
+pub const ParamsList = []const mdl.StringKV(mdl.Parameter);
 
 const FieldsMap = std.StringHashMapUnmanaged(Field);
 const Field = struct {
@@ -118,7 +118,7 @@ pub fn generateResolver(
     bld: *ContainerBuild,
     func_name: []const u8,
     config_type: []const u8,
-    rules: []const rls.Rule,
+    rules: []const mdl.Rule,
 ) !void {
     if (rules.len == 0) return error.EmptyRuleSet;
 
@@ -145,7 +145,7 @@ test "generateResolver" {
     var tst = try Tester.init();
     defer tst.deinit();
 
-    try generateResolver(tst.gen, tst.container(), "resolve", "Config", &[_]rls.Rule{
+    try generateResolver(tst.gen, tst.container(), "resolve", "Config", &[_]mdl.Rule{
         .{ .err = .{ .message = .{ .string = "baz" } } },
     });
 
@@ -168,10 +168,10 @@ fn generateParamBinding(
     bld: *BlockBuild,
     field_name: []const u8,
     source_name: []const u8,
-    param: rls.Parameter,
+    param: mdl.Parameter,
 ) !void {
     var builtin_eval: ?Expr = null;
-    var typ: rls.ParamValue = param.type;
+    var typ: mdl.ParamValue = param.type;
     if (param.built_in) |id| {
         const built_in = try self.engine.getBuiltIn(id);
         typ = built_in.type;
@@ -237,7 +237,7 @@ test "generateParamBinding" {
 }
 
 // const RulesCtx = struct { self: Self, rules: []const rls.Rule };
-fn generateResolverRules(self: Self, bld: *BlockBuild, rules: []const rls.Rule) !void {
+fn generateResolverRules(self: Self, bld: *BlockBuild, rules: []const mdl.Rule) !void {
     for (rules) |rule| {
         const body_ctx = RuleCtx{
             .self = self,
@@ -290,9 +290,9 @@ test "generateResolverRules" {
     var tst = try Tester.init();
     defer tst.deinit();
 
-    try generateResolverRules(tst.gen, tst.block(), &[_]rls.Rule{
+    try generateResolverRules(tst.gen, tst.block(), &[_]mdl.Rule{
         .{ .err = .{
-            .conditions = &[_]rls.Condition{.{
+            .conditions = &[_]mdl.Condition{.{
                 .function = lib.Function.Id.not,
                 .args = &.{.{ .reference = "Foo" }},
                 .assign = "foo",
@@ -329,7 +329,7 @@ test "generateResolverRules" {
     );
 }
 
-const ConditionCtx = struct { self: Self, conditions: []const rls.Condition };
+const ConditionCtx = struct { self: Self, conditions: []const mdl.Condition };
 fn generateResolverCondition(ctx: ConditionCtx, bld: *BlockBuild) !void {
     const self = ctx.self;
     // Evaluate conditions
@@ -352,7 +352,7 @@ test "generateResolverCondition" {
 
     try generateResolverCondition(.{
         .self = tst.gen,
-        .conditions = &[_]rls.Condition{
+        .conditions = &[_]mdl.Condition{
             .{
                 .function = lib.Function.Id.not,
                 .args = &.{.{ .reference = "Bar" }},
@@ -380,7 +380,7 @@ test "generateResolverCondition" {
     );
 }
 
-const RuleCtx = struct { self: Self, rule: rls.Rule };
+const RuleCtx = struct { self: Self, rule: mdl.Rule };
 fn generateRule(ctx: RuleCtx, bld: *BlockBuild) !void {
     return switch (ctx.rule) {
         .endpoint => |endpoint| ctx.self.generateEndpointRule(bld, endpoint),
@@ -389,7 +389,7 @@ fn generateRule(ctx: RuleCtx, bld: *BlockBuild) !void {
     };
 }
 
-fn generateErrorRule(self: Self, bld: *BlockBuild, rule: rls.ErrorRule) !void {
+fn generateErrorRule(self: Self, bld: *BlockBuild, rule: mdl.ErrorRule) !void {
     const template = try self.evalTemplateString(bld.x, rule.message);
     try bld.call("std.log.err", &.{
         bld.x.fromExpr(template.format),
@@ -416,7 +416,7 @@ test "generateErrorRule" {
 }
 
 // TODO: Codegen properties, headers, authSchemas
-fn generateEndpointRule(self: Self, bld: *BlockBuild, rule: rls.EndpointRule) !void {
+fn generateEndpointRule(self: Self, bld: *BlockBuild, rule: mdl.EndpointRule) !void {
     const template = try self.evalTemplateString(bld.x, rule.endpoint.url);
     try bld.returns().call("std.fmt.allocPrint", &.{
         bld.x.id(config.allocator_arg),
@@ -441,7 +441,7 @@ test "generateEndpointRule" {
 }
 
 const TemplateString = struct { format: Expr, args: Expr };
-fn evalTemplateString(self: Self, x: ExprBuild, template: rls.StringValue) !TemplateString {
+fn evalTemplateString(self: Self, x: ExprBuild, template: mdl.StringValue) !TemplateString {
     const arg = switch (template) {
         .string => |s| {
             var format = std.ArrayList(u8).init(self.arena);
@@ -543,7 +543,7 @@ pub fn evalFunc(
     self: Self,
     x: ExprBuild,
     id: lib.Function.Id,
-    args: []const rls.ArgValue,
+    args: []const mdl.ArgValue,
     assign: ?[]const u8,
 ) !Expr {
     const func = try self.engine.getFunc(id);
@@ -583,7 +583,7 @@ test "evalFunc" {
     );
 }
 
-pub fn evalArg(self: Self, x: ExprBuild, arg: rls.ArgValue) anyerror!Expr {
+pub fn evalArg(self: Self, x: ExprBuild, arg: mdl.ArgValue) anyerror!Expr {
     const expr = try self.evalArgRaw(x, arg);
     switch (arg) {
         .reference => |ref| {
@@ -597,7 +597,7 @@ pub fn evalArg(self: Self, x: ExprBuild, arg: rls.ArgValue) anyerror!Expr {
     }
 }
 
-pub fn evalArgRaw(self: Self, x: ExprBuild, arg: rls.ArgValue) anyerror!Expr {
+pub fn evalArgRaw(self: Self, x: ExprBuild, arg: mdl.ArgValue) anyerror!Expr {
     switch (arg) {
         .boolean => |b| return x.valueOf(b).consume(),
         .integer => |d| return x.valueOf(d).consume(),
@@ -639,7 +639,7 @@ test "evalArg" {
     expr = try tst.gen.evalArg(tst.x, .{ .string = "foo" });
     try expr.expect(tst.alloc, "\"foo\"");
 
-    const items: []const rls.ArgValue = &.{ .{ .string = "foo" }, .{ .string = "bar" } };
+    const items: []const mdl.ArgValue = &.{ .{ .string = "foo" }, .{ .string = "bar" } };
     expr = try tst.gen.evalArg(tst.x, .{
         .array = items,
     });
@@ -683,20 +683,20 @@ pub const Tester = struct {
 
         var gen = try Self.init(arena_alloc, engine, &.{ .{
             .key = "Foo",
-            .value = rls.Parameter{
+            .value = mdl.Parameter{
                 .type = .{ .string = null },
                 .documentation = "Optional",
             },
         }, .{
             .key = "Bar",
-            .value = rls.Parameter{
+            .value = mdl.Parameter{
                 .type = .{ .boolean = null },
                 .required = true,
                 .documentation = "Required",
             },
         }, .{
             .key = "Baz",
-            .value = rls.Parameter{
+            .value = mdl.Parameter{
                 .type = .{ .boolean = true },
                 .required = true,
                 .documentation = "Required with default",
@@ -755,3 +755,119 @@ pub const Tester = struct {
         }
     }
 };
+
+pub fn generateTests(
+    self: Self,
+    bld: *ContainerBuild,
+    func_name: []const u8,
+    config_type: []const u8,
+    cases: []const mdl.TestCase,
+) !void {
+    for (cases) |case| {
+        const context = .{ .arena = self.arena, .case = case, .func_name = func_name, .config_type = config_type };
+        try bld.testBlockWith(case.documentation, context, struct {
+            fn f(ctx: @TypeOf(context), b: *BlockBuild) !void {
+                const tc: mdl.TestCase = ctx.case;
+
+                var params = std.ArrayList(ExprBuild).init(ctx.arena);
+                try params.ensureTotalCapacityPrecise(tc.params.len);
+                for (tc.params) |kv| {
+                    const field = try name_util.snakeCase(ctx.arena, kv.key);
+                    const expr = switch (kv.value) {
+                        inline .boolean, .string => |t| try b.x.structAssign(field, b.x.valueOf(t.?)).consume(),
+                        .string_array => |values| blk: {
+                            var strings = std.ArrayList(ExprBuild).init(ctx.arena);
+                            try strings.ensureTotalCapacity(values.?.len);
+                            for (values.?) |v| strings.appendAssumeCapacity(b.x.valueOf(v));
+                            const array = b.x.addressOf().structLiteral(null, try strings.toOwnedSlice());
+                            break :blk try b.x.structAssign(field, array).consume();
+                        },
+                    };
+                    params.appendAssumeCapacity(b.x.fromExpr(expr));
+                }
+
+                const params_exprs = try params.toOwnedSlice();
+                try b.constant("config").assign(b.x.structLiteral(b.x.raw(ctx.config_type), params_exprs));
+
+                switch (tc.expect) {
+                    .err => |_| {
+                        try b.constant("endpoint").assign(
+                            b.x.call(ctx.func_name, &.{ b.x.raw("std.testing.allocator"), b.x.id("config") }),
+                        );
+                        try b.trys().call(
+                            "std.testing.expectError",
+                            &.{ b.x.raw("error.ReachedErrorRule"), b.x.id("endpoint") },
+                        ).end();
+                    },
+                    .endpoint => |s| {
+                        try b.constant("endpoint").assign(
+                            b.x.trys().call(ctx.func_name, &.{ b.x.raw("std.testing.allocator"), b.x.id("config") }),
+                        );
+                        try b.defers(b.x.call("std.testing.allocator.free", &.{b.x.id("endpoint")}));
+                        try b.trys().call(
+                            "std.testing.expectEqualStrings",
+                            &.{ b.x.valueOf(s), b.x.id("endpoint") },
+                        ).end();
+                    },
+                    .invalid => unreachable,
+                }
+            }
+        }.f);
+    }
+}
+
+test "generateTests" {
+    var tst = try Tester.init();
+    defer tst.deinit();
+
+    try generateTests(tst.gen, tst.container(), "resolve", "Config", &[_]mdl.TestCase{
+        .{
+            .documentation = "Test 1",
+            .expect = .{ .endpoint = "https://example.com" },
+            .params = &[_]mdl.StringKV(mdl.ParamValue){
+                .{ .key = "Foo", .value = .{ .string = "bar" } },
+                .{ .key = "BarBaz", .value = .{ .boolean = true } },
+            },
+        },
+        .{
+            .documentation = "Test 2",
+            .expect = .{ .err = "Fail..." },
+            .params = &[_]mdl.StringKV(mdl.ParamValue){
+                .{ .key = "Foo", .value = .{ .string = "bar" } },
+            },
+        },
+        .{
+            .documentation = "Test 3",
+            .expect = .{ .err = "Boom!" },
+            .params = &.{},
+        },
+    });
+
+    try tst.expect(
+        \\test "Test 1" {
+        \\    const config = Config{ .foo = "bar", .bar_baz = true };
+        \\
+        \\    const endpoint = try resolve(std.testing.allocator, config);
+        \\
+        \\    defer std.testing.allocator.free(endpoint);
+        \\
+        \\    try std.testing.expectEqualStrings("https://example.com", endpoint);
+        \\}
+        \\
+        \\test "Test 2" {
+        \\    const config = Config{.foo = "bar"};
+        \\
+        \\    const endpoint = resolve(std.testing.allocator, config);
+        \\
+        \\    try std.testing.expectError(error.ReachedErrorRule, endpoint);
+        \\}
+        \\
+        \\test "Test 3" {
+        \\    const config = Config{};
+        \\
+        \\    const endpoint = resolve(std.testing.allocator, config);
+        \\
+        \\    try std.testing.expectError(error.ReachedErrorRule, endpoint);
+        \\}
+    );
+}

@@ -3,14 +3,14 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const rls = @import("model.zig");
+const mdl = @import("model.zig");
 const lib = @import("library.zig");
 const JsonReader = @import("../../utils/JsonReader.zig");
 
-const ParamKV = rls.StringKV(rls.Parameter);
+const ParamKV = mdl.StringKV(mdl.Parameter);
 
-pub fn parse(arena: Allocator, reader: *JsonReader) !rls.RuleSet {
-    var value = rls.RuleSet{};
+pub fn parseRuleSet(arena: Allocator, reader: *JsonReader) !mdl.RuleSet {
+    var value = mdl.RuleSet{};
 
     try reader.nextObjectBegin();
     while (try reader.peek() != .object_end) {
@@ -123,8 +123,8 @@ fn parseParameter(arena: Allocator, reader: *JsonReader) !ParamKV {
     return kv;
 }
 
-fn parseDeprecated(arena: Allocator, reader: *JsonReader) !rls.Deprecated {
-    var value = rls.Deprecated{};
+fn parseDeprecated(arena: Allocator, reader: *JsonReader) !mdl.Deprecated {
+    var value = mdl.Deprecated{};
     try reader.nextObjectBegin();
     while (try reader.peek() != .object_end) {
         const prop = try reader.nextString();
@@ -141,13 +141,13 @@ fn parseDeprecated(arena: Allocator, reader: *JsonReader) !rls.Deprecated {
     return value;
 }
 
-fn parseConditions(arena: Allocator, reader: *JsonReader) ![]const rls.Condition {
-    var list = std.ArrayList(rls.Condition).init(arena);
+fn parseConditions(arena: Allocator, reader: *JsonReader) ![]const mdl.Condition {
+    var list = std.ArrayList(mdl.Condition).init(arena);
     errdefer list.deinit();
 
     try reader.nextArrayBegin();
     while (try reader.next() == .object_begin) {
-        var condition = rls.Condition{};
+        var condition = mdl.Condition{};
         while (try reader.peek() != .object_end) {
             const prop = try reader.nextString();
             if (mem.eql(u8, prop, "fn")) {
@@ -168,8 +168,8 @@ fn parseConditions(arena: Allocator, reader: *JsonReader) ![]const rls.Condition
     return list.toOwnedSlice();
 }
 
-fn parseFunctionArgs(arena: Allocator, reader: *JsonReader) ![]const rls.ArgValue {
-    var list = std.ArrayList(rls.ArgValue).init(arena);
+fn parseFunctionArgs(arena: Allocator, reader: *JsonReader) ![]const mdl.ArgValue {
+    var list = std.ArrayList(mdl.ArgValue).init(arena);
     errdefer list.deinit();
 
     try reader.nextArrayBegin();
@@ -194,7 +194,7 @@ fn parseFunctionArgs(arena: Allocator, reader: *JsonReader) ![]const rls.ArgValu
     return list.toOwnedSlice();
 }
 
-fn parseStringValue(arena: Allocator, reader: *JsonReader) !rls.StringValue {
+fn parseStringValue(arena: Allocator, reader: *JsonReader) !mdl.StringValue {
     return switch (try reader.peek()) {
         .string => .{ .string = try reader.nextStringAlloc(arena) },
         .object_begin => switch (try parseFuncOrRef(arena, reader)) {
@@ -205,8 +205,8 @@ fn parseStringValue(arena: Allocator, reader: *JsonReader) !rls.StringValue {
     };
 }
 
-fn parseStringValuesArray(arena: Allocator, reader: *JsonReader) ![]const rls.StringValue {
-    var list = std.ArrayList(rls.StringValue).init(arena);
+fn parseStringValuesArray(arena: Allocator, reader: *JsonReader) ![]const mdl.StringValue {
+    var list = std.ArrayList(mdl.StringValue).init(arena);
     errdefer list.deinit();
 
     try reader.nextArrayBegin();
@@ -219,12 +219,12 @@ fn parseStringValuesArray(arena: Allocator, reader: *JsonReader) ![]const rls.St
 }
 
 const FuncOrRef = union(enum) {
-    function: rls.FunctionCall,
+    function: mdl.FunctionCall,
     reference: []const u8,
 };
 
 fn parseFuncOrRef(arena: Allocator, reader: *JsonReader) anyerror!FuncOrRef {
-    var func = rls.FunctionCall{};
+    var func = mdl.FunctionCall{};
     try reader.nextObjectBegin();
     while (try reader.peek() != .object_end) {
         const prop = try reader.nextString();
@@ -245,8 +245,8 @@ fn parseFuncOrRef(arena: Allocator, reader: *JsonReader) anyerror!FuncOrRef {
     return .{ .function = func };
 }
 
-fn parseRules(arena: Allocator, reader: *JsonReader) anyerror![]const rls.Rule {
-    var list = std.ArrayList(rls.Rule).init(arena);
+fn parseRules(arena: Allocator, reader: *JsonReader) anyerror![]const mdl.Rule {
+    var list = std.ArrayList(mdl.Rule).init(arena);
     errdefer list.deinit();
 
     try reader.nextArrayBegin();
@@ -259,10 +259,10 @@ fn parseRules(arena: Allocator, reader: *JsonReader) anyerror![]const rls.Rule {
 }
 
 /// Sadly, at the time of writing the models position the type property at the end.
-fn parseRule(arena: Allocator, reader: *JsonReader) !rls.Rule {
+fn parseRule(arena: Allocator, reader: *JsonReader) !mdl.Rule {
     var docs: ?[]const u8 = null;
     errdefer if (docs) |d| arena.free(d);
-    var conditions: ?[]const rls.Condition = null;
+    var conditions: ?[]const mdl.Condition = null;
     errdefer if (conditions) |c| arena.free(c);
 
     try reader.nextObjectBegin();
@@ -298,7 +298,7 @@ fn parseRule(arena: Allocator, reader: *JsonReader) !rls.Rule {
     return error.UnrecognizedRule;
 }
 
-fn ruleBegin(reader: *JsonReader, docs: ?[]const u8, conditions: ?[]const rls.Condition, mid_prop: ?bool) !void {
+fn ruleBegin(reader: *JsonReader, docs: ?[]const u8, conditions: ?[]const mdl.Condition, mid_prop: ?bool) !void {
     if (docs != null or conditions != null or mid_prop != null) return;
     try reader.nextObjectBegin();
 }
@@ -320,10 +320,10 @@ fn parseErrorRule(
     arena: Allocator,
     reader: *JsonReader,
     fill_docs: ?[]const u8,
-    fill_conditions: ?[]const rls.Condition,
+    fill_conditions: ?[]const mdl.Condition,
     mid_prop: ?bool,
-) !rls.ErrorRule {
-    var rule = rls.ErrorRule{
+) !mdl.ErrorRule {
+    var rule = mdl.ErrorRule{
         .message = undefined,
         .conditions = fill_conditions orelse &.{},
         .documentation = fill_docs,
@@ -351,10 +351,10 @@ fn parseTreeRule(
     arena: Allocator,
     reader: *JsonReader,
     fill_docs: ?[]const u8,
-    fill_conditions: ?[]const rls.Condition,
+    fill_conditions: ?[]const mdl.Condition,
     mid_prop: bool,
-) !rls.TreeRule {
-    var rule = rls.TreeRule{
+) !mdl.TreeRule {
+    var rule = mdl.TreeRule{
         .rules = undefined,
         .conditions = fill_conditions orelse &.{},
         .documentation = fill_docs,
@@ -382,10 +382,10 @@ fn parseEndpointRule(
     arena: Allocator,
     reader: *JsonReader,
     fill_docs: ?[]const u8,
-    fill_conditions: ?[]const rls.Condition,
+    fill_conditions: ?[]const mdl.Condition,
     mid_prop: bool,
-) !rls.EndpointRule {
-    var rule = rls.EndpointRule{
+) !mdl.EndpointRule {
+    var rule = mdl.EndpointRule{
         .endpoint = undefined,
         .conditions = fill_conditions orelse &.{},
         .documentation = fill_docs,
@@ -409,8 +409,8 @@ fn parseEndpointRule(
     return rule;
 }
 
-fn parseEndpoint(arena: Allocator, reader: *JsonReader) !rls.Endpoint {
-    var endpoint = rls.Endpoint{ .url = undefined };
+fn parseEndpoint(arena: Allocator, reader: *JsonReader) !mdl.Endpoint {
+    var endpoint = mdl.Endpoint{ .url = undefined };
     try reader.nextObjectBegin();
     while (try reader.peek() != .object_end) {
         const prop = try reader.nextString();
@@ -419,7 +419,7 @@ fn parseEndpoint(arena: Allocator, reader: *JsonReader) !rls.Endpoint {
         } else if (mem.eql(u8, prop, "properties")) {
             endpoint.properties = (try reader.nextValueAlloc(arena)).object;
         } else if (mem.eql(u8, prop, "headers")) {
-            var list = std.ArrayList(rls.StringKV([]const rls.StringValue)).init(arena);
+            var list = std.ArrayList(mdl.StringKV([]const mdl.StringValue)).init(arena);
             errdefer list.deinit();
 
             try reader.nextObjectBegin();
@@ -441,21 +441,21 @@ fn parseEndpoint(arena: Allocator, reader: *JsonReader) !rls.Endpoint {
     return endpoint;
 }
 
-test {
+test "parseRuleSet" {
     var arena = std.heap.ArenaAllocator.init(test_alloc);
     const arena_alloc = arena.allocator();
     defer arena.deinit();
 
     const source = @embedFile("../../testing/rules.json");
     var reader = try JsonReader.initFixed(arena_alloc, source);
-    const value = try parse(arena_alloc, &reader);
+    const value = try parseRuleSet(arena_alloc, &reader);
     reader.deinit();
 
-    try testing.expectEqualDeep(rls.RuleSet{
+    try testing.expectEqualDeep(mdl.RuleSet{
         .parameters = &.{
             .{
                 .key = "Foo",
-                .value = rls.Parameter{
+                .value = mdl.Parameter{
                     .type = .{ .string = "Bar" },
                     .built_in = lib.BuiltIn.Id.of("Foo"),
                     .required = true,
@@ -468,10 +468,10 @@ test {
             },
         },
         .rules = &.{.{
-            .tree = rls.TreeRule{
+            .tree = mdl.TreeRule{
                 .documentation = "Tree docs...",
                 .conditions = &.{
-                    rls.Condition{
+                    mdl.Condition{
                         .function = lib.Function.Id.of("foo"),
                         .assign = "bar",
                         .args = &.{
@@ -479,7 +479,7 @@ test {
                             .{ .boolean = true },
                             .{ .array = &.{} },
                             .{ .reference = "qux" },
-                            .{ .function = rls.FunctionCall{
+                            .{ .function = mdl.FunctionCall{
                                 .id = lib.Function.Id.of("Bar"),
                                 .args = &.{},
                             } },
@@ -488,12 +488,12 @@ test {
                 },
                 .rules = &.{
                     .{
-                        .err = rls.ErrorRule{
+                        .err = mdl.ErrorRule{
                             .message = .{ .string = "BOOM" },
                         },
                     },
                     .{
-                        .endpoint = rls.EndpointRule{
+                        .endpoint = mdl.EndpointRule{
                             .endpoint = .{
                                 .url = .{ .string = "http://example.com" },
                                 .properties = &.{
@@ -508,5 +508,138 @@ test {
                 },
             },
         }},
+    }, value);
+}
+
+pub fn parseTests(arena: Allocator, reader: *JsonReader) ![:.{}]const mdl.TestCase {
+    var cases = std.ArrayList(mdl.TestCase).init(arena);
+
+    try reader.nextObjectBegin();
+    while (try reader.peek() != .object_end) {
+        const prop = try reader.nextString();
+        if (mem.eql(u8, prop, "testCases")) {
+            try reader.nextArrayBegin();
+            while (try reader.peek() != .array_end) {
+                try cases.append(try parseTestCase(arena, reader));
+            }
+            try reader.nextArrayEnd();
+        } else if (mem.eql(u8, prop, "version")) {
+            try reader.nextStringEql("1.0");
+        } else {
+            std.log.warn("Unknown EndpointTests property `{s}`", .{prop});
+            try reader.skipValueOrScope();
+        }
+    }
+    try reader.nextObjectEnd();
+
+    return cases.toOwnedSliceSentinel(mdl.TestCase{});
+}
+
+fn parseTestCase(arena: Allocator, reader: *JsonReader) !mdl.TestCase {
+    var value: mdl.TestCase = .{};
+
+    try reader.nextObjectBegin();
+    while (try reader.peek() != .object_end) {
+        const prop = try reader.nextString();
+        if (mem.eql(u8, prop, "documentation")) {
+            value.documentation = try reader.nextStringAlloc(arena);
+        } else if (mem.eql(u8, prop, "expect")) {
+            value.expect = try parseTestCaseExpect(arena, reader);
+        } else if (mem.eql(u8, prop, "params")) {
+            value.params = try parseTestCaseParams(arena, reader);
+        } else {
+            std.log.warn("Unknown Endpoint Test Case property `{s}`", .{prop});
+            try reader.skipValueOrScope();
+        }
+    }
+    try reader.nextObjectEnd();
+
+    return value;
+}
+
+fn parseTestCaseExpect(arena: Allocator, reader: *JsonReader) !mdl.TestCase.Expect {
+    try reader.nextObjectBegin();
+    const prop = try reader.nextString();
+    if (mem.eql(u8, prop, "endpoint")) {
+        try reader.nextObjectBegin();
+        try reader.nextStringEql("url");
+        const url = try reader.nextStringAlloc(arena);
+        try reader.nextObjectEnd();
+        try reader.nextObjectEnd();
+        return .{ .endpoint = url };
+    } else if (mem.eql(u8, prop, "error")) {
+        const err = try reader.nextStringAlloc(arena);
+        try reader.nextObjectEnd();
+        return .{ .err = err };
+    } else {
+        std.log.err("Unknown Endpoint Test Case property `{s}`", .{prop});
+        return error.UnexpectedEndpointTestExpect;
+    }
+}
+
+fn parseTestCaseParams(arena: Allocator, reader: *JsonReader) ![]const mdl.StringKV(mdl.ParamValue) {
+    var params = std.ArrayList(mdl.StringKV(mdl.ParamValue)).init(arena);
+    errdefer params.deinit();
+
+    try reader.nextObjectBegin();
+    while (try reader.peek() != .object_end) {
+        const name = try reader.nextStringAlloc(arena);
+        const value: mdl.ParamValue = switch (try reader.peek()) {
+            .true, .false => .{ .boolean = try reader.nextBoolean() },
+            .string => .{ .string = try reader.nextStringAlloc(arena) },
+            .array_begin => blk: {
+                var list = std.ArrayList([]const u8).init(arena);
+                errdefer {
+                    for (list.items) |s| arena.free(s);
+                    list.deinit();
+                }
+
+                try reader.nextArrayBegin();
+                while (try reader.peek() == .string) {
+                    try list.append(try reader.nextStringAlloc(arena));
+                }
+                try reader.nextArrayEnd();
+
+                break :blk .{ .string_array = try list.toOwnedSlice() };
+            },
+            else => return error.UnexpectedEndpointTestParam,
+        };
+        try params.append(.{ .key = name, .value = value });
+    }
+    try reader.nextObjectEnd();
+
+    return params.toOwnedSlice();
+}
+
+test "parseTests" {
+    var arena = std.heap.ArenaAllocator.init(test_alloc);
+    const arena_alloc = arena.allocator();
+    defer arena.deinit();
+
+    var reader = try JsonReader.initFixed(arena_alloc, @embedFile("../../testing/rules_cases.json"));
+    const value = try parseTests(arena_alloc, &reader);
+    reader.deinit();
+
+    try testing.expectEqualDeep(&[_]mdl.TestCase{
+        .{
+            .documentation = "Test 1",
+            .expect = .{ .endpoint = "https://example.com" },
+            .params = &[_]mdl.StringKV(mdl.ParamValue){
+                .{ .key = "Foo", .value = .{ .string = "bar" } },
+                .{ .key = "Baz", .value = .{ .boolean = true } },
+            },
+        },
+        .{
+            .documentation = "Test 2",
+            .expect = .{ .err = "Fail..." },
+            .params = &[_]mdl.StringKV(mdl.ParamValue){
+                .{ .key = "Foo", .value = .{ .string = "bar" } },
+            },
+        },
+        .{
+            .documentation = "Test 3",
+            .expect = .{ .err = "Boom!" },
+            .params = &.{},
+        },
     }, value);
 }

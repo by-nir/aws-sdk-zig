@@ -310,7 +310,17 @@ fn setupRulesEngine(model: *Model) !void {
         },
     };
 
+    const test_cases = &[_]rls.TestCase{
+        .{
+            .documentation = "Foo",
+            .expect = .{ .err = "Boom!" },
+            .params = &.{},
+        },
+        .{},
+    };
+
     try model.traits.put(test_alloc, SmithyId.of("test#Root"), &.{
         .{ .id = trt_rules.EndpointRuleSet.id, .value = &rule_set },
+        .{ .id = trt_rules.EndpointTests.id, .value = test_cases.ptr },
     });
 }

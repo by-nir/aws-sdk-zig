@@ -53,21 +53,13 @@ fn smithyTask(self: *const Delegate, src_dir: fs.Dir, options: SmithyOptions) an
     try self.defineValue(smithy_parse.ParsePolicy, ScopeTag.parse_policy, options.policy_parse);
     try self.defineValue(smithy_codegen.CodegenPolicy, ScopeTag.codegen_policy, options.policy_codegen);
 
-    const traits_manager: *trt.TraitsManager = try self.provide(trt.TraitsManager{}, struct {
-        fn clean(service: *trt.TraitsManager, allocator: Allocator) void {
-            service.deinit(allocator);
-        }
-    }.clean);
+    const traits_manager: *trt.TraitsManager = try self.provide(trt.TraitsManager{}, null);
     try prelude.registerTraits(self.alloc(), traits_manager);
     if (options.traits) |registry| {
         try traits_manager.registerAll(self.alloc(), registry);
     }
 
-    _ = try self.provide(try rls.RulesEngine.init(self.alloc(), options.rules_builtins, options.rules_funcs), struct {
-        fn clean(service: *rls.RulesEngine, allocator: Allocator) void {
-            service.deinit(allocator);
-        }
-    }.clean);
+    _ = try self.provide(try rls.RulesEngine.init(self.alloc(), options.rules_builtins, options.rules_funcs), null);
 
     var it = src_dir.iterate();
     while (try it.next()) |entry| {

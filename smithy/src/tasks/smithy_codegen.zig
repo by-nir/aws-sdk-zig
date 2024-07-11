@@ -68,6 +68,10 @@ fn serviceClientTask(self: *const Delegate, symbols: *SymbolsProvider, bld: *Con
         try self.evaluate(ClientScriptHeadHook, .{bld});
     }
 
+    if (symbols.hasTrait(symbols.service_id, trt_rules.EndpointRuleSet.id)) {
+        try bld.constant("service_endpoint").assign(bld.x.import("endpoint.zig"));
+    }
+
     try symbols.enqueue(symbols.service_id);
     while (symbols.next()) |id| {
         try self.evaluate(WriteShape, .{ bld, id });
@@ -109,21 +113,28 @@ fn serviceEndpointTask(
     rules_engine: *RulesEngine,
     bld: *ContainerBuild,
 ) anyerror!void {
-    const config_type = "EndpointConfig";
     const rule_set = trt_rules.EndpointRuleSet.get(symbols, symbols.service_id) orelse {
         return error.MissingEndpointRuleSet;
     };
 
     try bld.constant("resolvePartition").assign(bld.x.import("sdk-partitions").dot().id("resolve"));
 
-    const context = .{ .alloc = self.alloc(), .params = rule_set.parameters, .engine = rules_engine };
+    const func_name = "resolve";
+    const config_type = "EndpointConfig";
+    const rulesgen = try rules_engine.getGenerator(self.alloc(), rule_set.parameters);
+
+    const context = .{ .alloc = self.alloc(), .rulesgen = rulesgen };
     try bld.public().constant(config_type).assign(bld.x.@"struct"().bodyWith(context, struct {
         fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
-            try ctx.engine.generateConfigFields(ctx.alloc, b, ctx.params);
+            try ctx.rulesgen.generateParametersFields(b);
         }
     }.f));
 
-    try rules_engine.generateResolver(self.alloc(), bld, "resolveEndpoint", config_type, rule_set);
+    try rulesgen.generateResolver(bld, func_name, config_type, rule_set.rules);
+
+    if (trt_rules.EndpointTests.get(symbols, symbols.service_id)) |cases| {
+        try rulesgen.generateTests(bld, func_name, config_type, cases);
+    }
 }
 
 test "ServiceEndpoint" {
@@ -150,12 +161,20 @@ test "ServiceEndpoint" {
         \\    foo: ?bool = null,
         \\};
         \\
-        \\pub fn resolveEndpoint(allocator: Allocator, config: EndpointConfig) anyerror![]const u8 {
+        \\pub fn resolve(allocator: Allocator, config: EndpointConfig) anyerror![]const u8 {
         \\    var did_pass = false;
         \\
         \\    std.log.err("baz", .{});
         \\
         \\    return error.ReachedErrorRule;
+        \\}
+        \\
+        \\test "Foo" {
+        \\    const config = EndpointConfig{};
+        \\
+        \\    const endpoint = resolve(std.testing.allocator, config);
+        \\
+        \\    try std.testing.expectError(error.ReachedErrorRule, endpoint);
         \\}
     , ServiceEndpoint, tester.pipeline, .{});
 }

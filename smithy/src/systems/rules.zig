@@ -4,9 +4,11 @@ pub const RuleSet = model.RuleSet;
 pub const ArgValue = model.ArgValue;
 pub const Parameter = model.Parameter;
 pub const StringKV = model.StringKV;
+pub const TestCase = model.TestCase;
 
 const parsing = @import("rules/parsing.zig");
-pub const parse = parsing.parse;
+pub const parseRuleSet = parsing.parseRuleSet;
+pub const parseTests = parsing.parseTests;
 
 const library = @import("rules/library.zig");
 pub const BuiltIn = library.BuiltIn;

@@ -151,3 +151,15 @@ pub const StringValue = union(enum) {
     reference: []const u8,
     function: FunctionCall,
 };
+
+pub const TestCase = struct {
+    documentation: []const u8 = "",
+    expect: Expect = .invalid,
+    params: []const StringKV(ParamValue) = &.{},
+
+    pub const Expect = union(enum) {
+        invalid: void,
+        endpoint: []const u8,
+        err: []const u8,
+    };
+};
