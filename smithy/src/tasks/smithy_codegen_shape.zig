@@ -29,9 +29,7 @@ const test_symbols = @import("../testing/symbols.zig");
 pub const ServiceHeadHook = Task.Hook("Smithy Service Head", anyerror!void, &.{ *ContainerBuild, *const syb.SmithyService });
 pub const ResourceHeadHook = Task.Hook("Smithy Resource Head", anyerror!void, &.{ *ContainerBuild, SmithyId, *const syb.SmithyResource });
 pub const ErrorShapeHook = Task.Hook("Smithy Error Shape", anyerror!void, &.{ *ContainerBuild, ErrorShape });
-pub const OperationTypeHook = Task.Hook("Smithy Operation Type", anyerror!?[]const u8, &.{OperationShape});
 pub const OperationShapeHook = Task.Hook("Smithy Operation Shape", anyerror!void, &.{ *BlockBuild, OperationShape });
-pub const UniqueListTypeHook = Task.Hook("Smithy Unique List Type", anyerror![]const u8, &.{[]const u8});
 
 pub const ErrorShape = struct {
     id: SmithyId,
@@ -43,7 +41,8 @@ pub const ErrorShape = struct {
 pub const OperationShape = struct {
     id: SmithyId,
     input: ?Input,
-    output_type: ?[]const u8,
+    return_type: []const u8,
+    payload_type: ?[]const u8,
     errors_type: ?[]const u8,
 
     pub const Input = struct {
@@ -149,15 +148,7 @@ fn writeListShape(
     try writeDocComment(self.alloc(), symbols, bld, id, false);
 
     const target_exp = if (symbols.hasTrait(id, trt_constr.unique_items_id)) blk: {
-        if (self.hasOverride(UniqueListTypeHook)) {
-            const unique_name = try self.evaluate(UniqueListTypeHook, .{type_name});
-            break :blk bld.x.raw(unique_name);
-        } else {
-            break :blk bld.x.call(
-                "*const std.AutoArrayHashMapUnmanaged",
-                &.{ bld.x.raw(type_name), bld.x.raw("void") },
-            );
-        }
+        break :blk bld.x.call("*const smithy.SetUnmanaged", &.{bld.x.raw(type_name)});
     } else if (symbols.hasTrait(id, trt_refine.sparse_id)) blk: {
         break :blk bld.x.typeSlice(false, bld.x.typeOptional(bld.x.raw(type_name)));
     } else blk: {
@@ -176,7 +167,7 @@ test "writeListShape" {
     }.eval,
         \\pub const List = []const ?i32;
         \\
-        \\pub const Set = *const std.AutoArrayHashMapUnmanaged(i32, void);
+        \\pub const Set = *const smithy.SetUnmanaged(i32);
     );
 }
 
@@ -577,7 +568,7 @@ test "writeStructShape" {
         \\};
         \\
         \\pub const Error = struct {
-        \\    pub const source: ErrorSource = .client;
+        \\    pub const source: smithy.ErrorSource = .client;
         \\
         \\    pub const code: u10 = 429;
         \\
@@ -652,31 +643,30 @@ fn writeOperationFunc(
         };
     } else null;
 
-    const shape_output: ?[]const u8 = if (operation.output) |d| blk: {
+    const payload_type: ?[]const u8 = if (operation.output) |d| blk: {
         try symbols.markVisited(d);
         break :blk try symbols.getTypeName(d);
     } else null;
 
+    const return_type = if (errors_type) |errors|
+        try std.fmt.allocPrint(self.alloc(), "smithy.Failable({s}, {s})", .{
+            payload_type orelse "void",
+            errors,
+        })
+    else if (payload_type) |s| s else "void";
+
     const shape = OperationShape{
         .id = id,
         .input = shape_input,
-        .output_type = shape_output,
+        .return_type = return_type,
+        .payload_type = payload_type,
         .errors_type = errors_type,
-    };
-
-    const return_type = if (self.hasOverride(OperationTypeHook)) blk: {
-        const result = try self.evaluate(OperationTypeHook, .{shape});
-        break :blk if (result) |s| bld.x.raw(s) else bld.x.typeOf(void);
-    } else if (shape_output) |s| blk: {
-        break :blk bld.x.raw(s);
-    } else blk: {
-        break :blk bld.x.typeOf(void);
     };
 
     const context = .{ .self = self, .symbols = symbols, .shape = shape };
     const func1 = bld.public().function(op_name).arg("self", bld.x.This());
     const func2 = if (shape_input) |input| func1.arg(input.identifier, bld.x.raw(input.type)) else func1;
-    try func2.returns(return_type).bodyWith(context, struct {
+    try func2.returns(bld.x.raw(return_type)).bodyWith(context, struct {
         fn f(ctx: @TypeOf(context), b: *BlockBuild) !void {
             try ctx.self.evaluate(OperationShapeHook, .{ b, ctx.shape });
         }
@@ -749,7 +739,7 @@ test "writeOperationFunc" {
         \\    not_found: NotFound,
         \\};
         \\
-        \\pub fn operation(self: @This(), input: OperationInput) OperationOutput {
+        \\pub fn operation(self: @This(), input: OperationInput) smithy.Failable(OperationOutput, OperationErrors) {
         \\    return undefined;
         \\}
     );
@@ -811,7 +801,7 @@ test "writeResourceShape" {
         \\        not_found: NotFound,
         \\    };
         \\
-        \\    pub fn operation(self: @This(), input: OperationInput) OperationOutput {
+        \\    pub fn operation(self: @This(), input: OperationInput) smithy.Failable(OperationOutput, OperationErrors) {
         \\        return undefined;
         \\    }
         \\};
@@ -872,7 +862,7 @@ test "writeServiceShape" {
         \\        not_found: NotFound,
         \\    };
         \\
-        \\    pub fn operation(self: @This(), input: OperationInput) OperationOutput {
+        \\    pub fn operation(self: @This(), input: OperationInput) smithy.Failable(OperationOutput, OperationErrors) {
         \\        return undefined;
         \\    }
         \\};
@@ -954,7 +944,7 @@ const TEST_INVOKER = blk: {
 
     _ = builder.Override(ErrorShapeHook, "Test Error Shape", struct {
         fn f(_: *const Delegate, bld: *ContainerBuild, shape: ErrorShape) anyerror!void {
-            try bld.public().constant("source").typing(bld.x.raw("ErrorSource"))
+            try bld.public().constant("source").typing(bld.x.raw("smithy.ErrorSource"))
                 .assign(bld.x.valueOf(shape.source));
 
             try bld.public().constant("code").typing(bld.x.typeOf(u10))

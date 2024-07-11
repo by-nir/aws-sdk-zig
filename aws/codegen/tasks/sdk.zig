@@ -84,7 +84,6 @@ pub const pipeline_invoker = blk: {
     });
     _ = builder.Override(smithy.ScriptHeadHook, "AWS Script Head", writeScriptHeadHook, .{});
     _ = builder.Override(smithy.ClientScriptHeadHook, "AWS Client Script Head", writeClientScriptHeadHook, .{});
-    _ = builder.Override(smithy.UniqueListTypeHook, "AWS Unique List Type", uniqueListShapeTypeHook, .{});
     _ = builder.Override(smithy.ServiceHeadHook, "AWS Service Shape Head", writeServiceHeadHook, .{});
     _ = builder.Override(smithy.ErrorShapeHook, "AWS Error Shape", writeErrorShapeHook, .{});
     _ = builder.Override(smithy.OperationTypeHook, "AWS Operation Type", operationShapeTypeHook, .{});
@@ -126,18 +125,12 @@ fn writeReadmeHook(
     try bld.rawFmt(@embedFile("../template/README.footer.md.template"), .{ .title = meta.title });
 }
 
-fn uniqueListShapeTypeHook(self: *const Delegate, item_type: []const u8) anyerror![]const u8 {
-    return std.fmt.allocPrint(self.alloc(), "*const _aws_types.Set({s})", .{item_type});
-}
-
 fn writeScriptHeadHook(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
     try bld.constant("aws_types").assign(bld.x.import("aws-types"));
     try bld.constant("aws_runtime").assign(bld.x.import("aws-runtime"));
 }
 
 fn writeClientScriptHeadHook(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
-    try bld.constant("ErrorSource").assign(bld.x.raw("aws_types.ErrorSource"));
-    try bld.constant("Failable").assign(bld.x.raw("aws_types.Failable"));
     try bld.constant("Runtime").assign(bld.x.raw("aws_runtime.Client"));
     try bld.constant("Signer").assign(bld.x.raw("aws_runtime.Signer"));
 }
@@ -172,7 +165,7 @@ fn writeServiceDeinit(bld: *zig.BlockBuild) anyerror!void {
 }
 
 fn writeErrorShapeHook(_: *const Delegate, bld: *zig.ContainerBuild, shape: smithy.ErrorShape) anyerror!void {
-    try bld.public().constant("source").typing(bld.x.raw("ErrorSource"))
+    try bld.public().constant("source").typing(bld.x.raw("smithy.ErrorSource"))
         .assign(bld.x.valueOf(shape.source));
 
     try bld.public().constant("code").typing(bld.x.typeOf(u10))

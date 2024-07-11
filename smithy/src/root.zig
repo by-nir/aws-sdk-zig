@@ -33,9 +33,7 @@ pub const OperationShape = smithy_codegen_shape.OperationShape;
 pub const ServiceHeadHook = smithy_codegen_shape.ServiceHeadHook;
 pub const ResourceHeadHook = smithy_codegen_shape.ResourceHeadHook;
 pub const ErrorShapeHook = smithy_codegen_shape.ErrorShapeHook;
-pub const OperationTypeHook = smithy_codegen_shape.OperationTypeHook;
 pub const OperationShapeHook = smithy_codegen_shape.OperationShapeHook;
-pub const UniqueListTypeHook = smithy_codegen_shape.UniqueListTypeHook;
 
 const syb = @import("systems/symbols.zig");
 pub usingnamespace syb;

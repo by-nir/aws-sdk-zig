@@ -3,7 +3,7 @@ const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 
-pub fn Set(comptime T: type) type {
+pub fn SetUnmanaged(comptime T: type) type {
     const Map = if (T == []const u8)
         std.StringHashMapUnmanaged(void)
     else
@@ -73,8 +73,8 @@ pub fn Set(comptime T: type) type {
     };
 }
 
-test "Set" {
-    var set = Set(u32){};
+test "SetUnmanaged" {
+    var set = SetUnmanaged(u32){};
     errdefer set.deinit(test_alloc);
 
     try testing.expectEqual(0, set.count());
