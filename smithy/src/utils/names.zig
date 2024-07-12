@@ -27,11 +27,6 @@ pub fn snakeCase(allocator: Allocator, input: []const u8) ![]const u8 {
         } else c);
         prev_upper = is_upper;
     }
-
-    if (std.zig.Token.keywords.has(buffer.items)) {
-        try buffer.insertSlice(0, "@\"");
-        try buffer.append('"');
-    }
     return try buffer.toOwnedSlice();
 }
 
@@ -44,6 +39,41 @@ test "snakeCase" {
     try testing.expectEqualStrings("foo_bar", try snakeCase(arena_alloc, "fooBar"));
     try testing.expectEqualStrings("foo_bar", try snakeCase(arena_alloc, "FooBar"));
     try testing.expectEqualStrings("foo_bar", try snakeCase(arena_alloc, "FOO_BAR"));
+}
+
+pub fn screamCase(allocator: Allocator, input: []const u8) ![]const u8 {
+    var retain = true;
+    for (input) |c| {
+        if (ascii.isLower(c)) retain = false;
+    }
+    if (retain) return allocator.dupe(u8, input);
+
+    var buffer = try MutString.initCapacity(allocator, input.len);
+    errdefer buffer.deinit();
+
+    var prev_upper = false;
+    for (input, 0..) |c, i| {
+        const is_upper = ascii.isUpper(c);
+        if (is_upper and !prev_upper and i > 0 and input[i - 1] != '_') {
+            try buffer.append('_');
+        }
+
+        try buffer.append(if (is_upper) c else ascii.toUpper(c));
+        prev_upper = is_upper;
+    }
+
+    return try buffer.toOwnedSlice();
+}
+
+test "screamCase" {
+    var arena = std.heap.ArenaAllocator.init(test_alloc);
+    const arena_alloc = arena.allocator();
+    defer arena.deinit();
+
+    try testing.expectEqualStrings("FOO_BAR", try screamCase(arena_alloc, "foo_bar"));
+    try testing.expectEqualStrings("FOO_BAR", try screamCase(arena_alloc, "fooBar"));
+    try testing.expectEqualStrings("FOO_BAR", try screamCase(arena_alloc, "FooBar"));
+    try testing.expectEqualStrings("FOO_BAR", try screamCase(arena_alloc, "FOO_BAR"));
 }
 
 pub fn camelCase(allocator: Allocator, input: []const u8) ![]const u8 {

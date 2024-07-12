@@ -486,7 +486,7 @@ pub const SymbolsProvider = struct {
             .type => raw,
             .field => name_util.snakeCase(self.arena, raw),
             .function => name_util.camelCase(self.arena, raw),
-            .constant => raw,
+            .constant => name_util.screamCase(self.arena, raw),
             .title => name_util.titleCase(self.arena, raw),
         };
     }
@@ -711,7 +711,7 @@ test "SymbolsProvider: names" {
     try testing.expectEqualStrings("foo_bar", try symbols.getShapeName(foobar_id, .field));
     try testing.expectEqualStrings("fooBar", try symbols.getShapeName(foobar_id, .function));
     try testing.expectEqualStrings("FooBar", try symbols.getShapeName(foobar_id, .type));
-    // try testing.expectEqualStrings("FOO_BAR", try symbols.getShapeName(foobar_id, .constant));
+    try testing.expectEqualStrings("FOO_BAR", try symbols.getShapeName(foobar_id, .constant));
     try testing.expectEqualStrings("Foo Bar", try symbols.getShapeName(foobar_id, .title));
     try testing.expectError(
         error.NameNotFound,
