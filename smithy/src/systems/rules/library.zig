@@ -66,8 +66,9 @@ pub const std_builtins: BuiltInsRegistry = &.{
 pub const Function = struct {
     genFn: GenFn,
     returns: ?Expr,
+    returns_optional: bool = false,
 
-    pub const GenFn = *const fn (gen: Generator, x: ExprBuild, args: []const rls.ArgValue) anyerror!Expr;
+    pub const GenFn = *const fn (gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) anyerror!Expr;
 
     pub const Id = enum(symbols.IdHashInt) {
         pub const NULL: Id = @enumFromInt(0);
@@ -106,18 +107,47 @@ test "Function.Id" {
 }
 
 pub const std_functions: FunctionsRegistry = &.{
-    .{ Function.Id.get_attr, Function{ .returns = null, .genFn = fnGetAttr } },
-    .{ Function.Id.not, Function{ .returns = Expr.typeOf(bool), .genFn = fnNot } },
-    .{ Function.Id.is_set, Function{ .returns = Expr.typeOf(bool), .genFn = fnIsSet } },
-    .{ Function.Id.boolean_equals, Function{ .returns = Expr.typeOf(bool), .genFn = fnBooleanEquals } },
-    .{ Function.Id.string_equals, Function{ .returns = Expr.typeOf(bool), .genFn = fnStringEquals } },
-    .{ Function.Id.is_valid_host_label, Function{ .returns = Expr.typeOf(bool), .genFn = fnIsValidHostLabel } },
-    .{ Function.Id.parse_url, Function{ .returns = Expr.typeOf(?std.Uri), .genFn = fnParseUrl } },
-    .{ Function.Id.uri_encode, Function{ .returns = Expr.typeOf([]const u8), .genFn = fnUriEncode } },
-    .{ Function.Id.substring, Function{ .returns = Expr.typeOf(?[]const u8), .genFn = fnSubstring } },
+    .{ Function.Id.get_attr, Function{
+        .returns = null,
+        .genFn = fnGetAttr,
+    } },
+    .{ Function.Id.not, Function{
+        .returns = Expr.typeOf(bool),
+        .genFn = fnNot,
+    } },
+    .{ Function.Id.is_set, Function{
+        .returns = Expr.typeOf(bool),
+        .genFn = fnIsSet,
+    } },
+    .{ Function.Id.boolean_equals, Function{
+        .returns = Expr.typeOf(bool),
+        .genFn = fnBooleanEquals,
+    } },
+    .{ Function.Id.string_equals, Function{
+        .returns = Expr.typeOf(bool),
+        .genFn = fnStringEquals,
+    } },
+    .{ Function.Id.is_valid_host_label, Function{
+        .returns = Expr.typeOf(bool),
+        .genFn = fnIsValidHostLabel,
+    } },
+    .{ Function.Id.parse_url, Function{
+        .returns = Expr.typeOf(?std.Uri),
+        .returns_optional = true,
+        .genFn = fnParseUrl,
+    } },
+    .{ Function.Id.uri_encode, Function{
+        .returns = Expr.typeOf([]const u8),
+        .genFn = fnUriEncode,
+    } },
+    .{ Function.Id.substring, Function{
+        .returns = Expr.typeOf(?[]const u8),
+        .returns_optional = true,
+        .genFn = fnSubstring,
+    } },
 };
 
-fn fnBooleanEquals(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
+fn fnBooleanEquals(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const lhs = try gen.evalArg(x, args[0]);
     const rhs = try gen.evalArg(x, args[1]);
 
@@ -158,7 +188,7 @@ test "fnBooleanEquals" {
     }, "config.foo.? == config.bar");
 }
 
-fn fnIsSet(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
+fn fnIsSet(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const arg = try gen.evalArgRaw(x, args[0]);
     return x.fromExpr(arg).op(.not_eql).valueOf(null).consume();
 }
@@ -167,7 +197,7 @@ test "fnIsSet" {
     try Function.expect(fnIsSet, &.{.{ .reference = "foo" }}, "foo != null");
 }
 
-fn fnNot(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
+fn fnNot(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const arg = try gen.evalArg(x, args[0]);
     return x.op(.not).fromExpr(arg).consume();
 }
@@ -176,7 +206,7 @@ test "fnNot" {
     try Function.expect(fnNot, &.{.{ .boolean = true }}, "!true");
 }
 
-fn fnGetAttr(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
+fn fnGetAttr(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const val = try gen.evalArg(x, args[0]);
     const path = args[1].string;
 
@@ -230,7 +260,7 @@ test "fnGetAttr" {
     }, "config.foo.?.bar.baz_qux[8]");
 }
 
-fn fnStringEquals(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
+fn fnStringEquals(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const lhs = x.fromExpr(try gen.evalArg(x, args[0]));
     const rhs = x.fromExpr(try gen.evalArg(x, args[1]));
     return x.call("std.mem.eql", &.{ lhs, rhs }).consume();
@@ -243,7 +273,7 @@ test "fnStringEquals" {
     }, "std.mem.eql(config.foo.?, \"bar\")");
 }
 
-fn fnIsValidHostLabel(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
+fn fnIsValidHostLabel(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
     const subdomains = try gen.evalArg(x, args[1]);
     return x.call("smithy.url.isValidHostLabel", &.{
@@ -259,7 +289,7 @@ test "fnIsValidHostLabel" {
     }, "smithy.url.isValidHostLabel(\"foo\", false)");
 }
 
-fn fnParseUrl(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
+fn fnParseUrl(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
     return x.call("smithy.url.Url.init", &.{ x.id(config.allocator_arg), x.fromExpr(value) })
         .@"catch"().body(x.valueOf(null)).consume();
@@ -271,7 +301,7 @@ test "fnParseUrl" {
     }, "smithy.url.Url.init(allocator, \"http://example.com\") catch null");
 }
 
-fn fnUriEncode(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
+fn fnUriEncode(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
     return x.trys()
         .call("smithy.url.uriEncode", &.{ x.id(config.allocator_arg), x.fromExpr(value) })
@@ -284,7 +314,7 @@ test "fnUriEncode" {
     }, "try smithy.url.uriEncode(allocator, \"foo\")");
 }
 
-fn fnSubstring(gen: Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
+fn fnSubstring(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     return x.call("smithy.string.substring", &.{
         x.fromExpr(try gen.evalArg(x, args[0])),
         x.fromExpr(try gen.evalArg(x, args[1])),

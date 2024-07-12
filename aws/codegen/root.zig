@@ -43,3 +43,16 @@ fn awsTask(self: *const Delegate, src_dir: fs.Dir, out_dir: fs.Dir, whitelist: [
         .delete_on_error = true,
     }, src_dir });
 }
+
+test {
+    _ = @import("tasks/sdk.zig");
+    _ = @import("tasks/partitions.zig");
+    _ = @import("integrate/auth.zig");
+    _ = @import("integrate/cloudformation.zig");
+    _ = @import("integrate/core.zig");
+    _ = @import("integrate/endpoints.zig");
+    _ = @import("integrate/gateway.zig");
+    _ = @import("integrate/iam.zig");
+    _ = @import("integrate/protocols.zig");
+    _ = @import("integrate/rules.zig");
+}

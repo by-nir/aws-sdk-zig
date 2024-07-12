@@ -66,11 +66,13 @@ pub const std_builtins: BuiltInsRegistry = &.{
 
 pub const std_functions: FunctionsRegistry = &.{
     .{ Function.Id.of("aws.partition"), Function{
-        .returns = Expr{ .raw = "?aws_runtime.Endpoint.Partition" },
+        .returns = Expr{ .raw = "?*const aws_runtime.Partition" },
+        .returns_optional = true,
         .genFn = fnPartition,
     } },
     .{ Function.Id.of("aws.parseArn"), Function{
-        .returns = Expr{ .raw = "?Endpoint.Arn" },
+        .returns = Expr{ .raw = "?aws_runtime.Arn" },
+        .returns_optional = true,
         .genFn = fnParseArn,
     } },
     .{ Function.Id.of("aws.isVirtualHostableS3Bucket"), Function{
@@ -79,7 +81,7 @@ pub const std_functions: FunctionsRegistry = &.{
     } },
 };
 
-fn fnPartition(gen: Generator, x: ExprBuild, args: []const ArgValue) !Expr {
+fn fnPartition(gen: *Generator, x: ExprBuild, args: []const ArgValue) !Expr {
     const region = try gen.evalArg(x, args[0]);
     return x.call("resolvePartition", &.{x.fromExpr(region)}).consume();
 }
@@ -90,19 +92,19 @@ test "fnPartition" {
     }, "resolvePartition(\"us-east-1\")");
 }
 
-fn fnParseArn(gen: Generator, x: ExprBuild, args: []const ArgValue) !Expr {
+fn fnParseArn(gen: *Generator, x: ExprBuild, args: []const ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
-    return x.call("Endpoint.Arn.init", &.{ x.id(config.allocator_arg), x.fromExpr(value) }).consume();
+    return x.call("aws_runtime.Arn.init", &.{ x.id(config.allocator_arg), x.fromExpr(value) }).consume();
 }
 
 test "fnParseArn" {
     try Function.expect(fnParseArn, &.{
         .{ .string = "arn:aws:iam::012345678910:user/johndoe" },
-    }, "Endpoint.Arn.init(allocator, \"arn:aws:iam::012345678910:user/johndoe\")");
+    }, "aws_runtime.Arn.init(allocator, \"arn:aws:iam::012345678910:user/johndoe\")");
 }
 
-fn fnIsVirtualHostableS3Bucket(gen: Generator, x: ExprBuild, args: []const ArgValue) !Expr {
-    return x.call("Endpoint.isVirtualHostableS3Bucket", &.{
+fn fnIsVirtualHostableS3Bucket(gen: *Generator, x: ExprBuild, args: []const ArgValue) !Expr {
+    return x.call("aws_runtime.isVirtualHostableS3Bucket", &.{
         x.fromExpr(try gen.evalArg(x, args[0])),
         x.fromExpr(try gen.evalArg(x, args[1])),
     }).consume();
@@ -112,5 +114,5 @@ test "fnIsVirtualHostableS3Bucket" {
     try Function.expect(fnIsVirtualHostableS3Bucket, &.{
         .{ .string = "foo" },
         .{ .boolean = false },
-    }, "Endpoint.isVirtualHostableS3Bucket(\"foo\", false)");
+    }, "aws_runtime.isVirtualHostableS3Bucket(\"foo\", false)");
 }

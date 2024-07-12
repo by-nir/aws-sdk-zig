@@ -30,7 +30,7 @@ const PartitionsCodegen = codegen_tasks.ZigScript.Task("Partitions Codegen", par
 // https://github.com/smithy-lang/smithy-rs/blob/main/rust-runtime/inlineable/src/endpoint_lib/partition.rs
 fn partitionsCodegenTask(self: *const Delegate, bld: *ContainerBuild, reader: *JsonReader) anyerror!void {
     try bld.constant("std").assign(bld.x.import("std"));
-    try bld.constant("Partition").assign(bld.x.import("aws_runtime").dot().raw("Endpoint.Partition"));
+    try bld.constant("Partition").assign(bld.x.import("aws-runtime").dot().raw("Partition"));
 
     try bld.public().function("resolve")
         .arg("region", bld.x.typeOf([]const u8))
@@ -159,7 +159,7 @@ test "PartitionsCodegen" {
 const TEST_OUT: []const u8 =
     \\const std = @import("std");
     \\
-    \\const Partition = @import("aws_runtime").Endpoint.Partition;
+    \\const Partition = @import("aws-runtime").Partition;
     \\
     \\pub fn resolve(region: []const u8) ?*const Partition {
     \\    return partitions.get(region) orelse null;

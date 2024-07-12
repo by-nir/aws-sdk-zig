@@ -12,7 +12,7 @@ const SmithyId = syb.SmithyId;
 const SymbolsProvider = syb.SymbolsProvider;
 const RulesEngine = @import("../systems/rules.zig").RulesEngine;
 const md = @import("../codegen/md.zig");
-const ContainerBuild = @import("../codegen/zig.zig").ContainerBuild;
+const zig = @import("../codegen/zig.zig");
 const Writer = @import("../codegen/CodegenWriter.zig");
 const name_util = @import("../utils/names.zig");
 const IssuesBag = @import("../utils/IssuesBag.zig");
@@ -24,9 +24,9 @@ const trt_docs = @import("../traits/docs.zig");
 const trt_rules = @import("../traits/rules.zig");
 const test_symbols = @import("../testing/symbols.zig");
 
-pub const ScriptHeadHook = Task.Hook("Smithy Script Head", anyerror!void, &.{*ContainerBuild});
+pub const ScriptHeadHook = Task.Hook("Smithy Script Head", anyerror!void, &.{*zig.ContainerBuild});
 pub const ServiceReadmeHook = codegen_tasks.MarkdownDoc.Hook("Smithy Readme Codegen", &.{ReadmeMetadata});
-pub const ClientScriptHeadHook = Task.Hook("Smithy Client Script Head", anyerror!void, &.{*ContainerBuild});
+pub const ClientScriptHeadHook = Task.Hook("Smithy Client Script Head", anyerror!void, &.{*zig.ContainerBuild});
 
 pub const ReadmeMetadata = struct {
     /// `{[slug]s}` service SDK ID
@@ -74,10 +74,17 @@ fn serviceCodegenTask(self: *const Delegate, symbols: *SymbolsProvider) anyerror
 const ServiceClient = ServiceScriptGen.Task("Smithy Service Client Codegen", serviceClientTask, .{
     .injects = &.{SymbolsProvider},
 });
-fn serviceClientTask(self: *const Delegate, symbols: *SymbolsProvider, bld: *ContainerBuild) anyerror!void {
+fn serviceClientTask(
+    self: *const Delegate,
+    symbols: *SymbolsProvider,
+    bld: *zig.ContainerBuild,
+) anyerror!void {
+    var testables = std.ArrayList([]const u8).init(self.alloc());
+
     try bld.constant("service_errors").assign(bld.x.import("errors.zig"));
 
     if (symbols.hasTrait(symbols.service_id, trt_rules.EndpointRuleSet.id)) {
+        try testables.append("service_endpoint");
         try bld.constant("service_endpoint").assign(bld.x.import("endpoint.zig"));
     }
 
@@ -85,6 +92,7 @@ fn serviceClientTask(self: *const Delegate, symbols: *SymbolsProvider, bld: *Con
     for (service.resources) |id| {
         const filename = try resourceFilename(self.alloc(), symbols, id);
         const field_name = filename[0 .. filename.len - ".zig".len];
+        try testables.append(field_name);
         try bld.constant(field_name).assign(bld.x.import(filename));
     }
 
@@ -96,6 +104,13 @@ fn serviceClientTask(self: *const Delegate, symbols: *SymbolsProvider, bld: *Con
     while (symbols.next()) |id| {
         try self.evaluate(shape_tasks.WriteShape, .{ bld, id });
     }
+
+    try bld.testBlockWith(null, testables.items, struct {
+        fn f(ctx: []const []const u8, b: *zig.BlockBuild) !void {
+            try b.discard().id("service_errors").end();
+            for (ctx) |testable| try b.discard().id(testable).end();
+        }
+    }.f);
 }
 
 test "ServiceClient" {
@@ -132,6 +147,14 @@ test "ServiceClient" {
         \\pub const OperationInput = struct {};
         \\
         \\pub const OperationOutput = struct {};
+        \\
+        \\test {
+        \\    _ = service_errors;
+        \\
+        \\    _ = service_endpoint;
+        \\
+        \\    _ = resource_resource;
+        \\}
     , ServiceClient, tester.pipeline, .{});
 }
 
@@ -141,7 +164,7 @@ const ServiceResource = ServiceScriptGen.Task("Smithy Service Resource Codegen",
 fn serviceResourceTask(
     self: *const Delegate,
     symbols: *SymbolsProvider,
-    bld: *ContainerBuild,
+    bld: *zig.ContainerBuild,
     resource_id: SmithyId,
 ) anyerror!void {
     try bld.constant("service_errors").assign(bld.x.import("errors.zig"));
@@ -192,7 +215,7 @@ const ServiceErrors = ServiceScriptGen.Task("Smithy Service Errors Codegen", ser
 fn serviceErrorsTask(
     self: *const Delegate,
     symbols: *SymbolsProvider,
-    bld: *ContainerBuild,
+    bld: *zig.ContainerBuild,
 ) anyerror!void {
     var errors = std.AutoArrayHashMap(SmithyId, void).init(self.alloc());
 
@@ -216,7 +239,7 @@ fn serviceErrorsTask(
 fn processResourceErrors(
     self: *const Delegate,
     symbols: *SymbolsProvider,
-    bld: *ContainerBuild,
+    bld: *zig.ContainerBuild,
     queue: *std.AutoArrayHashMap(SmithyId, void),
     rsc_id: SmithyId,
     common_errors: []const SmithyId,
@@ -239,7 +262,7 @@ fn processResourceErrors(
 fn processOperationErrors(
     self: *const Delegate,
     symbols: *SymbolsProvider,
-    bld: *ContainerBuild,
+    bld: *zig.ContainerBuild,
     queue: *std.AutoArrayHashMap(SmithyId, void),
     op_id: SmithyId,
     common_errors: []const SmithyId,
@@ -300,7 +323,7 @@ fn serviceEndpointTask(
     self: *const Delegate,
     symbols: *SymbolsProvider,
     rules_engine: *RulesEngine,
-    bld: *ContainerBuild,
+    bld: *zig.ContainerBuild,
 ) anyerror!void {
     const rule_set = trt_rules.EndpointRuleSet.get(symbols, symbols.service_id) orelse {
         return error.MissingEndpointRuleSet;
@@ -308,13 +331,15 @@ fn serviceEndpointTask(
 
     try bld.constant("resolvePartition").assign(bld.x.import("sdk-partitions").dot().id("resolve"));
 
+    try bld.constant("IS_TEST").assign(bld.x.import("builtin").dot().id("is_test"));
+
     const func_name = "resolve";
     const config_type = "EndpointConfig";
-    const rulesgen = try rules_engine.getGenerator(self.alloc(), rule_set.parameters);
+    var rulesgen = try rules_engine.getGenerator(self.alloc(), rule_set.parameters);
 
-    const context = .{ .alloc = self.alloc(), .rulesgen = rulesgen };
+    const context = .{ .alloc = self.alloc(), .rulesgen = &rulesgen };
     try bld.public().constant(config_type).assign(bld.x.@"struct"().bodyWith(context, struct {
-        fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
+        fn f(ctx: @TypeOf(context), b: *zig.ContainerBuild) !void {
             try ctx.rulesgen.generateParametersFields(b);
         }
     }.f));
@@ -346,6 +371,8 @@ test "ServiceEndpoint" {
     try expectServiceScript(
         \\const resolvePartition = @import("sdk-partitions").resolve;
         \\
+        \\const IS_TEST = @import("builtin").is_test;
+        \\
         \\pub const EndpointConfig = struct {
         \\    foo: ?bool = null,
         \\};
@@ -353,7 +380,7 @@ test "ServiceEndpoint" {
         \\pub fn resolve(allocator: Allocator, config: EndpointConfig) anyerror![]const u8 {
         \\    var did_pass = false;
         \\
-        \\    std.log.err("baz", .{});
+        \\    if (!IS_TEST) std.log.err("baz", .{});
         \\
         \\    return error.ReachedErrorRule;
         \\}
@@ -443,12 +470,12 @@ test "ServiceReadme" {
 const ServiceScriptGen = codegen_tasks.ZigScript.Abstract(
     "Service Script Codegen",
     serviceScriptGenTask,
-    .{ .varyings = &.{*ContainerBuild} },
+    .{ .varyings = &.{*zig.ContainerBuild} },
 );
 fn serviceScriptGenTask(
     self: *const Delegate,
-    bld: *ContainerBuild,
-    task: AbstractEval(&.{*ContainerBuild}, anyerror!void),
+    bld: *zig.ContainerBuild,
+    task: AbstractEval(&.{*zig.ContainerBuild}, anyerror!void),
 ) anyerror!void {
     try bld.constant("std").assign(bld.x.import("std"));
     try bld.constant("Allocator").assign(bld.x.raw("std.mem.Allocator"));
@@ -485,7 +512,7 @@ test "ServiceScriptGen" {
         var builder = pipez.InvokerBuilder{};
 
         _ = builder.Override(ScriptHeadHook, "Test Script Head", struct {
-            fn f(_: *const Delegate, bld: *ContainerBuild) anyerror!void {
+            fn f(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
                 try bld.comment(.normal, "header");
             }
         }.f, .{});
@@ -497,7 +524,7 @@ test "ServiceScriptGen" {
     defer tester.deinit();
 
     const TestScript = ServiceScriptGen.Task("Test Script", struct {
-        fn f(_: *const Delegate, bld: *ContainerBuild) anyerror!void {
+        fn f(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
             try bld.constant("foo").assign(bld.x.raw("undefined"));
         }
     }.f, .{});

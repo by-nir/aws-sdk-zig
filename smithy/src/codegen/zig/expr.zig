@@ -626,15 +626,15 @@ pub const ExprBuild = struct {
         return self.append(.{ .keyword_space = .comma });
     }
 
-    pub fn unwrap(self: *const ExprBuild) ExprBuild {
-        return self.append(.{ .raw = ".?" });
-    }
-
     pub fn addressOf(self: *const ExprBuild) ExprBuild {
         return self.append(.{ .keyword_tight = .ampersand });
     }
 
-    pub fn valDeref(self: *const ExprBuild) ExprBuild {
+    pub fn unwrap(self: *const ExprBuild) ExprBuild {
+        return self.append(.{ .raw = ".?" });
+    }
+
+    pub fn deref(self: *const ExprBuild) ExprBuild {
         return self.append(.{ .keyword_tight = .period_asterisk });
     }
 
@@ -683,10 +683,10 @@ pub const ExprBuild = struct {
     }
 
     test "separator" {
-        try ExprBuild.init(test_alloc).comma().dot().unwrap().addressOf()
-            .valDeref().valIndexer(_raw("8")).valFrom(_raw("8")).valRange(_raw("6"), _raw("8"))
+        try ExprBuild.init(test_alloc).comma().dot().unwrap().deref()
+            .addressOf().valIndexer(_raw("8")).valFrom(_raw("8")).valRange(_raw("6"), _raw("8"))
             .orElse().assign().op(.not).op(.@"~").op(.eql)
-            .expect(", ..?&.*[8][8..][6..8] orelse  = !~ == ");
+            .expect(", ..?.*&[8][8..][6..8] orelse  = !~ == ");
     }
 
     pub fn import(self: *const ExprBuild, name: []const u8) ExprBuild {

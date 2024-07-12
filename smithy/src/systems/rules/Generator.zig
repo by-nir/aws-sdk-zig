@@ -70,7 +70,7 @@ pub fn init(arena: Allocator, engine: Engine, params: ParamsList) !Self {
     };
 }
 
-pub fn generateParametersFields(self: Self, bld: *ContainerBuild) !void {
+pub fn generateParametersFields(self: *Self, bld: *ContainerBuild) !void {
     for (self.params) |kv| {
         const param = kv.value;
         const param_name = kv.key;
@@ -114,7 +114,7 @@ test "generateParametersFields" {
 }
 
 pub fn generateResolver(
-    self: Self,
+    self: *Self,
     bld: *ContainerBuild,
     func_name: []const u8,
     config_type: []const u8,
@@ -155,7 +155,7 @@ test "generateResolver" {
         \\
         \\    var did_pass = false;
         \\
-        \\    std.log.err("baz", .{});
+        \\    if (!IS_TEST) std.log.err("baz", .{});
         \\
         \\    return error.ReachedErrorRule;
         \\}
@@ -202,7 +202,7 @@ fn generateParamBinding(
     }
     if (!param.required) typing = bld.x.typeOptional(typing);
 
-    const val_1 = bld.x.raw(ARG_CONFIG).dot().id(try name_util.camelCase(self.arena, source_name));
+    const val_1 = bld.x.raw(ARG_CONFIG).dot().id(try name_util.snakeCase(self.arena, source_name));
     const val_2 = if (builtin_eval) |eval| val_1.orElse().fromExpr(eval) else val_1;
     const val_3 = if (default) |t| val_2.orElse().buildExpr(t) else blk: {
         if (param.required and builtin_eval == null) return error.RulesRequiredParamHasNoValue;
@@ -221,7 +221,7 @@ test "generateParamBinding" {
         .documentation = "",
     });
 
-    try tst.gen.generateParamBinding(tst.block(), "bar", "Bar", .{
+    try tst.gen.generateParamBinding(tst.block(), "bar", "BarBaz", .{
         .type = .{ .boolean = true },
         .required = true,
         .documentation = "",
@@ -231,13 +231,13 @@ test "generateParamBinding" {
         \\{
         \\    const foo: ?bool = config.foo;
         \\
-        \\    const bar: bool = config.bar orelse true;
+        \\    const bar: bool = config.bar_baz orelse true;
         \\}
     );
 }
 
 // const RulesCtx = struct { self: Self, rules: []const rls.Rule };
-fn generateResolverRules(self: Self, bld: *BlockBuild, rules: []const mdl.Rule) !void {
+fn generateResolverRules(self: *Self, bld: *BlockBuild, rules: []const mdl.Rule) !void {
     for (rules) |rule| {
         const body_ctx = RuleCtx{
             .self = self,
@@ -259,12 +259,19 @@ fn generateResolverRules(self: Self, bld: *BlockBuild, rules: []const mdl.Rule) 
 
                 const func = try self.engine.getFunc(cond.function);
                 const typing = func.returns orelse return error.RulesFuncReturnsAny;
-                const wrap = switch (typing) {
+                const wrap = !func.returns_optional or switch (typing) {
                     .raw => |s| s[0] != '?',
                     .type => |t| t != .optional,
                     else => true,
                 };
                 const opt_typ = if (wrap) bld.x.typeOptional(bld.x.fromExpr(typing)) else bld.x.fromExpr(typing);
+                if (func.returns_optional or wrap) {
+                    try self.fields.put(self.arena, assign, .{
+                        .is_direct = false,
+                        .is_optional = true,
+                        .name = var_name,
+                    });
+                }
 
                 try bld.variable(var_name).typing(opt_typ).assign(bld.x.valueOf(null));
             }
@@ -317,19 +324,19 @@ test "generateResolverRules" {
         \\    };
         \\
         \\    if (did_pass) {
-        \\        std.log.err("bar", .{});
+        \\        if (!IS_TEST) std.log.err("bar", .{});
         \\
         \\        return error.ReachedErrorRule;
         \\    }
         \\
-        \\    std.log.err("baz", .{});
+        \\    if (!IS_TEST) std.log.err("baz", .{});
         \\
         \\    return error.ReachedErrorRule;
         \\}
     );
 }
 
-const ConditionCtx = struct { self: Self, conditions: []const mdl.Condition };
+const ConditionCtx = struct { self: *Self, conditions: []const mdl.Condition };
 fn generateResolverCondition(ctx: ConditionCtx, bld: *BlockBuild) !void {
     const self = ctx.self;
     // Evaluate conditions
@@ -380,7 +387,7 @@ test "generateResolverCondition" {
     );
 }
 
-const RuleCtx = struct { self: Self, rule: mdl.Rule };
+const RuleCtx = struct { self: *Self, rule: mdl.Rule };
 fn generateRule(ctx: RuleCtx, bld: *BlockBuild) !void {
     return switch (ctx.rule) {
         .endpoint => |endpoint| ctx.self.generateEndpointRule(bld, endpoint),
@@ -389,12 +396,13 @@ fn generateRule(ctx: RuleCtx, bld: *BlockBuild) !void {
     };
 }
 
-fn generateErrorRule(self: Self, bld: *BlockBuild, rule: mdl.ErrorRule) !void {
+fn generateErrorRule(self: *Self, bld: *BlockBuild, rule: mdl.ErrorRule) !void {
     const template = try self.evalTemplateString(bld.x, rule.message);
-    try bld.call("std.log.err", &.{
-        bld.x.fromExpr(template.format),
-        bld.x.fromExpr(template.args),
-    }).end();
+
+    try bld.@"if"(bld.x.op(.not).id("IS_TEST")).body(
+        bld.x.call("std.log.err", &.{ bld.x.fromExpr(template.format), bld.x.fromExpr(template.args) }),
+    ).end();
+
     try bld.returns().valueOf(error.ReachedErrorRule).end();
 }
 
@@ -408,7 +416,7 @@ test "generateErrorRule" {
 
     try tst.expect(
         \\{
-        \\    std.log.err("foo", .{});
+        \\    if (!IS_TEST) std.log.err("foo", .{});
         \\
         \\    return error.ReachedErrorRule;
         \\}
@@ -416,7 +424,7 @@ test "generateErrorRule" {
 }
 
 // TODO: Codegen properties, headers, authSchemas
-fn generateEndpointRule(self: Self, bld: *BlockBuild, rule: mdl.EndpointRule) !void {
+fn generateEndpointRule(self: *Self, bld: *BlockBuild, rule: mdl.EndpointRule) !void {
     const template = try self.evalTemplateString(bld.x, rule.endpoint.url);
     try bld.returns().call("std.fmt.allocPrint", &.{
         bld.x.id(config.allocator_arg),
@@ -441,7 +449,7 @@ test "generateEndpointRule" {
 }
 
 const TemplateString = struct { format: Expr, args: Expr };
-fn evalTemplateString(self: Self, x: ExprBuild, template: mdl.StringValue) !TemplateString {
+fn evalTemplateString(self: *Self, x: ExprBuild, template: mdl.StringValue) !TemplateString {
     const arg = switch (template) {
         .string => |s| {
             var format = std.ArrayList(u8).init(self.arena);
@@ -540,7 +548,7 @@ test "evalTemplateString" {
 }
 
 pub fn evalFunc(
-    self: Self,
+    self: *Self,
     x: ExprBuild,
     id: lib.Function.Id,
     args: []const mdl.ArgValue,
@@ -550,16 +558,25 @@ pub fn evalFunc(
     const expr = try func.genFn(self, x, args);
     errdefer expr.deinit(self.arena);
 
-    const asgn = assign orelse return expr;
-    const var_name = try name_util.snakeCase(self.arena, asgn);
+    if (assign) |name| {
+        const var_name = try name_util.snakeCase(self.arena, name);
 
-    const context = .{ .expr = expr, .var_name = var_name };
-    return x.label(ASSIGN_LABEL).blockWith(context, struct {
-        fn f(ctx: @TypeOf(context), b: *BlockBuild) !void {
-            try b.id(ctx.var_name).assign().fromExpr(ctx.expr).end();
-            try b.breaks(ASSIGN_LABEL).id(ctx.var_name).end();
-        }
-    }.f).consume();
+        const context = .{ .expr = expr, .var_name = var_name, .unwrap = func.returns_optional };
+        return x.label(ASSIGN_LABEL).blockWith(context, struct {
+            fn f(ctx: @TypeOf(context), b: *BlockBuild) !void {
+                try b.id(ctx.var_name).assign().fromExpr(ctx.expr).end();
+                if (ctx.unwrap) {
+                    try b.breaks(ASSIGN_LABEL).id(ctx.var_name).op(.not_eql).valueOf(null).end();
+                } else {
+                    try b.breaks(ASSIGN_LABEL).id(ctx.var_name).end();
+                }
+            }
+        }.f).consume();
+    } else if (func.returns_optional) {
+        return x.fromExpr(expr).op(.not_eql).valueOf(null).consume();
+    } else {
+        return expr;
+    }
 }
 
 test "evalFunc" {
@@ -583,13 +600,13 @@ test "evalFunc" {
     );
 }
 
-pub fn evalArg(self: Self, x: ExprBuild, arg: mdl.ArgValue) anyerror!Expr {
+pub fn evalArg(self: *Self, x: ExprBuild, arg: mdl.ArgValue) anyerror!Expr {
     const expr = try self.evalArgRaw(x, arg);
     switch (arg) {
         .reference => |ref| {
-            if (self.fields.get(ref)) |f| {
-                if (f.is_optional) return x.fromExpr(expr).unwrap().consume();
-            }
+            if (self.fields.get(ref)) |f| if (f.is_optional) {
+                return x.fromExpr(expr).unwrap().consume();
+            };
 
             return expr;
         },
@@ -597,7 +614,7 @@ pub fn evalArg(self: Self, x: ExprBuild, arg: mdl.ArgValue) anyerror!Expr {
     }
 }
 
-pub fn evalArgRaw(self: Self, x: ExprBuild, arg: mdl.ArgValue) anyerror!Expr {
+pub fn evalArgRaw(self: *Self, x: ExprBuild, arg: mdl.ArgValue) anyerror!Expr {
     switch (arg) {
         .boolean => |b| return x.valueOf(b).consume(),
         .integer => |d| return x.valueOf(d).consume(),
@@ -659,7 +676,7 @@ pub const Tester = struct {
     arena: *std.heap.ArenaAllocator,
     alloc: Allocator,
     engine: Engine,
-    gen: Self,
+    gen: *Self,
     x: ExprBuild,
     bld: Builder = .none,
 
@@ -681,7 +698,9 @@ pub const Tester = struct {
         var engine = try Engine.init(test_alloc, &.{}, &.{});
         errdefer engine.deinit(test_alloc);
 
-        var gen = try Self.init(arena_alloc, engine, &.{ .{
+        const gen = try test_alloc.create(Self);
+        errdefer test_alloc.destroy(gen);
+        gen.* = try Self.init(arena_alloc, engine, &.{ .{
             .key = "Foo",
             .value = mdl.Parameter{
                 .type = .{ .string = null },
@@ -702,7 +721,6 @@ pub const Tester = struct {
                 .documentation = "Required with default",
             },
         } });
-        errdefer gen.deinit();
 
         return .{
             .arena = arena,
@@ -722,6 +740,7 @@ pub const Tester = struct {
 
         self.engine.deinit(test_alloc);
         self.arena.deinit();
+        test_alloc.destroy(self.gen);
         test_alloc.destroy(self.arena);
     }
 
@@ -757,7 +776,7 @@ pub const Tester = struct {
 };
 
 pub fn generateTests(
-    self: Self,
+    self: *Self,
     bld: *ContainerBuild,
     func_name: []const u8,
     config_type: []const u8,

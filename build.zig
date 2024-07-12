@@ -34,6 +34,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .root_source_file = b.path("sdk/partitions.zig"),
+        .imports = &.{
+            .{ .name = "aws-runtime", .module = aws_client },
+        },
     });
 
     // Clients
@@ -59,7 +62,7 @@ fn addSdkClient(
     // Client
     const path = b.path(b.fmt("{s}/{s}/client.zig", .{ dir, name }));
     _ = b.addModule(
-        b.fmt("aws-{s}", .{name}),
+        b.fmt("aws-sdk/{s}", .{name}),
         .{
             .target = options.target,
             .optimize = options.optimize,
@@ -74,7 +77,7 @@ fn addSdkClient(
 
     // Tests
     const test_step = b.step(
-        b.fmt("test:{s}", .{name}),
+        b.fmt("test:sdk-{s}", .{name}),
         b.fmt("Run `{s}` SDK unit tests", .{name}),
     );
     const unit_tests = b.addTest(.{
