@@ -19,7 +19,7 @@ const IssuesBag = @import("../utils/IssuesBag.zig");
 const files_tasks = @import("files.zig");
 const codegen_tasks = @import("codegen.zig");
 const ScopeTag = @import("smithy.zig").ScopeTag;
-const WriteShape = @import("smithy_codegen_shape.zig").WriteShape;
+const shape_tasks = @import("smithy_codegen_shape.zig");
 const trt_docs = @import("../traits/docs.zig");
 const trt_rules = @import("../traits/rules.zig");
 const test_symbols = @import("../testing/symbols.zig");
@@ -49,8 +49,19 @@ pub const ServiceCodegen = files_tasks.OpenDir.Task("Smithy Service Codegen", se
 fn serviceCodegenTask(self: *const Delegate, symbols: *SymbolsProvider) anyerror!void {
     try self.evaluate(files_tasks.WriteFile.Chain(ServiceClient, .sync), .{ "client.zig", .{} });
 
+    try self.evaluate(files_tasks.WriteFile.Chain(ServiceErrors, .sync), .{ "errors.zig", .{} });
+
     if (symbols.hasTrait(symbols.service_id, trt_rules.EndpointRuleSet.id)) {
         try self.evaluate(files_tasks.WriteFile.Chain(ServiceEndpoint, .sync), .{ "endpoint.zig", .{} });
+    }
+
+    const resources_ids = blk: {
+        const service = (try symbols.getShape(symbols.service_id)).service;
+        break :blk service.resources;
+    };
+    for (resources_ids) |id| {
+        const filename = try resourceFilename(self.alloc(), symbols, id);
+        try self.evaluate(files_tasks.WriteFile.Chain(ServiceResource, .sync), .{ filename, .{}, id });
     }
 
     if (self.hasOverride(ServiceReadmeHook)) {
@@ -64,29 +75,38 @@ const ServiceClient = ServiceScriptGen.Task("Smithy Service Client Codegen", ser
     .injects = &.{SymbolsProvider},
 });
 fn serviceClientTask(self: *const Delegate, symbols: *SymbolsProvider, bld: *ContainerBuild) anyerror!void {
-    if (self.hasOverride(ClientScriptHeadHook)) {
-        try self.evaluate(ClientScriptHeadHook, .{bld});
-    }
+    try bld.constant("service_errors").assign(bld.x.import("errors.zig"));
 
     if (symbols.hasTrait(symbols.service_id, trt_rules.EndpointRuleSet.id)) {
         try bld.constant("service_endpoint").assign(bld.x.import("endpoint.zig"));
     }
 
+    const service = (try symbols.getShape(symbols.service_id)).service;
+    for (service.resources) |id| {
+        const filename = try resourceFilename(self.alloc(), symbols, id);
+        const field_name = filename[0 .. filename.len - ".zig".len];
+        try bld.constant(field_name).assign(bld.x.import(filename));
+    }
+
+    if (self.hasOverride(ClientScriptHeadHook)) {
+        try self.evaluate(ClientScriptHeadHook, .{bld});
+    }
+
     try symbols.enqueue(symbols.service_id);
     while (symbols.next()) |id| {
-        try self.evaluate(WriteShape, .{ bld, id });
+        try self.evaluate(shape_tasks.WriteShape, .{ bld, id });
     }
 }
 
 test "ServiceClient" {
-    var tester = try pipez.PipelineTester.init(.{});
+    var tester = try pipez.PipelineTester.init(.{ .invoker = shape_tasks.TEST_INVOKER });
     defer tester.deinit();
 
     var issues = IssuesBag.init(test_alloc);
     defer issues.deinit();
     _ = try tester.provideService(&issues, null);
 
-    var symbols = try test_symbols.setup(test_alloc, &.{ .root_child, .rules });
+    var symbols = try test_symbols.setup(tester.alloc(), &.{.service});
     defer symbols.deinit();
     _ = try tester.provideService(&symbols, null);
 
@@ -94,14 +114,183 @@ test "ServiceClient" {
     defer rules_engine.deinit(test_alloc);
     _ = try tester.provideService(&rules_engine, null);
 
-    symbols.service_id = SmithyId.of("test#Root");
+    symbols.service_id = SmithyId.of("test.serve#Service");
     try expectServiceScript(
+        \\const service_errors = @import("errors.zig");
+        \\
         \\const service_endpoint = @import("endpoint.zig");
         \\
-        \\pub const Root = []const Child;
+        \\const resource_resource = @import("resource_resource.zig");
         \\
-        \\pub const Child = []const i32;
+        \\/// Some _service_...
+        \\pub const Service = struct {
+        \\    pub fn operation(self: @This(), input: OperationInput) smithy.Result(OperationOutput, service_errors.OperationErrors) {
+        \\        return undefined;
+        \\    }
+        \\};
+        \\
+        \\pub const OperationInput = struct {};
+        \\
+        \\pub const OperationOutput = struct {};
     , ServiceClient, tester.pipeline, .{});
+}
+
+const ServiceResource = ServiceScriptGen.Task("Smithy Service Resource Codegen", serviceResourceTask, .{
+    .injects = &.{SymbolsProvider},
+});
+fn serviceResourceTask(
+    self: *const Delegate,
+    symbols: *SymbolsProvider,
+    bld: *ContainerBuild,
+    resource_id: SmithyId,
+) anyerror!void {
+    try bld.constant("service_errors").assign(bld.x.import("errors.zig"));
+
+    try symbols.enqueue(resource_id);
+    while (symbols.next()) |id| {
+        try self.evaluate(shape_tasks.WriteShape, .{ bld, id });
+    }
+}
+
+fn resourceFilename(allocator: Allocator, symbols: *SymbolsProvider, id: SmithyId) ![]const u8 {
+    const shape_name = try symbols.getShapeName(id, .field);
+    return try std.fmt.allocPrint(allocator, "resource_{s}.zig", .{shape_name});
+}
+
+test "ServiceResource" {
+    var tester = try pipez.PipelineTester.init(.{ .invoker = shape_tasks.TEST_INVOKER });
+    defer tester.deinit();
+
+    var issues = IssuesBag.init(test_alloc);
+    defer issues.deinit();
+    _ = try tester.provideService(&issues, null);
+
+    var symbols = try test_symbols.setup(tester.alloc(), &.{.service});
+    defer symbols.deinit();
+    _ = try tester.provideService(&symbols, null);
+
+    try expectServiceScript(
+        \\const service_errors = @import("errors.zig");
+        \\
+        \\pub const Resource = struct {
+        \\    forecast_id: []const u8,
+        \\
+        \\    pub fn operation(self: @This(), input: OperationInput) smithy.Result(OperationOutput, service_errors.OperationErrors) {
+        \\        return undefined;
+        \\    }
+        \\};
+        \\
+        \\pub const OperationInput = struct {};
+        \\
+        \\pub const OperationOutput = struct {};
+    , ServiceResource, tester.pipeline, .{SmithyId.of("test.serve#Resource")});
+}
+
+const ServiceErrors = ServiceScriptGen.Task("Smithy Service Errors Codegen", serviceErrorsTask, .{
+    .injects = &.{SymbolsProvider},
+});
+fn serviceErrorsTask(
+    self: *const Delegate,
+    symbols: *SymbolsProvider,
+    bld: *ContainerBuild,
+) anyerror!void {
+    var errors = std.AutoArrayHashMap(SmithyId, void).init(self.alloc());
+
+    const service = (try symbols.getShape(symbols.service_id)).service;
+    for (service.errors) |id| try errors.put(id, {});
+
+    for (service.operations) |op_id| {
+        try processOperationErrors(self, symbols, bld, &errors, op_id, service.errors);
+    }
+
+    for (service.resources) |rsc_id| {
+        try processResourceErrors(self, symbols, bld, &errors, rsc_id, service.errors);
+    }
+
+    var it = errors.iterator();
+    while (it.next()) |id| {
+        try self.evaluate(shape_tasks.WriteErrorShape, .{ bld, id.key_ptr.* });
+    }
+}
+
+fn processResourceErrors(
+    self: *const Delegate,
+    symbols: *SymbolsProvider,
+    bld: *ContainerBuild,
+    queue: *std.AutoArrayHashMap(SmithyId, void),
+    rsc_id: SmithyId,
+    common_errors: []const SmithyId,
+) !void {
+    const resource = (try symbols.getShape(rsc_id)).resource;
+
+    for (resource.operations) |op_id| {
+        try processOperationErrors(self, symbols, bld, queue, op_id, common_errors);
+    }
+
+    for (resource.collection_ops) |op_id| {
+        try processOperationErrors(self, symbols, bld, queue, op_id, common_errors);
+    }
+
+    for (resource.resources) |sub_id| {
+        try processResourceErrors(self, symbols, bld, queue, sub_id, common_errors);
+    }
+}
+
+fn processOperationErrors(
+    self: *const Delegate,
+    symbols: *SymbolsProvider,
+    bld: *ContainerBuild,
+    queue: *std.AutoArrayHashMap(SmithyId, void),
+    op_id: SmithyId,
+    common_errors: []const SmithyId,
+) !void {
+    const operation = (try symbols.getShape(op_id)).operation;
+    for (operation.errors) |err_id| try queue.put(err_id, {});
+    if (operation.errors.len + common_errors.len > 0) {
+        try self.evaluate(shape_tasks.WriteErrorSet, .{ bld, op_id, operation.errors, common_errors });
+    }
+}
+
+test "ServiceErrors" {
+    var tester = try pipez.PipelineTester.init(.{ .invoker = shape_tasks.TEST_INVOKER });
+    defer tester.deinit();
+
+    var issues = IssuesBag.init(test_alloc);
+    defer issues.deinit();
+    _ = try tester.provideService(&issues, null);
+
+    var symbols = try test_symbols.setup(tester.alloc(), &.{ .service, .err });
+    defer symbols.deinit();
+    _ = try tester.provideService(&symbols, null);
+
+    symbols.service_id = SmithyId.of("test.serve#Service");
+    try expectServiceScript(
+        \\pub const OperationErrors = union(enum) {
+        \\    service: ServiceError,
+        \\    not_found: NotFound,
+        \\};
+        \\
+        \\pub const OperationErrors = union(enum) {
+        \\    service: ServiceError,
+        \\    not_found: NotFound,
+        \\};
+        \\
+        \\pub const ServiceError = struct {
+        \\    pub const source: smithy.ErrorSource = .client;
+        \\
+        \\    pub const code: u10 = 429;
+        \\
+        \\    pub const retryable = true;
+        \\};
+        \\
+        \\pub const NotFound = struct {
+        \\    pub const source: smithy.ErrorSource = .server;
+        \\
+        \\    pub const code: u10 = 500;
+        \\
+        \\    pub const retryable = false;
+        \\};
+    , ServiceErrors, tester.pipeline, .{});
 }
 
 const ServiceEndpoint = ServiceScriptGen.Task("Smithy Service Endpoint Codegen", serviceEndpointTask, .{
@@ -145,7 +334,7 @@ test "ServiceEndpoint" {
     defer issues.deinit();
     _ = try tester.provideService(&issues, null);
 
-    var symbols = try test_symbols.setup(test_alloc, &.{ .root_child, .rules });
+    var symbols = try test_symbols.setup(tester.alloc(), &.{.service});
     defer symbols.deinit();
     _ = try tester.provideService(&symbols, null);
 
@@ -153,7 +342,7 @@ test "ServiceEndpoint" {
     defer rules_engine.deinit(test_alloc);
     _ = try tester.provideService(&rules_engine, null);
 
-    symbols.service_id = SmithyId.of("test#Root");
+    symbols.service_id = SmithyId.of("test.serve#Service");
     try expectServiceScript(
         \\const resolvePartition = @import("sdk-partitions").resolve;
         \\

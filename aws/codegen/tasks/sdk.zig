@@ -85,8 +85,6 @@ pub const pipeline_invoker = blk: {
     _ = builder.Override(smithy.ScriptHeadHook, "AWS Script Head", writeScriptHeadHook, .{});
     _ = builder.Override(smithy.ClientScriptHeadHook, "AWS Client Script Head", writeClientScriptHeadHook, .{});
     _ = builder.Override(smithy.ServiceHeadHook, "AWS Service Shape Head", writeServiceHeadHook, .{});
-    _ = builder.Override(smithy.ErrorShapeHook, "AWS Error Shape", writeErrorShapeHook, .{});
-    _ = builder.Override(smithy.OperationTypeHook, "AWS Operation Type", operationShapeTypeHook, .{});
     _ = builder.Override(smithy.OperationShapeHook, "AWS Operation Shape", writeOperationShapeHook, .{
         .injects = &.{SymbolsProvider},
     });
@@ -162,27 +160,6 @@ fn writeServiceInit(bld: *zig.BlockBuild) anyerror!void {
 
 fn writeServiceDeinit(bld: *zig.BlockBuild) anyerror!void {
     try bld.raw("self.runtime.release()");
-}
-
-fn writeErrorShapeHook(_: *const Delegate, bld: *zig.ContainerBuild, shape: smithy.ErrorShape) anyerror!void {
-    try bld.public().constant("source").typing(bld.x.raw("smithy.ErrorSource"))
-        .assign(bld.x.valueOf(shape.source));
-
-    try bld.public().constant("code").typing(bld.x.typeOf(u10))
-        .assign(bld.x.valueOf(shape.code));
-
-    try bld.public().constant("retryable").assign(bld.x.valueOf(shape.retryable));
-}
-
-fn operationShapeTypeHook(self: *const Delegate, shape: smithy.OperationShape) anyerror!?[]const u8 {
-    if (shape.errors_type) |errors| {
-        return try std.fmt.allocPrint(self.alloc(), "Failable({s}, {s})", .{
-            shape.output_type orelse "void",
-            errors,
-        });
-    } else {
-        return shape.output_type;
-    }
 }
 
 fn writeOperationShapeHook(

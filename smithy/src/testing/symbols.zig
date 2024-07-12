@@ -32,7 +32,6 @@ pub fn setup(arena: std.mem.Allocator, cases: []const Case) !SymbolsProvider {
         .structure => try setupStruct(&model),
         .err => try setupError(&model),
         .service => try setupServiceAndDeps(&model),
-        .rules => try setupRulesEngine(&model),
     };
 
     return model.consume(arena);
@@ -49,7 +48,6 @@ pub const Case = enum {
     structure,
     err,
     service,
-    rules,
 };
 
 fn setupUnit(model: *Model) !void {
@@ -220,11 +218,11 @@ fn setupStruct(model: *Model) !void {
 const ERROR_CODE: u10 = 429;
 const ERROR_SOURCE = trt_refine.Error.Source.client;
 fn setupError(model: *Model) !void {
-    try model.names.put(test_alloc, SmithyId.of("test#Error"), "Error");
-    try model.shapes.put(test_alloc, SmithyId.of("test#Error"), .{
+    try model.names.put(test_alloc, SmithyId.of("test#ServiceError"), "ServiceError");
+    try model.shapes.put(test_alloc, SmithyId.of("test#ServiceError"), .{
         .structure = &.{},
     });
-    try model.traits.put(test_alloc, SmithyId.of("test#Error"), &.{
+    try model.traits.put(test_alloc, SmithyId.of("test#ServiceError"), &.{
         .{ .id = trt_refine.Error.id, .value = &ERROR_SOURCE },
         .{ .id = trt_behave.retryable_id, .value = null },
         .{ .id = trt_http.HttpError.id, .value = &ERROR_CODE },
@@ -237,13 +235,17 @@ fn setupServiceAndDeps(model: *Model) !void {
             .version = "2017-02-11",
             .operations = &.{SmithyId.of("test.serve#Operation")},
             .resources = &.{SmithyId.of("test.serve#Resource")},
-            .errors = &.{SmithyId.of("test.error#ServiceError")},
+            .errors = &.{SmithyId.of("test#ServiceError")},
         };
         const service_doc: []const u8 = "<p>Some <i>service</i>...</p>";
-        const service_traits = &.{.{
-            .id = SmithyId.of("smithy.api#documentation"),
-            .value = @as(*const anyopaque, @ptrCast(&service_doc)),
-        }};
+        const service_traits = &.{
+            .{
+                .id = SmithyId.of("smithy.api#documentation"),
+                .value = @as(*const anyopaque, @ptrCast(&service_doc)),
+            },
+            .{ .id = trt_rules.EndpointRuleSet.id, .value = &rule_set },
+            .{ .id = trt_rules.EndpointTests.id, .value = rule_test_cases.ptr },
+        };
         const resource = SmithyResource{
             .identifiers = &.{
                 .{ .name = "forecastId", .shape = SmithyId.of("smithy.api#String") },
@@ -256,6 +258,23 @@ fn setupServiceAndDeps(model: *Model) !void {
             .output = SmithyId.of("test.serve#OperationOutput"),
             .errors = &.{SmithyId.of("test.error#NotFound")},
         };
+        const rule_set: rls.RuleSet = .{
+            .parameters = &[_]rls.StringKV(rls.Parameter){.{
+                .key = "foo",
+                .value = rls.Parameter{ .type = .{ .boolean = null } },
+            }},
+            .rules = &[_]rls.Rule{
+                .{ .err = .{ .message = .{ .string = "baz" } } },
+            },
+        };
+        const rule_test_cases = &[_]rls.TestCase{
+            .{
+                .documentation = "Foo",
+                .expect = .{ .err = "Boom!" },
+                .params = &.{},
+            },
+            .{},
+        };
     };
 
     model.service_id = SmithyId.of("test.serve#Service");
@@ -264,11 +283,6 @@ fn setupServiceAndDeps(model: *Model) !void {
         .service = &Static.service,
     });
     try model.traits.put(test_alloc, SmithyId.of("test.serve#Service"), Static.service_traits);
-
-    try model.names.put(test_alloc, SmithyId.of("test.error#ServiceError"), "ServiceError");
-    try model.shapes.put(test_alloc, SmithyId.of("test.error#ServiceError"), .{
-        .structure = &.{},
-    });
 
     try model.names.put(test_alloc, SmithyId.of("test.serve#Resource"), "Resource");
     try model.shapes.put(test_alloc, SmithyId.of("test.serve#Resource"), .{
@@ -295,32 +309,6 @@ fn setupServiceAndDeps(model: *Model) !void {
         .structure = &.{},
     });
     try model.traits.put(test_alloc, SmithyId.of("test.error#NotFound"), &.{
-        .{ .id = SmithyId.of("smithy.api#error"), .value = "client" },
-    });
-}
-
-fn setupRulesEngine(model: *Model) !void {
-    const rule_set: rls.RuleSet = .{
-        .parameters = &[_]rls.StringKV(rls.Parameter){.{
-            .key = "foo",
-            .value = rls.Parameter{ .type = .{ .boolean = null } },
-        }},
-        .rules = &[_]rls.Rule{
-            .{ .err = .{ .message = .{ .string = "baz" } } },
-        },
-    };
-
-    const test_cases = &[_]rls.TestCase{
-        .{
-            .documentation = "Foo",
-            .expect = .{ .err = "Boom!" },
-            .params = &.{},
-        },
-        .{},
-    };
-
-    try model.traits.put(test_alloc, SmithyId.of("test#Root"), &.{
-        .{ .id = trt_rules.EndpointRuleSet.id, .value = &rule_set },
-        .{ .id = trt_rules.EndpointTests.id, .value = test_cases.ptr },
+        .{ .id = trt_refine.Error.id, .value = "client" },
     });
 }

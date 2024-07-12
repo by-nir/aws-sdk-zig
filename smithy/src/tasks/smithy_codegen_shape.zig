@@ -28,7 +28,7 @@ const test_symbols = @import("../testing/symbols.zig");
 
 pub const ServiceHeadHook = Task.Hook("Smithy Service Head", anyerror!void, &.{ *ContainerBuild, *const syb.SmithyService });
 pub const ResourceHeadHook = Task.Hook("Smithy Resource Head", anyerror!void, &.{ *ContainerBuild, SmithyId, *const syb.SmithyResource });
-pub const ErrorShapeHook = Task.Hook("Smithy Error Shape", anyerror!void, &.{ *ContainerBuild, ErrorShape });
+pub const ExtendErrorShapeHook = Task.Hook("Smithy Extend Error Shape", anyerror!void, &.{ *ContainerBuild, ErrorShape });
 pub const OperationShapeHook = Task.Hook("Smithy Operation Shape", anyerror!void, &.{ *BlockBuild, OperationShape });
 
 pub const ErrorShape = struct {
@@ -61,14 +61,15 @@ fn writeShapeTask(
     bld: *ContainerBuild,
     id: SmithyId,
 ) !void {
-    const policy: CodegenPolicy = self.readValue(CodegenPolicy, ScopeTag.codegen_policy) orelse .{};
-
-    const shape = symbols.getShape(id) catch switch (policy.unknown_shape) {
-        .skip => return issues.add(.{ .codegen_unknown_shape = @intFromEnum(id) }),
-        .abort => {
-            std.log.err("Unknown shape: `{}`.", .{id});
-            return IssuesBag.PolicyAbortError;
-        },
+    const shape = symbols.getShape(id) catch {
+        const policy: CodegenPolicy = self.readValue(CodegenPolicy, ScopeTag.codegen_policy) orelse .{};
+        switch (policy.unknown_shape) {
+            .skip => return issues.add(.{ .codegen_unknown_shape = @intFromEnum(id) }),
+            .abort => {
+                std.log.err("Unknown shape: `{}`.", .{id});
+                return IssuesBag.PolicyAbortError;
+            },
+        }
     };
 
     (switch (shape) {
@@ -91,6 +92,8 @@ fn writeShapeTask(
             .{ .name = n }
         else |_|
             .{ .id = @intFromEnum(id) };
+
+        const policy: CodegenPolicy = self.readValue(CodegenPolicy, ScopeTag.codegen_policy) orelse .{};
         switch (e) {
             error.InvalidRootShape => switch (policy.invalid_root) {
                 .skip => {
@@ -477,7 +480,7 @@ fn writeStructShape(
         bld.x.@"struct"().bodyWith(context, struct {
             fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
                 const is_input = ctx.symbols.hasTrait(ctx.id, trt_refine.input_id);
-                try writeStructShapeError(ctx.self, ctx.symbols, b, ctx.id);
+
                 try writeStructShapeMixin(ctx.self.alloc(), ctx.symbols, b, is_input, ctx.id);
                 for (ctx.members) |m| {
                     try writeStructShapeMember(ctx.self.alloc(), ctx.symbols, b, is_input, m);
@@ -485,21 +488,6 @@ fn writeStructShape(
             }
         }.f),
     );
-}
-
-fn writeStructShapeError(
-    self: *const Delegate,
-    symbols: *SymbolsProvider,
-    bld: *ContainerBuild,
-    id: SmithyId,
-) !void {
-    const source = trt_refine.Error.get(symbols, id) orelse return;
-    try self.evaluate(ErrorShapeHook, .{ bld, .{
-        .id = id,
-        .source = source,
-        .retryable = symbols.hasTrait(id, trt_behave.retryable_id),
-        .code = trt_http.HttpError.get(symbols, id) orelse if (source == .client) 400 else 500,
-    } });
 }
 
 fn writeStructShapeMixin(
@@ -556,7 +544,6 @@ test "writeStructShape" {
     try smithyTester(&.{ .structure, .err }, struct {
         fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Struct") });
-            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Error") });
         }
     }.eval,
         \\pub const Struct = struct {
@@ -565,14 +552,6 @@ test "writeStructShape" {
         \\    foo_bar: i32,
         \\    /// An **integer-based** enumeration.
         \\    baz_qux: IntEnum = @enumFromInt(8),
-        \\};
-        \\
-        \\pub const Error = struct {
-        \\    pub const source: smithy.ErrorSource = .client;
-        \\
-        \\    pub const code: u10 = 429;
-        \\
-        \\    pub const retryable = true;
         \\};
     );
 }
@@ -594,16 +573,12 @@ fn writeOperationShapes(
         const members = (try symbols.getShape(out_id)).structure;
         try writeStructShape(self, symbols, bld, out_id, members);
     }
-
-    // We don't write directly since an error may be used by multiple operations.
-    for (operation.errors) |err_id| try symbols.enqueue(err_id);
 }
 
 test "writeOperationShapes" {
     const OpTest = Task.Define("Operation Test", struct {
         fn eval(self: *const Delegate, symbols: *SymbolsProvider, bld: *ContainerBuild) anyerror!void {
             try writeOperationShapes(self, symbols, bld, SmithyId.of("test.serve#Operation"));
-            try testing.expectEqual(SmithyId.of("test.error#NotFound"), symbols.next());
         }
     }.eval, .{
         .injects = &.{SymbolsProvider},
@@ -626,12 +601,12 @@ fn writeOperationFunc(
     bld: *ContainerBuild,
     id: SmithyId,
 ) !void {
-    const service_errors = try symbols.getServiceErrors();
     const operation = (try symbols.getShape(id)).operation;
     const op_name = try symbols.getShapeName(id, .function);
 
+    const service_errors = try symbols.getServiceErrors();
     const errors_type = if (operation.errors.len + service_errors.len > 0)
-        try writeOperationFuncError(self.alloc(), symbols, bld, op_name, operation.errors, service_errors)
+        try errorSetName(self.alloc(), op_name, "service_errors.")
     else
         null;
 
@@ -649,7 +624,7 @@ fn writeOperationFunc(
     } else null;
 
     const return_type = if (errors_type) |errors|
-        try std.fmt.allocPrint(self.alloc(), "smithy.Failable({s}, {s})", .{
+        try std.fmt.allocPrint(self.alloc(), "smithy.Result({s}, {s})", .{
             payload_type orelse "void",
             errors,
         })
@@ -673,53 +648,6 @@ fn writeOperationFunc(
     }.f);
 }
 
-fn writeOperationFuncError(
-    arena: Allocator,
-    symbols: *SymbolsProvider,
-    bld: *ContainerBuild,
-    op_name: []const u8,
-    op_errors: []const SmithyId,
-    service_errors: []const SmithyId,
-) ![]const u8 {
-    const type_name = try std.fmt.allocPrint(arena, "{c}{s}Errors", .{
-        std.ascii.toUpper(op_name[0]),
-        op_name[1..op_name.len],
-    });
-
-    const context = .{ .arena = arena, .symbols = symbols, .service_errors = service_errors, .op_errors = op_errors };
-    try bld.public().constant(type_name).assign(bld.x.@"union"().bodyWith(context, struct {
-        fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
-            for (ctx.service_errors) |m| try writeOperationFuncErrorMember(ctx.arena, ctx.symbols, b, m);
-            for (ctx.op_errors) |m| try writeOperationFuncErrorMember(ctx.arena, ctx.symbols, b, m);
-        }
-    }.f));
-
-    return type_name;
-}
-
-fn writeOperationFuncErrorMember(
-    arena: Allocator,
-    symbols: *SymbolsProvider,
-    bld: *ContainerBuild,
-    member: SmithyId,
-) !void {
-    const type_name = try symbols.getTypeName(member);
-    var shape_name = try symbols.getShapeName(member, .field);
-    inline for (.{ "_error", "_exception" }) |suffix| {
-        if (std.ascii.endsWithIgnoreCase(shape_name, suffix)) {
-            shape_name = shape_name[0 .. shape_name.len - suffix.len];
-            break;
-        }
-    }
-
-    try writeDocComment(arena, symbols, bld, member, true);
-    if (type_name.len > 0) {
-        try bld.field(shape_name).typing(bld.x.raw(type_name)).end();
-    } else {
-        try bld.field(shape_name).end();
-    }
-}
-
 test "writeOperationFunc" {
     const OpFuncTest = Task.Define("Operation Function Test", struct {
         fn eval(self: *const Delegate, symbols: *SymbolsProvider, bld: *ContainerBuild) anyerror!void {
@@ -734,12 +662,7 @@ test "writeOperationFunc" {
             try tester.runTask(OpFuncTest, .{bld});
         }
     }.eval,
-        \\pub const OperationErrors = union(enum) {
-        \\    service: ServiceError,
-        \\    not_found: NotFound,
-        \\};
-        \\
-        \\pub fn operation(self: @This(), input: OperationInput) smithy.Failable(OperationOutput, OperationErrors) {
+        \\pub fn operation(self: @This(), input: OperationInput) smithy.Result(OperationOutput, service_errors.OperationErrors) {
         \\    return undefined;
         \\}
     );
@@ -784,6 +707,7 @@ fn writeResourceShape(
     }
     for (resource.operations) |op_id| try writeOperationShapes(self, symbols, bld, op_id);
     for (resource.collection_ops) |op_id| try writeOperationShapes(self, symbols, bld, op_id);
+
     for (resource.resources) |rsc_id| try symbols.enqueue(rsc_id);
 }
 
@@ -796,12 +720,7 @@ test "writeResourceShape" {
         \\pub const Resource = struct {
         \\    forecast_id: []const u8,
         \\
-        \\    pub const OperationErrors = union(enum) {
-        \\        service: ServiceError,
-        \\        not_found: NotFound,
-        \\    };
-        \\
-        \\    pub fn operation(self: @This(), input: OperationInput) smithy.Failable(OperationOutput, OperationErrors) {
+        \\    pub fn operation(self: @This(), input: OperationInput) smithy.Result(OperationOutput, service_errors.OperationErrors) {
         \\        return undefined;
         \\    }
         \\};
@@ -839,30 +758,17 @@ fn writeServiceShape(
     for (service.operations) |op_id| {
         try writeOperationShapes(self, symbols, bld, op_id);
     }
-
-    for (service.resources) |rsc_id| try symbols.enqueue(rsc_id);
-    for (service.errors) |err_id| try symbols.enqueue(err_id);
 }
 
 test "writeServiceShape" {
     try smithyTester(&.{.service}, struct {
         fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test.serve#Service") });
-
-            const symbols = tester.getService(SymbolsProvider).?;
-            try testing.expect(symbols.didVisit(SmithyId.of("test.serve#Resource")));
-            try testing.expect(symbols.didVisit(SmithyId.of("test.error#NotFound")));
-            try testing.expect(symbols.didVisit(SmithyId.of("test.error#ServiceError")));
         }
     }.eval,
         \\/// Some _service_...
         \\pub const Service = struct {
-        \\    pub const OperationErrors = union(enum) {
-        \\        service: ServiceError,
-        \\        not_found: NotFound,
-        \\    };
-        \\
-        \\    pub fn operation(self: @This(), input: OperationInput) smithy.Failable(OperationOutput, OperationErrors) {
+        \\    pub fn operation(self: @This(), input: OperationInput) smithy.Result(OperationOutput, service_errors.OperationErrors) {
         \\        return undefined;
         \\    }
         \\};
@@ -870,6 +776,144 @@ test "writeServiceShape" {
         \\pub const OperationInput = struct {};
         \\
         \\pub const OperationOutput = struct {};
+    );
+}
+
+pub const WriteErrorShape = Task.Define("Smithy Write Error Shape", writeErrorShapeTask, .{
+    .injects = &.{ SymbolsProvider, IssuesBag },
+});
+fn writeErrorShapeTask(
+    self: *const Delegate,
+    symbols: *SymbolsProvider,
+    issues: *IssuesBag,
+    bld: *ContainerBuild,
+    id: SmithyId,
+) !void {
+    const struct_shape = symbols.getShape(id) catch {
+        const policy: CodegenPolicy = self.readValue(CodegenPolicy, ScopeTag.codegen_policy) orelse .{};
+        switch (policy.unknown_shape) {
+            .skip => return issues.add(.{ .codegen_unknown_shape = @intFromEnum(id) }),
+            .abort => {
+                std.log.err("Unknown shape: `{}`.", .{id});
+                return IssuesBag.PolicyAbortError;
+            },
+        }
+    };
+    const members = struct_shape.structure;
+
+    const shape_name = try symbols.getShapeName(id, .type);
+    try writeDocComment(self.alloc(), symbols, bld, id, false);
+    const source = trt_refine.Error.get(symbols, id) orelse return error.MissingErrorTrait;
+
+    const shape: ErrorShape = .{
+        .id = id,
+        .source = source,
+        .retryable = symbols.hasTrait(id, trt_behave.retryable_id),
+        .code = trt_http.HttpError.get(symbols, id) orelse if (source == .client) 400 else 500,
+    };
+
+    const context = .{ .self = self, .symbols = symbols, .id = id, .shape = shape, .members = members };
+    try bld.public().constant(shape_name).assign(bld.x.@"struct"().bodyWith(context, struct {
+        fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
+            try b.public().constant("source").typing(b.x.raw("smithy.ErrorSource"))
+                .assign(b.x.valueOf(ctx.shape.source));
+
+            try b.public().constant("code").typing(b.x.typeOf(u10))
+                .assign(b.x.valueOf(ctx.shape.code));
+
+            try b.public().constant("retryable").assign(b.x.valueOf(ctx.shape.retryable));
+
+            try writeStructShapeMixin(ctx.self.alloc(), ctx.symbols, b, false, ctx.id);
+            for (ctx.members) |m| {
+                try writeStructShapeMember(ctx.self.alloc(), ctx.symbols, b, false, m);
+            }
+
+            if (ctx.self.hasOverride(ExtendErrorShapeHook)) {
+                try ctx.self.evaluate(ExtendErrorShapeHook, .{ b, ctx.shape });
+            }
+        }
+    }.f));
+}
+
+test "WriteErrorShape" {
+    try smithyTester(&.{.err}, struct {
+        fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
+            try tester.runTask(WriteErrorShape, .{ bld, SmithyId.of("test#ServiceError") });
+        }
+    }.eval,
+        \\pub const ServiceError = struct {
+        \\    pub const source: smithy.ErrorSource = .client;
+        \\
+        \\    pub const code: u10 = 429;
+        \\
+        \\    pub const retryable = true;
+        \\};
+    );
+}
+
+pub const WriteErrorSet = Task.Define("Smithy Write Error Set", writeErrorSetTask, .{
+    .injects = &.{SymbolsProvider},
+});
+fn writeErrorSetTask(
+    self: *const Delegate,
+    symbols: *SymbolsProvider,
+    bld: *ContainerBuild,
+    shape_id: SmithyId,
+    shape_errors: []const SmithyId,
+    common_errors: []const SmithyId,
+) anyerror!void {
+    const shape_name = try symbols.getShapeName(shape_id, .type);
+    const type_name = try errorSetName(self.alloc(), shape_name, "");
+
+    const context = .{ .arena = self.alloc(), .symbols = symbols, .common_errors = common_errors, .shape_errors = shape_errors };
+    try bld.public().constant(type_name).assign(bld.x.@"union"().bodyWith(context, struct {
+        fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
+            for (ctx.common_errors) |m| try writeErrorSetMember(ctx.arena, ctx.symbols, b, m);
+            for (ctx.shape_errors) |m| try writeErrorSetMember(ctx.arena, ctx.symbols, b, m);
+        }
+    }.f));
+}
+
+fn errorSetName(allocator: Allocator, shape_name: []const u8, comptime prefix: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, prefix ++ "{c}{s}Errors", .{
+        std.ascii.toUpper(shape_name[0]),
+        shape_name[1..shape_name.len],
+    });
+}
+
+fn writeErrorSetMember(arena: Allocator, symbols: *SymbolsProvider, bld: *ContainerBuild, member: SmithyId) !void {
+    const type_name = try symbols.getTypeName(member);
+    var shape_name = try symbols.getShapeName(member, .field);
+    inline for (.{ "_error", "_exception" }) |suffix| {
+        if (std.ascii.endsWithIgnoreCase(shape_name, suffix)) {
+            shape_name = shape_name[0 .. shape_name.len - suffix.len];
+            break;
+        }
+    }
+
+    try writeDocComment(arena, symbols, bld, member, true);
+    if (type_name.len > 0) {
+        try bld.field(shape_name).typing(bld.x.raw(type_name)).end();
+    } else {
+        try bld.field(shape_name).end();
+    }
+}
+
+test "WriteErrorSet" {
+    try smithyTester(&.{ .service, .err }, struct {
+        fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
+            try tester.runTask(WriteErrorSet, .{
+                bld,
+                SmithyId.of("test.serve#Operation"),
+                &.{SmithyId.of("test.error#NotFound")},
+                &.{SmithyId.of("test#ServiceError")},
+            });
+        }
+    }.eval,
+        \\pub const OperationErrors = union(enum) {
+        \\    service: ServiceError,
+        \\    not_found: NotFound,
+        \\};
     );
 }
 
@@ -939,20 +983,8 @@ fn smithyTester(
     try testing.expectEqualStrings(expected, buffer.items);
 }
 
-const TEST_INVOKER = blk: {
+pub const TEST_INVOKER = blk: {
     var builder = pipez.InvokerBuilder{};
-
-    _ = builder.Override(ErrorShapeHook, "Test Error Shape", struct {
-        fn f(_: *const Delegate, bld: *ContainerBuild, shape: ErrorShape) anyerror!void {
-            try bld.public().constant("source").typing(bld.x.raw("smithy.ErrorSource"))
-                .assign(bld.x.valueOf(shape.source));
-
-            try bld.public().constant("code").typing(bld.x.typeOf(u10))
-                .assign(bld.x.valueOf(shape.code));
-
-            try bld.public().constant("retryable").assign(bld.x.valueOf(shape.retryable));
-        }
-    }.f, .{});
 
     _ = builder.Override(OperationShapeHook, "Test Operation Shape", struct {
         fn f(_: *const Delegate, bld: *BlockBuild, _: OperationShape) anyerror!void {

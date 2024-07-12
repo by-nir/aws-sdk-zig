@@ -32,7 +32,7 @@ pub const ErrorShape = smithy_codegen_shape.ErrorShape;
 pub const OperationShape = smithy_codegen_shape.OperationShape;
 pub const ServiceHeadHook = smithy_codegen_shape.ServiceHeadHook;
 pub const ResourceHeadHook = smithy_codegen_shape.ResourceHeadHook;
-pub const ErrorShapeHook = smithy_codegen_shape.ErrorShapeHook;
+pub const ExtendErrorShapeHook = smithy_codegen_shape.ExtendErrorShapeHook;
 pub const OperationShapeHook = smithy_codegen_shape.OperationShapeHook;
 
 const syb = @import("systems/symbols.zig");
