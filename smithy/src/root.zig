@@ -21,8 +21,8 @@ const smithy_parse = @import("tasks/smithy_parse.zig");
 pub const ParsePolicy = smithy_parse.ParsePolicy;
 
 const smithy_codegen = @import("tasks/smithy_codegen.zig");
-pub const ReadmeMetadata = smithy_codegen.ReadmeMetadata;
 pub const CodegenPolicy = smithy_codegen.CodegenPolicy;
+pub const ReadmeMetadata = smithy_codegen.ReadmeMetadata;
 pub const ScriptHeadHook = smithy_codegen.ScriptHeadHook;
 pub const ServiceReadmeHook = smithy_codegen.ServiceReadmeHook;
 pub const ClientScriptHeadHook = smithy_codegen.ClientScriptHeadHook;
@@ -53,11 +53,12 @@ const IssuesBag = @import("utils/IssuesBag.zig");
 pub const PolicyResolution = IssuesBag.PolicyResolution;
 
 pub const JsonReader = @import("utils/JsonReader.zig");
+pub const name_util = @import("utils/names.zig");
 
 test {
     // Utils
-    _ = @import("utils/names.zig");
     _ = @import("utils/declarative.zig");
+    _ = name_util;
     _ = IssuesBag;
     _ = JsonReader;
 

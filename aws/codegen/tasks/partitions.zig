@@ -1,6 +1,10 @@
+// https://github.com/awslabs/aws-c-sdkutils/blob/main/source/partitions.c
+
 const std = @import("std");
 const mem = std.mem;
 const Allocator = mem.Allocator;
+const testing = std.testing;
+const test_alloc = testing.allocator;
 const smithy = @import("smithy");
 const pipez = smithy.pipez;
 const Delegate = pipez.Delegate;
@@ -8,11 +12,16 @@ const files_tasks = smithy.files_tasks;
 const codegen_tasks = smithy.codegen_tasks;
 const JsonReader = smithy.JsonReader;
 const zig = smithy.codegen_zig;
+const Expr = zig.Expr;
 const ExprBuild = zig.ExprBuild;
 const BlockBuild = zig.BlockBuild;
 const ContainerBuild = zig.ContainerBuild;
+const name_util = smithy.name_util;
 
-const log = std.log.scoped(.codegen_partitions);
+const Matcher = struct {
+    func: []const u8,
+    partition: Expr,
+};
 
 pub const Partitions = files_tasks.WriteFile.Task("AWS Partitions", partitionsTask, .{});
 fn partitionsTask(self: *const Delegate, writer: std.io.AnyWriter, src_dir: std.fs.Dir) anyerror!void {
@@ -27,21 +36,12 @@ fn partitionsTask(self: *const Delegate, writer: std.io.AnyWriter, src_dir: std.
 
 const PartitionsCodegen = codegen_tasks.ZigScript.Task("Partitions Codegen", partitionsCodegenTask, .{});
 
-// https://github.com/smithy-lang/smithy-rs/blob/main/rust-runtime/inlineable/src/endpoint_lib/partition.rs
 fn partitionsCodegenTask(self: *const Delegate, bld: *ContainerBuild, reader: *JsonReader) anyerror!void {
     try bld.constant("std").assign(bld.x.import("std"));
     try bld.constant("Partition").assign(bld.x.import("aws-runtime").dot().raw("Partition"));
 
-    try bld.public().function("resolve")
-        .arg("region", bld.x.typeOf([]const u8))
-        .returns(bld.x.raw("?*const Partition"))
-        .body(struct {
-        fn f(b: *BlockBuild) !void {
-            try b.returns().raw("partitions.get(region) orelse null").end();
-        }
-    }.f);
-
     var regions = std.ArrayList(ExprBuild).init(self.alloc());
+    var matchers = std.ArrayList(Matcher).init(self.alloc());
 
     try reader.nextObjectBegin();
     while (try reader.peek() == .string) {
@@ -51,7 +51,7 @@ fn partitionsCodegenTask(self: *const Delegate, bld: *ContainerBuild, reader: *J
         } else if (mem.eql(u8, "partitions", key)) {
             try reader.nextArrayBegin();
             while (try reader.next() != .array_end) {
-                try processPartition(self.alloc(), bld, reader, &regions);
+                try processPartition(self.alloc(), bld, reader, &regions, &matchers);
             }
         } else {
             return error.UnexpectedKey;
@@ -63,6 +63,30 @@ fn partitionsCodegenTask(self: *const Delegate, bld: *ContainerBuild, reader: *J
         "std.StaticStringMap(*const Partition).initComptime",
         &.{bld.x.structLiteral(null, regions.items)},
     ));
+
+    try bld.public().function("resolve")
+        .arg("region", bld.x.typeOf([]const u8))
+        .returns(bld.x.raw("?*const Partition"))
+        .bodyWith(matchers.items, struct {
+        fn f(prts: []const Matcher, b: *BlockBuild) !void {
+            try b.raw("if (partitions.get(region)) |p| return p");
+
+            var default: ?Expr = null;
+            for (prts) |matcher| {
+                if (mem.eql(u8, "matchAws", matcher.func)) default = matcher.partition;
+                try b.@"if"(b.x.call(matcher.func, &.{b.x.id("region")}))
+                    .body(b.x.returns().fromExpr(matcher.partition)).end();
+            }
+
+            if (default) |partition| {
+                try b.returns().fromExpr(partition).end();
+            } else {
+                try b.returns().valueOf(null).end();
+            }
+        }
+    }.f);
+
+    try writeRegexUtils(bld);
 }
 
 fn processPartition(
@@ -70,53 +94,41 @@ fn processPartition(
     bld: *ContainerBuild,
     reader: *JsonReader,
     regions: *std.ArrayList(ExprBuild),
+    matchers: *std.ArrayList(Matcher),
 ) !void {
     var id: []u8 = "";
+    var matcher: []u8 = "";
     var regex: []const u8 = "";
-    var out_name: []const u8 = "";
-    var out_dns_suffix: []const u8 = "";
-    var out_dual_dns_suffix: []const u8 = "";
-    var out_supports_fips: bool = false;
-    var out_supports_dual_stack: bool = false;
-    var out_implicit_region: []const u8 = "";
+    var outputs: Partition = .{};
 
     while (try reader.peek() == .string) {
-        var key = try reader.nextString();
+        const key = try reader.nextString();
         if (mem.eql(u8, "id", key)) {
             const raw = try reader.nextString();
+
             id = try std.fmt.allocPrint(arena, "prtn_{s}", .{raw});
             mem.replaceScalar(u8, id[6..id.len], '-', '_');
+
+            matcher = try std.fmt.allocPrint(arena, "match{s}", .{try name_util.pascalCase(arena, raw)});
+            try matchers.append(
+                .{ .func = matcher, .partition = try bld.x.addressOf().id(id).consume() },
+            );
         } else if (mem.eql(u8, "outputs", key)) {
-            try reader.nextObjectBegin();
-            while (try reader.peek() == .string) {
-                key = try reader.nextString();
-                if (mem.eql(u8, "name", key)) {
-                    out_name = try reader.nextStringAlloc(arena);
-                } else if (mem.eql(u8, "dnsSuffix", key)) {
-                    out_dns_suffix = try reader.nextStringAlloc(arena);
-                } else if (mem.eql(u8, "dualStackDnsSuffix", key)) {
-                    out_dual_dns_suffix = try reader.nextStringAlloc(arena);
-                } else if (mem.eql(u8, "supportsFIPS", key)) {
-                    out_supports_fips = try reader.nextBoolean();
-                } else if (mem.eql(u8, "supportsDualStack", key)) {
-                    out_supports_dual_stack = try reader.nextBoolean();
-                } else if (mem.eql(u8, "implicitGlobalRegion", key)) {
-                    out_implicit_region = try reader.nextStringAlloc(arena);
-                } else {
-                    return error.UnexpectedKey;
-                }
-            }
-            try reader.nextObjectEnd();
+            outputs = try Partition.parse(arena, reader);
+            if (!outputs.isValid()) return error.InvalidOutputs;
         } else if (mem.eql(u8, "regionRegex", key)) {
             regex = try reader.nextString();
         } else if (mem.eql(u8, "regions", key)) {
-            const target = bld.x.addressOf().id(id);
+            if (id.len == 0) return error.MissingId;
+            if (outputs.is_empty) return error.MissingOutputs;
+            const prtn_target = bld.x.addressOf().id(id);
             try reader.nextObjectBegin();
             while (try reader.peek() != .object_end) {
                 const region = bld.x.valueOf(try reader.nextStringAlloc(arena));
-                const dibi = bld.x.structLiteral(null, &.{ region, target });
-                try regions.append(dibi);
-                try reader.skipValueOrScope();
+                const override = try Partition.parse(arena, reader);
+                const value = if (override.is_empty) prtn_target else outputs.mergeFrom(override).consume(bld);
+                const pair = bld.x.structLiteral(null, &.{ region, value });
+                try regions.append(pair);
             }
             try reader.nextObjectEnd();
         } else {
@@ -124,25 +136,16 @@ fn processPartition(
         }
     }
     try reader.nextObjectEnd();
+    if (regex.len == 0 or matcher.len == 0) return error.MissingKeys;
 
-    if (id.len == 0 or regex.len == 0 or out_dns_suffix.len == 0 or
-        out_dual_dns_suffix.len == 0 or out_implicit_region.len == 0)
-    {
-        return error.MissingKey;
-    }
+    try bld.constant(id).assign(outputs.consume(bld));
 
-    try bld.constant(id).assign(bld.x.structLiteral(bld.x.id("Partition"), &.{
-        bld.x.structAssign("name", bld.x.valueOf(out_name)),
-        bld.x.structAssign("dns_suffix", bld.x.valueOf(out_dns_suffix)),
-        bld.x.structAssign("dual_stack_dns_suffix", bld.x.valueOf(out_dual_dns_suffix)),
-        bld.x.structAssign("supports_fips", bld.x.valueOf(out_supports_fips)),
-        bld.x.structAssign("supports_dual_stack", bld.x.valueOf(out_supports_dual_stack)),
-        bld.x.structAssign("implicit_global_region", bld.x.valueOf(out_implicit_region)),
-    }));
+    try bld.function(matcher).arg("code", bld.x.typeOf([]const u8)).returns(bld.x.typeOf(bool))
+        .bodyWith(regex, writeRegexMatcher);
 }
 
 test "PartitionsCodegen" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    var arena = std.heap.ArenaAllocator.init(test_alloc);
     const arena_alloc = arena.allocator();
     defer arena.deinit();
 
@@ -156,14 +159,224 @@ test "PartitionsCodegen" {
     try codegen_tasks.expectEqualZigScript(TEST_OUT, output);
 }
 
+const Partition = struct {
+    is_empty: bool = true,
+    name: ?[]const u8 = null,
+    dns_suffix: ?[]const u8 = null,
+    dual_stack_dns_suffix: ?[]const u8 = null,
+    supports_fips: ?bool = null,
+    supports_dual_stack: ?bool = null,
+    implicit_global_region: ?[]const u8 = null,
+
+    const fields = .{ "name", "dns_suffix", "dual_stack_dns_suffix", "supports_fips", "supports_dual_stack", "implicit_global_region" };
+
+    pub fn isValid(self: Partition) bool {
+        if (self.is_empty) return false;
+        inline for (fields) |field| {
+            if (@field(self, field) == null) return false;
+        }
+        return true;
+    }
+
+    pub fn mergeFrom(self: Partition, override: Partition) Partition {
+        var merged = self;
+        inline for (fields) |field| {
+            if (@field(override, field)) |val| @field(merged, field) = val;
+        }
+        return merged;
+    }
+
+    pub fn parse(arena: Allocator, reader: *JsonReader) !Partition {
+        var value: Partition = .{};
+        try reader.nextObjectBegin();
+        while (try reader.peek() == .string) {
+            const key = try reader.nextString();
+            if (mem.eql(u8, "name", key)) {
+                value.is_empty = false;
+                value.name = try reader.nextStringAlloc(arena);
+            } else if (mem.eql(u8, "dnsSuffix", key)) {
+                value.is_empty = false;
+                value.dns_suffix = try reader.nextStringAlloc(arena);
+            } else if (mem.eql(u8, "dualStackDnsSuffix", key)) {
+                value.is_empty = false;
+                value.dual_stack_dns_suffix = try reader.nextStringAlloc(arena);
+            } else if (mem.eql(u8, "supportsFIPS", key)) {
+                value.is_empty = false;
+                value.supports_fips = try reader.nextBoolean();
+            } else if (mem.eql(u8, "supportsDualStack", key)) {
+                value.is_empty = false;
+                value.supports_dual_stack = try reader.nextBoolean();
+            } else if (mem.eql(u8, "implicitGlobalRegion", key)) {
+                value.is_empty = false;
+                value.implicit_global_region = try reader.nextStringAlloc(arena);
+            } else if (mem.eql(u8, "description", key)) {
+                try reader.skipValueOrScope();
+            } else {
+                return error.UnexpectedKey;
+            }
+        }
+        try reader.nextObjectEnd();
+        return value;
+    }
+
+    pub fn consume(self: Partition, bld: *ContainerBuild) ExprBuild {
+        return bld.x.structLiteral(bld.x.id("Partition"), &.{
+            bld.x.structAssign("name", bld.x.valueOf(self.name)),
+            bld.x.structAssign("dns_suffix", bld.x.valueOf(self.dns_suffix)),
+            bld.x.structAssign("dual_stack_dns_suffix", bld.x.valueOf(self.dual_stack_dns_suffix)),
+            bld.x.structAssign("supports_fips", bld.x.valueOf(self.supports_fips)),
+            bld.x.structAssign("supports_dual_stack", bld.x.valueOf(self.supports_dual_stack)),
+            bld.x.structAssign("implicit_global_region", bld.x.valueOf(self.implicit_global_region)),
+        });
+    }
+};
+
+test "Partition parse" {
+    var arena = std.heap.ArenaAllocator.init(test_alloc);
+    const arena_alloc = arena.allocator();
+    defer arena.deinit();
+
+    var reader = try JsonReader.initFixed(arena_alloc, TEST_OUTPUTS);
+    defer reader.deinit();
+
+    var output = try Partition.parse(arena_alloc, &reader);
+    try testing.expectEqualDeep(Partition{
+        .is_empty = false,
+        .name = "aws",
+        .dns_suffix = "amazonaws.com",
+        .dual_stack_dns_suffix = "api.aws",
+        .supports_fips = true,
+        .supports_dual_stack = true,
+        .implicit_global_region = "us-east-1",
+    }, output);
+
+    try testing.expectEqual(true, output.isValid());
+    output.dns_suffix = null;
+    try testing.expectEqual(false, output.isValid());
+}
+
+test "Partition parse – empty" {
+    var arena = std.heap.ArenaAllocator.init(test_alloc);
+    const arena_alloc = arena.allocator();
+    defer arena.deinit();
+
+    var reader = try JsonReader.initFixed(arena_alloc, "{\"description\":\"foo\"}");
+    defer reader.deinit();
+
+    const output = try Partition.parse(arena_alloc, &reader);
+    try testing.expectEqualDeep(Partition{ .is_empty = true }, output);
+}
+
+fn writeRegexMatcher(regex: []const u8, bld: *BlockBuild) !void {
+    if (regex.len == 0 or regex[0] != '^' or regex[regex.len - 1] != '$') {
+        return error.InvalidRegex;
+    }
+
+    try bld.variable("rest").assign(bld.x.id("code").valRange(bld.x.valueOf(1), bld.x.raw("code.len-1")));
+
+    var it = std.mem.tokenizeSequence(u8, regex[1 .. regex.len - 1], "\\-");
+    while (it.next()) |part| {
+        if (part[0] == '(' and part[part.len - 1] == ')') {
+            var list = std.ArrayList(ExprBuild).init(bld.allocator);
+            errdefer list.deinit();
+
+            var items = std.mem.tokenizeSequence(u8, part[1 .. part.len - 1], "|");
+            while (items.next()) |item| {
+                try list.append(bld.x.structLiteral(null, &.{bld.x.valueOf(item)}));
+            }
+
+            try bld.@"if"(
+                bld.x.op(.not).call("matchAny", &.{
+                    bld.x.addressOf().id("rest"),
+                    bld.x.structLiteral(null, try list.toOwnedSlice()),
+                }),
+            ).body(bld.x.returns().valueOf(false)).end();
+        } else if (mem.eql(u8, "\\w+", part)) {
+            try bld.raw("if (!matchWord(&rest)) return false");
+        } else if (mem.eql(u8, "\\d+", part)) {
+            try bld.raw("if (!matchNumber(&rest)) return false");
+        } else {
+            try bld.@"if"(
+                bld.x.op(.not).call("matchString", &.{
+                    bld.x.addressOf().id("rest"),
+                    bld.x.valueOf(part),
+                }),
+            ).body(bld.x.returns().valueOf(false)).end();
+        }
+
+        if (it.rest().len > 0) try bld.raw("if (!matchDash(&rest)) return false");
+    }
+
+    try bld.returns().valueOf(true).end();
+}
+
+fn writeRegexUtils(bld: *ContainerBuild) !void {
+    try bld.function("matchAny")
+        .arg("rest", bld.x.typeOf(*[]const u8))
+        .arg("values", null)
+        .returns(bld.x.typeOf(bool))
+        .body(struct {
+        fn f(b: *BlockBuild) !void {
+            try b.raw("const set = std.StaticStringMap(void).initComptime(values)");
+            try b.raw("const i = std.mem.indexOfScalar(u8, rest.*, '-') orelse rest.len");
+            try b.raw("if (!set.has(rest[0..i])) return false");
+            try b.raw("rest.* = rest[i..rest.len]");
+            try b.raw("return true");
+        }
+    }.f);
+
+    try bld.function("matchWord")
+        .arg("rest", bld.x.typeOf(*[]const u8))
+        .returns(bld.x.typeOf(bool))
+        .body(struct {
+        fn f(b: *BlockBuild) !void {
+            try b.raw("const i = std.mem.indexOfScalar(u8, rest.*, '-') orelse rest.len");
+            try b.raw("for (rest[0..i]) |c| if (!std.ascii.isAlphabetic(c)) return false");
+            try b.raw("rest.* = rest[i..rest.len]");
+            try b.raw("return true");
+        }
+    }.f);
+
+    try bld.function("matchNumber")
+        .arg("rest", bld.x.typeOf(*[]const u8))
+        .returns(bld.x.typeOf(bool))
+        .body(struct {
+        fn f(b: *BlockBuild) !void {
+            try b.raw("const i = std.mem.indexOfScalar(u8, rest.*, '-') orelse rest.len");
+            try b.raw("for (rest[0..i]) |c| if (!std.ascii.isDigit(c)) return false");
+            try b.raw("rest.* = rest[i..rest.len]");
+            try b.raw("return true");
+        }
+    }.f);
+
+    try bld.function("matchString")
+        .arg("rest", bld.x.typeOf(*[]const u8))
+        .arg("str", bld.x.typeOf([]const u8))
+        .returns(bld.x.typeOf(bool))
+        .body(struct {
+        fn f(b: *BlockBuild) !void {
+            try b.raw("if (!std.mem.startsWith(u8, rest.*, str)) return false");
+            try b.raw("rest.* = rest[str.len..rest.len]");
+            try b.raw("return true");
+        }
+    }.f);
+
+    try bld.function("matchDash")
+        .arg("rest", bld.x.typeOf(*[]const u8))
+        .returns(bld.x.typeOf(bool))
+        .body(struct {
+        fn f(b: *BlockBuild) !void {
+            try b.raw("if (rest.len == 0 or rest[0] != '-') return false");
+            try b.raw("rest.* = rest[1..rest.len]");
+            try b.raw("return true");
+        }
+    }.f);
+}
+
 const TEST_OUT: []const u8 =
     \\const std = @import("std");
     \\
     \\const Partition = @import("aws-runtime").Partition;
-    \\
-    \\pub fn resolve(region: []const u8) ?*const Partition {
-    \\    return partitions.get(region) orelse null;
-    \\}
     \\
     \\const prtn_aws = Partition{
     \\    .name = "aws",
@@ -174,6 +387,22 @@ const TEST_OUT: []const u8 =
     \\    .implicit_global_region = "us-east-1",
     \\};
     \\
+    \\fn matchAws(code: []const u8) bool {
+    \\    var rest = code[1..code.len-1];
+    \\
+    \\    if (!matchAny(&rest, .{ .{"us"}, .{"il"} })) return false;
+    \\
+    \\    if (!matchDash(&rest)) return false;
+    \\
+    \\    if (!matchWord(&rest)) return false;
+    \\
+    \\    if (!matchDash(&rest)) return false;
+    \\
+    \\    if (!matchNumber(&rest)) return false;
+    \\
+    \\    return true;
+    \\}
+    \\
     \\const prtn_aws_cn = Partition{
     \\    .name = "aws-cn",
     \\    .dns_suffix = "amazonaws.com.cn",
@@ -182,6 +411,22 @@ const TEST_OUT: []const u8 =
     \\    .supports_dual_stack = true,
     \\    .implicit_global_region = "cn-northwest-1",
     \\};
+    \\
+    \\fn matchAwsCn(code: []const u8) bool {
+    \\    var rest = code[1..code.len-1];
+    \\
+    \\    if (!matchString(&rest, "cn")) return false;
+    \\
+    \\    if (!matchDash(&rest)) return false;
+    \\
+    \\    if (!matchWord(&rest)) return false;
+    \\
+    \\    if (!matchDash(&rest)) return false;
+    \\
+    \\    if (!matchNumber(&rest)) return false;
+    \\
+    \\    return true;
+    \\}
     \\
     \\const prtn_aws_us_gov = Partition{
     \\    .name = "aws-us-gov",
@@ -192,13 +437,111 @@ const TEST_OUT: []const u8 =
     \\    .implicit_global_region = "us-gov-west-1",
     \\};
     \\
+    \\fn matchAwsUsGov(code: []const u8) bool {
+    \\    var rest = code[1..code.len-1];
+    \\
+    \\    if (!matchString(&rest, "us")) return false;
+    \\
+    \\    if (!matchDash(&rest)) return false;
+    \\
+    \\    if (!matchString(&rest, "gov")) return false;
+    \\
+    \\    if (!matchDash(&rest)) return false;
+    \\
+    \\    if (!matchWord(&rest)) return false;
+    \\
+    \\    if (!matchDash(&rest)) return false;
+    \\
+    \\    if (!matchNumber(&rest)) return false;
+    \\
+    \\    return true;
+    \\}
+    \\
     \\const partitions = std.StaticStringMap(*const Partition).initComptime(.{
     \\    .{ "il-central-1", &prtn_aws },
     \\    .{ "us-east-1", &prtn_aws },
     \\    .{ "aws-cn-global", &prtn_aws_cn },
     \\    .{ "cn-northwest-1", &prtn_aws_cn },
-    \\    .{ "us-gov-west-1", &prtn_aws_us_gov },
+    \\    .{ "us-gov-west-1", Partition{
+    \\        .name = "aws-us-gov",
+    \\        .dns_suffix = "amazonaws.com",
+    \\        .dual_stack_dns_suffix = "api.aws",
+    \\        .supports_fips = false,
+    \\        .supports_dual_stack = true,
+    \\        .implicit_global_region = "us-gov-west-1",
+    \\    } },
     \\});
+    \\
+    \\pub fn resolve(region: []const u8) ?*const Partition {
+    \\    if (partitions.get(region)) |p| return p;
+    \\
+    \\    if (matchAws(region)) return &prtn_aws;
+    \\
+    \\    if (matchAwsCn(region)) return &prtn_aws_cn;
+    \\
+    \\    if (matchAwsUsGov(region)) return &prtn_aws_us_gov;
+    \\
+    \\    return &prtn_aws;
+    \\}
+    \\
+    \\fn matchAny(rest: *[]const u8, values: anytype) bool {
+    \\    const set = std.StaticStringMap(void).initComptime(values);
+    \\
+    \\    const i = std.mem.indexOfScalar(u8, rest.*, '-') orelse rest.len;
+    \\
+    \\    if (!set.has(rest[0..i])) return false;
+    \\
+    \\    rest.* = rest[i..rest.len];
+    \\
+    \\    return true;
+    \\}
+    \\
+    \\fn matchWord(rest: *[]const u8) bool {
+    \\    const i = std.mem.indexOfScalar(u8, rest.*, '-') orelse rest.len;
+    \\
+    \\    for (rest[0..i]) |c| if (!std.ascii.isAlphabetic(c)) return false;
+    \\
+    \\    rest.* = rest[i..rest.len];
+    \\
+    \\    return true;
+    \\}
+    \\
+    \\fn matchNumber(rest: *[]const u8) bool {
+    \\    const i = std.mem.indexOfScalar(u8, rest.*, '-') orelse rest.len;
+    \\
+    \\    for (rest[0..i]) |c| if (!std.ascii.isDigit(c)) return false;
+    \\
+    \\    rest.* = rest[i..rest.len];
+    \\
+    \\    return true;
+    \\}
+    \\
+    \\fn matchString(rest: *[]const u8, str: []const u8) bool {
+    \\    if (!std.mem.startsWith(u8, rest.*, str)) return false;
+    \\
+    \\    rest.* = rest[str.len..rest.len];
+    \\
+    \\    return true;
+    \\}
+    \\
+    \\fn matchDash(rest: *[]const u8) bool {
+    \\    if (rest.len == 0 or rest[0] != '-') return false;
+    \\
+    \\    rest.* = rest[1..rest.len];
+    \\
+    \\    return true;
+    \\}
+;
+
+const TEST_OUTPUTS: []const u8 =
+    \\{
+    \\    "dnsSuffix": "amazonaws.com",
+    \\    "dualStackDnsSuffix": "api.aws",
+    \\    "implicitGlobalRegion": "us-east-1",
+    \\    "name": "aws",
+    \\    "supportsDualStack": true,
+    \\    "supportsFIPS": true
+    \\}
 ;
 
 const TEST_SRC: []const u8 =
@@ -257,7 +600,8 @@ const TEST_SRC: []const u8 =
     \\      "regionRegex": "^us\\-gov\\-\\w+\\-\\d+$",
     \\      "regions": {
     \\        "us-gov-west-1": {
-    \\            "description": "AWS GovCloud (US-West)"
+    \\            "description": "AWS GovCloud (US-West)",
+    \\            "supportsFIPS": false
     \\        }
     \\      }
     \\    }

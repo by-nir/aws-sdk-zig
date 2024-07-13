@@ -1,3 +1,5 @@
+// https://github.com/awslabs/aws-c-sdkutils/blob/main/source/endpoints_standard_lib.c
+
 const std = @import("std");
 const mem = std.mem;
 const Allocator = mem.Allocator;

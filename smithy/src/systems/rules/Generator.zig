@@ -113,6 +113,7 @@ test "generateParametersFields" {
     );
 }
 
+// https://github.com/awslabs/aws-c-sdkutils/blob/main/source/endpoints_rule_engine.c
 pub fn generateResolver(
     self: *Self,
     bld: *ContainerBuild,
@@ -775,6 +776,7 @@ pub const Tester = struct {
     }
 };
 
+// https://github.com/awslabs/aws-c-sdkutils/blob/main/tests/endpoints_rule_engine_tests.c
 pub fn generateTests(
     self: *Self,
     bld: *ContainerBuild,

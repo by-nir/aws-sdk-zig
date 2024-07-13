@@ -1,3 +1,6 @@
+// https://github.com/awslabs/aws-c-sdkutils/blob/main/source/endpoints_ruleset.c
+// https://github.com/awslabs/aws-c-sdkutils/blob/main/source/endpoints_types_impl.c
+
 const std = @import("std");
 const testing = std.testing;
 const lib = @import("library.zig");

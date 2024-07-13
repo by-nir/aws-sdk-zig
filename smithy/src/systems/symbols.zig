@@ -483,7 +483,7 @@ pub const SymbolsProvider = struct {
     pub fn getShapeName(self: SymbolsProvider, id: SmithyId, format: NameFormat) ![]const u8 {
         const raw = self.model_names.get(id) orelse return error.NameNotFound;
         return switch (format) {
-            .type => raw,
+            .type => raw, // we assume shape names are already in pascal case
             .field => name_util.snakeCase(self.arena, raw),
             .function => name_util.camelCase(self.arena, raw),
             .constant => name_util.screamCase(self.arena, raw),
