@@ -45,9 +45,6 @@ pub fn init(arena: Allocator, engine: Engine, params: ParamsList) !Self {
     try fields.ensureTotalCapacity(arena, @intCast(params.len));
 
     for (params) |kv| {
-        const name = try name_util.snakeCase(arena, kv.key);
-        defer arena.free(name);
-
         const param = kv.value;
         const builtin = if (param.built_in) |id| try engine.getBuiltIn(id) else null;
         const is_direct = !param.type.hasDefault() and (builtin == null or builtin.?.genFn == null);
@@ -55,10 +52,13 @@ pub fn init(arena: Allocator, engine: Engine, params: ParamsList) !Self {
         fields.putAssumeCapacity(kv.key, .{
             .is_direct = is_direct,
             .is_optional = !param.required,
-            .name = if (is_direct)
-                try std.fmt.allocPrint(arena, ARG_CONFIG ++ ".{}", .{std.zig.fmtId(name)})
-            else
-                try std.fmt.allocPrint(arena, "param_{s}", .{name}),
+            .name = if (is_direct) blk: {
+                const name = try name_util.snakeCase(arena, kv.key);
+                defer arena.free(name);
+                break :blk try std.fmt.allocPrint(arena, ARG_CONFIG ++ ".{}", .{std.zig.fmtId(name)});
+            } else blk: {
+                break :blk try std.fmt.allocPrint(arena, "param_{s}", .{name_util.SnakeCase{ .value = kv.key }});
+            },
         });
     }
 

@@ -16,7 +16,7 @@ const Expr = zig.Expr;
 const ExprBuild = zig.ExprBuild;
 const BlockBuild = zig.BlockBuild;
 const ContainerBuild = zig.ContainerBuild;
-const name_util = smithy.name_util;
+const PascalCase = smithy.name_util.PascalCase;
 
 const Matcher = struct {
     func: []const u8,
@@ -109,7 +109,7 @@ fn processPartition(
             id = try std.fmt.allocPrint(arena, "prtn_{s}", .{raw});
             mem.replaceScalar(u8, id[6..id.len], '-', '_');
 
-            matcher = try std.fmt.allocPrint(arena, "match{s}", .{try name_util.pascalCase(arena, raw)});
+            matcher = try std.fmt.allocPrint(arena, "match{s}", .{PascalCase{ .value = raw }});
             try matchers.append(
                 .{ .func = matcher, .partition = try bld.x.addressOf().id(id).consume() },
             );

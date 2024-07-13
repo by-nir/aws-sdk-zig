@@ -87,7 +87,7 @@ fn writeShapeTask(
             error.InvalidRootShape,
         else => error.InvalidRootShape,
     }) catch |e| {
-        const shape_name = symbols.getShapeName(id, .type);
+        const shape_name = symbols.getShapeNameRaw(id);
         const name_id: IssuesBag.Issue.NameOrId = if (shape_name) |n|
             .{ .name = n }
         else |_|

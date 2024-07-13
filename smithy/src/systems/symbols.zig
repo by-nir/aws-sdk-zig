@@ -480,6 +480,10 @@ pub const SymbolsProvider = struct {
         title,
     };
 
+    pub fn getShapeNameRaw(self: SymbolsProvider, id: SmithyId) ![]const u8 {
+        return self.model_names.get(id) orelse error.NameNotFound;
+    }
+
     pub fn getShapeName(self: SymbolsProvider, id: SmithyId, format: NameFormat) ![]const u8 {
         const raw = self.model_names.get(id) orelse return error.NameNotFound;
         return switch (format) {
@@ -661,7 +665,7 @@ test "SymbolsProvider: model" {
         symbols.getShapeUnwrap(SmithyId.of("test#undefined")),
     );
 
-    try testing.expectEqualStrings("Foo", try symbols.getShapeName(shape_foo, .type));
+    try testing.expectEqualStrings("Foo", try symbols.getShapeNameRaw(shape_foo));
     const field_name = try symbols.getShapeName(shape_foo, .field);
     defer test_alloc.free(field_name);
     try testing.expectEqualStrings("foo", field_name);
@@ -713,10 +717,7 @@ test "SymbolsProvider: names" {
     try testing.expectEqualStrings("FooBar", try symbols.getShapeName(foobar_id, .type));
     try testing.expectEqualStrings("FOO_BAR", try symbols.getShapeName(foobar_id, .constant));
     try testing.expectEqualStrings("Foo Bar", try symbols.getShapeName(foobar_id, .title));
-    try testing.expectError(
-        error.NameNotFound,
-        symbols.getShapeName(SmithyId.of("test#undefined"), .type),
-    );
+    try testing.expectError(error.NameNotFound, symbols.getShapeName(SmithyId.of("test#undefined"), .type));
 
     try testing.expectError(
         error.UnexpectedDocumentShape,

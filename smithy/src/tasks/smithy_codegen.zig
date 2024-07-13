@@ -176,8 +176,8 @@ fn serviceResourceTask(
 }
 
 fn resourceFilename(allocator: Allocator, symbols: *SymbolsProvider, id: SmithyId) ![]const u8 {
-    const shape_name = try symbols.getShapeName(id, .field);
-    return try std.fmt.allocPrint(allocator, "resource_{s}.zig", .{shape_name});
+    const shape_name = try symbols.getShapeNameRaw(id);
+    return try std.fmt.allocPrint(allocator, "resource_{s}.zig", .{name_util.SnakeCase{ .value = shape_name }});
 }
 
 test "ServiceResource" {
