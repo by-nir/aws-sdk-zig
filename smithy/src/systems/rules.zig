@@ -16,6 +16,7 @@ pub const Function = library.Function;
 pub const BuiltInsRegistry = library.BuiltInsRegistry;
 pub const FunctionsRegistry = library.FunctionsRegistry;
 
+pub const std_builtins = library.std_builtins;
 pub const RulesEngine = @import("rules/RulesEngine.zig");
 pub const Generator = @import("rules/Generator.zig");
 

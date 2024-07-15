@@ -879,6 +879,14 @@ pub const ExprBuild = struct {
         return self.append(.{ .flow = .{ .token_reflow = data } });
     }
 
+    pub fn inlines(self: *const ExprBuild) ExprBuild {
+        const data = flow.TokenReflow{
+            .token = .keyword_inline,
+            .label = null,
+        };
+        return self.append(.{ .flow = .{ .token_reflow = data } });
+    }
+
     pub fn returns(self: *const ExprBuild) ExprBuild {
         const data = flow.TokenReflow{
             .token = .keyword_return,
@@ -906,6 +914,7 @@ pub const ExprBuild = struct {
     test "reflows" {
         const build = ExprBuild.init(test_alloc);
         try build.trys().raw("foo").expect("try foo");
+        try build.inlines().raw("foo").expect("inline foo");
         try build.returns().raw("foo").expect("return foo");
         try build.breaks("foo").raw("bar").expect("break :foo bar");
         try build.continues("foo").raw("bar").expect("continue :foo bar");

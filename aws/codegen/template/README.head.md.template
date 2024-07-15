@@ -1,4 +1,4 @@
-# {[title]s} SDK for Zig
+# {[title]s} – AWS SDK for Zig
 
 ![Zig v0.14 (dev)](https://img.shields.io/badge/Zig-v0.14_(dev)-black?logo=zig&logoColor=F7A41D "Zig v0.14 – master branch")
 [![MIT License](https://img.shields.io/github/license/by-nir/aws-sdk-zig)](https://github.com/by-nir/aws-sdk-zig/LICENSE)

@@ -6,9 +6,9 @@ const Task = pipez.Task;
 const Delegate = pipez.Delegate;
 const Pipeline = pipez.Pipeline;
 const files_tasks = smithy.files_tasks;
-const sdk = @import("tasks/sdk.zig");
+const sdk_client = @import("tasks/client.zig");
 const conf_region = @import("tasks/config_region.zig");
-const Partitions = @import("tasks/config_partitions.zig").Partitions;
+const conf_partition = @import("tasks/config_partitions.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -30,7 +30,7 @@ pub fn main() !void {
     var out_sdk_dir = try fs.cwd().makeOpenPath(args[3], .{});
     defer out_sdk_dir.close();
 
-    var pipeline = try Pipeline.init(alloc, .{ .invoker = sdk.pipeline_invoker });
+    var pipeline = try Pipeline.init(alloc, .{ .invoker = sdk_client.pipeline_invoker });
     defer pipeline.deinit();
 
     const whitelist = args[4..args.len];
@@ -49,7 +49,7 @@ fn awsTask(
 
     var region_defs = std.ArrayList(conf_region.RegionDef).init(self.alloc());
 
-    try self.evaluate(Partitions, .{ "partitions.gen.zig", files_tasks.FileOptions{
+    try self.evaluate(conf_partition.Partitions, .{ "partitions.gen.zig", files_tasks.FileOptions{
         .delete_on_error = true,
     }, src_dir, &region_defs });
 
@@ -59,7 +59,7 @@ fn awsTask(
     }, try region_defs.toOwnedSlice() });
 
     try files_tasks.overrideWorkDir(self, out_sdk_dir);
-    try self.evaluate(sdk.Sdk, .{ src_dir, whitelist });
+    try self.evaluate(sdk_client.Sdk, .{ src_dir, whitelist });
 }
 
 test {
@@ -71,7 +71,7 @@ test {
     _ = @import("integrate/iam.zig");
     _ = @import("integrate/protocols.zig");
     _ = @import("integrate/rules.zig");
+    _ = conf_partition;
     _ = conf_region;
-    _ = @import("tasks/sdk.zig");
-    _ = @import("tasks/config_partitions.zig");
+    _ = sdk_client;
 }

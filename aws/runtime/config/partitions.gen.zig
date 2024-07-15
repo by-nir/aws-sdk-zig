@@ -5,7 +5,7 @@
 
 const std = @import("std");
 
-const Partition = @import("aws-runtime").Partition;
+const Partition = @import("endpoint.zig").Partition;
 
 const prtn_aws = Partition{
     .name = "aws",
@@ -280,9 +280,9 @@ fn matchAny(rest: *[]const u8, values: anytype) bool {
 
     const i = std.mem.indexOfScalar(u8, rest.*, '-') orelse rest.len;
 
-    if (!set.has(rest[0..i])) return false;
+    if (!set.has(rest.*[0..i])) return false;
 
-    rest.* = rest[i..rest.len];
+    rest.* = rest.*[i..rest.len];
 
     return true;
 }
@@ -290,9 +290,9 @@ fn matchAny(rest: *[]const u8, values: anytype) bool {
 fn matchWord(rest: *[]const u8) bool {
     const i = std.mem.indexOfScalar(u8, rest.*, '-') orelse rest.len;
 
-    for (rest[0..i]) |c| if (!std.ascii.isAlphabetic(c)) return false;
+    for (rest.*[0..i]) |c| if (!std.ascii.isAlphanumeric(c) and c != '_') return false;
 
-    rest.* = rest[i..rest.len];
+    rest.* = rest.*[i..rest.len];
 
     return true;
 }
@@ -300,9 +300,9 @@ fn matchWord(rest: *[]const u8) bool {
 fn matchNumber(rest: *[]const u8) bool {
     const i = std.mem.indexOfScalar(u8, rest.*, '-') orelse rest.len;
 
-    for (rest[0..i]) |c| if (!std.ascii.isDigit(c)) return false;
+    for (rest.*[0..i]) |c| if (!std.ascii.isDigit(c)) return false;
 
-    rest.* = rest[i..rest.len];
+    rest.* = rest.*[i..rest.len];
 
     return true;
 }
@@ -310,15 +310,15 @@ fn matchNumber(rest: *[]const u8) bool {
 fn matchString(rest: *[]const u8, str: []const u8) bool {
     if (!std.mem.startsWith(u8, rest.*, str)) return false;
 
-    rest.* = rest[str.len..rest.len];
+    rest.* = rest.*[str.len..rest.len];
 
     return true;
 }
 
 fn matchDash(rest: *[]const u8) bool {
-    if (rest.len == 0 or rest[0] != '-') return false;
+    if (rest.len == 0 or rest.*[0] != '-') return false;
 
-    rest.* = rest[1..rest.len];
+    rest.* = rest.*[1..rest.len];
 
     return true;
 }

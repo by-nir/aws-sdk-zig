@@ -46,8 +46,7 @@ pub fn init(arena: Allocator, engine: Engine, params: ParamsList) !Self {
 
     for (params) |kv| {
         const param = kv.value;
-        const builtin = if (param.built_in) |id| try engine.getBuiltIn(id) else null;
-        const is_direct = !param.type.hasDefault() and (builtin == null or builtin.?.genFn == null);
+        const is_direct = !param.type.hasDefault();
 
         fields.putAssumeCapacity(kv.key, .{
             .is_direct = is_direct,
@@ -171,14 +170,10 @@ fn generateParamBinding(
     source_name: []const u8,
     param: mdl.Parameter,
 ) !void {
-    var builtin_eval: ?Expr = null;
     var typ: mdl.ParamValue = param.type;
     if (param.built_in) |id| {
         const built_in = try self.engine.getBuiltIn(id);
         typ = built_in.type;
-        if (built_in.genFn) |hook| {
-            builtin_eval = try hook(self, bld.x);
-        }
     }
 
     var typing: ExprBuild = undefined;
@@ -204,13 +199,12 @@ fn generateParamBinding(
     if (!param.required) typing = bld.x.typeOptional(typing);
 
     const val_1 = bld.x.raw(ARG_CONFIG).dot().id(try name_util.snakeCase(self.arena, source_name));
-    const val_2 = if (builtin_eval) |eval| val_1.orElse().fromExpr(eval) else val_1;
-    const val_3 = if (default) |t| val_2.orElse().buildExpr(t) else blk: {
-        if (param.required and builtin_eval == null) return error.RulesRequiredParamHasNoValue;
-        break :blk val_2;
+    const val_2 = if (default) |t| val_1.orElse().buildExpr(t) else blk: {
+        if (param.required) return error.RulesRequiredParamHasNoValue;
+        break :blk val_1;
     };
 
-    try bld.constant(field_name).typing(typing).assign(val_3);
+    try bld.constant(field_name).typing(typing).assign(val_2);
 }
 
 test "generateParamBinding" {

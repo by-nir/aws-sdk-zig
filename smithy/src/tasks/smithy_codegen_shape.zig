@@ -738,10 +738,9 @@ fn writeServiceShape(
     id: SmithyId,
     service: *const syb.SmithyService,
 ) !void {
-    const service_name = try symbols.getShapeName(id, .type);
     try writeDocComment(self.alloc(), symbols, bld, id, false);
     const context = .{ .self = self, .symbols = symbols, .service = service };
-    try bld.public().constant(service_name).assign(
+    try bld.public().constant("Client").assign(
         bld.x.@"struct"().bodyWith(context, struct {
             fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
                 if (ctx.self.hasOverride(ServiceHeadHook)) {
@@ -767,7 +766,7 @@ test "writeServiceShape" {
         }
     }.eval,
         \\/// Some _service_...
-        \\pub const Service = struct {
+        \\pub const Client = struct {
         \\    pub fn operation(self: @This(), input: OperationInput) smithy.Result(OperationOutput, service_errors.OperationErrors) {
         \\        return undefined;
         \\    }

@@ -44,7 +44,7 @@ fn partitionsCodegenTask(
     region_defs: *std.ArrayList(RegionDef),
 ) anyerror!void {
     try bld.constant("std").assign(bld.x.import("std"));
-    try bld.constant("Partition").assign(bld.x.import("aws-runtime").dot().raw("Partition"));
+    try bld.constant("Partition").assign(bld.x.import("endpoint.zig").dot().raw("Partition"));
 
     var matchers = std.ArrayList(Matcher).init(self.alloc());
     var region_parts = std.ArrayList(zig.ExprBuild).init(self.alloc());
@@ -354,8 +354,8 @@ fn writeRegexUtils(bld: *zig.ContainerBuild) !void {
         fn f(b: *zig.BlockBuild) !void {
             try b.raw("const set = std.StaticStringMap(void).initComptime(values)");
             try b.raw("const i = std.mem.indexOfScalar(u8, rest.*, '-') orelse rest.len");
-            try b.raw("if (!set.has(rest[0..i])) return false");
-            try b.raw("rest.* = rest[i..rest.len]");
+            try b.raw("if (!set.has(rest.*[0..i])) return false");
+            try b.raw("rest.* = rest.*[i..rest.len]");
             try b.raw("return true");
         }
     }.f);
@@ -366,8 +366,8 @@ fn writeRegexUtils(bld: *zig.ContainerBuild) !void {
         .body(struct {
         fn f(b: *zig.BlockBuild) !void {
             try b.raw("const i = std.mem.indexOfScalar(u8, rest.*, '-') orelse rest.len");
-            try b.raw("for (rest[0..i]) |c| if (!std.ascii.isAlphabetic(c)) return false");
-            try b.raw("rest.* = rest[i..rest.len]");
+            try b.raw("for (rest.*[0..i]) |c| if (!std.ascii.isAlphanumeric(c) and c != '_') return false");
+            try b.raw("rest.* = rest.*[i..rest.len]");
             try b.raw("return true");
         }
     }.f);
@@ -378,8 +378,8 @@ fn writeRegexUtils(bld: *zig.ContainerBuild) !void {
         .body(struct {
         fn f(b: *zig.BlockBuild) !void {
             try b.raw("const i = std.mem.indexOfScalar(u8, rest.*, '-') orelse rest.len");
-            try b.raw("for (rest[0..i]) |c| if (!std.ascii.isDigit(c)) return false");
-            try b.raw("rest.* = rest[i..rest.len]");
+            try b.raw("for (rest.*[0..i]) |c| if (!std.ascii.isDigit(c)) return false");
+            try b.raw("rest.* = rest.*[i..rest.len]");
             try b.raw("return true");
         }
     }.f);
@@ -391,7 +391,7 @@ fn writeRegexUtils(bld: *zig.ContainerBuild) !void {
         .body(struct {
         fn f(b: *zig.BlockBuild) !void {
             try b.raw("if (!std.mem.startsWith(u8, rest.*, str)) return false");
-            try b.raw("rest.* = rest[str.len..rest.len]");
+            try b.raw("rest.* = rest.*[str.len..rest.len]");
             try b.raw("return true");
         }
     }.f);
@@ -401,8 +401,8 @@ fn writeRegexUtils(bld: *zig.ContainerBuild) !void {
         .returns(bld.x.typeOf(bool))
         .body(struct {
         fn f(b: *zig.BlockBuild) !void {
-            try b.raw("if (rest.len == 0 or rest[0] != '-') return false");
-            try b.raw("rest.* = rest[1..rest.len]");
+            try b.raw("if (rest.len == 0 or rest.*[0] != '-') return false");
+            try b.raw("rest.* = rest.*[1..rest.len]");
             try b.raw("return true");
         }
     }.f);
@@ -411,7 +411,7 @@ fn writeRegexUtils(bld: *zig.ContainerBuild) !void {
 const TEST_OUT: []const u8 =
     \\const std = @import("std");
     \\
-    \\const Partition = @import("aws-runtime").Partition;
+    \\const Partition = @import("endpoint.zig").Partition;
     \\
     \\const prtn_aws = Partition{
     \\    .name = "aws",
@@ -524,9 +524,9 @@ const TEST_OUT: []const u8 =
     \\
     \\    const i = std.mem.indexOfScalar(u8, rest.*, '-') orelse rest.len;
     \\
-    \\    if (!set.has(rest[0..i])) return false;
+    \\    if (!set.has(rest.*[0..i])) return false;
     \\
-    \\    rest.* = rest[i..rest.len];
+    \\    rest.* = rest.*[i..rest.len];
     \\
     \\    return true;
     \\}
@@ -534,9 +534,9 @@ const TEST_OUT: []const u8 =
     \\fn matchWord(rest: *[]const u8) bool {
     \\    const i = std.mem.indexOfScalar(u8, rest.*, '-') orelse rest.len;
     \\
-    \\    for (rest[0..i]) |c| if (!std.ascii.isAlphabetic(c)) return false;
+    \\    for (rest.*[0..i]) |c| if (!std.ascii.isAlphanumeric(c) and c != '_') return false;
     \\
-    \\    rest.* = rest[i..rest.len];
+    \\    rest.* = rest.*[i..rest.len];
     \\
     \\    return true;
     \\}
@@ -544,9 +544,9 @@ const TEST_OUT: []const u8 =
     \\fn matchNumber(rest: *[]const u8) bool {
     \\    const i = std.mem.indexOfScalar(u8, rest.*, '-') orelse rest.len;
     \\
-    \\    for (rest[0..i]) |c| if (!std.ascii.isDigit(c)) return false;
+    \\    for (rest.*[0..i]) |c| if (!std.ascii.isDigit(c)) return false;
     \\
-    \\    rest.* = rest[i..rest.len];
+    \\    rest.* = rest.*[i..rest.len];
     \\
     \\    return true;
     \\}
@@ -554,15 +554,15 @@ const TEST_OUT: []const u8 =
     \\fn matchString(rest: *[]const u8, str: []const u8) bool {
     \\    if (!std.mem.startsWith(u8, rest.*, str)) return false;
     \\
-    \\    rest.* = rest[str.len..rest.len];
+    \\    rest.* = rest.*[str.len..rest.len];
     \\
     \\    return true;
     \\}
     \\
     \\fn matchDash(rest: *[]const u8) bool {
-    \\    if (rest.len == 0 or rest[0] != '-') return false;
+    \\    if (rest.len == 0 or rest.*[0] != '-') return false;
     \\
-    \\    rest.* = rest[1..rest.len];
+    \\    rest.* = rest.*[1..rest.len];
     \\
     \\    return true;
     \\}

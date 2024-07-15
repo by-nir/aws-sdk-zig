@@ -25,8 +25,8 @@ pub const CodegenPolicy = smithy_codegen.CodegenPolicy;
 pub const ReadmeMetadata = smithy_codegen.ReadmeMetadata;
 pub const ScriptHeadHook = smithy_codegen.ScriptHeadHook;
 pub const ServiceReadmeHook = smithy_codegen.ServiceReadmeHook;
-pub const ClientScriptHeadHook = smithy_codegen.ClientScriptHeadHook;
-pub const EndpointScriptHeadHook = smithy_codegen.EndpointScriptHeadHook;
+pub const ExtendClientScriptHook = smithy_codegen.ExtendClientScriptHook;
+pub const ExtendEndpointScriptHook = smithy_codegen.ExtendEndpointScriptHook;
 
 const smithy_codegen_shape = @import("tasks/smithy_codegen_shape.zig");
 pub const ErrorShape = smithy_codegen_shape.ErrorShape;
@@ -43,12 +43,14 @@ const trt = @import("systems/traits.zig");
 pub const TraitsRegistry = trt.TraitsRegistry;
 
 const rls = @import("systems/rules.zig");
+pub const RuleSet = rls.RuleSet;
 pub const RulesFunc = rls.Function;
 pub const RulesBuiltIn = rls.BuiltIn;
 pub const RulesGenerator = rls.Generator;
 pub const RulesArgValue = rls.ArgValue;
 pub const RulesFuncsRegistry = rls.FunctionsRegistry;
 pub const RulesBuiltInsRegistry = rls.BuiltInsRegistry;
+pub const RulesParamKV = rls.StringKV(rls.Parameter);
 
 const IssuesBag = @import("utils/IssuesBag.zig");
 pub const PolicyResolution = IssuesBag.PolicyResolution;

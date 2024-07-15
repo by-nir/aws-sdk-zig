@@ -26,8 +26,8 @@ const test_symbols = @import("../testing/symbols.zig");
 
 pub const ScriptHeadHook = Task.Hook("Smithy Script Head", anyerror!void, &.{*zig.ContainerBuild});
 pub const ServiceReadmeHook = codegen_tasks.MarkdownDoc.Hook("Smithy Readme Codegen", &.{ReadmeMetadata});
-pub const ClientScriptHeadHook = Task.Hook("Smithy Client Script Head", anyerror!void, &.{*zig.ContainerBuild});
-pub const EndpointScriptHeadHook = Task.Hook("Smithy Endpoint Script Head", anyerror!void, &.{*zig.ContainerBuild});
+pub const ExtendClientScriptHook = Task.Hook("Smithy Extend Client Script", anyerror!void, &.{*zig.ContainerBuild});
+pub const ExtendEndpointScriptHook = Task.Hook("Smithy Extend Endpoint Script", anyerror!void, &.{*zig.ContainerBuild});
 
 pub const ReadmeMetadata = struct {
     /// `{[slug]s}` service SDK ID
@@ -97,8 +97,8 @@ fn serviceClientTask(
         try bld.constant(field_name).assign(bld.x.import(filename));
     }
 
-    if (self.hasOverride(ClientScriptHeadHook)) {
-        try self.evaluate(ClientScriptHeadHook, .{bld});
+    if (self.hasOverride(ExtendClientScriptHook)) {
+        try self.evaluate(ExtendClientScriptHook, .{bld});
     }
 
     try symbols.enqueue(symbols.service_id);
@@ -139,7 +139,7 @@ test "ServiceClient" {
         \\const resource_resource = @import("resource_resource.zig");
         \\
         \\/// Some _service_...
-        \\pub const Service = struct {
+        \\pub const Client = struct {
         \\    pub fn operation(self: @This(), input: OperationInput) smithy.Result(OperationOutput, service_errors.OperationErrors) {
         \\        return undefined;
         \\    }
@@ -330,11 +330,11 @@ fn serviceEndpointTask(
         return error.MissingEndpointRuleSet;
     };
 
-    if (self.hasOverride(EndpointScriptHeadHook)) {
-        try self.evaluate(EndpointScriptHeadHook, .{bld});
-    }
-
     try bld.constant("IS_TEST").assign(bld.x.import("builtin").dot().id("is_test"));
+
+    if (self.hasOverride(ExtendEndpointScriptHook)) {
+        try self.evaluate(ExtendEndpointScriptHook, .{bld});
+    }
 
     const func_name = "resolve";
     const config_type = "EndpointConfig";

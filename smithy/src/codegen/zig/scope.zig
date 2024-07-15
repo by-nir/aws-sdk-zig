@@ -867,6 +867,10 @@ pub const BlockBuild = struct {
         return self.startChain().trys();
     }
 
+    pub fn inlines(self: *BlockBuild) ExprBuild {
+        return self.startChain().inlines();
+    }
+
     pub fn returns(self: *BlockBuild) ExprBuild {
         return self.startChain().returns();
     }
@@ -884,6 +888,9 @@ pub const BlockBuild = struct {
         errdefer b.deinit();
         try b.trys().raw("foo").end();
         try b.expect("try foo");
+
+        try b.inlines().raw("foo").end();
+        try b.expect("inline foo");
 
         try b.returns().raw("foo").end();
         try b.expect("return foo");
