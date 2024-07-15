@@ -22,18 +22,13 @@ increased **platform portability**.
 
 ## Contributing
 
-> 👁️ – Publicly accessible module.
->
-> 🏭 – Generated source code – **do not modify directly!**
-
-| 📁 | Description | | |
-|:-|:-|:-:|:-:|
-| [sdk](sdk) | AWS SDKs for Zig | 👁️ | 🏭 |
-| [aws/types](aws/types) | Common types shared by all _AWS modules_ | 👁️ | |
-| [aws/client](aws/client) | Base client runtime for _AWS SDKs_ | | |
-| [aws/codegen](aws/codegen) | SDKs source generation pipeline | | |
-| [smithy/runtime](smithy/runtime) | [Smithy 2.0](https://smithy.io/2.0) client runtime | | |
-| [smithy/src](smithy/src) | [Smithy 2.0](https://smithy.io/2.0) code generator | | |
+| 📁 | Description |
+|:-|:-|
+| [sdk](sdk/) | AWS SDKs for Zig |
+| [aws/runtime](aws/runtime/) | SDK Runtime, shared by all the services _AWS SDKs_ |
+| [aws/codegen](aws/codegen/) | AWS-specific source generation pipeline |
+| [smithy/runtime](smithy/runtime/) | [Smithy 2.0](https://smithy.io/2.0) client runtime |
+| [smithy/src](smithy/src/) | [Smithy 2.0](https://smithy.io/2.0) source generation pipeline |
 
 ### CLI Commands
 

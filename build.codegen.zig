@@ -2,7 +2,7 @@ const std = @import("std");
 const default_whitelist = [_][]const u8{"cloudcontrol"};
 
 pub fn build(b: *std.Build) void {
-    const aws = b.dependency("aws-runtime", .{
+    const aws = b.dependency("aws", .{
         .target = b.graph.host,
     });
 
@@ -18,9 +18,15 @@ pub fn build(b: *std.Build) void {
         aws_codegen.addDirectoryArg(src_dir);
     }
 
+    const aws_out_dir = aws_codegen.addOutputDirectoryArg("aws");
     const sdk_out_dir = aws_codegen.addOutputDirectoryArg("sdk");
     aws_codegen.addArgs(whitelist orelse &default_whitelist);
     b.getInstallStep().dependOn(&aws_codegen.step);
+    b.installDirectory(.{
+        .source_dir = aws_out_dir,
+        .install_dir = .prefix,
+        .install_subdir = "../aws/runtime/config",
+    });
     b.installDirectory(.{
         .source_dir = sdk_out_dir,
         .install_dir = .prefix,

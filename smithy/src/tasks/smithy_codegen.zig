@@ -27,6 +27,7 @@ const test_symbols = @import("../testing/symbols.zig");
 pub const ScriptHeadHook = Task.Hook("Smithy Script Head", anyerror!void, &.{*zig.ContainerBuild});
 pub const ServiceReadmeHook = codegen_tasks.MarkdownDoc.Hook("Smithy Readme Codegen", &.{ReadmeMetadata});
 pub const ClientScriptHeadHook = Task.Hook("Smithy Client Script Head", anyerror!void, &.{*zig.ContainerBuild});
+pub const EndpointScriptHeadHook = Task.Hook("Smithy Endpoint Script Head", anyerror!void, &.{*zig.ContainerBuild});
 
 pub const ReadmeMetadata = struct {
     /// `{[slug]s}` service SDK ID
@@ -329,7 +330,9 @@ fn serviceEndpointTask(
         return error.MissingEndpointRuleSet;
     };
 
-    try bld.constant("resolvePartition").assign(bld.x.import("sdk-partitions").dot().id("resolve"));
+    if (self.hasOverride(EndpointScriptHeadHook)) {
+        try self.evaluate(EndpointScriptHeadHook, .{bld});
+    }
 
     try bld.constant("IS_TEST").assign(bld.x.import("builtin").dot().id("is_test"));
 
@@ -369,8 +372,6 @@ test "ServiceEndpoint" {
 
     symbols.service_id = SmithyId.of("test.serve#Service");
     try expectServiceScript(
-        \\const resolvePartition = @import("sdk-partitions").resolve;
-        \\
         \\const IS_TEST = @import("builtin").is_test;
         \\
         \\pub const EndpointConfig = struct {

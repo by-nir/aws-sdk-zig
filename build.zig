@@ -10,18 +10,17 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const runtime = b.dependency("aws-runtime", .{
+    const aws = b.dependency("aws", .{
         .target = target,
         .optimize = optimize,
     });
-    const aws_types = runtime.module("types");
-    const aws_client = runtime.module("client");
-
-    b.modules.put("aws-types", aws_types) catch {};
+    const sdk_runtime = aws.module("runtime");
 
     //
     // SDK
     //
+
+    b.modules.put("aws-sdk", sdk_runtime) catch {};
 
     const sdk_path = "sdk";
     var sdk_dir = std.fs.openDirAbsolute(b.path(sdk_path).getPath(b), .{ .iterate = true }) catch {
@@ -29,24 +28,14 @@ pub fn build(b: *std.Build) void {
     };
     defer sdk_dir.close();
 
-    // Partitions
-    const sdk_partitions = b.addModule("sdk-partitions", .{
-        .target = target,
-        .optimize = optimize,
-        .root_source_file = b.path("sdk/partitions.zig"),
-        .imports = &.{
-            .{ .name = "aws-runtime", .module = aws_client },
-        },
-    });
-
-    // Clients
+    // Services
     var it = sdk_dir.iterateAssumeFirstIteration();
     while (it.next() catch @panic("Dir iterator error")) |entry| {
         if (entry.kind != .directory) continue;
         addSdkClient(b, .{
             .target = target,
             .optimize = optimize,
-        }, sdk_path, entry.name, aws_types, aws_client, sdk_partitions);
+        }, sdk_path, entry.name, sdk_runtime);
     }
 }
 
@@ -55,9 +44,7 @@ fn addSdkClient(
     options: Options,
     dir: []const u8,
     name: []const u8,
-    aws_types: *Build.Module,
-    aws_client: *Build.Module,
-    sdk_partitions: *Build.Module,
+    runtime: *Build.Module,
 ) void {
     // Client
     const path = b.path(b.fmt("{s}/{s}/client.zig", .{ dir, name }));
@@ -68,9 +55,7 @@ fn addSdkClient(
             .optimize = options.optimize,
             .root_source_file = path,
             .imports = &.{
-                .{ .name = "aws-types", .module = aws_types },
-                .{ .name = "aws-runtime", .module = aws_client },
-                .{ .name = "sdk-partitions", .module = sdk_partitions },
+                .{ .name = "aws-runtime", .module = runtime },
             },
         },
     );
@@ -85,8 +70,6 @@ fn addSdkClient(
         .optimize = options.optimize,
         .root_source_file = path,
     });
-    unit_tests.root_module.addImport("aws-types", aws_types);
-    unit_tests.root_module.addImport("aws-runtime", aws_client);
-    unit_tests.root_module.addImport("sdk-partitions", sdk_partitions);
+    unit_tests.root_module.addImport("aws-runtime", runtime);
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 }

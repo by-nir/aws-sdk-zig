@@ -84,6 +84,7 @@ pub const pipeline_invoker = blk: {
     });
     _ = builder.Override(smithy.ScriptHeadHook, "AWS Script Head", writeScriptHeadHook, .{});
     _ = builder.Override(smithy.ClientScriptHeadHook, "AWS Client Script Head", writeClientScriptHeadHook, .{});
+    _ = builder.Override(smithy.EndpointScriptHeadHook, "AWS Endpoint Script Head", writeEndpointScriptHeadHook, .{});
     _ = builder.Override(smithy.ServiceHeadHook, "AWS Service Shape Head", writeServiceHeadHook, .{});
     _ = builder.Override(smithy.OperationShapeHook, "AWS Operation Shape", writeOperationShapeHook, .{
         .injects = &.{SymbolsProvider},
@@ -124,13 +125,16 @@ fn writeReadmeHook(
 }
 
 fn writeScriptHeadHook(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
-    try bld.constant("aws_types").assign(bld.x.import("aws-types"));
     try bld.constant("aws_runtime").assign(bld.x.import("aws-runtime"));
 }
 
 fn writeClientScriptHeadHook(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
     try bld.constant("Runtime").assign(bld.x.raw("aws_runtime.Client"));
     try bld.constant("Signer").assign(bld.x.raw("aws_runtime.Signer"));
+}
+
+fn writeEndpointScriptHeadHook(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
+    try bld.constant("aws_config").assign(bld.x.raw("aws_runtime.config"));
 }
 
 fn writeServiceHeadHook(_: *const Delegate, bld: *zig.ContainerBuild, _: *const SmithyService) anyerror!void {

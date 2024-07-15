@@ -26,6 +26,7 @@ pub const ReadmeMetadata = smithy_codegen.ReadmeMetadata;
 pub const ScriptHeadHook = smithy_codegen.ScriptHeadHook;
 pub const ServiceReadmeHook = smithy_codegen.ServiceReadmeHook;
 pub const ClientScriptHeadHook = smithy_codegen.ClientScriptHeadHook;
+pub const EndpointScriptHeadHook = smithy_codegen.EndpointScriptHeadHook;
 
 const smithy_codegen_shape = @import("tasks/smithy_codegen_shape.zig");
 pub const ErrorShape = smithy_codegen_shape.ErrorShape;

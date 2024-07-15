@@ -443,6 +443,8 @@ pub const ExprBuild = struct {
         if (self.callback_fn) |callback| {
             errdefer expr.deinit(self.allocator);
             try callback(self.callback_ctx.?, expr);
+        } else if (std.debug.runtime_safety) {
+            unreachable;
         } else {
             return error.NonCallbackExprBuilder;
         }

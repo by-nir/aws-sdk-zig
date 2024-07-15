@@ -19,6 +19,10 @@ pub fn defineWorkDir(delegate: *const Delegate, dir: fs.Dir) !void {
     try delegate.defineValue(fs.Dir, FilesScope.work_dir, dir);
 }
 
+pub fn overrideWorkDir(delegate: *const Delegate, dir: fs.Dir) !void {
+    try delegate.writeValue(fs.Dir, FilesScope.work_dir, dir);
+}
+
 /// Returns the scope’s active directory.
 /// Fallbacks to the executable’s current working directory.
 pub fn getWorkDir(delegate: *const Delegate) fs.Dir {

@@ -4,7 +4,7 @@
     .minimum_zig_version = "0.14.0",
 
     .dependencies = .{
-        .@"aws-runtime" = .{
+        .aws = .{
             .path = "aws",
         },
         .@"aws-models" = .{

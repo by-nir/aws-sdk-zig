@@ -806,13 +806,12 @@ pub const Switch = struct {
             );
 
             const is_inline = switch (self.state) {
-                .idle => false,
+                .idle, .end => false,
                 .inlined => blk: {
                     self.state = .idle;
                     break :blk true;
                 },
                 .end_inlined => true,
-                else => unreachable,
             };
 
             try self.statements.append(self.allocator, .{

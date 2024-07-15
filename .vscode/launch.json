@@ -20,37 +20,19 @@
       "preLaunchTask": "smithy:build-tests"
     },
     {
-      "name": "AWS: Codegen SDK",
+      "name": "AWS: Codegen",
       "type": "lldb",
       "request": "launch",
-      "program": "${workspaceFolder}/aws/zig-out/test/codegen-sdk",
+      "program": "${workspaceFolder}/aws/zig-out/test/codegen",
       "args": [],
       "cwd": "${workspaceFolder}/aws",
       "preLaunchTask": "aws:build-tests"
     },
     {
-      "name": "AWS: Codegen Partitions",
+      "name": "AWS: Runtime",
       "type": "lldb",
       "request": "launch",
-      "program": "${workspaceFolder}/aws/zig-out/test/codegen-partitions",
-      "args": [],
-      "cwd": "${workspaceFolder}/aws",
-      "preLaunchTask": "aws:build-tests"
-    },
-    {
-      "name": "AWS: Runtime Types",
-      "type": "lldb",
-      "request": "launch",
-      "program": "${workspaceFolder}/aws/zig-out/test/runtime-types",
-      "args": [],
-      "cwd": "${workspaceFolder}/aws",
-      "preLaunchTask": "aws:build-tests"
-    },
-    {
-      "name": "AWS: Runtime Client",
-      "type": "lldb",
-      "request": "launch",
-      "program": "${workspaceFolder}/aws/zig-out/test/runtime-client",
+      "program": "${workspaceFolder}/aws/zig-out/test/runtime",
       "args": [],
       "cwd": "${workspaceFolder}/aws",
       "preLaunchTask": "aws:build-tests"

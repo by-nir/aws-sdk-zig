@@ -12,36 +12,42 @@ const files_tasks = smithy.files_tasks;
 const codegen_tasks = smithy.codegen_tasks;
 const JsonReader = smithy.JsonReader;
 const zig = smithy.codegen_zig;
-const Expr = zig.Expr;
-const ExprBuild = zig.ExprBuild;
-const BlockBuild = zig.BlockBuild;
-const ContainerBuild = zig.ContainerBuild;
 const PascalCase = smithy.name_util.PascalCase;
+const RegionDef = @import("config_region.zig").RegionDef;
 
 const Matcher = struct {
     func: []const u8,
-    partition: Expr,
+    partition: zig.Expr,
 };
 
-pub const Partitions = files_tasks.WriteFile.Task("AWS Partitions", partitionsTask, .{});
-fn partitionsTask(self: *const Delegate, writer: std.io.AnyWriter, src_dir: std.fs.Dir) anyerror!void {
+pub const Partitions = files_tasks.WriteFile.Task("AWS Config Partitions", partitionsTask, .{});
+fn partitionsTask(
+    self: *const Delegate,
+    writer: std.io.AnyWriter,
+    src_dir: std.fs.Dir,
+    region_defs: *std.ArrayList(RegionDef),
+) anyerror!void {
     const src_file = try src_dir.openFile("sdk-partitions.json", .{});
     defer src_file.close();
 
     var reader = try JsonReader.initPersist(self.alloc(), src_file);
     defer reader.deinit();
 
-    try self.evaluate(PartitionsCodegen, .{ writer, &reader });
+    return self.evaluate(PartitionsCodegen, .{ writer, &reader, region_defs });
 }
 
 const PartitionsCodegen = codegen_tasks.ZigScript.Task("Partitions Codegen", partitionsCodegenTask, .{});
-
-fn partitionsCodegenTask(self: *const Delegate, bld: *ContainerBuild, reader: *JsonReader) anyerror!void {
+fn partitionsCodegenTask(
+    self: *const Delegate,
+    bld: *zig.ContainerBuild,
+    reader: *JsonReader,
+    region_defs: *std.ArrayList(RegionDef),
+) anyerror!void {
     try bld.constant("std").assign(bld.x.import("std"));
     try bld.constant("Partition").assign(bld.x.import("aws-runtime").dot().raw("Partition"));
 
-    var regions = std.ArrayList(ExprBuild).init(self.alloc());
     var matchers = std.ArrayList(Matcher).init(self.alloc());
+    var region_parts = std.ArrayList(zig.ExprBuild).init(self.alloc());
 
     try reader.nextObjectBegin();
     while (try reader.peek() == .string) {
@@ -51,7 +57,7 @@ fn partitionsCodegenTask(self: *const Delegate, bld: *ContainerBuild, reader: *J
         } else if (mem.eql(u8, "partitions", key)) {
             try reader.nextArrayBegin();
             while (try reader.next() != .array_end) {
-                try processPartition(self.alloc(), bld, reader, &regions, &matchers);
+                try processPartition(self.alloc(), bld, reader, region_defs, &region_parts, &matchers);
             }
         } else {
             return error.UnexpectedKey;
@@ -61,17 +67,17 @@ fn partitionsCodegenTask(self: *const Delegate, bld: *ContainerBuild, reader: *J
 
     try bld.constant("partitions").assign(bld.x.call(
         "std.StaticStringMap(*const Partition).initComptime",
-        &.{bld.x.structLiteral(null, regions.items)},
+        &.{bld.x.structLiteral(null, region_parts.items)},
     ));
 
     try bld.public().function("resolve")
         .arg("region", bld.x.typeOf([]const u8))
         .returns(bld.x.raw("?*const Partition"))
         .bodyWith(matchers.items, struct {
-        fn f(prts: []const Matcher, b: *BlockBuild) !void {
+        fn f(prts: []const Matcher, b: *zig.BlockBuild) !void {
             try b.raw("if (partitions.get(region)) |p| return p");
 
-            var default: ?Expr = null;
+            var default: ?zig.Expr = null;
             for (prts) |matcher| {
                 if (mem.eql(u8, "matchAws", matcher.func)) default = matcher.partition;
                 try b.@"if"(b.x.call(matcher.func, &.{b.x.id("region")}))
@@ -91,9 +97,10 @@ fn partitionsCodegenTask(self: *const Delegate, bld: *ContainerBuild, reader: *J
 
 fn processPartition(
     arena: Allocator,
-    bld: *ContainerBuild,
+    bld: *zig.ContainerBuild,
     reader: *JsonReader,
-    regions: *std.ArrayList(ExprBuild),
+    region_defs: *std.ArrayList(RegionDef),
+    region_parts: *std.ArrayList(zig.ExprBuild),
     matchers: *std.ArrayList(Matcher),
 ) !void {
     var id: []u8 = "";
@@ -114,7 +121,7 @@ fn processPartition(
                 .{ .func = matcher, .partition = try bld.x.addressOf().id(id).consume() },
             );
         } else if (mem.eql(u8, "outputs", key)) {
-            outputs = try Partition.parse(arena, reader);
+            outputs = try Partition.parse(arena, region_defs.allocator, reader);
             if (!outputs.isValid()) return error.InvalidOutputs;
         } else if (mem.eql(u8, "regionRegex", key)) {
             regex = try reader.nextString();
@@ -124,11 +131,18 @@ fn processPartition(
             const prtn_target = bld.x.addressOf().id(id);
             try reader.nextObjectBegin();
             while (try reader.peek() != .object_end) {
-                const region = bld.x.valueOf(try reader.nextStringAlloc(arena));
-                const override = try Partition.parse(arena, reader);
+                const code = try reader.nextStringAlloc(arena);
+                const override = try Partition.parse(arena, region_defs.allocator, reader);
+
+                try region_defs.append(.{
+                    .code = code,
+                    .description = override.region_description,
+                });
+
                 const value = if (override.is_empty) prtn_target else outputs.mergeFrom(override).consume(bld);
+                const region = bld.x.valueOf(code);
                 const pair = bld.x.structLiteral(null, &.{ region, value });
-                try regions.append(pair);
+                try region_parts.append(pair);
             }
             try reader.nextObjectEnd();
         } else {
@@ -155,8 +169,24 @@ test "PartitionsCodegen" {
     var reader = try JsonReader.initFixed(arena_alloc, TEST_SRC);
     defer reader.deinit();
 
-    const output = try codegen_tasks.evaluateZigScript(arena_alloc, tester.pipeline, PartitionsCodegen, .{&reader});
+    var region_defs = std.ArrayList(RegionDef).init(arena_alloc);
+    defer region_defs.deinit();
+
+    const output = try codegen_tasks.evaluateZigScript(
+        arena_alloc,
+        tester.pipeline,
+        PartitionsCodegen,
+        .{ &reader, &region_defs },
+    );
     try codegen_tasks.expectEqualZigScript(TEST_OUT, output);
+
+    try testing.expectEqualDeep(&[_]RegionDef{
+        .{ .code = "il-central-1", .description = "Israel (Tel Aviv)" },
+        .{ .code = "us-east-1", .description = "US East (N. Virginia)" },
+        .{ .code = "aws-cn-global", .description = "AWS China global region" },
+        .{ .code = "cn-northwest-1", .description = "China (Ningxia)" },
+        .{ .code = "us-gov-west-1", .description = "AWS GovCloud (US-West)" },
+    }, region_defs.items);
 }
 
 const Partition = struct {
@@ -167,6 +197,7 @@ const Partition = struct {
     supports_fips: ?bool = null,
     supports_dual_stack: ?bool = null,
     implicit_global_region: ?[]const u8 = null,
+    region_description: ?[]const u8 = null,
 
     const fields = .{ "name", "dns_suffix", "dual_stack_dns_suffix", "supports_fips", "supports_dual_stack", "implicit_global_region" };
 
@@ -186,20 +217,20 @@ const Partition = struct {
         return merged;
     }
 
-    pub fn parse(arena: Allocator, reader: *JsonReader) !Partition {
+    pub fn parse(part_alloc: Allocator, region_alloc: Allocator, reader: *JsonReader) !Partition {
         var value: Partition = .{};
         try reader.nextObjectBegin();
         while (try reader.peek() == .string) {
             const key = try reader.nextString();
             if (mem.eql(u8, "name", key)) {
                 value.is_empty = false;
-                value.name = try reader.nextStringAlloc(arena);
+                value.name = try reader.nextStringAlloc(part_alloc);
             } else if (mem.eql(u8, "dnsSuffix", key)) {
                 value.is_empty = false;
-                value.dns_suffix = try reader.nextStringAlloc(arena);
+                value.dns_suffix = try reader.nextStringAlloc(part_alloc);
             } else if (mem.eql(u8, "dualStackDnsSuffix", key)) {
                 value.is_empty = false;
-                value.dual_stack_dns_suffix = try reader.nextStringAlloc(arena);
+                value.dual_stack_dns_suffix = try reader.nextStringAlloc(part_alloc);
             } else if (mem.eql(u8, "supportsFIPS", key)) {
                 value.is_empty = false;
                 value.supports_fips = try reader.nextBoolean();
@@ -208,9 +239,9 @@ const Partition = struct {
                 value.supports_dual_stack = try reader.nextBoolean();
             } else if (mem.eql(u8, "implicitGlobalRegion", key)) {
                 value.is_empty = false;
-                value.implicit_global_region = try reader.nextStringAlloc(arena);
+                value.implicit_global_region = try reader.nextStringAlloc(part_alloc);
             } else if (mem.eql(u8, "description", key)) {
-                try reader.skipValueOrScope();
+                value.region_description = try reader.nextStringAlloc(region_alloc);
             } else {
                 return error.UnexpectedKey;
             }
@@ -219,7 +250,7 @@ const Partition = struct {
         return value;
     }
 
-    pub fn consume(self: Partition, bld: *ContainerBuild) ExprBuild {
+    pub fn consume(self: Partition, bld: *zig.ContainerBuild) zig.ExprBuild {
         return bld.x.structLiteral(bld.x.id("Partition"), &.{
             bld.x.structAssign("name", bld.x.valueOf(self.name)),
             bld.x.structAssign("dns_suffix", bld.x.valueOf(self.dns_suffix)),
@@ -239,7 +270,7 @@ test "Partition parse" {
     var reader = try JsonReader.initFixed(arena_alloc, TEST_OUTPUTS);
     defer reader.deinit();
 
-    var output = try Partition.parse(arena_alloc, &reader);
+    var output = try Partition.parse(arena_alloc, arena_alloc, &reader);
     try testing.expectEqualDeep(Partition{
         .is_empty = false,
         .name = "aws",
@@ -263,21 +294,25 @@ test "Partition parse – empty" {
     var reader = try JsonReader.initFixed(arena_alloc, "{\"description\":\"foo\"}");
     defer reader.deinit();
 
-    const output = try Partition.parse(arena_alloc, &reader);
-    try testing.expectEqualDeep(Partition{ .is_empty = true }, output);
+    const output = try Partition.parse(arena_alloc, arena_alloc, &reader);
+    try testing.expectEqualDeep(Partition{
+        .is_empty = true,
+        .region_description = "foo",
+    }, output);
+    try testing.expectEqual(false, output.isValid());
 }
 
-fn writeRegexMatcher(regex: []const u8, bld: *BlockBuild) !void {
+fn writeRegexMatcher(regex: []const u8, bld: *zig.BlockBuild) !void {
     if (regex.len == 0 or regex[0] != '^' or regex[regex.len - 1] != '$') {
         return error.InvalidRegex;
     }
 
-    try bld.variable("rest").assign(bld.x.id("code").valRange(bld.x.valueOf(1), bld.x.raw("code.len-1")));
+    try bld.variable("rest").assign(bld.x.raw("code[1 .. code.len - 1]"));
 
     var it = std.mem.tokenizeSequence(u8, regex[1 .. regex.len - 1], "\\-");
     while (it.next()) |part| {
         if (part[0] == '(' and part[part.len - 1] == ')') {
-            var list = std.ArrayList(ExprBuild).init(bld.allocator);
+            var list = std.ArrayList(zig.ExprBuild).init(bld.allocator);
             errdefer list.deinit();
 
             var items = std.mem.tokenizeSequence(u8, part[1 .. part.len - 1], "|");
@@ -310,13 +345,13 @@ fn writeRegexMatcher(regex: []const u8, bld: *BlockBuild) !void {
     try bld.returns().valueOf(true).end();
 }
 
-fn writeRegexUtils(bld: *ContainerBuild) !void {
+fn writeRegexUtils(bld: *zig.ContainerBuild) !void {
     try bld.function("matchAny")
         .arg("rest", bld.x.typeOf(*[]const u8))
         .arg("values", null)
         .returns(bld.x.typeOf(bool))
         .body(struct {
-        fn f(b: *BlockBuild) !void {
+        fn f(b: *zig.BlockBuild) !void {
             try b.raw("const set = std.StaticStringMap(void).initComptime(values)");
             try b.raw("const i = std.mem.indexOfScalar(u8, rest.*, '-') orelse rest.len");
             try b.raw("if (!set.has(rest[0..i])) return false");
@@ -329,7 +364,7 @@ fn writeRegexUtils(bld: *ContainerBuild) !void {
         .arg("rest", bld.x.typeOf(*[]const u8))
         .returns(bld.x.typeOf(bool))
         .body(struct {
-        fn f(b: *BlockBuild) !void {
+        fn f(b: *zig.BlockBuild) !void {
             try b.raw("const i = std.mem.indexOfScalar(u8, rest.*, '-') orelse rest.len");
             try b.raw("for (rest[0..i]) |c| if (!std.ascii.isAlphabetic(c)) return false");
             try b.raw("rest.* = rest[i..rest.len]");
@@ -341,7 +376,7 @@ fn writeRegexUtils(bld: *ContainerBuild) !void {
         .arg("rest", bld.x.typeOf(*[]const u8))
         .returns(bld.x.typeOf(bool))
         .body(struct {
-        fn f(b: *BlockBuild) !void {
+        fn f(b: *zig.BlockBuild) !void {
             try b.raw("const i = std.mem.indexOfScalar(u8, rest.*, '-') orelse rest.len");
             try b.raw("for (rest[0..i]) |c| if (!std.ascii.isDigit(c)) return false");
             try b.raw("rest.* = rest[i..rest.len]");
@@ -354,7 +389,7 @@ fn writeRegexUtils(bld: *ContainerBuild) !void {
         .arg("str", bld.x.typeOf([]const u8))
         .returns(bld.x.typeOf(bool))
         .body(struct {
-        fn f(b: *BlockBuild) !void {
+        fn f(b: *zig.BlockBuild) !void {
             try b.raw("if (!std.mem.startsWith(u8, rest.*, str)) return false");
             try b.raw("rest.* = rest[str.len..rest.len]");
             try b.raw("return true");
@@ -365,7 +400,7 @@ fn writeRegexUtils(bld: *ContainerBuild) !void {
         .arg("rest", bld.x.typeOf(*[]const u8))
         .returns(bld.x.typeOf(bool))
         .body(struct {
-        fn f(b: *BlockBuild) !void {
+        fn f(b: *zig.BlockBuild) !void {
             try b.raw("if (rest.len == 0 or rest[0] != '-') return false");
             try b.raw("rest.* = rest[1..rest.len]");
             try b.raw("return true");
@@ -388,7 +423,7 @@ const TEST_OUT: []const u8 =
     \\};
     \\
     \\fn matchAws(code: []const u8) bool {
-    \\    var rest = code[1..code.len-1];
+    \\    var rest = code[1 .. code.len - 1];
     \\
     \\    if (!matchAny(&rest, .{ .{"us"}, .{"il"} })) return false;
     \\
@@ -413,7 +448,7 @@ const TEST_OUT: []const u8 =
     \\};
     \\
     \\fn matchAwsCn(code: []const u8) bool {
-    \\    var rest = code[1..code.len-1];
+    \\    var rest = code[1 .. code.len - 1];
     \\
     \\    if (!matchString(&rest, "cn")) return false;
     \\
@@ -438,7 +473,7 @@ const TEST_OUT: []const u8 =
     \\};
     \\
     \\fn matchAwsUsGov(code: []const u8) bool {
-    \\    var rest = code[1..code.len-1];
+    \\    var rest = code[1 .. code.len - 1];
     \\
     \\    if (!matchString(&rest, "us")) return false;
     \\
