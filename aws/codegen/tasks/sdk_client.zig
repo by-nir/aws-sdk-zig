@@ -1,5 +1,6 @@
 const std = @import("std");
 const smithy = @import("smithy");
+const smithy_conf = smithy.config;
 const SmithyTask = smithy.SmithyTask;
 const SmithyOptions = smithy.SmithyOptions;
 const md = smithy.codegen_md;
@@ -148,12 +149,12 @@ fn extendEndpointScriptHook(
     const context = .{ .arena = self.alloc(), .params = trait.parameters };
     try bld.public().function("extractConfig")
         .arg(ENDPOINT_SRC_ARG, null)
-        .returns(bld.x.id("EndpointConfig")).bodyWith(context, struct {
+        .returns(bld.x.id(smithy_conf.endpoint_config_type)).bodyWith(context, struct {
         fn f(ctx: @TypeOf(context), b: *zig.BlockBuild) !void {
             try b.@"if"(b.x.raw("@typeInfo(@TypeOf(source)) != .Struct"))
                 .body(b.x.raw("@compileError(\"Endpoint’s `extractConfig` expect a source of type struct.\")")).end();
 
-            try b.variable("value").typing(b.x.id("EndpointConfig")).assign(b.x.raw(".{}"));
+            try b.variable("value").typing(b.x.id(smithy_conf.endpoint_config_type)).assign(b.x.raw(".{}"));
 
             for (ctx.params) |param| {
                 const id = param.value.built_in orelse continue;

@@ -18,6 +18,7 @@ const name_util = @import("../utils/names.zig");
 const IssuesBag = @import("../utils/IssuesBag.zig");
 const files_tasks = @import("files.zig");
 const codegen_tasks = @import("codegen.zig");
+const config = @import("../config.zig");
 const ScopeTag = @import("smithy.zig").ScopeTag;
 const shape_tasks = @import("smithy_codegen_shape.zig");
 const trt_docs = @import("../traits/docs.zig");
@@ -336,21 +337,19 @@ fn serviceEndpointTask(
         try self.evaluate(ExtendEndpointScriptHook, .{bld});
     }
 
-    const func_name = "resolve";
-    const config_type = "EndpointConfig";
     var rulesgen = try rules_engine.getGenerator(self.alloc(), rule_set.parameters);
 
     const context = .{ .alloc = self.alloc(), .rulesgen = &rulesgen };
-    try bld.public().constant(config_type).assign(bld.x.@"struct"().bodyWith(context, struct {
+    try bld.public().constant(config.endpoint_config_type).assign(bld.x.@"struct"().bodyWith(context, struct {
         fn f(ctx: @TypeOf(context), b: *zig.ContainerBuild) !void {
             try ctx.rulesgen.generateParametersFields(b);
         }
     }.f));
 
-    try rulesgen.generateResolver(bld, func_name, config_type, rule_set.rules);
+    try rulesgen.generateResolver(bld, rule_set.rules);
 
     if (trt_rules.EndpointTests.get(symbols, symbols.service_id)) |cases| {
-        try rulesgen.generateTests(bld, func_name, config_type, cases);
+        try rulesgen.generateTests(bld, cases);
     }
 }
 
@@ -379,6 +378,14 @@ test "ServiceEndpoint" {
         \\};
         \\
         \\pub fn resolve(allocator: Allocator, config: EndpointConfig) anyerror![]const u8 {
+        \\    var local_buffer: [512]u8 = undefined;
+        \\
+        \\    var local_heap = std.heap.FixedBufferAllocator.init(&local_buffer);
+        \\
+        \\    const stack_alloc = local_heap.allocator();
+        \\
+        \\    _ = stack_alloc;
+        \\
         \\    var did_pass = false;
         \\
         \\    if (!IS_TEST) std.log.err("baz", .{});

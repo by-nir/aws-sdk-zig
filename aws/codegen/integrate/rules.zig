@@ -94,7 +94,7 @@ test "fnPartition" {
 
 fn fnParseArn(gen: *Generator, x: ExprBuild, args: []const ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
-    return x.call("aws_internal.Arn.init", &.{ x.id(config.allocator_arg), x.fromExpr(value) }).consume();
+    return x.call("aws_internal.Arn.init", &.{ x.id(config.allocator_name), x.fromExpr(value) }).consume();
 }
 
 test "fnParseArn" {

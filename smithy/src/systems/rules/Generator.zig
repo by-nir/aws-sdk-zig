@@ -113,22 +113,21 @@ test "generateParametersFields" {
 }
 
 // https://github.com/awslabs/aws-c-sdkutils/blob/main/source/endpoints_rule_engine.c
-pub fn generateResolver(
-    self: *Self,
-    bld: *ContainerBuild,
-    func_name: []const u8,
-    config_type: []const u8,
-    rules: []const mdl.Rule,
-) !void {
+pub fn generateResolver(self: *Self, bld: *ContainerBuild, rules: []const mdl.Rule) !void {
     if (rules.len == 0) return error.EmptyRuleSet;
 
     const context = .{ .self = self, .rules = rules };
-    try bld.public().function(func_name)
-        .arg(config.allocator_arg, bld.x.id("Allocator"))
-        .arg(ARG_CONFIG, bld.x.raw(config_type))
+    try bld.public().function(config.endpoint_resolve_fn)
+        .arg(config.allocator_name, bld.x.id("Allocator"))
+        .arg(ARG_CONFIG, bld.x.raw(config.endpoint_config_type))
         .returns(bld.x.typeOf(anyerror![]const u8))
         .bodyWith(context, struct {
         fn f(ctx: @TypeOf(context), b: *BlockBuild) !void {
+            try b.variable("local_buffer").typing(b.typeOf([512]u8)).assign(b.x.raw("undefined"));
+            try b.variable("local_heap").assign(b.x.call("std.heap.FixedBufferAllocator.init", &.{b.x.addressOf().id("local_buffer")}));
+            try b.constant(config.stack_alloc_name).assign(b.x.raw("local_heap.allocator()"));
+            try b.discard().id(config.stack_alloc_name).end();
+
             for (ctx.self.params) |kv| {
                 const field = ctx.self.fields.get(kv.key).?;
                 if (field.is_direct) continue;
@@ -145,12 +144,20 @@ test "generateResolver" {
     var tst = try Tester.init();
     defer tst.deinit();
 
-    try generateResolver(tst.gen, tst.container(), "resolve", "Config", &[_]mdl.Rule{
+    try generateResolver(tst.gen, tst.container(), &[_]mdl.Rule{
         .{ .err = .{ .message = .{ .string = "baz" } } },
     });
 
     try tst.expect(
-        \\pub fn resolve(allocator: Allocator, config: Config) anyerror![]const u8 {
+        \\pub fn resolve(allocator: Allocator, config: EndpointConfig) anyerror![]const u8 {
+        \\    var local_buffer: [512]u8 = undefined;
+        \\
+        \\    var local_heap = std.heap.FixedBufferAllocator.init(&local_buffer);
+        \\
+        \\    const stack_alloc = local_heap.allocator();
+        \\
+        \\    _ = stack_alloc;
+        \\
         \\    const param_baz: bool = config.baz orelse true;
         \\
         \\    var did_pass = false;
@@ -422,7 +429,7 @@ test "generateErrorRule" {
 fn generateEndpointRule(self: *Self, bld: *BlockBuild, rule: mdl.EndpointRule) !void {
     const template = try self.evalTemplateString(bld.x, rule.endpoint.url);
     try bld.returns().call("std.fmt.allocPrint", &.{
-        bld.x.id(config.allocator_arg),
+        bld.x.id(config.allocator_name),
         bld.x.fromExpr(template.format),
         bld.x.fromExpr(template.args),
     }).end();
@@ -771,15 +778,9 @@ pub const Tester = struct {
 };
 
 // https://github.com/awslabs/aws-c-sdkutils/blob/main/tests/endpoints_rule_engine_tests.c
-pub fn generateTests(
-    self: *Self,
-    bld: *ContainerBuild,
-    func_name: []const u8,
-    config_type: []const u8,
-    cases: []const mdl.TestCase,
-) !void {
+pub fn generateTests(self: *Self, bld: *ContainerBuild, cases: []const mdl.TestCase) !void {
     for (cases) |case| {
-        const context = .{ .arena = self.arena, .case = case, .func_name = func_name, .config_type = config_type };
+        const context = .{ .arena = self.arena, .case = case };
         try bld.testBlockWith(case.documentation, context, struct {
             fn f(ctx: @TypeOf(context), b: *BlockBuild) !void {
                 const tc: mdl.TestCase = ctx.case;
@@ -802,12 +803,12 @@ pub fn generateTests(
                 }
 
                 const params_exprs = try params.toOwnedSlice();
-                try b.constant("config").assign(b.x.structLiteral(b.x.raw(ctx.config_type), params_exprs));
+                try b.constant("config").assign(b.x.structLiteral(b.x.raw(config.endpoint_config_type), params_exprs));
 
                 switch (tc.expect) {
                     .err => |_| {
                         try b.constant("endpoint").assign(
-                            b.x.call(ctx.func_name, &.{ b.x.raw("std.testing.allocator"), b.x.id("config") }),
+                            b.x.call(config.endpoint_resolve_fn, &.{ b.x.raw("std.testing.allocator"), b.x.id("config") }),
                         );
                         try b.trys().call(
                             "std.testing.expectError",
@@ -816,7 +817,7 @@ pub fn generateTests(
                     },
                     .endpoint => |s| {
                         try b.constant("endpoint").assign(
-                            b.x.trys().call(ctx.func_name, &.{ b.x.raw("std.testing.allocator"), b.x.id("config") }),
+                            b.x.trys().call(config.endpoint_resolve_fn, &.{ b.x.raw("std.testing.allocator"), b.x.id("config") }),
                         );
                         try b.defers(b.x.call("std.testing.allocator.free", &.{b.x.id("endpoint")}));
                         try b.trys().call(
@@ -835,7 +836,7 @@ test "generateTests" {
     var tst = try Tester.init();
     defer tst.deinit();
 
-    try generateTests(tst.gen, tst.container(), "resolve", "Config", &[_]mdl.TestCase{
+    try generateTests(tst.gen, tst.container(), &[_]mdl.TestCase{
         .{
             .documentation = "Test 1",
             .expect = .{ .endpoint = "https://example.com" },
@@ -860,7 +861,7 @@ test "generateTests" {
 
     try tst.expect(
         \\test "Test 1" {
-        \\    const config = Config{ .foo = "bar", .bar_baz = true };
+        \\    const config = EndpointConfig{ .foo = "bar", .bar_baz = true };
         \\
         \\    const endpoint = try resolve(std.testing.allocator, config);
         \\
@@ -870,7 +871,7 @@ test "generateTests" {
         \\}
         \\
         \\test "Test 2" {
-        \\    const config = Config{.foo = "bar"};
+        \\    const config = EndpointConfig{.foo = "bar"};
         \\
         \\    const endpoint = resolve(std.testing.allocator, config);
         \\
@@ -878,7 +879,7 @@ test "generateTests" {
         \\}
         \\
         \\test "Test 3" {
-        \\    const config = Config{};
+        \\    const config = EndpointConfig{};
         \\
         \\    const endpoint = resolve(std.testing.allocator, config);
         \\

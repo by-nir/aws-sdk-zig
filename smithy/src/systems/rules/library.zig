@@ -290,27 +290,27 @@ test "fnIsValidHostLabel" {
 
 fn fnParseUrl(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
-    return x.call("smithy.url.Url.init", &.{ x.id(config.allocator_arg), x.fromExpr(value) })
+    return x.call("smithy.url.Url.init", &.{ x.id(config.stack_alloc_name), x.fromExpr(value) })
         .@"catch"().body(x.valueOf(null)).consume();
 }
 
 test "fnParseUrl" {
     try Function.expect(fnParseUrl, &.{
         .{ .string = "http://example.com" },
-    }, "smithy.url.Url.init(allocator, \"http://example.com\") catch null");
+    }, "smithy.url.Url.init(" ++ config.stack_alloc_name ++ ", \"http://example.com\") catch null");
 }
 
 fn fnUriEncode(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
     return x.trys()
-        .call("smithy.url.uriEncode", &.{ x.id(config.allocator_arg), x.fromExpr(value) })
+        .call("smithy.url.uriEncode", &.{ x.id(config.stack_alloc_name), x.fromExpr(value) })
         .consume();
 }
 
 test "fnUriEncode" {
     try Function.expect(fnUriEncode, &.{
         .{ .string = "foo" },
-    }, "try smithy.url.uriEncode(allocator, \"foo\")");
+    }, "try smithy.url.uriEncode(" ++ config.stack_alloc_name ++ ", \"foo\")");
 }
 
 fn fnSubstring(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
