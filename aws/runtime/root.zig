@@ -7,8 +7,9 @@ pub const Signer = @import("Signer.zig");
 const conf_region = @import("config/region.gen.zig");
 pub const Region = conf_region.Region;
 
-const conf_sdk = @import("config/sdk.zig");
-pub const SdkConfig = conf_sdk.SdkConfig;
+const conf_settings = @import("config/settings.zig");
+pub const SdkConfig = conf_settings.Config;
+pub const SdkCredentials = conf_settings.Credentials;
 
 const conf_endpoint = @import("config/endpoint.zig");
 const conf_partition = @import("config/partitions.gen.zig");
@@ -25,7 +26,7 @@ test {
     _ = Signer;
     _ = Client;
     _ = conf_region;
-    _ = conf_sdk;
+    _ = conf_settings;
     _ = conf_endpoint;
     _ = conf_partition;
 }

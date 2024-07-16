@@ -6,7 +6,7 @@ const Task = pipez.Task;
 const Delegate = pipez.Delegate;
 const Pipeline = pipez.Pipeline;
 const files_tasks = smithy.files_tasks;
-const sdk_client = @import("tasks/client.zig");
+const sdk_client = @import("tasks/sdk_client.zig");
 const conf_region = @import("tasks/config_region.zig");
 const conf_partition = @import("tasks/config_partitions.zig");
 

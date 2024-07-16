@@ -190,11 +190,8 @@ fn endpointBuiltinFieldName(id: BuiltInId) ![]const u8 {
     };
 }
 
-fn writeServiceHeadHook(
-    _: *const Delegate,
-    bld: *zig.ContainerBuild,
-    _: *const SmithyService,
-) anyerror!void {
+fn writeServiceHeadHook(_: *const Delegate, bld: *zig.ContainerBuild, _: *const SmithyService) anyerror!void {
+    try bld.field("sdk_config").typing(bld.x.raw("aws_runtime.SdkConfig")).end();
     try bld.field("endpoint_config").typing(bld.x.raw("service_endpoint.EndpointConfig")).end();
 
     try bld.public().function("init")
@@ -212,7 +209,8 @@ fn writeServiceInit(bld: *zig.BlockBuild) anyerror!void {
     try bld.constant("endpoint_conf").assign(bld.x.call("service_endpoint.extractConfig", &.{bld.x.id("config")}));
 
     try bld.returns().structLiteral(null, &.{
-        bld.x.structAssign("endpoint_config", bld.x.id("endpoint_conf")),
+        bld.x.structAssign("config_sdk", bld.x.id("config")),
+        bld.x.structAssign("config_endpoint", bld.x.id("endpoint_conf")),
     }).end();
 }
 
