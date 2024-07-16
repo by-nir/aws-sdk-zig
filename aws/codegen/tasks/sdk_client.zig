@@ -135,6 +135,8 @@ fn extendClientScriptHook(_: *const Delegate, bld: *zig.ContainerBuild) anyerror
     try bld.constant("Signer").assign(bld.x.raw("aws_runtime.Signer"));
 }
 
+const ENDPOINT_SRC_ARG = "source";
+
 fn extendEndpointScriptHook(
     self: *const Delegate,
     symbols: *SymbolsProvider,
@@ -146,7 +148,7 @@ fn extendEndpointScriptHook(
 
     const context = .{ .arena = self.alloc(), .params = trait.parameters };
     try bld.public().function("extractConfig")
-        .arg("source", null)
+        .arg(ENDPOINT_SRC_ARG, null)
         .returns(bld.x.id("EndpointConfig")).bodyWith(context, struct {
         fn f(ctx: @TypeOf(context), b: *zig.BlockBuild) !void {
             try b.@"if"(b.x.raw("@typeInfo(@TypeOf(source)) != .Struct"))
@@ -156,9 +158,9 @@ fn extendEndpointScriptHook(
 
             for (ctx.params) |param| {
                 const id = param.value.built_in orelse continue;
-                const src_field = try endpointBuiltinFieldName(id);
+                const expr = try mapEndpointConfigBuiltin(b.x, id);
                 const val_field = try name_util.snakeCase(ctx.arena, param.key);
-                try b.id("value").dot().id(val_field).assign().id("source").dot().id(src_field).end();
+                try b.id("value").dot().id(val_field).assign().fromExpr(expr).end();
             }
 
             try b.returns().id("value").end();
@@ -166,28 +168,36 @@ fn extendEndpointScriptHook(
     }.f);
 }
 
-/// Maps a rule built-in id to an `SdkConfig` field name.
-fn endpointBuiltinFieldName(id: BuiltInId) ![]const u8 {
-    return switch (id) {
-        // Smithy
-        BuiltInId.endpoint => "endpoint_url",
-        // AWS
-        BuiltInId.of("AWS::Region") => "region",
-        BuiltInId.of("AWS::UseDualStack") => "use_dual_stack",
-        BuiltInId.of("AWS::UseFIPS") => "use_fips",
-        // TODO: Remaining built-ins
-        //  BuiltInId.of("AWS::Auth::AccountId")
-        //  BuiltInId.of("AWS::Auth::AccountIdEndpointMode")
-        //  BuiltInId.of("AWS::Auth::CredentialScope")
-        //  BuiltInId.of("AWS::S3::Accelerate")
-        //  BuiltInId.of("AWS::S3::DisableMultiRegionAccessPoints")
-        //  BuiltInId.of("AWS::S3::ForcePathStyle")
-        //  BuiltInId.of("AWS::S3::UseArnRegion")
-        //  BuiltInId.of("AWS::S3::UseGlobalEndpoint")
-        //  BuiltInId.of("AWS::S3Control::UseArnRegion")
-        //  BuiltInId.of("AWS::STS::UseGlobalEndpoint")
-        else => error.UnresolvedEndpointBuiltIn,
-    };
+/// Provides a mapping from an endpoint built-in to a config value.
+fn mapEndpointConfigBuiltin(x: zig.ExprBuild, id: BuiltInId) !zig.Expr {
+    if (id == BuiltInId.of("AWS::Region")) {
+        return x.@"if"(x.id(ENDPOINT_SRC_ARG).dot().id("region"))
+            .capture("r").body(x.raw("r.toCode()"))
+            .@"else"().body(x.valueOf(null))
+            .end().consume();
+    } else {
+        const field: []const u8 = switch (id) {
+            // Smithy
+            BuiltInId.endpoint => "endpoint_url",
+            // AWS
+            BuiltInId.of("AWS::Region") => unreachable,
+            BuiltInId.of("AWS::UseFIPS") => "use_fips",
+            BuiltInId.of("AWS::UseDualStack") => "use_dual_stack",
+            // TODO: Remaining built-ins
+            //  BuiltInId.of("AWS::Auth::AccountId")
+            //  BuiltInId.of("AWS::Auth::AccountIdEndpointMode")
+            //  BuiltInId.of("AWS::Auth::CredentialScope")
+            //  BuiltInId.of("AWS::S3::Accelerate")
+            //  BuiltInId.of("AWS::S3::DisableMultiRegionAccessPoints")
+            //  BuiltInId.of("AWS::S3::ForcePathStyle")
+            //  BuiltInId.of("AWS::S3::UseArnRegion")
+            //  BuiltInId.of("AWS::S3::UseGlobalEndpoint")
+            //  BuiltInId.of("AWS::S3Control::UseArnRegion")
+            //  BuiltInId.of("AWS::STS::UseGlobalEndpoint")
+            else => return error.UnresolvedEndpointBuiltIn,
+        };
+        return x.id(ENDPOINT_SRC_ARG).dot().raw(field).consume();
+    }
 }
 
 fn writeServiceHeadHook(_: *const Delegate, bld: *zig.ContainerBuild, _: *const SmithyService) anyerror!void {
