@@ -128,6 +128,7 @@ fn writeReadmeHook(
 
 fn writeScriptHeadHook(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
     try bld.constant("aws_runtime").assign(bld.x.import("aws-runtime"));
+    try bld.constant("aws_internal").assign(bld.x.raw("aws_runtime.internal"));
 }
 
 fn extendClientScriptHook(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
@@ -142,8 +143,6 @@ fn extendEndpointScriptHook(
     symbols: *SymbolsProvider,
     bld: *zig.ContainerBuild,
 ) anyerror!void {
-    try bld.constant("aws_config").assign(bld.x.raw("aws_runtime.config"));
-
     const trait = symbols.getTrait(smithy.RuleSet, symbols.service_id, trt_rule_set_id) orelse unreachable;
 
     const context = .{ .arena = self.alloc(), .params = trait.parameters };

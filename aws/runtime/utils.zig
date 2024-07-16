@@ -14,7 +14,7 @@ const EMPTY_HASH = [_]u8{
 const EMPTY_HASH_STR = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 /// Hash a payload into a 256-bit hash (SHA-256).
-pub fn hash(out: *Hash, payload: []const u8) void {
+pub fn hash256(out: *Hash, payload: []const u8) void {
     if (payload.len > 0) {
         Sha256.hash(payload, out, .{});
     } else {
@@ -22,12 +22,12 @@ pub fn hash(out: *Hash, payload: []const u8) void {
     }
 }
 
-test "hash" {
+test "hash256" {
     var buffer: Hash = undefined;
-    hash(&buffer, &.{});
+    hash256(&buffer, &.{});
     try testing.expectEqualStrings(&EMPTY_HASH, &buffer);
 
-    hash(&buffer, "foo-bar-baz");
+    hash256(&buffer, "foo-bar-baz");
     try testing.expectEqualSlices(u8, &.{
         0x26, 0x9D, 0xCE, 0x1A, 0x5B, 0xB9, 0x01, 0x88, 0xB2, 0xD9, 0xCF, 0x54, 0x2A, 0x7C, 0x30, 0xE4,
         0x10, 0xC7, 0xD8, 0x25, 0x1E, 0x34, 0xA9, 0x7B, 0xFE, 0xA5, 0x60, 0x62, 0xDF, 0x51, 0xAE, 0x23,
@@ -39,7 +39,7 @@ pub fn hashString(out: *HashStr, payload: ?[]const u8) void {
     std.debug.assert(out.len >= 2 * HASH_LEN);
     if (payload) |pld| if (pld.len > 0) {
         var s256: Hash = undefined;
-        hash(&s256, pld);
+        hash256(&s256, pld);
         _ = hexString(out, .lower, &s256) catch unreachable;
         return;
     };
@@ -87,10 +87,10 @@ test "hexString" {
     );
 }
 
-// The following is from from an old version of Zig’s `std.Uri`.
-// https://github.com/jacobly0/zig/blob/4e2570baafb587c679ee0fc5e113ddeb36522a5d/lib/std/Uri.zig
-
 /// Applies URI encoding and replaces all reserved characters with their respective %XX code.
+///
+/// Based on an older Zig implementation:
+/// https://github.com/jacobly0/zig/blob/4e2570baafb587c679ee0fc5e113ddeb36522a5d/lib/std/Uri.zig
 pub fn escapeUri(allocator: Allocator, input: []const u8) Allocator.Error![]u8 {
     var outsize: usize = 0;
     for (input) |c| {
@@ -122,4 +122,50 @@ fn isUnreserved(c: u8) bool {
         'A'...'Z', 'a'...'z', '0'...'9', '-', '.', '_', '~' => true,
         else => false,
     };
+}
+
+pub const TimeStr = struct {
+    /// Format: `yyyymmdd`
+    date: [8]u8,
+    /// Format: `yyyymmddThhmmssZ`
+    timestamp: [16]u8,
+
+    pub fn initNow() TimeStr {
+        const secs: u64 = @intCast(std.time.timestamp());
+        return initEpoch(secs);
+    }
+
+    /// `seconds` since the Unix epoch.
+    pub fn initEpoch(seconds: u64) TimeStr {
+        const epoch_sec = std.time.epoch.EpochSeconds{ .secs = seconds };
+        const year_day = epoch_sec.getEpochDay().calculateYearDay();
+        const month_day = year_day.calculateMonthDay();
+        const day_secs = epoch_sec.getDaySeconds();
+
+        var date: [8]u8 = undefined;
+        formatInt(date[0..4], year_day.year);
+        formatInt(date[4..6], month_day.month.numeric());
+        formatInt(date[6..8], month_day.day_index + 1);
+
+        var timestamp: [16]u8 = "00000000T000000Z".*;
+        @memcpy(timestamp[0..8], &date);
+        formatInt(timestamp[9..11], day_secs.getHoursIntoDay());
+        formatInt(timestamp[11..13], day_secs.getMinutesIntoHour());
+        formatInt(timestamp[13..15], day_secs.getSecondsIntoMinute());
+
+        return .{ .date = date, .timestamp = timestamp };
+    }
+
+    fn formatInt(out: []u8, value: anytype) void {
+        _ = std.fmt.formatIntBuf(out, value, 10, .lower, .{
+            .width = out.len,
+            .fill = '0',
+        });
+    }
+};
+
+test "TimeStr" {
+    const time = TimeStr.initEpoch(1373321335);
+    try testing.expectEqualStrings("20130708", &time.date);
+    try testing.expectEqualStrings("20130708T220855Z", &time.timestamp);
 }

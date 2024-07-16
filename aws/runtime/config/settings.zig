@@ -3,21 +3,21 @@ const ZigType = std.builtin.Type;
 const testing = std.testing;
 const Region = @import("region.gen.zig").Region;
 
-pub const ACCESS_ID_LEN = 20;
-pub const ACCESS_SECRET_LEN = 40;
+pub const ID_LEN = 20;
+pub const SECRET_LEN = 40;
 
-pub const AccessId = [ACCESS_ID_LEN]u8;
-pub const AccessSecret = [ACCESS_SECRET_LEN]u8;
+pub const AccessId = [ID_LEN]u8;
+pub const AccessSecret = [SECRET_LEN]u8;
 pub const SessionToken = []const u8;
 
 /// [AWS Spec](https://docs.aws.amazon.com/sdkref/latest/guide/feature-static-credentials.html)
-pub const Credentials = union(enum) {
+pub const Credentials = struct {
     /// The access key ID.
     access_id: AccessId,
     /// The secret access key.
     access_secret: AccessSecret,
     /// The session token (optional).
-    session_token: ?SessionToken,
+    session_token: ?SessionToken = null,
 };
 
 /// [AWS Spec](https://docs.aws.amazon.com/sdkref/latest/guide/settings-reference.html)
