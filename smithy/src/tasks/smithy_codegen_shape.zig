@@ -17,6 +17,7 @@ const ContainerBuild = zig.ContainerBuild;
 const Writer = @import("../codegen/CodegenWriter.zig");
 const name_util = @import("../utils/names.zig");
 const IssuesBag = @import("../utils/IssuesBag.zig");
+const JsonValue = @import("../utils/JsonReader.zig").Value;
 const ScopeTag = @import("smithy.zig").ScopeTag;
 const CodegenPolicy = @import("smithy_codegen.zig").CodegenPolicy;
 const trt_docs = @import("../traits/docs.zig");
@@ -933,6 +934,70 @@ fn writeDocComment(
     } orelse return;
 
     try bld.commentMarkdownWith(.doc, md.html.CallbackContext{ .allocator = arena, .html = docs }, md.html.callback);
+}
+
+pub fn writeDocument(x: ExprBuild, json_val: JsonValue) !zig.Expr {
+    switch (json_val) {
+        .null => return x.valueOf(.null).consume(),
+        .array => |t| {
+            var list = try std.ArrayList(ExprBuild).initCapacity(x.allocator, t.len);
+            for (t) |item| {
+                const sub_doc = try writeDocument(x, item);
+                list.appendAssumeCapacity(x.fromExpr(sub_doc));
+            }
+            return x.structLiteral(null, &.{
+                x.structAssign("array", x.addressOf().structLiteral(null, try list.toOwnedSlice())),
+            }).consume();
+        },
+        .object => |t| {
+            var list = try std.ArrayList(ExprBuild).initCapacity(x.allocator, t.len);
+            for (t) |item| {
+                const sub_doc = try writeDocument(x, item.value);
+                list.appendAssumeCapacity(x.structLiteral(null, &.{
+                    x.structAssign("key", x.valueOf(item.key)),
+                    x.structAssign("key_alloc", x.valueOf(false)),
+                    x.structAssign("document", x.fromExpr(sub_doc)),
+                }));
+            }
+            return x.structLiteral(null, &.{
+                x.structAssign("object", x.addressOf().structLiteral(null, try list.toOwnedSlice())),
+            }).consume();
+        },
+        inline else => |t, g| {
+            return x.structLiteral(null, &.{x.structAssign(@tagName(g), x.valueOf(t))}).consume();
+        },
+    }
+}
+
+test "writeDocument" {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const arena_alloc = arena.allocator();
+    defer arena.deinit();
+
+    const expr = try writeDocument(.{ .allocator = arena_alloc }, JsonValue{
+        .array = &.{
+            JsonValue{ .boolean = true },
+            JsonValue{ .integer = 108 },
+            JsonValue{ .float = 1.08 },
+            JsonValue{ .string = "foo" },
+            JsonValue{ .object = &.{
+                .{ .key = "obj", .value = JsonValue.null },
+            } },
+        },
+    });
+    try expr.expect(arena_alloc,
+        \\.{.array = &.{
+        \\    .{.boolean = true},
+        \\    .{.integer = 108},
+        \\    .{.float = 1.08},
+        \\    .{.string = "foo"},
+        \\    .{.object = &.{.{
+        \\        .key = "obj",
+        \\        .key_alloc = false,
+        \\        .document = .null,
+        \\    }}},
+        \\}}
+    );
 }
 
 fn smithyTester(

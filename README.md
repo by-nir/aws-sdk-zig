@@ -24,42 +24,51 @@ increased **platform portability**.
 
 ### Authentication
 
-| Support | Method | Run locally |
-|:-------:|:-------|:-----------:|
-| -       | [IAM Identity Center authentication](https://docs.aws.amazon.com/sdkref/latest/guide/access-sso.html) | ✓ |
-| -       | [IAM Roles Anywhere](https://docs.aws.amazon.com/sdkref/latest/guide/access-rolesanywhere.html) | ✓ |
-| -       | [Assume a role](https://docs.aws.amazon.com/sdkref/latest/guide/access-assume-role.html) | ✓ |
-| -       | [AWS access keys](https://docs.aws.amazon.com/sdkref/latest/guide/access-users.html) | ✓ |
-| -       | [IAM roles for EC2 instances](https://docs.aws.amazon.com/sdkref/latest/guide/access-iam-roles-for-ec2.html) | ✗ |
+| Status | Method | Runs locally |
+|:------:|:-------|:------------:|
+|        | [IAM Identity Center authentication](https://docs.aws.amazon.com/sdkref/latest/guide/access-sso.html) | ✓ |
+|        | [IAM Roles Anywhere](https://docs.aws.amazon.com/sdkref/latest/guide/access-rolesanywhere.html) | ✓ |
+|        | [Assume a role](https://docs.aws.amazon.com/sdkref/latest/guide/access-assume-role.html) | ✓ |
+| ✓      | [AWS access keys](https://docs.aws.amazon.com/sdkref/latest/guide/access-users.html) | ✓ |
+|        | [IAM roles for EC2 instances](https://docs.aws.amazon.com/sdkref/latest/guide/access-iam-roles-for-ec2.html) |   |
 
 ### Settings
 
-| Support | Feature | Notes |
-|:-------:|:--------|:------|
-| -       | [Application ID](https://docs.aws.amazon.com/sdkref/latest/guide/feature-appid.html) | |
-| -       | [Amazon EC2 instance metadata](https://docs.aws.amazon.com/sdkref/latest/guide/feature-ec2-instance-metadata.html) | |
-| -       | [Amazon S3 access points](https://docs.aws.amazon.com/sdkref/latest/guide/feature-s3-access-point.html) | |
-| -       | [Amazon S3 Multi-Region Access Points](https://docs.aws.amazon.com/sdkref/latest/guide/feature-s3-mrap.html) | |
-| ✅       | [AWS Region](https://docs.aws.amazon.com/sdkref/latest/guide/feature-region.html) | |
-| -       | [AWS STS Regionalized endpoints](https://docs.aws.amazon.com/sdkref/latest/guide/feature-sts-regionalized-endpoints.html) | |
-| ✅       | [Dual-stack and FIPS endpoints](https://docs.aws.amazon.com/sdkref/latest/guide/feature-endpoints.html) | |
-| -       | [Endpoint discovery](https://docs.aws.amazon.com/sdkref/latest/guide/feature-endpoint-discovery.html) | |
-| -       | [General configuration](https://docs.aws.amazon.com/sdkref/latest/guide/feature-gen-config.html) | |
-| -       | [IMDS client](https://docs.aws.amazon.com/sdkref/latest/guide/feature-imds-client.html) | |
-| -       | [Retry behavior](https://docs.aws.amazon.com/sdkref/latest/guide/feature-retry-behavior.html) | |
-| -       | [Request compression](https://docs.aws.amazon.com/sdkref/latest/guide/feature-compression.html) | |
-| -       | [Service-specific endpoints](https://docs.aws.amazon.com/sdkref/latest/guide/feature-ss-endpoints.html) | |
-| -       | [Smart configuration defaults](https://docs.aws.amazon.com/sdkref/latest/guide/feature-smart-config-defaults.html) | |
+| Status | Feature | Notes |
+|:------:|:--------|:------|
+|        | [Application ID](https://docs.aws.amazon.com/sdkref/latest/guide/feature-appid.html) | |
+|        | [Amazon EC2 instance metadata](https://docs.aws.amazon.com/sdkref/latest/guide/feature-ec2-instance-metadata.html) | |
+|        | [Amazon S3 access points](https://docs.aws.amazon.com/sdkref/latest/guide/feature-s3-access-point.html) | |
+|        | [Amazon S3 Multi-Region Access Points](https://docs.aws.amazon.com/sdkref/latest/guide/feature-s3-mrap.html) | |
+| ✓      | [AWS Region](https://docs.aws.amazon.com/sdkref/latest/guide/feature-region.html) | |
+|        | [AWS STS Regionalized endpoints](https://docs.aws.amazon.com/sdkref/latest/guide/feature-sts-regionalized-endpoints.html) | |
+| ✓      | [Dual-stack and FIPS endpoints](https://docs.aws.amazon.com/sdkref/latest/guide/feature-endpoints.html) | |
+|        | [Endpoint discovery](https://docs.aws.amazon.com/sdkref/latest/guide/feature-endpoint-discovery.html) | |
+|        | [General configuration](https://docs.aws.amazon.com/sdkref/latest/guide/feature-gen-config.html) | |
+|        | [IMDS client](https://docs.aws.amazon.com/sdkref/latest/guide/feature-imds-client.html) | |
+|        | [Retry behavior](https://docs.aws.amazon.com/sdkref/latest/guide/feature-retry-behavior.html) | |
+|        | [Request compression](https://docs.aws.amazon.com/sdkref/latest/guide/feature-compression.html) | |
+|        | [Service-specific endpoints](https://docs.aws.amazon.com/sdkref/latest/guide/feature-ss-endpoints.html) | |
+|        | [Smart configuration defaults](https://docs.aws.amazon.com/sdkref/latest/guide/feature-smart-config-defaults.html) | |
 
 ## Contributing
 
-| 📁                                | Description                                                    |
-|:----------------------------------|:---------------------------------------------------------------|
-| [sdk](sdk/) | AWS SDKs for Zig    |                                                                |
-| [aws/runtime](aws/runtime/)       | SDK runtime shared by all the services                         |
-| [aws/codegen](aws/codegen/)       | AWS-specific source generation pipeline                        |
-| [smithy/runtime](smithy/runtime/) | [Smithy 2.0](https://smithy.io/2.0) client runtime             |
-| [smithy/src](smithy/src/)         | [Smithy 2.0](https://smithy.io/2.0) source generation pipeline |
+At this point, the project serves as environment for developing other experimental sub-projects.
+These initiatives are in an exploratory phase and are not yet ready for contributions.
+**Please refrain from contributing to [📁&nbsp;smithy/src](smithy/src/) and [📁&nbsp;aws/codegen](aws/codegen/) unless there is a critical _runtime behavior_ issue.**
+
+As the experimental projects mature, they will be extracted from this repository,
+and this project will then focus entirely on the development of the _AWS SDKs for Zig_.
+
+However, we welcome contributions related to the **runtime and AWS-related behavior**.
+
+| 📁                                | Description                                                     |
+|:----------------------------------|:----------------------------------------------------------------|
+| [sdk](sdk/)                       | AWS SDKs for Zig<br />_Auto-generated, do not modify manually!_ |
+| [aws/runtime](aws/runtime/)       | SDK runtime shared by all the services                          |
+| [aws/codegen](aws/codegen/)       | AWS-specific source generation pipeline                         |
+| [smithy/runtime](smithy/runtime/) | [Smithy 2.0](https://smithy.io/2.0) client runtime              |
+| [smithy/src](smithy/src/)         | [Smithy 2.0](https://smithy.io/2.0) source generation pipeline  |
 
 ### CLI Commands
 

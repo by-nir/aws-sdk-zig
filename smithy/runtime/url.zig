@@ -7,7 +7,7 @@ const testing = std.testing;
 const test_alloc = std.testing.allocator;
 
 /// [Smithy Spec](https://smithy.io/2.0/additional-specs/rules-engine/standard-library.html#url-structure)
-pub const Url = struct {
+pub const RulesUrl = struct {
     allocator: Allocator,
     did_alloc_path: bool = false,
     did_alloc_authority: bool = false,
@@ -23,7 +23,7 @@ pub const Url = struct {
     /// Indicates whether the authority is an IPv4 _or_ IPv6 address.
     is_ip: bool,
 
-    pub fn init(allocator: Allocator, value: []const u8) !Url {
+    pub fn init(allocator: Allocator, value: []const u8) !RulesUrl {
         const uri = try std.Uri.parse(value);
         if (uri.query != null or uri.fragment != null) return error.InvalidUrlComponents;
 
@@ -69,7 +69,7 @@ pub const Url = struct {
             }
         }
 
-        return Url{
+        return RulesUrl{
             .allocator = allocator,
             .did_alloc_path = did_alloc_path,
             .did_alloc_authority = did_alloc_authority,
@@ -81,13 +81,13 @@ pub const Url = struct {
         };
     }
 
-    pub fn deinit(self: Url) void {
+    pub fn deinit(self: RulesUrl) void {
         if (self.did_alloc_path) self.allocator.free(self.normalized_path);
         if (self.did_alloc_authority) self.allocator.free(self.authority);
     }
 
-    fn expect(expected: Url, value: []const u8) !void {
-        const url = try Url.init(expected.allocator, value);
+    fn expect(expected: RulesUrl, value: []const u8) !void {
+        const url = try RulesUrl.init(expected.allocator, value);
         defer url.deinit();
 
         try testing.expectEqualStrings(expected.scheme, url.scheme);
@@ -98,17 +98,17 @@ pub const Url = struct {
     }
 };
 
-test "Url" {
+test "RulesUrl" {
     try testing.expectError(
         error.InvalidUrlComponents,
-        Url.init(test_alloc, "https://example.com:8443?foo=bar&faz=baz"),
+        RulesUrl.init(test_alloc, "https://example.com:8443?foo=bar&faz=baz"),
     );
     try testing.expectError(
         error.MissingUrlHost,
-        Url.init(test_alloc, "https:///foo/bar"),
+        RulesUrl.init(test_alloc, "https:///foo/bar"),
     );
 
-    try Url.expect(.{
+    try RulesUrl.expect(.{
         .allocator = test_alloc,
         .scheme = "https",
         .authority = "example.com",
@@ -117,7 +117,7 @@ test "Url" {
         .is_ip = false,
     }, "https://example.com");
 
-    try Url.expect(.{
+    try RulesUrl.expect(.{
         .allocator = test_alloc,
         .scheme = "http",
         .authority = "example.com:80",
@@ -126,7 +126,7 @@ test "Url" {
         .is_ip = false,
     }, "http://example.com:80/foo/bar");
 
-    try Url.expect(.{
+    try RulesUrl.expect(.{
         .allocator = test_alloc,
         .scheme = "https",
         .authority = "127.0.0.1",
@@ -135,7 +135,7 @@ test "Url" {
         .is_ip = true,
     }, "https://127.0.0.1");
 
-    try Url.expect(.{
+    try RulesUrl.expect(.{
         .allocator = test_alloc,
         .scheme = "https",
         .authority = "[fe80::1]",

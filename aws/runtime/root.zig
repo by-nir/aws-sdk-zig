@@ -1,3 +1,8 @@
+const smithy = @import("smithy");
+pub const Set = smithy.Set;
+pub const Result = smithy.Result;
+pub const ErrorSource = smithy.ErrorSource;
+
 const conf_region = @import("config/region.gen.zig");
 pub const Region = conf_region.Region;
 

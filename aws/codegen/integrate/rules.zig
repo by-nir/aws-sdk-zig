@@ -94,13 +94,13 @@ test "fnPartition" {
 
 fn fnParseArn(gen: *Generator, x: ExprBuild, args: []const ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
-    return x.call("aws_internal.Arn.init", &.{ x.id(config.allocator_name), x.fromExpr(value) }).consume();
+    return x.call("aws_internal.Arn.init", &.{ x.id(config.stack_alloc_name), x.fromExpr(value) }).consume();
 }
 
 test "fnParseArn" {
     try Function.expect(fnParseArn, &.{
         .{ .string = "arn:aws:iam::012345678910:user/johndoe" },
-    }, "aws_internal.Arn.init(allocator, \"arn:aws:iam::012345678910:user/johndoe\")");
+    }, "aws_internal.Arn.init(stack_alloc, \"arn:aws:iam::012345678910:user/johndoe\")");
 }
 
 fn fnIsVirtualHostableS3Bucket(gen: *Generator, x: ExprBuild, args: []const ArgValue) !Expr {

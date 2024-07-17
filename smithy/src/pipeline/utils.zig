@@ -120,7 +120,10 @@ pub fn Node(comptime T: type) type {
 }
 
 test "Node.deinit" {
-    var gpa: std.heap.GeneralPurposeAllocator(.{ .safety = true }) = .{};
+    var gpa: std.heap.GeneralPurposeAllocator(.{
+        .never_unmap = true,
+        .retain_metadata = true,
+    }) = .{};
     const alloc = gpa.allocator();
 
     var next: ?*Node(usize) = null;
@@ -143,7 +146,10 @@ test "Node.deinit with values" {
         }
     };
 
-    var gpa: std.heap.GeneralPurposeAllocator(.{ .safety = true }) = .{};
+    var gpa: std.heap.GeneralPurposeAllocator(.{
+        .never_unmap = true,
+        .retain_metadata = true,
+    }) = .{};
     const alloc = gpa.allocator();
 
     var next: ?*Node(*const Value) = null;

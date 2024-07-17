@@ -275,7 +275,7 @@ test "fnStringEquals" {
 fn fnIsValidHostLabel(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
     const subdomains = try gen.evalArg(x, args[1]);
-    return x.call("smithy.url.isValidHostLabel", &.{
+    return x.call("smithy.internal.isValidHostLabel", &.{
         x.fromExpr(value),
         x.fromExpr(subdomains),
     }).consume();
@@ -285,36 +285,36 @@ test "fnIsValidHostLabel" {
     try Function.expect(fnIsValidHostLabel, &.{
         .{ .string = "foo" },
         .{ .boolean = false },
-    }, "smithy.url.isValidHostLabel(\"foo\", false)");
+    }, "smithy.internal.isValidHostLabel(\"foo\", false)");
 }
 
 fn fnParseUrl(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
-    return x.call("smithy.url.Url.init", &.{ x.id(config.stack_alloc_name), x.fromExpr(value) })
+    return x.call("smithy.internal.RulesUrl.init", &.{ x.id(config.stack_alloc_name), x.fromExpr(value) })
         .@"catch"().body(x.valueOf(null)).consume();
 }
 
 test "fnParseUrl" {
     try Function.expect(fnParseUrl, &.{
         .{ .string = "http://example.com" },
-    }, "smithy.url.Url.init(" ++ config.stack_alloc_name ++ ", \"http://example.com\") catch null");
+    }, "smithy.internal.RulesUrl.init(" ++ config.stack_alloc_name ++ ", \"http://example.com\") catch null");
 }
 
 fn fnUriEncode(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
     return x.trys()
-        .call("smithy.url.uriEncode", &.{ x.id(config.stack_alloc_name), x.fromExpr(value) })
+        .call("smithy.internal.uriEncode", &.{ x.id(config.stack_alloc_name), x.fromExpr(value) })
         .consume();
 }
 
 test "fnUriEncode" {
     try Function.expect(fnUriEncode, &.{
         .{ .string = "foo" },
-    }, "try smithy.url.uriEncode(" ++ config.stack_alloc_name ++ ", \"foo\")");
+    }, "try smithy.internal.uriEncode(" ++ config.stack_alloc_name ++ ", \"foo\")");
 }
 
 fn fnSubstring(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
-    return x.call("smithy.string.substring", &.{
+    return x.call("smithy.internal.substring", &.{
         x.fromExpr(try gen.evalArg(x, args[0])),
         x.fromExpr(try gen.evalArg(x, args[1])),
         x.fromExpr(try gen.evalArg(x, args[2])),
@@ -328,5 +328,5 @@ test "fnSubstring" {
         .{ .integer = 0 },
         .{ .integer = 2 },
         .{ .boolean = false },
-    }, "smithy.string.substring(\"foo\", 0, 2, false) catch null");
+    }, "smithy.internal.substring(\"foo\", 0, 2, false) catch null");
 }

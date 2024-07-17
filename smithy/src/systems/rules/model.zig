@@ -162,7 +162,7 @@ pub const TestCase = struct {
 
     pub const Expect = union(enum) {
         invalid: void,
-        endpoint: []const u8,
+        endpoint: Endpoint,
         err: []const u8,
     };
 };

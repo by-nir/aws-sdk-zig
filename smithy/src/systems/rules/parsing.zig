@@ -561,12 +561,9 @@ fn parseTestCaseExpect(arena: Allocator, reader: *JsonReader) !mdl.TestCase.Expe
     try reader.nextObjectBegin();
     const prop = try reader.nextString();
     if (mem.eql(u8, prop, "endpoint")) {
-        try reader.nextObjectBegin();
-        try reader.nextStringEql("url");
-        const url = try reader.nextStringAlloc(arena);
+        const endpoint = try parseEndpoint(arena, reader);
         try reader.nextObjectEnd();
-        try reader.nextObjectEnd();
-        return .{ .endpoint = url };
+        return .{ .endpoint = endpoint };
     } else if (mem.eql(u8, prop, "error")) {
         const err = try reader.nextStringAlloc(arena);
         try reader.nextObjectEnd();
@@ -623,7 +620,20 @@ test "parseTests" {
     try testing.expectEqualDeep(&[_]mdl.TestCase{
         .{
             .documentation = "Test 1",
-            .expect = .{ .endpoint = "https://example.com" },
+            .expect = .{
+                .endpoint = .{
+                    .url = .{ .string = "https://example.com" },
+                    .headers = &.{
+                        .{
+                            .key = "foo",
+                            .value = &.{ .{ .string = "bar" }, .{ .string = "baz" } },
+                        },
+                    },
+                    .properties = &.{
+                        .{ .key = "qux", .value = .null },
+                    },
+                },
+            },
             .params = &[_]mdl.StringKV(mdl.ParamValue){
                 .{ .key = "Foo", .value = .{ .string = "bar" } },
                 .{ .key = "Baz", .value = .{ .boolean = true } },

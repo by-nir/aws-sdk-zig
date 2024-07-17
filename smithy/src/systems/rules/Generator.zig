@@ -6,6 +6,8 @@ const test_alloc = testing.allocator;
 const mdl = @import("model.zig");
 const lib = @import("library.zig");
 const Engine = @import("RulesEngine.zig");
+const config = @import("../../config.zig");
+const name_util = @import("../../utils/names.zig");
 const md = @import("../../codegen/md.zig");
 const zig = @import("../../codegen/zig.zig");
 const Expr = zig.Expr;
@@ -13,8 +15,7 @@ const ExprBuild = zig.ExprBuild;
 const BlockBuild = zig.BlockBuild;
 const ContainerBuild = zig.ContainerBuild;
 const Writer = @import("../../codegen/CodegenWriter.zig");
-const name_util = @import("../../utils/names.zig");
-const config = @import("../../config.zig");
+const evalDocument = @import("../../tasks/smithy_codegen_shape.zig").writeDocument;
 
 const ARG_CONFIG = "config";
 const CONDIT_VAL = "did_pass";
@@ -120,7 +121,7 @@ pub fn generateResolver(self: *Self, bld: *ContainerBuild, rules: []const mdl.Ru
     try bld.public().function(config.endpoint_resolve_fn)
         .arg(config.allocator_name, bld.x.id("Allocator"))
         .arg(ARG_CONFIG, bld.x.raw(config.endpoint_config_type))
-        .returns(bld.x.typeOf(anyerror![]const u8))
+        .returns(bld.x.raw("!smithy.internal.Endpoint"))
         .bodyWith(context, struct {
         fn f(ctx: @TypeOf(context), b: *BlockBuild) !void {
             try b.variable("local_buffer").typing(b.typeOf([512]u8)).assign(b.x.raw("undefined"));
@@ -149,7 +150,7 @@ test "generateResolver" {
     });
 
     try tst.expect(
-        \\pub fn resolve(allocator: Allocator, config: EndpointConfig) anyerror![]const u8 {
+        \\pub fn resolve(allocator: Allocator, config: EndpointConfig) !smithy.internal.Endpoint {
         \\    var local_buffer: [512]u8 = undefined;
         \\
         \\    var local_heap = std.heap.FixedBufferAllocator.init(&local_buffer);
@@ -392,17 +393,18 @@ test "generateResolverCondition" {
 const RuleCtx = struct { self: *Self, rule: mdl.Rule };
 fn generateRule(ctx: RuleCtx, bld: *BlockBuild) !void {
     return switch (ctx.rule) {
-        .endpoint => |endpoint| ctx.self.generateEndpointRule(bld, endpoint),
-        .err => |err| ctx.self.generateErrorRule(bld, err),
+        .endpoint => |endpoint| ctx.self.generateEndpointRule(bld, endpoint.endpoint),
+        .err => |err| ctx.self.generateErrorRule(bld, err.message),
         .tree => |tree| ctx.self.generateResolverRules(bld, tree.rules),
     };
 }
 
-fn generateErrorRule(self: *Self, bld: *BlockBuild, rule: mdl.ErrorRule) !void {
-    const template = try self.evalTemplateString(bld.x, rule.message);
+fn generateErrorRule(self: *Self, bld: *BlockBuild, message: mdl.StringValue) !void {
+    const template = try self.evalTemplateString(bld.x, message);
+    const fmt_args = if (template.args) |args| bld.x.fromExpr(args) else bld.x.raw(".{}");
 
     try bld.@"if"(bld.x.op(.not).id("IS_TEST")).body(
-        bld.x.call("std.log.err", &.{ bld.x.fromExpr(template.format), bld.x.fromExpr(template.args) }),
+        bld.x.call("std.log.err", &.{ bld.x.fromExpr(template.format), fmt_args }),
     ).end();
 
     try bld.returns().valueOf(error.ReachedErrorRule).end();
@@ -412,10 +414,7 @@ test "generateErrorRule" {
     var tst = try Tester.init();
     defer tst.deinit();
 
-    try tst.gen.generateErrorRule(tst.block(), .{
-        .message = .{ .string = "foo" },
-    });
-
+    try tst.gen.generateErrorRule(tst.block(), .{ .string = "foo" });
     try tst.expect(
         \\{
         \\    if (!IS_TEST) std.log.err("foo", .{});
@@ -425,13 +424,77 @@ test "generateErrorRule" {
     );
 }
 
-// TODO: Codegen properties, headers, authSchemas
-fn generateEndpointRule(self: *Self, bld: *BlockBuild, rule: mdl.EndpointRule) !void {
-    const template = try self.evalTemplateString(bld.x, rule.endpoint.url);
-    try bld.returns().call("std.fmt.allocPrint", &.{
-        bld.x.id(config.allocator_name),
-        bld.x.fromExpr(template.format),
-        bld.x.fromExpr(template.args),
+fn generateEndpointRule(self: *Self, bld: *BlockBuild, endpoint: mdl.Endpoint) !void {
+    const fmt_url = try self.evalTemplateString(bld.x, endpoint.url);
+    if (fmt_url.args) |args| {
+        try bld.constant("url").assign(bld.x.trys().call("std.fmt.allocPrint", &.{
+            bld.x.id(config.allocator_name),
+            bld.x.fromExpr(fmt_url.format),
+            bld.x.fromExpr(args),
+        }));
+    } else {
+        try bld.constant("url").assign(
+            bld.x.trys().id(config.allocator_name).dot().call("dupe", &.{
+                bld.x.typeOf(u8),
+                bld.x.fromExpr(fmt_url.format),
+            }),
+        );
+    }
+    try bld.errorDefers().body(bld.x.id(config.allocator_name).dot().call("free", &.{bld.x.id("url")}));
+
+    const headers = if (endpoint.headers) |headers| blk: {
+        var list = try std.ArrayList(ExprBuild).initCapacity(self.arena, headers.len);
+        for (headers, 0..) |header, i| {
+            const prefix = try std.fmt.allocPrint(self.arena, "head_{d}_", .{i});
+            defer self.arena.free(prefix);
+
+            const values = try self.generateStringsArray(bld, header.value, prefix);
+            list.appendAssumeCapacity(bld.x.structLiteral(null, &.{
+                bld.x.structAssign("key", bld.x.valueOf(header.key)),
+                bld.x.structAssign("values", bld.x.fromExpr(values)),
+            }));
+        }
+        break :blk bld.x.addressOf().structLiteral(null, try list.toOwnedSlice());
+    } else bld.x.raw("&.{}");
+
+    const properties = if (endpoint.properties) |props| blk: {
+        var list = try std.ArrayList(ExprBuild).initCapacity(self.arena, props.len);
+        for (props, 0..) |prop, i| {
+            const document = switch (prop.value) {
+                .string => |s| doc: {
+                    const fmt_prop = try self.evalTemplateString(bld.x, .{ .string = s });
+                    if (fmt_prop.args) |args| {
+                        const name = try std.fmt.allocPrint(self.arena, "prop_{d}", .{i});
+                        try bld.constant(name).assign(bld.x.trys().call("std.fmt.allocPrint", &.{
+                            bld.x.id(config.allocator_name),
+                            bld.x.fromExpr(fmt_prop.format),
+                            bld.x.fromExpr(args),
+                        }));
+                        try bld.errorDefers().body(bld.x.id(config.allocator_name).dot().call("free", &.{bld.x.id(name)}));
+                        break :doc bld.x.structLiteral(null, &.{
+                            bld.x.structAssign("string_alloc", bld.x.id(name)),
+                        });
+                    } else {
+                        break :doc bld.x.structLiteral(null, &.{
+                            bld.x.structAssign("string", bld.x.fromExpr(fmt_prop.format)),
+                        });
+                    }
+                },
+                else => bld.x.fromExpr(try evalDocument(bld.x, prop.value)),
+            };
+            list.appendAssumeCapacity(bld.x.structLiteral(null, &.{
+                bld.x.structAssign("key", bld.x.valueOf(prop.key)),
+                bld.x.structAssign("key_alloc", bld.x.valueOf(false)),
+                bld.x.structAssign("document", document),
+            }));
+        }
+        break :blk bld.x.addressOf().structLiteral(null, try list.toOwnedSlice());
+    } else bld.x.raw("&.{}");
+
+    try bld.returns().structLiteral(null, &.{
+        bld.x.structAssign("url", bld.x.id("url")),
+        bld.x.structAssign("headers", headers),
+        bld.x.structAssign("properties", properties),
     }).end();
 }
 
@@ -440,19 +503,44 @@ test "generateEndpointRule" {
     defer tst.deinit();
 
     try tst.gen.generateEndpointRule(tst.block(), .{
-        .endpoint = .{ .url = .{ .string = "https://{Foo}.service.com" } },
+        .url = .{ .string = "https://{Foo}.service.com" },
+        .headers = &.{
+            .{
+                .key = "foo",
+                .value = &.{},
+            },
+            .{
+                .key = "bar",
+                .value = &.{ .{ .string = "baz" }, .{ .string = "qux" } },
+            },
+        },
+        .properties = &.{
+            .{ .key = "qux", .value = .null },
+        },
     });
 
     try tst.expect(
         \\{
-        \\    return std.fmt.allocPrint(allocator, "https://{s}.service.com", .{config.foo.?});
+        \\    const url = try std.fmt.allocPrint(allocator, "https://{s}.service.com", .{config.foo.?});
+        \\
+        \\    errdefer allocator.free(url);
+        \\
+        \\    return .{
+        \\        .url = url,
+        \\        .headers = &.{ .{ .key = "foo", .values = &.{} }, .{ .key = "bar", .values = &.{ "baz", "qux" } } },
+        \\        .properties = &.{.{
+        \\            .key = "qux",
+        \\            .key_alloc = false,
+        \\            .document = .null,
+        \\        }},
+        \\    };
         \\}
     );
 }
 
-const TemplateString = struct { format: Expr, args: Expr };
+const TemplateString = struct { format: Expr, args: ?Expr };
 fn evalTemplateString(self: *Self, x: ExprBuild, template: mdl.StringValue) !TemplateString {
-    const arg = switch (template) {
+    switch (template) {
         .string => |s| {
             var format = std.ArrayList(u8).init(self.arena);
             errdefer format.deinit();
@@ -499,19 +587,18 @@ fn evalTemplateString(self: *Self, x: ExprBuild, template: mdl.StringValue) !Tem
                 .args = try x.structLiteral(null, try args.toOwnedSlice()).consume(),
             } else .{
                 .format = try x.valueOf(s).consume(),
-                .args = Expr{ .value = .{
-                    .struct_literal = .{ .identifier = null, .values = &.{} },
-                } },
+                .args = null,
             };
         },
-        .reference => |ref| try self.evalArg(x, .{ .reference = ref }),
-        .function => |func| try self.evalFunc(x, func.id, func.args, null),
-    };
-
-    return .{
-        .format = try x.valueOf("{s}").consume(),
-        .args = try x.structLiteral(null, &.{x.fromExpr(arg)}).consume(),
-    };
+        .reference => |ref| return .{
+            .format = try self.evalArg(x, .{ .reference = ref }),
+            .args = null,
+        },
+        .function => |func| return .{
+            .format = try self.evalFunc(x, func.id, func.args, null),
+            .args = null,
+        },
+    }
 }
 
 test "evalTemplateString" {
@@ -521,8 +608,8 @@ test "evalTemplateString" {
     var template = try tst.gen.evalTemplateString(tst.x, .{
         .reference = "Foo",
     });
-    try template.format.expect(tst.alloc, "\"{s}\"");
-    try template.args.expect(tst.alloc, ".{config.foo.?}");
+    try template.format.expect(tst.alloc, "config.foo.?");
+    try testing.expectEqual(null, template.args);
 
     template = try tst.gen.evalTemplateString(tst.x, .{
         .function = .{
@@ -533,20 +620,62 @@ test "evalTemplateString" {
             },
         },
     });
-    try template.format.expect(tst.alloc, "\"{s}\"");
-    try template.args.expect(tst.alloc, ".{config.foo.?.bar}");
+    try template.format.expect(tst.alloc, "config.foo.?.bar");
+    try testing.expectEqual(null, template.args);
 
-    template = try tst.gen.evalTemplateString(tst.x, .{
-        .string = "foo",
-    });
+    template = try tst.gen.evalTemplateString(tst.x, .{ .string = "foo" });
     try template.format.expect(tst.alloc, "\"foo\"");
-    try template.args.expect(tst.alloc, ".{}");
+    try testing.expectEqual(null, template.args);
 
-    template = try tst.gen.evalTemplateString(tst.x, .{
-        .string = "{Foo}bar{baz#qux}",
-    });
+    template = try tst.gen.evalTemplateString(tst.x, .{ .string = "{Foo}bar{baz#qux}" });
     try template.format.expect(tst.alloc, "\"{s}bar{s}\"");
-    try template.args.expect(tst.alloc, ".{ config.foo.?, baz.qux }");
+    try template.args.?.expect(tst.alloc, ".{ config.foo.?, baz.qux }");
+}
+
+fn generateStringsArray(
+    self: *Self,
+    bld: *BlockBuild,
+    strings: []const mdl.StringValue,
+    id_prefix: []const u8,
+) !Expr {
+    if (strings.len == 0) return bld.x.raw("&.{}").consume();
+
+    var exprs = try std.ArrayList(ExprBuild).initCapacity(self.arena, strings.len);
+    for (strings, 0..) |value, i| {
+        const template = try self.evalTemplateString(bld.x, value);
+        if (template.args) |args| {
+            const id = try std.fmt.allocPrint(self.arena, "{s}{d}", .{ id_prefix, i });
+            try bld.constant(id).assign(bld.x.trys().call("std.fmt.allocPrint", &.{
+                bld.x.id(config.allocator_name),
+                bld.x.fromExpr(template.format),
+                bld.x.fromExpr(args),
+            }));
+            try bld.errorDefers().body(bld.x.id(config.allocator_name).dot().call("free", &.{bld.x.id(id)}));
+            exprs.appendAssumeCapacity(bld.x.id(id));
+        } else {
+            exprs.appendAssumeCapacity(bld.x.fromExpr(template.format));
+        }
+    }
+
+    return bld.x.addressOf().structLiteral(null, try exprs.toOwnedSlice()).consume();
+}
+
+test "generateStringsArray" {
+    var tst = try Tester.init();
+    defer tst.deinit();
+
+    var expr = try tst.gen.generateStringsArray(tst.block(), &.{
+        .{ .string = "foo" },
+        .{ .string = "{Foo}bar{baz#qux}" },
+    }, "item_");
+    try expr.expect(tst.alloc, "&.{ \"foo\", item_1 }");
+    try tst.expect(
+        \\{
+        \\    const item_1 = try std.fmt.allocPrint(allocator, "{s}bar{s}", .{ config.foo.?, baz.qux });
+        \\
+        \\    errdefer allocator.free(item_1);
+        \\}
+    );
 }
 
 pub fn evalFunc(
@@ -806,6 +935,7 @@ pub fn generateTests(self: *Self, bld: *ContainerBuild, cases: []const mdl.TestC
                 try b.constant("config").assign(b.x.structLiteral(b.x.raw(config.endpoint_config_type), params_exprs));
 
                 switch (tc.expect) {
+                    .invalid => unreachable,
                     .err => |_| {
                         try b.constant("endpoint").assign(
                             b.x.call(config.endpoint_resolve_fn, &.{ b.x.raw("std.testing.allocator"), b.x.id("config") }),
@@ -815,17 +945,59 @@ pub fn generateTests(self: *Self, bld: *ContainerBuild, cases: []const mdl.TestC
                             &.{ b.x.raw("error.ReachedErrorRule"), b.x.id("endpoint") },
                         ).end();
                     },
-                    .endpoint => |s| {
+                    .endpoint => |endpoint| {
                         try b.constant("endpoint").assign(
                             b.x.trys().call(config.endpoint_resolve_fn, &.{ b.x.raw("std.testing.allocator"), b.x.id("config") }),
                         );
-                        try b.defers(b.x.call("std.testing.allocator.free", &.{b.x.id("endpoint")}));
+                        try b.defers(b.x.id("endpoint").dot().call("deinit", &.{b.x.raw("std.testing.allocator")}));
+
                         try b.trys().call(
                             "std.testing.expectEqualStrings",
-                            &.{ b.x.valueOf(s), b.x.id("endpoint") },
+                            &.{ b.x.valueOf(endpoint.url.string), b.x.raw("endpoint.url") },
                         ).end();
+
+                        if (endpoint.headers) |headers| {
+                            var list = try std.ArrayList(ExprBuild).initCapacity(ctx.arena, headers.len);
+                            for (headers) |header| {
+                                var strs = try std.ArrayList(ExprBuild).initCapacity(ctx.arena, header.value.len);
+                                for (header.value) |s| strs.appendAssumeCapacity(b.x.valueOf(s.string));
+                                const str_array = b.x.addressOf().structLiteral(null, try strs.toOwnedSlice());
+                                list.appendAssumeCapacity(b.x.structLiteral(null, &.{
+                                    b.x.structAssign("key", b.x.valueOf(header.key)),
+                                    b.x.structAssign("values", str_array),
+                                }));
+                            }
+                            const expected = b.x.fromExpr(try b.x.structLiteral(
+                                b.x.raw("&[_]smithy.internal.HttpHeader"),
+                                try list.toOwnedSlice(),
+                            ).consume());
+                            try b.trys().call(
+                                "std.testing.expectEqualDeep",
+                                &.{ expected, b.x.raw("endpoint.headers") },
+                            ).end();
+                        }
+
+                        if (endpoint.properties) |props| {
+                            var list = try std.ArrayList(ExprBuild).initCapacity(ctx.arena, props.len);
+                            for (props) |prop| {
+                                const doc = try evalDocument(b.x, prop.value);
+                                list.appendAssumeCapacity(b.x.structLiteral(null, &.{
+                                    b.x.structAssign("key", b.x.valueOf(prop.key)),
+                                    b.x.structAssign("key_alloc", b.x.valueOf(false)),
+                                    b.x.structAssign("document", b.x.fromExpr(doc)),
+                                }));
+                            }
+                            const expected = b.x.fromExpr(try b.x.structLiteral(
+                                b.x.raw("&[_]smithy.internal.Document.KV"),
+                                try list.toOwnedSlice(),
+                            ).consume());
+
+                            try b.trys().call(
+                                "std.testing.expectEqualDeep",
+                                &.{ expected, b.x.raw("endpoint.properties") },
+                            ).end();
+                        }
                     },
-                    .invalid => unreachable,
                 }
             }
         }.f);
@@ -839,7 +1011,20 @@ test "generateTests" {
     try generateTests(tst.gen, tst.container(), &[_]mdl.TestCase{
         .{
             .documentation = "Test 1",
-            .expect = .{ .endpoint = "https://example.com" },
+            .expect = .{
+                .endpoint = .{
+                    .url = .{ .string = "https://example.com" },
+                    .headers = &.{
+                        .{
+                            .key = "foo",
+                            .value = &.{ .{ .string = "bar" }, .{ .string = "baz" } },
+                        },
+                    },
+                    .properties = &.{
+                        .{ .key = "qux", .value = .null },
+                    },
+                },
+            },
             .params = &[_]mdl.StringKV(mdl.ParamValue){
                 .{ .key = "Foo", .value = .{ .string = "bar" } },
                 .{ .key = "BarBaz", .value = .{ .boolean = true } },
@@ -865,9 +1050,17 @@ test "generateTests" {
         \\
         \\    const endpoint = try resolve(std.testing.allocator, config);
         \\
-        \\    defer std.testing.allocator.free(endpoint);
+        \\    defer endpoint.deinit(std.testing.allocator);
         \\
-        \\    try std.testing.expectEqualStrings("https://example.com", endpoint);
+        \\    try std.testing.expectEqualStrings("https://example.com", endpoint.url);
+        \\
+        \\    try std.testing.expectEqualDeep(&[_]smithy.internal.HttpHeader{.{ .key = "foo", .values = &.{ "bar", "baz" } }}, endpoint.headers);
+        \\
+        \\    try std.testing.expectEqualDeep(&[_]smithy.internal.Document.KV{.{
+        \\        .key = "qux",
+        \\        .key_alloc = false,
+        \\        .document = .null,
+        \\    }}, endpoint.properties);
         \\}
         \\
         \\test "Test 2" {

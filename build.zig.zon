@@ -4,6 +4,9 @@
     .minimum_zig_version = "0.14.0",
 
     .dependencies = .{
+        .smithy = .{
+            .path = "smithy",
+        },
         .aws = .{
             .path = "aws",
         },

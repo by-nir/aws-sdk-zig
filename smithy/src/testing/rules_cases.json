@@ -4,7 +4,13 @@
       "documentation": "Test 1",
       "expect": {
         "endpoint": {
-          "url": "https://example.com"
+          "url": "https://example.com",
+          "headers": {
+            "foo": ["bar", "baz"]
+          },
+          "properties": {
+            "qux": null
+          }
         }
       },
       "params": {

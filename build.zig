@@ -10,17 +10,21 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const aws = b.dependency("aws", .{
+    const smithy = b.dependency("smithy", .{
         .target = target,
         .optimize = optimize,
-    });
-    const sdk_runtime = aws.module("runtime");
+    }).module("runtime");
+
+    const aws_runtime = b.dependency("aws", .{
+        .target = target,
+        .optimize = optimize,
+    }).module("runtime");
 
     //
     // SDK
     //
 
-    b.modules.put("aws-sdk", sdk_runtime) catch {};
+    b.modules.put("aws-sdk", aws_runtime) catch {};
 
     const sdk_path = "sdk";
     var sdk_dir = std.fs.openDirAbsolute(b.path(sdk_path).getPath(b), .{ .iterate = true }) catch {
@@ -35,7 +39,7 @@ pub fn build(b: *std.Build) void {
         addSdkClient(b, .{
             .target = target,
             .optimize = optimize,
-        }, sdk_path, entry.name, sdk_runtime);
+        }, sdk_path, entry.name, smithy, aws_runtime);
     }
 }
 
@@ -44,6 +48,7 @@ fn addSdkClient(
     options: Options,
     dir: []const u8,
     name: []const u8,
+    smithy: *Build.Module,
     runtime: *Build.Module,
 ) void {
     // Client
@@ -55,6 +60,7 @@ fn addSdkClient(
             .optimize = options.optimize,
             .root_source_file = path,
             .imports = &.{
+                .{ .name = "smithy", .module = smithy },
                 .{ .name = "aws-runtime", .module = runtime },
             },
         },
@@ -70,6 +76,7 @@ fn addSdkClient(
         .optimize = options.optimize,
         .root_source_file = path,
     });
+    unit_tests.root_module.addImport("smithy", smithy);
     unit_tests.root_module.addImport("aws-runtime", runtime);
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 }
