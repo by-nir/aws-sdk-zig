@@ -17,6 +17,7 @@ pub const internal = struct {
     pub const Document = values.Document;
     pub const substring = values.substring;
     pub const Endpoint = endpoint.Endpoint;
+    pub const AuthScheme = endpoint.AuthScheme;
 };
 
 test {

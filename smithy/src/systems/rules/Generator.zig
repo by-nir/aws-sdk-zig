@@ -8,6 +8,7 @@ const lib = @import("library.zig");
 const Engine = @import("RulesEngine.zig");
 const config = @import("../../config.zig");
 const name_util = @import("../../utils/names.zig");
+const JsonValue = @import("../../utils/JsonReader.zig").Value;
 const md = @import("../../codegen/md.zig");
 const zig = @import("../../codegen/zig.zig");
 const Expr = zig.Expr;
@@ -443,59 +444,140 @@ fn generateEndpointRule(self: *Self, bld: *BlockBuild, endpoint: mdl.Endpoint) !
     try bld.errorDefers().body(bld.x.id(config.allocator_name).dot().call("free", &.{bld.x.id("url")}));
 
     const headers = if (endpoint.headers) |headers| blk: {
-        var list = try std.ArrayList(ExprBuild).initCapacity(self.arena, headers.len);
-        for (headers, 0..) |header, i| {
-            const prefix = try std.fmt.allocPrint(self.arena, "head_{d}_", .{i});
-            defer self.arena.free(prefix);
+        try bld.constant("headers").assign(
+            bld.x.trys().id(config.allocator_name).dot().call("alloc", &.{
+                bld.x.raw("smithy.internal.HttpHeader"),
+                bld.x.valueOf(headers.len),
+            }),
+        );
+        try bld.errorDefers().body(
+            bld.x.id(config.allocator_name).dot().call("free", &.{bld.x.id("headers")}),
+        );
 
+        for (headers, 0..) |header, i| {
+            const prefix = try std.fmt.allocPrint(self.arena, "head_{d}", .{i});
             const values = try self.generateStringsArray(bld, header.value, prefix);
-            list.appendAssumeCapacity(bld.x.structLiteral(null, &.{
+            try bld.id("headers").valIndexer(bld.valueOf(i)).assign().structLiteral(null, &.{
                 bld.x.structAssign("key", bld.x.valueOf(header.key)),
                 bld.x.structAssign("values", bld.x.fromExpr(values)),
-            }));
+            }).end();
         }
-        break :blk bld.x.addressOf().structLiteral(null, try list.toOwnedSlice());
+
+        break :blk bld.x.id("headers");
     } else bld.x.raw("&.{}");
 
+    var auth_schemes: ?[]const JsonValue = null;
     const properties = if (endpoint.properties) |props| blk: {
-        var list = try std.ArrayList(ExprBuild).initCapacity(self.arena, props.len);
-        for (props, 0..) |prop, i| {
-            const document = switch (prop.value) {
-                .string => |s| doc: {
-                    const fmt_prop = try self.evalTemplateString(bld.x, .{ .string = s });
-                    if (fmt_prop.args) |args| {
-                        const name = try std.fmt.allocPrint(self.arena, "prop_{d}", .{i});
-                        try bld.constant(name).assign(bld.x.trys().call("std.fmt.allocPrint", &.{
-                            bld.x.id(config.allocator_name),
-                            bld.x.fromExpr(fmt_prop.format),
-                            bld.x.fromExpr(args),
-                        }));
-                        try bld.errorDefers().body(bld.x.id(config.allocator_name).dot().call("free", &.{bld.x.id(name)}));
-                        break :doc bld.x.structLiteral(null, &.{
-                            bld.x.structAssign("string_alloc", bld.x.id(name)),
-                        });
-                    } else {
-                        break :doc bld.x.structLiteral(null, &.{
-                            bld.x.structAssign("string", bld.x.fromExpr(fmt_prop.format)),
-                        });
-                    }
-                },
-                else => bld.x.fromExpr(try evalDocument(bld.x, prop.value)),
-            };
-            list.appendAssumeCapacity(bld.x.structLiteral(null, &.{
-                bld.x.structAssign("key", bld.x.valueOf(prop.key)),
-                bld.x.structAssign("key_alloc", bld.x.valueOf(false)),
-                bld.x.structAssign("document", document),
-            }));
+        for (props) |prop| {
+            if (mem.eql(u8, "authSchemes", prop.key)) {
+                auth_schemes = prop.value.array;
+                break;
+            }
         }
-        break :blk bld.x.addressOf().structLiteral(null, try list.toOwnedSlice());
+
+        try bld.constant("properties").assign(
+            bld.x.trys().id(config.allocator_name).dot().call("alloc", &.{
+                bld.x.raw("smithy.internal.Document.KV"),
+                bld.x.valueOf(if (auth_schemes == null) props.len else props.len - 1),
+            }),
+        );
+        try bld.errorDefers().body(
+            bld.x.id(config.allocator_name).dot().call("free", &.{bld.x.id("properties")}),
+        );
+
+        var i: usize = 0;
+        for (props) |prop| {
+            if (auth_schemes != null and mem.eql(u8, "authSchemes", prop.key)) continue;
+            const document = try self.generateEndpointProperty(bld, prop, "prop_{d}", .{i});
+            try bld.id("properties").valIndexer(bld.valueOf(i)).assign().fromExpr(document).end();
+            i += 1;
+        }
+        break :blk bld.x.id("properties");
+    } else bld.x.raw("&.{}");
+
+    const auth = if (auth_schemes) |schemes| blk: {
+        try bld.constant("schemes").assign(
+            bld.x.trys().id(config.allocator_name).dot().call("alloc", &.{
+                bld.x.raw("smithy.internal.AuthScheme"),
+                bld.x.valueOf(schemes.len),
+            }),
+        );
+        try bld.errorDefers().body(
+            bld.x.id(config.allocator_name).dot().call("free", &.{bld.x.id("schemes")}),
+        );
+
+        for (schemes, 0..) |scheme, i| {
+            std.debug.assert(mem.eql(u8, "name", scheme.object[0].key));
+            const name = scheme.object[0].value.string;
+            const props = scheme.object[1..scheme.object.len];
+
+            const id = try std.fmt.allocPrint(self.arena, "scheme_{d}", .{i});
+            try bld.constant(id).assign(
+                bld.x.trys().id(config.allocator_name).dot().call("alloc", &.{
+                    bld.x.raw("smithy.internal.Document.KV"),
+                    bld.x.valueOf(props.len),
+                }),
+            );
+            try bld.errorDefers().body(
+                bld.x.id(config.allocator_name).dot().call("free", &.{bld.x.id(id)}),
+            );
+
+            for (props, 0..) |prop, p| {
+                const document = try self.generateEndpointProperty(bld, prop, "scheme_{d}_{d}", .{ i, p });
+                try bld.id(id).valIndexer(bld.valueOf(i)).assign().fromExpr(document).end();
+            }
+
+            try bld.id("schemes").valIndexer(bld.valueOf(i)).assign().structLiteral(null, &.{
+                bld.x.structAssign("id", bld.x.call("smithy.intenral.AuthId.of", &.{bld.x.valueOf(name)})),
+                bld.x.structAssign("properties", bld.x.id(id)),
+            }).end();
+        }
+
+        break :blk bld.x.id("schemes");
     } else bld.x.raw("&.{}");
 
     try bld.returns().structLiteral(null, &.{
         bld.x.structAssign("url", bld.x.id("url")),
         bld.x.structAssign("headers", headers),
         bld.x.structAssign("properties", properties),
+        bld.x.structAssign("auth_schemes", auth),
     }).end();
+}
+
+fn generateEndpointProperty(
+    self: *Self,
+    bld: *BlockBuild,
+    prop: JsonValue.KV,
+    comptime name_fmt: []const u8,
+    name_args: anytype,
+) !Expr {
+    const document = switch (prop.value) {
+        .string => |s| doc: {
+            const fmt_prop = try self.evalTemplateString(bld.x, .{ .string = s });
+            if (fmt_prop.args) |args| {
+                const name = try std.fmt.allocPrint(self.arena, name_fmt, name_args);
+                try bld.constant(name).assign(bld.x.trys().call("std.fmt.allocPrint", &.{
+                    bld.x.id(config.allocator_name),
+                    bld.x.fromExpr(fmt_prop.format),
+                    bld.x.fromExpr(args),
+                }));
+                try bld.errorDefers().body(bld.x.id(config.allocator_name).dot().call("free", &.{bld.x.id(name)}));
+                break :doc bld.x.structLiteral(null, &.{
+                    bld.x.structAssign("string_alloc", bld.x.id(name)),
+                });
+            } else {
+                break :doc bld.x.structLiteral(null, &.{
+                    bld.x.structAssign("string", bld.x.fromExpr(fmt_prop.format)),
+                });
+            }
+        },
+        else => bld.x.fromExpr(try evalDocument(bld.x, prop.value)),
+    };
+    return bld.x.structLiteral(null, &.{
+        bld.x.structAssign("key", bld.x.valueOf(prop.key)),
+        bld.x.structAssign("key_alloc", bld.x.valueOf(false)),
+        bld.x.structAssign("document", document),
+    }).consume();
 }
 
 test "generateEndpointRule" {
@@ -516,6 +598,15 @@ test "generateEndpointRule" {
         },
         .properties = &.{
             .{ .key = "qux", .value = .null },
+            .{
+                .key = "authSchemes",
+                .value = .{ .array = &.{.{
+                    .object = &.{
+                        .{ .key = "name", .value = .{ .string = "auth" } },
+                        .{ .key = "value", .value = .{ .integer = 108 } },
+                    },
+                }} },
+            },
         },
     });
 
@@ -525,14 +616,53 @@ test "generateEndpointRule" {
         \\
         \\    errdefer allocator.free(url);
         \\
+        \\    const headers = try allocator.alloc(smithy.internal.HttpHeader, 2);
+        \\
+        \\    errdefer allocator.free(headers);
+        \\
+        \\    headers[0] = .{ .key = "foo", .values = &.{} };
+        \\
+        \\    const head_1 = try allocator.alloc([]const u8, 2);
+        \\
+        \\    errdefer allocator.free(head_1);
+        \\
+        \\    head_1[0] = "baz";
+        \\
+        \\    head_1[1] = "qux";
+        \\
+        \\    headers[1] = .{ .key = "bar", .values = head_1 };
+        \\
+        \\    const properties = try allocator.alloc(smithy.internal.Document.KV, 1);
+        \\
+        \\    errdefer allocator.free(properties);
+        \\
+        \\    properties[0] = .{
+        \\        .key = "qux",
+        \\        .key_alloc = false,
+        \\        .document = .null,
+        \\    };
+        \\
+        \\    const schemes = try allocator.alloc(smithy.internal.AuthScheme, 1);
+        \\
+        \\    errdefer allocator.free(schemes);
+        \\
+        \\    const scheme_0 = try allocator.alloc(smithy.internal.Document.KV, 1);
+        \\
+        \\    errdefer allocator.free(scheme_0);
+        \\
+        \\    scheme_0[0] = .{
+        \\        .key = "value",
+        \\        .key_alloc = false,
+        \\        .document = .{.integer = 108},
+        \\    };
+        \\
+        \\    schemes[0] = .{ .id = smithy.intenral.AuthId.of("auth"), .properties = scheme_0 };
+        \\
         \\    return .{
         \\        .url = url,
-        \\        .headers = &.{ .{ .key = "foo", .values = &.{} }, .{ .key = "bar", .values = &.{ "baz", "qux" } } },
-        \\        .properties = &.{.{
-        \\            .key = "qux",
-        \\            .key_alloc = false,
-        \\            .document = .null,
-        \\        }},
+        \\        .headers = headers,
+        \\        .properties = properties,
+        \\        .auth_schemes = schemes,
         \\    };
         \\}
     );
@@ -640,24 +770,33 @@ fn generateStringsArray(
 ) !Expr {
     if (strings.len == 0) return bld.x.raw("&.{}").consume();
 
-    var exprs = try std.ArrayList(ExprBuild).initCapacity(self.arena, strings.len);
+    try bld.constant(id_prefix).assign(
+        bld.x.trys().id(config.allocator_name).dot().call("alloc", &.{
+            bld.x.raw("[]const u8"),
+            bld.x.valueOf(strings.len),
+        }),
+    );
+    try bld.errorDefers().body(
+        bld.x.id(config.allocator_name).dot().call("free", &.{bld.x.id(id_prefix)}),
+    );
+
     for (strings, 0..) |value, i| {
         const template = try self.evalTemplateString(bld.x, value);
         if (template.args) |args| {
-            const id = try std.fmt.allocPrint(self.arena, "{s}{d}", .{ id_prefix, i });
+            const id = try std.fmt.allocPrint(self.arena, "{s}_{d}", .{ id_prefix, i });
             try bld.constant(id).assign(bld.x.trys().call("std.fmt.allocPrint", &.{
                 bld.x.id(config.allocator_name),
                 bld.x.fromExpr(template.format),
                 bld.x.fromExpr(args),
             }));
             try bld.errorDefers().body(bld.x.id(config.allocator_name).dot().call("free", &.{bld.x.id(id)}));
-            exprs.appendAssumeCapacity(bld.x.id(id));
+            try bld.id(id_prefix).valIndexer(bld.valueOf(i)).assign().id(id).end();
         } else {
-            exprs.appendAssumeCapacity(bld.x.fromExpr(template.format));
+            try bld.id(id_prefix).valIndexer(bld.valueOf(i)).assign().fromExpr(template.format).end();
         }
     }
 
-    return bld.x.addressOf().structLiteral(null, try exprs.toOwnedSlice()).consume();
+    return bld.x.id(id_prefix).consume();
 }
 
 test "generateStringsArray" {
@@ -667,13 +806,21 @@ test "generateStringsArray" {
     var expr = try tst.gen.generateStringsArray(tst.block(), &.{
         .{ .string = "foo" },
         .{ .string = "{Foo}bar{baz#qux}" },
-    }, "item_");
-    try expr.expect(tst.alloc, "&.{ \"foo\", item_1 }");
+    }, "item");
+    try expr.expect(tst.alloc, "item");
     try tst.expect(
         \\{
+        \\    const item = try allocator.alloc([]const u8, 2);
+        \\
+        \\    errdefer allocator.free(item);
+        \\
+        \\    item[0] = "foo";
+        \\
         \\    const item_1 = try std.fmt.allocPrint(allocator, "{s}bar{s}", .{ config.foo.?, baz.qux });
         \\
         \\    errdefer allocator.free(item_1);
+        \\
+        \\    item[1] = item_1;
         \\}
     );
 }
@@ -977,9 +1124,15 @@ pub fn generateTests(self: *Self, bld: *ContainerBuild, cases: []const mdl.TestC
                             ).end();
                         }
 
+                        var auth_schemes: ?[]const JsonValue = null;
                         if (endpoint.properties) |props| {
                             var list = try std.ArrayList(ExprBuild).initCapacity(ctx.arena, props.len);
                             for (props) |prop| {
+                                if (mem.eql(u8, "authSchemes", prop.key)) {
+                                    auth_schemes = prop.value.array;
+                                    continue;
+                                }
+
                                 const doc = try evalDocument(b.x, prop.value);
                                 list.appendAssumeCapacity(b.x.structLiteral(null, &.{
                                     b.x.structAssign("key", b.x.valueOf(prop.key)),
@@ -995,6 +1148,37 @@ pub fn generateTests(self: *Self, bld: *ContainerBuild, cases: []const mdl.TestC
                             try b.trys().call(
                                 "std.testing.expectEqualDeep",
                                 &.{ expected, b.x.raw("endpoint.properties") },
+                            ).end();
+                        }
+
+                        if (auth_schemes) |schemes| {
+                            var list = try std.ArrayList(ExprBuild).initCapacity(ctx.arena, schemes.len);
+                            for (schemes) |scheme| {
+                                std.debug.assert(mem.eql(u8, "name", scheme.object[0].key));
+                                const name = scheme.object[0].value.string;
+                                const props = scheme.object[1..scheme.object.len];
+                                var prop_exprs = try std.ArrayList(ExprBuild).initCapacity(ctx.arena, props.len);
+                                for (props) |prop| {
+                                    const document = b.x.fromExpr(try evalDocument(b.x, prop.value));
+                                    prop_exprs.appendAssumeCapacity(b.x.structLiteral(null, &.{
+                                        b.x.structAssign("key", b.x.valueOf(prop.key)),
+                                        b.x.structAssign("key_alloc", b.x.valueOf(false)),
+                                        b.x.structAssign("document", document),
+                                    }));
+                                }
+                                list.appendAssumeCapacity(b.x.structLiteral(null, &.{
+                                    b.x.structAssign("id", b.x.call("smithy.intenral.AuthId.of", &.{b.x.valueOf(name)})),
+                                    b.x.structAssign("properties", b.x.addressOf().structLiteral(null, try prop_exprs.toOwnedSlice())),
+                                }));
+                            }
+                            const expected = b.x.fromExpr(try b.x.structLiteral(
+                                b.x.raw("&[_]smithy.internal.AuthScheme"),
+                                try list.toOwnedSlice(),
+                            ).consume());
+
+                            try b.trys().call(
+                                "std.testing.expectEqualDeep",
+                                &.{ expected, b.x.raw("endpoint.auth_schemes") },
                             ).end();
                         }
                     },
@@ -1022,6 +1206,15 @@ test "generateTests" {
                     },
                     .properties = &.{
                         .{ .key = "qux", .value = .null },
+                        .{
+                            .key = "authSchemes",
+                            .value = .{ .array = &.{.{
+                                .object = &.{
+                                    .{ .key = "name", .value = .{ .string = "auth" } },
+                                    .{ .key = "value", .value = .{ .integer = 108 } },
+                                },
+                            }} },
+                        },
                     },
                 },
             },
@@ -1061,6 +1254,12 @@ test "generateTests" {
         \\        .key_alloc = false,
         \\        .document = .null,
         \\    }}, endpoint.properties);
+        \\
+        \\    try std.testing.expectEqualDeep(&[_]smithy.internal.AuthScheme{.{ .id = smithy.intenral.AuthId.of("auth"), .properties = &.{.{
+        \\        .key = "value",
+        \\        .key_alloc = false,
+        \\        .document = .{.integer = 108},
+        \\    }} }}, endpoint.auth_schemes);
         \\}
         \\
         \\test "Test 2" {

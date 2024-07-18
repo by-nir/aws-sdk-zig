@@ -498,7 +498,7 @@ pub const SymbolsProvider = struct {
     pub fn getTypeName(self: *SymbolsProvider, id: SmithyId) ![]const u8 {
         return switch (id) {
             .str_enum, .int_enum, .list, .map, .structure, .tagged_uinon, .operation, .resource, .service, .apply => unreachable,
-            // A document’s consume should parse it into a meaningful type manually:
+            // A document’s consumer should parse it into a meaningful type manually:
             .document => return error.UnexpectedDocumentShape,
             // The union type generator assumes a unit is an empty string:
             .unit => "",
