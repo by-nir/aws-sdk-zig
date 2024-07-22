@@ -36,7 +36,8 @@ pub fn build(b: *std.Build) void {
     const codegen_exe = b.addExecutable(.{
         .name = "aws-codegen",
         .target = target,
-        .optimize = optimize,
+        .optimize = .Debug,
+        .error_tracing = true,
         .root_source_file = b.path("codegen/root.zig"),
     });
     codegen_exe.root_module.addImport("smithy", smithy_codegen);
