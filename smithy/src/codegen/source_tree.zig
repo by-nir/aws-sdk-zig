@@ -11,27 +11,26 @@ pub const Slice = struct {
     pub const empty = Slice{ .offset = 0, .length = 0 };
 };
 
-pub fn Tree(comptime Tag: type) type {
+pub fn SourceTree(comptime Tag: type) type {
     return struct {
         const Self = @This();
 
-        allocator: Allocator,
         payloads: []const u8,
         children: []const Indexer,
         nodes_tag: []const Tag,
         nodes_payload: []const Slice,
         nodes_children: []const Slice,
 
-        pub fn author(allocator: Allocator) !TreeAuthor(Tag) {
-            return TreeAuthor(Tag).init(allocator);
+        pub fn author(allocator: Allocator) !SourceTreeAuthor(Tag) {
+            return SourceTreeAuthor(Tag).init(allocator);
         }
 
-        pub fn deinit(self: Self) void {
-            self.allocator.free(self.payloads);
-            self.allocator.free(self.children);
-            self.allocator.free(self.nodes_tag);
-            self.allocator.free(self.nodes_payload);
-            self.allocator.free(self.nodes_children);
+        pub fn deinit(self: Self, allocator: Allocator) void {
+            allocator.free(self.payloads);
+            allocator.free(self.children);
+            allocator.free(self.nodes_tag);
+            allocator.free(self.nodes_payload);
+            allocator.free(self.nodes_children);
         }
 
         pub fn iterate(self: *const Self) Iterator {
@@ -83,17 +82,16 @@ pub fn Tree(comptime Tag: type) type {
 }
 
 test "Tree" {
-    const tree = Tree(u8){
-        .allocator = test_alloc,
-        .payloads = "foobar",
+    const tree = SourceTree(u8){
+        .payloads = "foo108bar",
         .children = &.{ 2, 3, 1, 4 },
         .nodes_tag = &.{ 0, 101, 201, 202, 102 },
         .nodes_payload = &.{
             Slice.empty,
             Slice.empty,
-            .{ .offset = 3, .length = 3 },
+            .{ .offset = 6, .length = 3 },
             Slice.empty,
-            .{ .offset = 0, .length = 3 },
+            .{ .offset = 0, .length = 6 },
         },
         .nodes_children = &.{
             .{ .offset = 2, .length = 2 },
@@ -107,7 +105,7 @@ test "Tree" {
     try expectTree(tree);
 }
 
-pub fn TreeAuthor(comptime Tag: type) type {
+pub fn SourceTreeAuthor(comptime Tag: type) type {
     return struct {
         const Self = @This();
 
@@ -149,7 +147,7 @@ pub fn TreeAuthor(comptime Tag: type) type {
             self.root_children.deinit(self.allocator);
         }
 
-        pub fn consume(self: *Self) !Tree(Tag) {
+        pub fn consume(self: *Self) !SourceTree(Tag) {
             const alloc = self.allocator;
 
             const payloads = try self.payloads.toOwnedSlice(alloc);
@@ -173,8 +171,7 @@ pub fn TreeAuthor(comptime Tag: type) type {
             const nodes_children = try self.nodes_children.toOwnedSlice(alloc);
             errdefer alloc.free(nodes_children);
 
-            return Tree(Tag){
-                .allocator = alloc,
+            return SourceTree(Tag){
                 .payloads = payloads,
                 .children = children,
                 .nodes_tag = nodes_tag,
@@ -217,28 +214,51 @@ pub fn TreeAuthor(comptime Tag: type) type {
             errdefer _ = self.nodes_children.pop();
         }
 
-        fn sealNodeAuthor(self: *Self, index: Indexer, payload: []const u8, children: []const Indexer) !void {
-            const payload_len: Indexer = @truncate(payload.len);
-            const payload_offset: Indexer = @truncate(self.payloads.items.len);
-            try self.payloads.appendSlice(self.allocator, payload);
-            errdefer {
-                self.payloads.items.len -= payload.len;
-                self.payloads.capacity += payload.len;
-            }
-
+        fn sealNodeAuthor(self: *Self, index: Indexer, payload: Payload, children: []const Indexer) !void {
             const children_len: Indexer = @truncate(children.len);
             const children_offset: Indexer = @truncate(self.children.items.len);
             try self.children.appendSlice(self.allocator, children);
-
-            self.nodes_payload.items[index] = Slice{ .offset = payload_offset, .length = payload_len };
             self.nodes_children.items[index] = Slice{ .offset = children_offset, .length = children_len };
+            errdefer {
+                self.nodes_children.items[index] = Slice.empty;
+                self.children.items.len -= children.len;
+                self.children.capacity += children.len;
+            }
+
+            switch (payload) {
+                .none => {},
+                .slice => |slice| self.nodes_payload.items[index] = slice,
+                .value => |s| {
+                    const offset = self.payloads.items.len;
+                    try self.payloads.appendSlice(self.allocator, s);
+                    self.nodes_payload.items[index] = Slice{
+                        .offset = @truncate(offset),
+                        .length = @truncate(s.len),
+                    };
+                },
+            }
         }
+
+        fn formatPayload(self: *Self, comptime format: []const u8, args: anytype) !Payload {
+            const offset = self.payloads.items.len;
+            try self.payloads.writer(self.allocator).print(format, args);
+            return .{ .slice = .{
+                .offset = @truncate(offset),
+                .length = @truncate(self.payloads.items.len - offset),
+            } };
+        }
+
+        const Payload = union(enum) {
+            none,
+            value: []const u8,
+            slice: Slice,
+        };
 
         pub const Node = struct {
             allocator: Allocator,
             tree: *Self,
             index: Indexer,
-            payload: []const u8 = &.{},
+            payload: Payload = .none,
             children: std.ArrayListUnmanaged(Indexer) = .{},
 
             pub fn deinit(self: *Node) void {
@@ -257,13 +277,23 @@ pub fn TreeAuthor(comptime Tag: type) type {
                 try self.children.append(self.allocator, node.index);
                 return node;
             }
+
+            pub fn setPayload(self: *Node, value: []const u8) void {
+                std.debug.assert(self.payload == .none);
+                self.payload = .{ .value = value };
+            }
+
+            pub fn setPayloadFmt(self: *Node, comptime format: []const u8, args: anytype) !void {
+                std.debug.assert(self.payload == .none);
+                self.payload = try self.tree.formatPayload(format, args);
+            }
         };
     };
 }
 
 test "TreeAuthor" {
     const tree = blk: {
-        var author = try TreeAuthor(u8).init(test_alloc);
+        var author = try SourceTreeAuthor(u8).init(test_alloc);
         errdefer author.deinit();
 
         var node = try author.append(101);
@@ -272,7 +302,7 @@ test "TreeAuthor" {
         var child = try node.append(201);
         errdefer child.deinit();
 
-        child.payload = "bar";
+        child.setPayload("bar");
         try child.seal();
 
         child = try node.append(202);
@@ -281,12 +311,13 @@ test "TreeAuthor" {
         try node.seal();
 
         node = try author.append(102);
-        node.payload = "foo";
+        try node.setPayloadFmt("foo{d}", .{108});
         try node.seal();
 
         break :blk try author.consume();
     };
-    defer tree.deinit();
+    defer tree.deinit(test_alloc);
+
     try expectTree(tree);
 }
 
@@ -294,7 +325,7 @@ test "TreeAuthor" {
 ///   201 "bar"
 ///   202
 /// 102 "foo"
-fn expectTree(tree: Tree(u8)) !void {
+fn expectTree(tree: SourceTree(u8)) !void {
     var iter = tree.iterate();
     var node = iter.next().?;
     try testing.expectEqual(101, node.tag);
@@ -309,6 +340,6 @@ fn expectTree(tree: Tree(u8)) !void {
 
     node = iter.next().?;
     try testing.expectEqual(102, node.tag);
-    try testing.expectEqualStrings("foo", node.payload);
+    try testing.expectEqualStrings("foo108", node.payload);
     try testing.expectEqual(null, iter.next());
 }
