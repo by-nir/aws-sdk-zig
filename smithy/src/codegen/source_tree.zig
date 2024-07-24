@@ -283,9 +283,11 @@ pub fn SourceTreeAuthor(comptime Tag: type) type {
                 self.payload = .{ .value = value };
             }
 
-            pub fn setPayloadFmt(self: *Node, comptime format: []const u8, args: anytype) !void {
+            pub fn setPayloadFmt(self: *Node, comptime format: []const u8, args: anytype) !Indexer {
                 std.debug.assert(self.payload == .none);
-                self.payload = try self.tree.formatPayload(format, args);
+                const payload = try self.tree.formatPayload(format, args);
+                self.payload = payload;
+                return payload.slice.length;
             }
         };
     };
@@ -311,7 +313,8 @@ test "TreeAuthor" {
         try node.seal();
 
         node = try author.append(102);
-        try node.setPayloadFmt("foo{d}", .{108});
+        const len = try node.setPayloadFmt("foo{d}", .{108});
+        try testing.expectEqual(6, len);
         try node.seal();
 
         break :blk try author.consume();
