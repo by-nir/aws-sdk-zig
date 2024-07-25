@@ -58,6 +58,11 @@ pub fn SourceTree(comptime Tag: type) type {
             payload: []const u8,
             children: []const Indexer,
 
+            pub fn child(self: Node, index: Indexer) ?Node {
+                if (self.children.len <= index) return null;
+                return self.tree.getNode(self.children[index]);
+            }
+
             pub fn iterate(self: Node) Iterator {
                 return Iterator{
                     .tree = self.tree,
@@ -69,6 +74,17 @@ pub fn SourceTree(comptime Tag: type) type {
         pub const Iterator = struct {
             tree: *const Self,
             indices: []const Indexer,
+
+            pub fn skip(self: *Iterator, count: Indexer) void {
+                std.debug.assert(count <= self.indices.len);
+                self.indices = self.indices[count..self.indices.len];
+            }
+
+            pub fn peek(self: *const Iterator) ?Node {
+                if (self.indices.len == 0) return null;
+                const index = self.indices[0];
+                return self.tree.getNode(index);
+            }
 
             pub fn next(self: *Iterator) ?Node {
                 if (self.indices.len == 0) return null;

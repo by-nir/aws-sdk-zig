@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const test_alloc = std.testing.allocator;
+const testing = std.testing;
+const test_alloc = testing.allocator;
 const dcl = @import("../utils/declarative.zig");
 const StackChain = dcl.StackChain;
 const InferCallback = dcl.InferCallback;
@@ -735,25 +736,642 @@ const Mark = enum {
     text_bold_italic,
     text_code,
     text_link,
+
+    pub fn is_inline(self: Mark) bool {
+        return @intFromEnum(self) >= @intFromEnum(Mark.text_plain);
+    }
 };
 
 const MarkTree = source_tree.SourceTree(Mark);
 const MarkTreeAuthor = source_tree.SourceTreeAuthor(Mark);
 
-const MarkColumn = packed struct(u16) {
-    width: u8,
+const MarkColumn = packed struct(u24) {
     aligns: Align,
+    self_width: u8,
+    dynamic_width: u8,
 
     pub const Align = enum(u8) { left, center, right };
 };
 
-pub const MarkdownList = enum(u8) { unordered, ordered };
+pub const ListKind = enum(u8) { unordered, ordered };
+
+const MAX_TABLE_COLUMNS = 16;
+
+pub const NEW_Document = struct {
+    tree: MarkTree,
+
+    const INDENT = " " ** 4;
+
+    pub fn author(allocator: Allocator) !DocumentAuthor {
+        return DocumentAuthor.init(allocator);
+    }
+
+    pub fn deinit(self: NEW_Document, allocator: Allocator) void {
+        self.tree.deinit(allocator);
+    }
+
+    pub fn write(self: NEW_Document, writer: *Writer) !void {
+        var it = self.tree.iterate();
+        if (it.next()) |node| try writeNode(node, writer);
+
+        while (it.next()) |node| {
+            try writeNodePrefix(false, writer);
+            try writeNode(node, writer);
+        }
+    }
+
+    fn writeNode(node: MarkTree.Node, writer: *Writer) anyerror!void {
+        switch (node.tag) {
+            .block_raw, .text_plain => try writer.appendString(node.payload),
+            .text_italic => try writer.appendFmt("_{s}_", .{node.payload}),
+            .text_bold => try writer.appendFmt("**{s}**", .{node.payload}),
+            .text_bold_italic => try writer.appendFmt("***{s}***", .{node.payload}),
+            .text_code => try writer.appendFmt("`{s}`", .{node.payload}),
+            .text_link => {
+                try writer.appendChar('[');
+                try writeNodeChildren(node, .inlined, writer);
+                try writer.appendFmt("]({s})", .{node.payload});
+            },
+            .block_comment => try writer.appendFmt("<!-- {s} -->", .{node.payload}),
+            .block_paragraph => try writeNodeChildren(node, .inlined, writer),
+            .block_heading => {
+                std.debug.assert(node.payload.len == 1);
+                const level: u8 = node.payload[0];
+                std.debug.assert(level > 0 and level <= 6);
+
+                try writer.appendString("####### "[7 - level .. 8]);
+                try writeNodeChildren(node, .inlined, writer);
+            },
+            .block_quote => {
+                try writer.pushIndent("> ");
+                defer writer.popIndent();
+                try writer.appendString("> ");
+                try writeNodeChildren(node, .inlined, writer);
+            },
+            .block_code => {
+                std.debug.assert(node.payload.len == @sizeOf(usize));
+                const code: *const zig.Container = @ptrFromInt(std.mem.bytesToValue(usize, node.payload));
+
+                try writer.appendString("```zig\n");
+                try code.write(writer);
+                try writer.breakString("```");
+            },
+            .block_list => {
+                std.debug.assert(node.payload.len == 1);
+                const kind: ListKind = @enumFromInt(node.payload[0]);
+
+                var i: usize = 1;
+                var items = node.iterate();
+                while (items.next()) |item| {
+                    if (i > 1) try writer.breakString("");
+                    if (item.tag == .block_list) {
+                        try writer.pushIndent(INDENT);
+                        defer writer.popIndent();
+                        try writer.appendString(INDENT);
+                        try writeNode(item, writer);
+                    } else {
+                        switch (kind) {
+                            .unordered => try writer.appendString("- "),
+                            .ordered => try writer.appendFmt("{d}. ", .{i}),
+                        }
+                        try writeNodeChildren(item, .inlined_or_indent, writer);
+                        i += 1;
+                    }
+                }
+            },
+            .block_table => {
+                std.debug.assert(node.payload.len == 1);
+                const col_len = node.payload[0];
+
+                const whitespace = " " ** 255;
+                const separator = "-" ** 255;
+
+                var widths: [MAX_TABLE_COLUMNS]u8 = undefined;
+
+                // Header
+                try writer.appendChar('|');
+                for (0..col_len) |i| {
+                    const col_node = node.child(@intCast(i)).?;
+                    const column = std.mem.bytesAsValue(MarkColumn, col_node.payload);
+                    widths[i] = column.dynamic_width;
+                    const padding = column.dynamic_width - column.self_width;
+
+                    try writer.appendChar(' ');
+                    try writeNodeChildren(col_node, .inlined, writer);
+                    try writer.appendString(whitespace[0..padding]);
+                    try writer.appendString(" |");
+                }
+
+                // Separator
+                try writer.breakChar('|');
+                for (0..col_len) |i| {
+                    const item = node.child(@intCast(i)).?;
+                    const column = std.mem.bytesAsValue(MarkColumn, item.payload);
+                    switch (column.aligns) {
+                        .left => try writer.appendFmt(
+                            ":{s}|",
+                            .{separator[0 .. column.dynamic_width + 1]},
+                        ),
+                        .center => try writer.appendFmt(
+                            ":{s}:|",
+                            .{separator[0..column.dynamic_width]},
+                        ),
+                        .right => try writer.appendFmt(
+                            "{s}:|",
+                            .{separator[0 .. column.dynamic_width + 1]},
+                        ),
+                    }
+                }
+
+                // Rows
+                var it = node.iterate();
+                it.skip(col_len);
+                while (it.next()) |row_node| {
+                    try writer.breakChar('|');
+
+                    var i: usize = 0;
+                    var row = row_node.iterate();
+                    while (row.next()) |cell_node| : (i += 1) {
+                        std.debug.assert(cell_node.payload.len == 1);
+                        const padding = widths[i] - cell_node.payload[0];
+
+                        try writer.appendChar(' ');
+                        try writeNodeChildren(cell_node, .inlined, writer);
+                        try writer.appendString(whitespace[0..padding]);
+                        try writer.appendString(" |");
+                    }
+                }
+            },
+            else => return error.UnexpectedNodeTag,
+        }
+    }
+
+    const Concat = enum { blocks, inlined, inlined_or_indent };
+    fn writeNodeChildren(parent: MarkTree.Node, concat: Concat, writer: *Writer) !void {
+        var inlined = false;
+        var it = parent.iterate();
+        if (it.next()) |node| {
+            try writeNode(node, writer);
+
+            switch (concat) {
+                .blocks => try writer.breakEmpty(1),
+                .inlined => inlined = node.tag.is_inline(),
+                .inlined_or_indent => {
+                    if (node.tag.is_inline()) {
+                        inlined = true;
+                    } else {
+                        try writer.pushIndent(INDENT);
+                    }
+                },
+            }
+        }
+        defer if (concat == .inlined_or_indent and !inlined) writer.popIndent();
+
+        while (it.next()) |node| {
+            try writeNodePrefix(inlined, writer);
+            try writeNode(node, writer);
+        }
+    }
+
+    fn writeNodePrefix(inlined: bool, writer: *Writer) !void {
+        if (inlined) {
+            try writer.appendChar(' ');
+        } else {
+            try writer.breakEmpty(1);
+            try writer.breakString("");
+        }
+    }
+};
+
+test "Document: Raw" {
+    const doc = blk: {
+        var tree = try MarkTree.author(test_alloc);
+        errdefer tree.deinit();
+
+        {
+            var node = try tree.append(.block_raw);
+            errdefer node.deinit();
+            node.setPayload("foo");
+            try node.seal();
+
+            node = try tree.append(.block_raw);
+            node.setPayload("bar");
+            try node.seal();
+        }
+
+        break :blk NEW_Document{ .tree = try tree.consume() };
+    };
+    defer doc.deinit(test_alloc);
+
+    try Writer.expectValue(
+        \\foo
+        \\
+        \\bar
+    , doc);
+}
+
+test "Document: Comment" {
+    const doc = blk: {
+        var tree = try MarkTree.author(test_alloc);
+        errdefer tree.deinit();
+
+        {
+            var node = try tree.append(.block_comment);
+            errdefer node.deinit();
+            node.setPayload("foo");
+            try node.seal();
+        }
+
+        break :blk NEW_Document{ .tree = try tree.consume() };
+    };
+    defer doc.deinit(test_alloc);
+
+    try Writer.expectValue("<!-- foo -->", doc);
+}
+
+test "Document: Paragraph & Text" {
+    const doc = blk: {
+        var tree = try MarkTree.author(test_alloc);
+        errdefer tree.deinit();
+
+        {
+            var node = try tree.append(.block_paragraph);
+            errdefer node.deinit();
+
+            var child = try node.append(.text_plain);
+            errdefer child.deinit();
+            child.setPayload("text");
+            try child.seal();
+
+            child = try node.append(.text_italic);
+            child.setPayload("italic");
+            try child.seal();
+
+            child = try node.append(.text_bold);
+            child.setPayload("bold");
+            try child.seal();
+
+            child = try node.append(.text_bold_italic);
+            child.setPayload("bold italic");
+            try child.seal();
+
+            child = try node.append(.text_code);
+            child.setPayload("code");
+            try child.seal();
+
+            child = try node.append(.text_link);
+            child.setPayload("#");
+            var link_text = try child.append(.text_plain);
+            errdefer link_text.deinit();
+            link_text.setPayload("link");
+            try link_text.seal();
+            try child.seal();
+
+            try node.seal();
+        }
+
+        break :blk NEW_Document{ .tree = try tree.consume() };
+    };
+    defer doc.deinit(test_alloc);
+
+    try Writer.expectValue("text _italic_ **bold** ***bold italic*** `code` [link](#)", doc);
+}
+
+test "Document: Header" {
+    const doc = blk: {
+        var tree = try MarkTree.author(test_alloc);
+        errdefer tree.deinit();
+
+        {
+            var node = try tree.append(.block_heading);
+            errdefer node.deinit();
+            node.setPayload(&.{@as(u8, 2)});
+
+            var child = try node.append(.text_plain);
+            errdefer child.deinit();
+            child.setPayload("Foo");
+            try child.seal();
+
+            try node.seal();
+        }
+
+        break :blk NEW_Document{ .tree = try tree.consume() };
+    };
+    defer doc.deinit(test_alloc);
+
+    try Writer.expectValue("## Foo", doc);
+}
+
+test "Document: Quote" {
+    const doc = blk: {
+        var tree = try MarkTree.author(test_alloc);
+        errdefer tree.deinit();
+
+        {
+            var node = try tree.append(.block_quote);
+            errdefer node.deinit();
+
+            var child = try node.append(.text_plain);
+            errdefer child.deinit();
+            child.setPayload("foo");
+            try child.seal();
+
+            try node.seal();
+
+            node = try tree.append(.block_quote);
+
+            var para = try node.append(.block_paragraph);
+            errdefer para.deinit();
+            child = try para.append(.text_plain);
+            child.setPayload("bar");
+            try child.seal();
+            try para.seal();
+
+            para = try node.append(.block_paragraph);
+            child = try para.append(.text_plain);
+            child.setPayload("baz");
+            try child.seal();
+            try para.seal();
+
+            try node.seal();
+        }
+
+        break :blk NEW_Document{ .tree = try tree.consume() };
+    };
+    defer doc.deinit(test_alloc);
+
+    try Writer.expectValue(
+        \\> foo
+        \\
+        \\> bar
+        \\>
+        \\> baz
+    , doc);
+}
+
+test "Document: Code" {
+    const code = zig.Container{ .statements = &.{} };
+    const doc = blk: {
+        var tree = try MarkTree.author(test_alloc);
+        errdefer tree.deinit();
+
+        {
+            var node = try tree.append(.block_code);
+            errdefer node.deinit();
+            node.setPayload(&std.mem.toBytes(@intFromPtr(&code)));
+
+            try node.seal();
+        }
+
+        break :blk NEW_Document{ .tree = try tree.consume() };
+    };
+    defer doc.deinit(test_alloc);
+
+    try Writer.expectValue(
+        \\```zig
+        \\
+        \\```
+    , doc);
+}
+
+test "Document: List" {
+    const doc = blk: {
+        var tree = try MarkTree.author(test_alloc);
+        errdefer tree.deinit();
+
+        {
+            var node = try tree.append(.block_list);
+            errdefer node.deinit();
+            node.setPayload(&.{@intFromEnum(ListKind.unordered)});
+
+            var item = try node.append(.block_list_item);
+            errdefer item.deinit();
+            var child = try item.append(.text_plain);
+            errdefer child.deinit();
+            child.setPayload("foo");
+            try child.seal();
+            try item.seal();
+
+            item = try node.append(.block_list_item);
+
+            var para = try item.append(.block_paragraph);
+            errdefer para.deinit();
+            child = try para.append(.text_plain);
+            child.setPayload("bar");
+            try child.seal();
+            try para.seal();
+
+            para = try item.append(.block_paragraph);
+            child = try para.append(.text_plain);
+            child.setPayload("baz");
+            try child.seal();
+            try para.seal();
+
+            try item.seal();
+
+            item = try node.append(.block_list_item);
+            child = try item.append(.text_plain);
+            child.setPayload("qux");
+            try child.seal();
+            try item.seal();
+
+            try node.seal();
+
+            node = try tree.append(.block_list);
+            node.setPayload(&.{@intFromEnum(ListKind.ordered)});
+
+            item = try node.append(.block_list_item);
+            child = try item.append(.text_plain);
+            child.setPayload("foo");
+            try child.seal();
+            try item.seal();
+
+            item = try node.append(.block_list_item);
+            child = try item.append(.text_plain);
+            child.setPayload("bar");
+            try child.seal();
+            try item.seal();
+
+            var sublist = try node.append(.block_list);
+            sublist.setPayload(&.{@intFromEnum(ListKind.ordered)});
+
+            item = try sublist.append(.block_list_item);
+            child = try item.append(.text_plain);
+            child.setPayload("baz");
+            try child.seal();
+            try item.seal();
+
+            item = try sublist.append(.block_list_item);
+            child = try item.append(.text_plain);
+            child.setPayload("qux");
+            try child.seal();
+            try item.seal();
+
+            try sublist.seal();
+            try node.seal();
+        }
+
+        break :blk NEW_Document{ .tree = try tree.consume() };
+    };
+    defer doc.deinit(test_alloc);
+
+    try Writer.expectValue(
+        \\- foo
+        \\- bar
+        \\
+        \\    baz
+        \\- qux
+        \\
+        \\1. foo
+        \\2. bar
+        \\    1. baz
+        \\    2. qux
+    , doc);
+}
+
+test "Document: Table" {
+    const doc = blk: {
+        var tree = try MarkTree.author(test_alloc);
+        errdefer tree.deinit();
+
+        {
+            var table = try tree.append(.block_table);
+            errdefer table.deinit();
+            table.setPayload(&.{3});
+
+            var cell = try table.append(.block_table_column);
+            errdefer cell.deinit();
+            cell.setPayload(&std.mem.toBytes(MarkColumn{
+                .aligns = .right,
+                .self_width = 1,
+                .dynamic_width = 8,
+            }));
+            var child = try cell.append(.text_plain);
+            errdefer child.deinit();
+            child.setPayload("A");
+            try child.seal();
+            try cell.seal();
+
+            cell = try table.append(.block_table_column);
+            cell.setPayload(&std.mem.toBytes(MarkColumn{
+                .aligns = .center,
+                .self_width = 1,
+                .dynamic_width = 11,
+            }));
+            child = try cell.append(.text_plain);
+            child.setPayload("B");
+            try child.seal();
+            try cell.seal();
+
+            cell = try table.append(.block_table_column);
+            cell.setPayload(&std.mem.toBytes(MarkColumn{
+                .aligns = .left,
+                .self_width = 1,
+                .dynamic_width = 7,
+            }));
+            child = try cell.append(.text_plain);
+            child.setPayload("C");
+            try child.seal();
+            try cell.seal();
+
+            var row = try table.append(.block_table_row);
+            errdefer row.deinit();
+
+            cell = try row.append(.block_table_cell);
+            cell.setPayload(&.{8});
+            child = try cell.append(.text_plain);
+            child.setPayload("A01 Foo!");
+            try child.seal();
+            try cell.seal();
+
+            cell = try row.append(.block_table_cell);
+            cell.setPayload(&.{3});
+            child = try cell.append(.text_plain);
+            child.setPayload("B01");
+            try child.seal();
+            try cell.seal();
+
+            cell = try row.append(.block_table_cell);
+            cell.setPayload(&.{3});
+            child = try cell.append(.text_plain);
+            child.setPayload("C01");
+            try child.seal();
+            try cell.seal();
+
+            try row.seal();
+            row = try table.append(.block_table_row);
+
+            cell = try row.append(.block_table_cell);
+            cell.setPayload(&.{3});
+            child = try cell.append(.text_plain);
+            child.setPayload("A02");
+            try child.seal();
+            try cell.seal();
+
+            cell = try row.append(.block_table_cell);
+            cell.setPayload(&.{11});
+            child = try cell.append(.text_plain);
+            child.setPayload("B02 Bar Baz");
+            try child.seal();
+            try cell.seal();
+
+            cell = try row.append(.block_table_cell);
+            cell.setPayload(&.{3});
+            child = try cell.append(.text_plain);
+            child.setPayload("C02");
+            try child.seal();
+            try cell.seal();
+
+            try row.seal();
+            row = try table.append(.block_table_row);
+
+            cell = try row.append(.block_table_cell);
+            cell.setPayload(&.{3});
+            child = try cell.append(.text_plain);
+            child.setPayload("A03");
+            try child.seal();
+            try cell.seal();
+
+            cell = try row.append(.block_table_cell);
+            cell.setPayload(&.{3});
+            child = try cell.append(.text_plain);
+            child.setPayload("B03");
+            try child.seal();
+            try cell.seal();
+
+            cell = try row.append(.block_table_cell);
+            cell.setPayload(&.{7});
+            child = try cell.append(.text_plain);
+            child.setPayload("C03 Qux");
+            try child.seal();
+            try cell.seal();
+
+            try row.seal();
+            try table.seal();
+        }
+
+        break :blk NEW_Document{ .tree = try tree.consume() };
+    };
+    defer doc.deinit(test_alloc);
+
+    try Writer.expectValue(
+        \\| A        | B           | C       |
+        \\|---------:|:-----------:|:--------|
+        \\| A01 Foo! | B01         | C01     |
+        \\| A02      | B02 Bar Baz | C02     |
+        \\| A03      | B03         | C03 Qux |
+    , doc);
+}
 
 pub const DocumentAuthor = struct {
     tree: MarkTreeAuthor,
 
     pub fn init(allocator: Allocator) !DocumentAuthor {
         return .{ .tree = MarkTreeAuthor.init(allocator) };
+    }
+
+    pub fn consume(self: *DocumentAuthor) !NEW_Document {
+        return NEW_Document{ .tree = try self.tree.consume() };
     }
 
     pub fn raw(self: *DocumentAuthor, value: []const u8) !void {
@@ -785,6 +1403,7 @@ pub const DocumentAuthor = struct {
     }
 
     pub fn heading(self: *DocumentAuthor, level: u8, text: []const u8) !void {
+        if (level == 0 or level > 6) return error.InvalidHeaderLevel;
         var node = try self.tree.append(.block_heading);
         errdefer node.deinit();
         _ = try node.setPayloadFmt("{c}{s}", .{ level, text });
@@ -792,6 +1411,7 @@ pub const DocumentAuthor = struct {
     }
 
     pub fn headingFmt(self: *DocumentAuthor, level: u8, comptime format: []const u8, args: anytype) !void {
+        if (level == 0 or level > 6) return error.InvalidHeaderLevel;
         var node = try self.tree.append(.block_heading);
         errdefer node.deinit();
         _ = try node.setPayloadFmt("{c}" ++ format, .{level} ++ args);
@@ -826,7 +1446,7 @@ pub const DocumentAuthor = struct {
         return StyledAuthor{ .parent = try self.tree.append(.block_quote) };
     }
 
-    pub fn list(self: *DocumentAuthor, kind: MarkdownList) !ListAuthor {
+    pub fn list(self: *DocumentAuthor, kind: ListKind) !ListAuthor {
         const node = try self.tree.append(.block_list);
         return ListAuthor{ .parent = node, .kind = kind };
     }
@@ -895,7 +1515,7 @@ pub const ContainerAuthor = struct {
         return StyledAuthor{ .parent = try self.parent.append(.block_quote) };
     }
 
-    pub fn list(self: *ContainerAuthor, kind: MarkdownList) !ListAuthor {
+    pub fn list(self: *ContainerAuthor, kind: ListKind) !ListAuthor {
         const node = try self.parent.append(.block_list);
         return ListAuthor{ .parent = node, .kind = kind };
     }
@@ -929,10 +1549,17 @@ pub const StyledAuthor = struct {
     parent: MarkTreeAuthor.Node,
     callback: ?Callback = null,
 
+    const CallbackFn = fn (
+        ctx: *anyopaque,
+        node: *MarkTreeAuthor.Node,
+        index: usize,
+        length: usize,
+    ) anyerror!void;
+
     const Callback = struct {
         index: usize,
         context: *anyopaque,
-        func: *const fn (*anyopaque, index: usize, length: usize) void,
+        func: CallbackFn,
         length: usize = 0,
 
         pub fn increment(self: *Callback, length: usize) void {
@@ -968,9 +1595,7 @@ pub const StyledAuthor = struct {
     }
 
     pub fn seal(self: *StyledAuthor) !void {
-        if (self.callback) |cb| {
-            cb.func(cb.context, cb.index, cb.length);
-        }
+        if (self.callback) |cb| try cb.func(cb.context, &self.parent, cb.index, cb.length);
         try self.parent.seal();
     }
 
@@ -1106,7 +1731,7 @@ pub const StyledAuthor = struct {
 };
 
 pub const ListAuthor = struct {
-    kind: MarkdownList,
+    kind: ListKind,
     parent: MarkTreeAuthor.Node,
 
     pub fn deinit(self: *ListAuthor) void {
@@ -1114,7 +1739,8 @@ pub const ListAuthor = struct {
     }
 
     pub fn seal(self: *ListAuthor) !void {
-        self.parent.setPayload(&.{self.kind});
+        if (self.parent.children.items.len == 0) return error.EmptyList;
+        self.parent.setPayload(&.{@intFromEnum(self.kind)});
         try self.parent.seal();
     }
 
@@ -1137,7 +1763,7 @@ pub const ListAuthor = struct {
         return ContainerAuthor{ .parent = child };
     }
 
-    pub fn list(self: *ListAuthor, kind: MarkdownList) !ListAuthor {
+    pub fn list(self: *ListAuthor, kind: ListKind) !ListAuthor {
         const child = try self.parent.append(.block_list);
         return ListAuthor{ .parent = child, .kind = kind };
     }
@@ -1153,23 +1779,29 @@ pub const TableAuthor = struct {
     }
 
     pub fn seal(self: *TableAuthor) !void {
-        const payload = std.mem.sliceAsBytes(self.columns.items);
+        const columns = self.columns.items;
+        if (columns.len == 0) return error.EmptyTable;
+        if (columns.len > MAX_TABLE_COLUMNS) return error.TooManyTableColumns;
+        if (self.parent.children.items.len == columns.len) return error.EmptyTable;
+
+        const payload = std.mem.sliceAsBytes(columns);
         self.parent.setPayload(payload);
         try self.parent.seal();
     }
 
-    pub fn columnText(self: *TableAuthor, aligns: Table.Align, name: []const u8) !void {
-        if (name.len > 255) return error.CellValueTooLong;
+    pub fn columnText(self: *TableAuthor, aligns: Table.Align, value: []const u8) !void {
+        if (value.len > 255) return error.CellValueTooLong;
         if (!self.columns_sealed) return error.TableColumnAfterRows;
 
         try self.columns.append(self.parent.allocator, MarkColumn{
             .aligns = aligns,
-            .width = @truncate(name.len),
+            .self_width = @truncate(value.len),
+            .dynamic_width = @truncate(value.len),
         });
         errdefer _ = self.columns.pop();
 
         const child = try self.parent.append(.block_table_column);
-        try StyledAuthor.createPlain(child, name);
+        try StyledAuthor.createPlain(child, value);
     }
 
     pub fn columnFmt(
@@ -1188,7 +1820,8 @@ pub const TableAuthor = struct {
 
         try self.columns.append(self.parent.allocator, MarkColumn{
             .aligns = aligns,
-            .width = @truncate(len),
+            .self_width = @truncate(len),
+            .dynamic_width = @truncate(len),
         });
     }
 
@@ -1196,7 +1829,7 @@ pub const TableAuthor = struct {
         if (!self.columns_sealed) return error.TableColumnAfterRows;
 
         const column_index = self.columns.items.len;
-        try self.columns.append(self.parent.allocator, MarkColumn{ .aligns = aligns, .width = 0 });
+        try self.columns.append(self.parent.allocator, MarkColumn{ .aligns = aligns, .dynamic_width = 0 });
         errdefer _ = self.columns.pop();
 
         return StyledAuthor{
@@ -1204,9 +1837,16 @@ pub const TableAuthor = struct {
             .callback = .{
                 .context = &self.columns,
                 .index = column_index,
-                .func = updateColumnWidth,
+                .func = updateStyledColumnWidth,
             },
         };
+    }
+
+    fn updateStyledColumnWidth(ctx: *anyopaque, _: *MarkTreeAuthor.Node, index: usize, width: u8) !void {
+        if (width > 255) return error.CellValueTooLong;
+        const self: *std.ArrayListUnmanaged(MarkColumn) = @ptrCast(@alignCast(ctx));
+        const column = &self.columns.items[index];
+        if (width > column.dynamic_width) column.dynamic_width = @truncate(width);
     }
 
     pub fn rowText(self: *TableAuthor, cells: []const []const u8) !void {
@@ -1220,10 +1860,10 @@ pub const TableAuthor = struct {
 
             const child = try row.append(.block_table_cell);
             errdefer child.deinit();
-
+            child.setPayload(&.{@truncate(cell.len)});
             try StyledAuthor.createPlain(child, cell);
             const column = &self.columns.items[i];
-            if (cell.len > column.width) column.width = @truncate(cell.len);
+            if (cell.len > column.dynamic_width) column.dynamic_width = @truncate(cell.len);
         }
 
         try row.seal();
@@ -1233,7 +1873,7 @@ pub const TableAuthor = struct {
     pub fn rowContainer(self: *TableAuthor) !Row {
         const child = try self.parent.append(.block_table_row);
         self.columns_sealed = true;
-        return StyledAuthor{
+        return Row{
             .parent = child,
             .columns = &self.columns,
         };
@@ -1257,8 +1897,9 @@ pub const TableAuthor = struct {
 
             const column = &self.columns.items[column_index];
             const child = try self.parent.append(.block_table_cell);
+            child.setPayload(&.{@truncate(cell.len)});
             try StyledAuthor.createPlain(child, value);
-            if (value.len > column.width) column.width = @truncate(value.len);
+            if (value.len > column.dynamic_width) column.dynamic_width = @truncate(value.len);
         }
 
         pub fn cellFmt(self: *Row, comptime format: []const u8, args: anytype) !void {
@@ -1267,8 +1908,16 @@ pub const TableAuthor = struct {
 
             const column = &self.columns.items[column_index];
             const child = try self.parent.append(.block_table_cell);
-            const width = try StyledAuthor.createPlainFmt(child, format, args);
-            if (width > column.width) column.width = @truncate(width);
+            errdefer child.deinit();
+
+            var text = try child.append(.text_plain);
+            errdefer text.deinit();
+            const width = try text.setPayloadFmt(format, args);
+            if (width > column.dynamic_width) column.dynamic_width = @truncate(width);
+            try text.seal();
+
+            child.setPayload(&.{@truncate(width)});
+            try child.seal();
         }
 
         pub fn cellStyled(self: *Row) !StyledAuthor {
@@ -1281,18 +1930,16 @@ pub const TableAuthor = struct {
                 .callback = .{
                     .context = self.columns,
                     .index = column_index,
-                    .func = updateColumnWidth,
+                    .func = updateStyledCellWidth,
                 },
             };
         }
-    };
 
-    fn updateColumnWidth(ctx: *anyopaque, index: usize, width: u8) void {
-        if (width > 255) return error.CellValueTooLong;
-        const self: *std.ArrayListUnmanaged(MarkColumn) = @ptrCast(@alignCast(ctx));
-        const column = &self.columns.items[index];
-        if (width > column.width) column.width = @truncate(width);
-    }
+        fn updateStyledCellWidth(ctx: *anyopaque, node: *MarkTreeAuthor.Node, index: usize, width: u8) !void {
+            node.setPayload(&.{@truncate(width)});
+            try updateStyledColumnWidth(ctx, node, index, width);
+        }
+    };
 };
 
 test {
