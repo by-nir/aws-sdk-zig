@@ -200,11 +200,11 @@ pub const ContainerBuild = struct {
         ctx: anytype,
         closure: Closure(@TypeOf(ctx), md.DocumentClosure),
     ) !void {
-        const data = try md.Document.init(self.allocator, ctx, closure);
-        errdefer data.deinit(self.allocator);
+        const doc = try md.authorDocument(self.allocator, ctx, closure);
+        errdefer doc.deinit(self.allocator);
         try self.appendStatement(.{ .comment = .{
             .kind = kind,
-            .source = .{ .markdown = data },
+            .source = .{ .markdown = doc },
         } });
     }
 
@@ -213,7 +213,7 @@ pub const ContainerBuild = struct {
         errdefer b.deinit();
 
         try b.commentMarkdown(.doc, struct {
-            fn f(m: *md.Document.Build) !void {
+            fn f(m: *md.DocumentAuthor) !void {
                 try m.heading(1, "qux");
             }
         }.f);
@@ -599,11 +599,11 @@ pub const BlockBuild = struct {
         ctx: anytype,
         closure: Closure(@TypeOf(ctx), md.DocumentClosure),
     ) !void {
-        const data = try md.Document.init(self.allocator, ctx, closure);
-        errdefer data.deinit(self.allocator);
+        const doc = try md.authorDocument(self.allocator, ctx, closure);
+        errdefer doc.deinit(self.allocator);
         try self.append(.{ .comment = .{
             .kind = kind,
-            .source = .{ .markdown = data },
+            .source = .{ .markdown = doc },
         } });
     }
 
@@ -612,7 +612,7 @@ pub const BlockBuild = struct {
         errdefer b.deinit();
 
         try b.commentMarkdown(.doc, struct {
-            fn f(m: *md.Document.Build) !void {
+            fn f(m: *md.DocumentAuthor) !void {
                 try m.heading(1, "qux");
             }
         }.f);

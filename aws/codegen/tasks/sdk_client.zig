@@ -112,7 +112,7 @@ fn filterSourceModelHook(self: *const Delegate, filename: []const u8) bool {
 fn writeReadmeHook(
     _: *const Delegate,
     symbols: *SymbolsProvider,
-    bld: *md.Document.Build,
+    bld: *md.DocumentAuthor,
     src: smithy.ReadmeMetadata,
 ) anyerror!void {
     var meta = src;

@@ -110,7 +110,7 @@ test "If" {
         .body(_raw("bar"))
         .elseIf(_raw("baz")).body(_raw("qux"))
         .commentMarkdown(struct {
-        fn f(b: *md.Document.Build) !void {
+        fn f(b: *md.DocumentAuthor) !void {
             try b.heading(1, "foo");
         }
     }.f)
@@ -527,7 +527,7 @@ pub const Branch = struct {
                 ctx: anytype,
                 closure: Closure(@TypeOf(ctx), md.DocumentClosure),
             ) Self {
-                if (md.Document.init(self.allocator, ctx, closure)) |data| {
+                if (md.authorDocument(self.allocator, ctx, closure)) |data| {
                     return self.flushAndReset(null, ExprComment{
                         .kind = .normal,
                         .source = .{ .markdown = data },
@@ -733,11 +733,11 @@ pub const Switch = struct {
             closure: Closure(@TypeOf(ctx), md.DocumentClosure),
         ) !void {
             assert(self.state == .idle or self.state == .inlined);
-            const data = try md.Document.init(self.allocator, ctx, closure);
-            errdefer data.deinit(self.allocator);
+            const doc = try md.authorDocument(self.allocator, ctx, closure);
+            errdefer doc.deinit(self.allocator);
             try self.statements.append(self.allocator, .{ .comment = ExprComment{
                 .kind = .normal,
-                .source = .{ .markdown = data },
+                .source = .{ .markdown = doc },
             } });
         }
 
@@ -902,7 +902,7 @@ test "Switch" {
     try b.branch().caseRange(b.x.raw("18"), b.x.raw("108"))
         .body(b.x.raw("unreachable"));
     try b.commentMarkdown(struct {
-        fn f(m: *md.Document.Build) !void {
+        fn f(m: *md.DocumentAuthor) !void {
             try m.heading(1, "foo");
         }
     }.f);

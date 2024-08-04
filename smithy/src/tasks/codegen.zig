@@ -14,19 +14,19 @@ const MD_HEAD = @embedFile("../codegen/template/head.md.template");
 const ZIG_HEAD = @embedFile("../codegen/template/head.zig.template");
 
 pub const MarkdownDoc = AbstractTask.Define("Markdown Codegen", markdownDocTask, .{
-    .varyings = &.{*md.Document.Build},
+    .varyings = &.{*md.DocumentAuthor},
 });
 fn markdownDocTask(
     self: *const Delegate,
     writer: std.io.AnyWriter,
-    task: AbstractEval(&.{*md.Document.Build}, anyerror!void),
+    task: AbstractEval(&.{*md.DocumentAuthor}, anyerror!void),
 ) anyerror!void {
     var codegen = Writer.init(self.alloc(), writer);
     defer codegen.deinit();
 
-    var build = md.Document.Build{ .allocator = self.alloc() };
+    var build = try md.DocumentAuthor.init(self.alloc());
     task.evaluate(.{&build}) catch |err| {
-        build.deinit(self.alloc());
+        build.deinit();
         return err;
     };
 
@@ -50,7 +50,7 @@ pub fn expectEqualMarkdownDoc(comptime expected: []const u8, actual: []const u8)
 
 test "markdown document" {
     const TestDocument = MarkdownDoc.Task("Test Documen", struct {
-        fn f(_: *const Delegate, bld: *md.Document.Build) anyerror!void {
+        fn f(_: *const Delegate, bld: *md.DocumentAuthor) anyerror!void {
             try bld.heading(2, "Foo");
         }
     }.f, .{});

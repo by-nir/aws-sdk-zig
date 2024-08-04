@@ -8,359 +8,415 @@ const Writer = @import("../CodegenWriter.zig");
 
 const log = std.log.scoped(.html_to_md);
 
-const Tag = struct {
-    kind: Kind,
-    role: Role,
-    len: usize,
-
-    pub const Role = enum { open, close };
-
-    pub const Kind = union(enum) {
-        UNRECOGNIZED: []const u8,
-        paragraph,
-        list: md.List.Kind,
-        list_item,
-        anchor,
-        bold,
-        italic,
-        code,
-    };
-};
-
 pub const CallbackContext = struct {
     allocator: Allocator,
     html: []const u8,
 };
 
-pub fn callback(ctx: CallbackContext, b: *md.Document.Build) !void {
+pub fn callback(ctx: CallbackContext, b: *md.DocumentAuthor) !void {
     try convert(ctx.allocator, b, ctx.html);
 }
 
-/// Write Markdown source using an **extremely naive and partial** Markdown parser.
-pub fn convert(allocator: Allocator, bld: *md.Document.Build, source: []const u8) !void {
-    var tokens = mem.tokenizeAny(u8, source, &std.ascii.whitespace);
-    while (tokens.next()) |token| {
-        var remaining = token;
-        inner: while (remaining.len > 0) {
-            const tag: ?Tag = blk: {
-                const open_idx = mem.indexOfScalar(u8, remaining, '<') orelse break :blk null;
-                break :blk extractTagAt(remaining, open_idx);
+const HtmlTag = enum(u32) {
+    ROOT = 0,
+    TEXT = std.math.maxInt(u32),
+    p = hash("p"),
+    ul = hash("ul"),
+    ol = hash("ol"),
+    li = hash("li"),
+    a = hash("a"),
+    b = hash("b"),
+    strong = hash("strong"),
+    i = hash("i"),
+    em = hash("em"),
+    code = hash("code"),
+    _,
+
+    pub fn parse(str: []const u8) HtmlTag {
+        return @enumFromInt(hash(str));
+    }
+
+    fn hash(str: []const u8) u64 {
+        std.debug.assert(str.len > 0 and str.len <= 32);
+        var output: [32]u8 = undefined;
+        const name = std.ascii.lowerString(&output, str);
+        return std.hash.CityHash32.hash(name);
+    }
+
+    pub fn isInline(self: HtmlTag) bool {
+        return switch (self) {
+            .TEXT, .a, .b, .strong, .i, .em, .code => true,
+            else => false,
+        };
+    }
+};
+
+const HtmlTagInfo = struct {
+    raw: []const u8,
+    tag: HtmlTag,
+    kind: Kind,
+
+    pub const Kind = enum { open, close, self_close };
+
+    pub fn parse(raw: []const u8) HtmlTagInfo {
+        std.debug.assert(raw.len > 2);
+        std.debug.assert(raw[0] == '<' and raw[raw.len - 1] == '>');
+        std.debug.assert(!mem.eql(u8, "</>", raw));
+
+        const kind: Kind = if (raw[raw.len - 2] == '/')
+            .self_close
+        else if (raw[1] == '/')
+            .close
+        else
+            .open;
+
+        const tag = blk: {
+            const start: usize = if (kind == .close) 2 else 1;
+            const end: usize = if (kind == .self_close) raw.len - 2 else raw.len - 1;
+            const name = if (mem.indexOfScalarPos(u8, raw, start, ' ')) |idx| raw[start..idx] else raw[start..end];
+            break :blk HtmlTag.parse(name);
+        };
+
+        return .{
+            .raw = raw,
+            .tag = tag,
+            .kind = kind,
+        };
+    }
+};
+
+test "HtmlTagInfo" {
+    try testing.expectEqualDeep(HtmlTagInfo{ .raw = "<p>", .tag = .p, .kind = .open }, HtmlTagInfo.parse("<p>"));
+    try testing.expectEqualDeep(HtmlTagInfo{ .raw = "</p>", .tag = .p, .kind = .close }, HtmlTagInfo.parse("</p>"));
+    try testing.expectEqualDeep(HtmlTagInfo{ .raw = "<p />", .tag = .p, .kind = .self_close }, HtmlTagInfo.parse("<p />"));
+}
+
+/// Naively parse HTML source, normalize whitespace, and convert entities to unicode.
+const HtmlFragmenter = struct {
+    allocator: Allocator,
+    token: []const u8 = "",
+    stream: mem.TokenIterator(u8, .any),
+    buffer: std.ArrayListUnmanaged(u8) = .{},
+
+    pub const Fragment = union(enum) {
+        tag: []const u8,
+        text: []const u8,
+
+        pub fn deinit(self: Fragment, allocator: Allocator) void {
+            switch (self) {
+                inline else => |s| allocator.free(s),
+            }
+        }
+    };
+
+    pub fn init(allocator: Allocator, html: []const u8) HtmlFragmenter {
+        return .{
+            .allocator = allocator,
+            .stream = mem.tokenizeAny(u8, html, &std.ascii.whitespace),
+        };
+    }
+
+    pub fn deinit(self: *HtmlFragmenter) void {
+        self.buffer.deinit(self.allocator);
+    }
+
+    pub fn next(self: *HtmlFragmenter) !?Fragment {
+        errdefer self.buffer.deinit(self.allocator);
+        while (true) {
+            const idx = mem.indexOfAny(u8, self.token, "<>") orelse {
+                try self.appendToBuffer(self.token);
+                if (self.stream.next()) |token| {
+                    self.token = token;
+                    continue;
+                } else {
+                    self.token = "";
+                    break;
+                }
             };
 
-            if (tag) |g| {
-                remaining = remaining[g.len..remaining.len];
-                if (g.kind == .UNRECOGNIZED) continue :inner;
-                if (g.role == .close) return error.UnexpectedClosingTag;
+            if (self.token[idx] == '<') {
+                // Tag opening
+                try self.appendToBuffer(self.token[0..idx]);
+                self.token = self.token[idx..self.token.len];
 
-                remaining = switch (g.kind) {
-                    .paragraph => try processParagraph(allocator, bld, &tokens, remaining, true),
-                    .list => |kind| try processList(allocator, bld, kind, &tokens, remaining),
-                    .UNRECOGNIZED => unreachable,
-                    else => return error.UnexpectedRootTag,
-                };
+                // Has buffered text?
+                if (self.buffer.items.len > 0) break;
+
+                try self.appendToBuffer("<");
+                self.token = self.token[1..self.token.len];
             } else {
-                remaining = try processParagraph(allocator, bld, &tokens, remaining, false);
+                // Tag closing
+                try self.appendToBuffer(self.token[0 .. idx + 1]);
+                self.token = self.token[idx + 1 .. self.token.len];
+
+                // If not a valid tag continue parsing as raw text
+                const buffer = self.buffer.items;
+                if (buffer.len == idx + 1 or buffer[0] != '<') continue;
+                if (buffer.len > 2 and buffer[1] == '/' and buffer[buffer.len - 2] == '/') continue; // `</>`, `</···/>`
+
+                // Valid tag
+                const fragment = try self.buffer.toOwnedSlice(self.allocator);
+                return Fragment{ .tag = fragment };
             }
         }
-    }
-}
 
-fn processParagraph(
-    allocator: Allocator,
-    bld: *md.Document.Build,
-    tokenizer: *mem.TokenIterator(u8, .any),
-    initial: []const u8,
-    comptime is_contained: bool,
-) ![]const u8 {
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
-
-    var remaining = if (initial.len > 0) initial else tokenizer.next() orelse "";
-    if (try processFormattedText(
-        bld.allocator,
-        &buffer,
-        &remaining,
-        tokenizer,
-        if (is_contained) .paragraph else null,
-    )) |formatted| {
-        try bld.blocks.append(bld.allocator, .{ .paragraph = formatted });
-    }
-
-    if (remaining.len == 0) remaining = tokenizer.next() orelse "";
-    return remaining;
-}
-
-fn processList(
-    allocator: Allocator,
-    bld: *md.Document.Build,
-    kind: md.List.Kind,
-    tokenizer: *mem.TokenIterator(u8, .any),
-    initial: []const u8,
-) ![]const u8 {
-    var remaining = if (initial.len > 0) initial else tokenizer.next() orelse "";
-
-    const context = .{ .allocator = allocator, .tokenizer = tokenizer, .remaining = &remaining };
-    try bld.listWith(kind, context, struct {
-        fn f(ctx: @TypeOf(context), b: *md.List.Build) !void {
-            var buffer = std.ArrayList(u8).init(ctx.allocator);
-            defer buffer.deinit();
-
-            var pos: usize = 0;
-            while (pos < ctx.remaining.len) {
-                const tag = try consumeUntilTag(&buffer, ctx.tokenizer, ctx.remaining, &pos) orelse continue;
-                switch (tag.kind) {
-                    .list => |k| switch (tag.role) {
-                        .open => {
-                            // TODO
-                            _ = k; // autofix
-                            return error.UnsupportedNestedList;
-                        },
-                        .close => {
-                            const text = try flushTextBuffer(&buffer, ctx.remaining, &pos, tag.len);
-                            std.debug.assert(text == null);
-                            return;
-                        },
-                    },
-                    .list_item => {
-                        if (tag.role == .close) return error.UnexpectedClosingTag;
-                        const text = try flushTextBuffer(&buffer, ctx.remaining, &pos, tag.len);
-                        std.debug.assert(text == null);
-
-                        if (try processFormattedText(
-                            b.allocator,
-                            &buffer,
-                            ctx.remaining,
-                            ctx.tokenizer,
-                            .list_item,
-                        )) |formatted| {
-                            try b.items.append(b.allocator, .{ .formated = formatted });
-                        }
-                        pos = 0;
-                    },
-                    else => return error.UnexpectedTag,
-                }
-
-                if (ctx.remaining.len == 0) ctx.remaining.* = ctx.tokenizer.next() orelse "";
-            }
-        }
-    }.f);
-
-    return remaining;
-}
-
-fn processFormattedText(
-    allocator: Allocator,
-    buffer: *std.ArrayList(u8),
-    remaining: *[]const u8,
-    tokenizer: *mem.TokenIterator(u8, .any),
-    comptime container: ?Tag.Kind,
-) !?md.Formated {
-    var segments = std.ArrayList(md.Formated.Segment).init(allocator);
-    var interim_style: md.Formated.Style = undefined;
-    errdefer segments.deinit();
-
-    var pos: usize = 0;
-    if (remaining.len == 0) remaining.* = tokenizer.next() orelse "";
-    while (pos < remaining.len) {
-        const tag = try consumeUntilTag(buffer, tokenizer, remaining, &pos) orelse continue;
-        switch (tag.kind) {
-            inline .italic, .bold, .code => |t, g| switch (tag.role) {
-                .open => {
-                    if (try flushTextBuffer(buffer, remaining, &pos, tag.len)) |s| {
-                        try segments.append(.{ .text = s, .format = .plain });
-                    }
-                },
-                .close => {
-                    const style = @unionInit(md.Formated.Style, @tagName(g), t);
-                    if (try flushTextBuffer(buffer, remaining, &pos, tag.len)) |s| {
-                        try segments.append(.{ .text = s, .format = style });
-                    }
-                },
-            },
-            .anchor => switch (tag.role) {
-                .open => {
-                    if (try flushTextBuffer(buffer, remaining, &pos, tag.len)) |s| {
-                        try segments.append(.{ .text = s, .format = .plain });
-                    }
-
-                    remaining.* = tokenizer.next() orelse return error.MissingHrefAttribute;
-                    pos = 6 + (mem.indexOf(u8, remaining.*, "href=\"") orelse {
-                        return error.MissingHrefAttribute;
-                    });
-                    const href_end = mem.indexOfPos(u8, remaining.*, pos, "\">") orelse {
-                        return error.MissingHrefAttribute;
-                    };
-
-                    interim_style = .{ .link = remaining.*[pos..href_end] };
-                    remaining.* = remaining.*[href_end + 2 .. remaining.len];
-                    pos = 0;
-                },
-                .close => {
-                    if (try flushTextBuffer(buffer, remaining, &pos, tag.len)) |s| {
-                        try segments.append(.{ .text = s, .format = interim_style });
-                    }
-                },
-            },
-            inline else => |_, g| {
-                // Container
-                if (container) |c| if (c == g) {
-                    if (tag.role == .open) return error.UnexpectedNestedContainer;
-                    if (try flushTextBuffer(buffer, remaining, &pos, tag.len)) |s| {
-                        try segments.append(.{ .text = s, .format = .plain });
-                    }
-
-                    if (segments.items.len > 0) {
-                        return .{ .segments = try segments.toOwnedSlice() };
-                    } else {
-                        return null;
-                    }
-                };
-
-                // Non-container
-                if (tag.role == .open and container == null) {
-                    break;
-                } else {
-                    // Ignore non-container tags, but consume their text
-                    try appendTextBuffer(buffer, remaining, &pos, tag.len);
-                }
-            },
-        }
-
-        if (remaining.len == 0) remaining.* = tokenizer.next() orelse "";
-    }
-
-    if (container == null) {
-        if (try flushTextBuffer(buffer, remaining, &pos, 0)) |s| {
-            try segments.append(.{ .text = s, .format = .plain });
-        }
-
-        if (segments.items.len > 0) {
-            return .{ .segments = try segments.toOwnedSlice() };
-        }
-    }
-
-    return null;
-}
-
-fn consumeUntilTag(
-    buffer: *std.ArrayList(u8),
-    tokenizer: *mem.TokenIterator(u8, .any),
-    remaining: *[]const u8,
-    pos: *usize,
-) !?Tag {
-    const open_idx = mem.indexOfScalarPos(u8, remaining.*, pos.*, '<') orelse {
-        // No special action
-        try padBuffer(buffer, remaining.*);
-        try buffer.appendSlice(remaining.*);
-        pos.* = 0;
-        remaining.* = tokenizer.*.next() orelse "";
-        return null;
-    };
-
-    pos.* = open_idx;
-    return extractTagAt(remaining.*, open_idx) orelse {
-        pos.* += 1;
-        return null;
-    };
-}
-
-fn padBuffer(buffer: *std.ArrayList(u8), text: []const u8) !void {
-    if (buffer.items.len == 0 or text.len == 0) return;
-    try buffer.append(' ');
-}
-
-fn appendTextBuffer(buffer: *std.ArrayList(u8), remaining: *[]const u8, pos: *usize, tag_len: usize) !void {
-    const text = remaining.*[0..pos.*];
-    try padBuffer(buffer, text);
-    try buffer.appendSlice(text);
-    remaining.* = remaining.*[pos.* + tag_len .. remaining.len];
-    pos.* = 0;
-}
-
-fn flushTextBuffer(buffer: *std.ArrayList(u8), remaining: *[]const u8, pos: *usize, tag_len: usize) !?[]const u8 {
-    const text = remaining.*[0..pos.*];
-    try padBuffer(buffer, text);
-    try buffer.appendSlice(text);
-    remaining.* = remaining.*[pos.* + tag_len .. remaining.len];
-    pos.* = 0;
-    return if (buffer.items.len > 0) try buffer.toOwnedSlice() else null;
-}
-
-fn extractTagAt(string: []const u8, pos: usize) ?Tag {
-    var idx = pos;
-    if (idx + 1 == string.len) return null;
-    const is_close: bool = if (string[idx + 1] == '/') blk: {
-        idx += 1;
-        if (!hasRemaining(string, idx, 2)) return null;
-        break :blk true;
-    } else false;
-
-    const name_start = string[idx + 1 ..];
-
-    var len: usize = 0;
-    var kind: Tag.Kind = undefined;
-    if (hasRemaining(string, idx, 2) and name_start[1] == '>') {
-        len = 3;
-        kind = switch (name_start[0]) {
-            'p' => .paragraph,
-            'i' => .italic,
-            'b' => .bold,
-            'a' => if (!is_close) {
-                log.warn("Anchor missing href attribute", .{});
-                return null;
-            } else .anchor,
-            else => return null,
-        };
-    } else if (hasRemaining(string, idx, 3) and name_start[2] == '>') {
-        const name = name_start[0..2];
-        len = 4;
-        kind = if (mem.eql(u8, "ul", name))
-            .{ .list = .unordered }
-        else if (mem.eql(u8, "ol", name))
-            .{ .list = .ordered }
-        else if (mem.eql(u8, "li", name))
-            .list_item
-        else if (mem.eql(u8, "em", name))
-            .italic
-        else
+        const fragment = try self.buffer.toOwnedSlice(self.allocator);
+        if (fragment.len > 0) {
+            return Fragment{ .text = fragment };
+        } else {
             return null;
-    } else if (name_start[0] == 'a' and hasRemaining(string, idx, 0)) {
-        len = 2;
-        kind = .anchor;
-    } else if (hasRemaining(string, idx, 5) and mem.eql(u8, "code>", name_start[0..5])) {
-        len = 6;
-        kind = .code;
-    } else if (hasRemaining(string, idx, 7) and mem.eql(u8, "strong>", name_start[0..7])) {
-        len = 8;
-        kind = .bold;
-    } else if (mem.indexOfAnyPos(u8, string, idx + 1, "<>")) |close_idx| {
-        if (string[close_idx] == '<') return null;
-        const name = string[idx + 1 .. close_idx];
-        if (!is_close) log.warn("Unrecognized tag: `<{s}>`", .{name});
-        len = name.len + 2;
-        kind = .{ .UNRECOGNIZED = name };
-    } else {
-        return null;
+        }
     }
 
-    if (is_close) len += 1;
-    return .{
-        .kind = kind,
-        .role = if (is_close) .close else .open,
-        .len = len,
-    };
+    fn appendToBuffer(self: *HtmlFragmenter, text: []const u8) !void {
+        if (text.len == 0) return;
+
+        const buffer = self.buffer.items;
+        const is_open_only = mem.eql(u8, buffer, "<");
+        if (!is_open_only and (buffer.len > 0 or mem.startsWith(u8, text, "/>"))) {
+            try self.buffer.append(self.allocator, ' ');
+        }
+
+        // TODO: convert entities to unicode https://html.spec.whatwg.org/entities.json
+        try self.buffer.appendSlice(self.allocator, text);
+    }
+
+    fn expectNext(self: *HtmlFragmenter, expected: Fragment) !void {
+        const frag = (try self.next()) orelse return error.FragmentsDepleted;
+        defer frag.deinit(test_alloc);
+        try testing.expectEqualDeep(expected, frag);
+    }
+};
+
+test "HtmlFragmenter" {
+    var frags = HtmlFragmenter.init(test_alloc, "foo bar<baz>qux</baz><foo /></invalid/></invalid /></>");
+    errdefer frags.deinit();
+
+    try frags.expectNext(.{ .text = "foo bar" });
+    try frags.expectNext(.{ .tag = "<baz>" });
+    try frags.expectNext(.{ .text = "qux" });
+    try frags.expectNext(.{ .tag = "</baz>" });
+    try frags.expectNext(.{ .tag = "<foo />" });
+    try frags.expectNext(.{ .text = "</invalid/>" });
+    try frags.expectNext(.{ .text = "</invalid />" });
+    try frags.expectNext(.{ .text = "</>" });
+    try testing.expectEqual(null, try frags.next());
 }
 
-fn hasRemaining(string: []const u8, after: usize, n: usize) bool {
-    return string.len - after > n;
+const HtmlNode = struct {
+    const Self = @This();
+
+    tag: HtmlTag,
+    raw: []const u8,
+    children: std.ArrayListUnmanaged(*HtmlNode) = .{},
+
+    pub fn init(allocator: Allocator, tag: HtmlTag, raw: []const u8) !*Self {
+        const self = try allocator.create(Self);
+        self.* = .{ .tag = tag, .raw = raw };
+        return self;
+    }
+
+    pub fn deinit(self: *Self, allocator: Allocator) void {
+        for (self.children.items) |node| node.deinit(allocator);
+        self.children.deinit(allocator);
+        if (self.raw.len > 0) allocator.free(self.raw);
+        allocator.destroy(self);
+    }
+
+    pub fn appendChild(self: *Self, allocator: Allocator, tag: HtmlTag, raw: []const u8) !*Self {
+        const child = try init(allocator, tag, raw);
+        errdefer child.deinit(allocator);
+        try self.children.append(allocator, child);
+        return child;
+    }
+
+    pub fn iterate(self: Self) Iterator {
+        return .{ .children = self.children.items };
+    }
+
+    pub const Iterator = struct {
+        index: usize = 0,
+        children: []const *HtmlNode,
+
+        pub fn next(self: *Iterator) ?*HtmlNode {
+            if (self.index >= self.children.len) return null;
+            defer self.index += 1;
+            return self.children[self.index];
+        }
+    };
+};
+
+fn buildTree(allocator: Allocator, html: []const u8) !*HtmlNode {
+    var frags = HtmlFragmenter.init(allocator, html);
+    const meta = HtmlTagInfo{ .tag = .ROOT, .kind = .open, .raw = "" };
+    const root = try HtmlNode.init(allocator, .ROOT, "");
+    try buildNode(allocator, &frags, root, meta);
+    return root;
+}
+
+fn buildNode(allocator: Allocator, frags: *HtmlFragmenter, node: *HtmlNode, meta: HtmlTagInfo) !void {
+    while (try frags.next()) |frag| {
+        switch (frag) {
+            .text => |s| _ = try node.appendChild(allocator, .TEXT, s),
+            .tag => |s| {
+                const child_meta = HtmlTagInfo.parse(s);
+                switch (child_meta.kind) {
+                    .close => {
+                        allocator.free(child_meta.raw);
+                        return if (child_meta.tag == meta.tag) {} else error.UnexpectedClosingTag;
+                    },
+                    inline else => |g| {
+                        errdefer allocator.free(child_meta.raw);
+                        const child_node = try node.appendChild(allocator, child_meta.tag, child_meta.raw);
+                        if (g == .open) try buildNode(allocator, frags, child_node, child_meta);
+                    },
+                }
+            },
+        }
+    }
+}
+
+test "buildTree" {
+    const tree = try buildTree(test_alloc, "foo<p /><ul><li /></ul>");
+    defer tree.deinit(test_alloc);
+
+    var it = tree.iterate();
+    try testing.expectEqualDeep(&HtmlNode{ .tag = .TEXT, .raw = "foo" }, it.next().?);
+    try testing.expectEqualDeep(&HtmlNode{ .tag = .p, .raw = "<p />" }, it.next().?);
+
+    const list = it.next().?;
+    try testing.expectEqual(HtmlTag.ul, list.tag);
+    try testing.expectEqual(null, it.next());
+
+    it = list.iterate();
+    try testing.expectEqualDeep(&HtmlNode{ .tag = .li, .raw = "<li />" }, it.next().?);
+    try testing.expectEqual(null, it.next());
+}
+
+/// Write Markdown source using an **extremely naive and partial** Markdown parser.
+pub fn convert(allocator: Allocator, bld: *md.DocumentAuthor, html: []const u8) !void {
+    const tree = try buildTree(allocator, html);
+    errdefer tree.deinit(allocator);
+
+    var it = tree.iterate();
+    while (it.next()) |node| {
+        try convertNode(.{ .document = bld }, node);
+    }
+}
+
+const NodeBuilder = union(enum) {
+    document: *md.DocumentAuthor,
+    container: *md.ContainerAuthor,
+};
+
+fn convertNode(bld: NodeBuilder, node: *const HtmlNode) !void {
+    switch (node.tag) {
+        .TEXT => switch (bld) {
+            inline else => |t| try t.paragraph(node.raw),
+        },
+        .p => {
+            var paragraph: md.StyledAuthor = switch (bld) {
+                inline else => |t| try t.paragraphStyled(),
+            };
+            errdefer paragraph.deinit();
+
+            var it = node.iterate();
+            while (it.next()) |child| {
+                try convertStyledNode(&paragraph, child);
+            }
+
+            try paragraph.seal();
+        },
+        inline .ul, .ol => |tag| {
+            const kind: md.ListKind = if (tag == .ul) .unordered else .ordered;
+            var list: md.ListAuthor = switch (bld) {
+                inline else => |t| try t.list(kind),
+            };
+            errdefer list.deinit();
+
+            var it = node.iterate();
+            while (it.next()) |child| {
+                std.debug.assert(child.tag == .li);
+
+                var container = try list.container();
+                errdefer container.deinit();
+
+                var styled: ?md.StyledAuthor = null;
+                errdefer if (styled) |*t| t.deinit();
+
+                var item_it = child.iterate();
+                while (item_it.next()) |item| {
+                    if (item.tag.isInline()) {
+                        if (styled == null) styled = try container.paragraphStyled();
+                        try convertStyledNode(&styled.?, item);
+                    } else {
+                        if (styled) |*t| {
+                            defer styled = null;
+                            try t.seal();
+                        }
+
+                        try convertNode(.{ .container = &container }, item);
+                    }
+                }
+
+                if (styled) |*t| try t.seal();
+                try container.seal();
+            }
+
+            try list.seal();
+        },
+        else => {
+            // TODO: Custom tag handlers
+            log.warn("Unrecognized tag: `<{}>`", .{node.tag});
+
+            var it = node.iterate();
+            while (it.next()) |child| {
+                try convertNode(bld, child);
+            }
+        },
+    }
+}
+
+fn convertStyledNode(bld: *md.StyledAuthor, node: *const HtmlNode) !void {
+    switch (node.tag) {
+        .TEXT => try bld.plain(node.raw),
+        .b, .strong => {
+            const text = TEMP_extractNodeText(node);
+            try bld.bold(text);
+        },
+        .i, .em => {
+            const text = TEMP_extractNodeText(node);
+            try bld.italic(text);
+        },
+        .code => {
+            const text = TEMP_extractNodeText(node);
+            try bld.code(text);
+        },
+        .a => {
+            const start = 6 + (mem.indexOf(u8, node.raw, "href=\"") orelse return error.MissingHrefAttribute);
+            const end = mem.indexOfScalarPos(u8, node.raw, start, '"') orelse return error.MissingHrefAttribute;
+            const href = node.raw[start..end];
+
+            const text = TEMP_extractNodeText(node);
+            try bld.link(href, text);
+        },
+        else => {
+            // TODO: Custom tag handlers
+            log.warn("Unrecognized tag: `<{}>`", .{node.tag});
+        },
+    }
+}
+
+// TODO: Support dynamic children
+fn TEMP_extractNodeText(node: *const HtmlNode) []const u8 {
+    std.debug.assert(node.children.items.len == 1);
+    return node.children.items[0].raw;
 }
 
 test "convert" {
-    try expect("Uncontained text...", "Uncontained text...");
+    try expect("<p>foo</p>", "foo");
 
-    try expect("Uncontained text...    <p>Foo.</p><p></p>\n    <p>Bar baz\n    <qux.</p>",
-        \\Uncontained text...
-        \\
+    try expect("Foo.\n    <p>Bar baz\n    <qux.</p>",
         \\Foo.
         \\
         \\Bar baz <qux.
@@ -371,23 +427,61 @@ test "convert" {
         "Inline: [foo 106](#), _bar 107_, **baz 108**, `qux 109`.",
     );
 
-    try expect("<ul>\n<li>\nFoo 106\n</li>\n<li><code>Bar\n107</code></li>\n<li><p>Baz 108</p></li>\n<li>\nQux<p>\n109</p></li></ul>",
+    try expect("<ul>\n<li>\nFoo 106\n</li>\n<li><code>Bar\n107</code></li>\n<li><p>Baz 108</p></li></ul>",
         \\- Foo 106
         \\- `Bar 107`
         \\- Baz 108
-        \\- Qux 109
+    );
+
+    try expect(
+        \\<ul>
+        \\    <li>
+        \\        <p>Foo</p>
+        \\        <p>Bar</p>
+        \\    </li>
+        \\    <li>Baz</li>
+        \\</ul>
+    ,
+        \\- Foo
+        \\
+        \\    Bar
+        \\- Baz
+    );
+
+    try expect(
+        \\<ul>
+        \\    <li>
+        \\        <p>Foo</p>
+        \\        <ul>
+        \\            <li>Bar</li>
+        \\            <li>Baz</li>
+        \\        </ul>
+        \\    </li>
+        \\    <li>Qux</li>
+        \\</ul>
+    ,
+        \\- Foo
+        \\
+        \\    - Bar
+        \\    - Baz
+        \\- Qux
     );
 }
 
 fn expect(source: []const u8, expected: []const u8) !void {
-    var build = md.Document.Build{ .allocator = test_alloc };
-    errdefer build.deinit(test_alloc);
-
-    var arena = std.heap.ArenaAllocator.init(test_alloc);
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const arena_alloc = arena.allocator();
     defer arena.deinit();
 
-    try convert(arena.allocator(), &build, source);
-    const doc = try build.consume();
-    defer doc.deinit(test_alloc);
+    const doc = blk: {
+        var build = try md.DocumentAuthor.init(arena_alloc);
+        errdefer build.deinit();
+
+        try convert(arena_alloc, &build, source);
+
+        break :blk try build.consume();
+    };
+    errdefer doc.deinit(arena_alloc);
+
     try Writer.expectValue(expected, doc);
 }
