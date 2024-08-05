@@ -38,7 +38,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = .Debug,
         .error_tracing = true,
-        .root_source_file = b.path("codegen/root.zig"),
+        .root_source_file = b.path("codegen/main.zig"),
     });
     codegen_exe.root_module.addImport("smithy", smithy_codegen);
     b.installArtifact(codegen_exe);
@@ -70,7 +70,7 @@ pub fn build(b: *std.Build) void {
     const test_codegen_exe = b.addTest(.{
         .target = target,
         .optimize = optimize,
-        .root_source_file = b.path("codegen/root.zig"),
+        .root_source_file = b.path("codegen/main.zig"),
     });
     test_codegen_exe.root_module.addImport("smithy", smithy_codegen);
     test_codegen_step.dependOn(&b.addRunArtifact(test_codegen_exe).step);

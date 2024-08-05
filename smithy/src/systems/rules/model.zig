@@ -91,7 +91,7 @@ pub const EndpointRule = struct {
     conditions: []const Condition = &.{},
     /// The endpoint to return if this rule is selected.
     endpoint: Endpoint,
-    /// string	A description of the rule.
+    /// A description of the rule.
     documentation: ?[]const u8 = null,
 };
 
