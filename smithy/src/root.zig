@@ -71,6 +71,7 @@ test {
     _ = rls;
 
     // Codegen
+    _ = @import("codegen/serialize.zig");
     _ = @import("codegen/source_tree.zig");
     _ = @import("codegen/CodegenWriter.zig");
     _ = codegen_md;
