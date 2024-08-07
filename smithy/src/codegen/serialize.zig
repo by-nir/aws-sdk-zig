@@ -6,6 +6,13 @@ const test_alloc = testing.allocator;
 
 const ENDIAN = @import("builtin").cpu.arch.endian();
 
+pub const SerialHandle = struct {
+    offset: usize,
+    length: usize,
+
+    pub const empty = .{ .offset = 0, .length = 0 };
+};
+
 /// Do not use for encoding permanent storage or transmission as the serial format is platform-dependent.
 pub const SerialWriter = struct {
     buffer: std.ArrayListUnmanaged(u8) = .{},
@@ -31,26 +38,34 @@ pub const SerialWriter = struct {
         return self.buffer.items;
     }
 
-    pub fn append(self: *SerialWriter, allocator: Allocator, comptime T: type, value: T) !void {
-        const initial_len = self.length();
-        errdefer self.buffer.shrinkRetainingCapacity(initial_len);
+    pub fn append(self: *SerialWriter, allocator: Allocator, comptime T: type, value: T) !SerialHandle {
+        const initial_cursor = self.length();
+        errdefer self.buffer.shrinkRetainingCapacity(initial_cursor);
 
         switch (@typeInfo(T)) {
-            .Bool, .Int, .Float, .Enum => try self.writeValue(allocator, T, value),
+            .Bool, .Int, .Float, .Enum => {
+                const offset = try self.writePadding(allocator, @alignOf(T));
+                try self.buffer.appendSlice(allocator, mem.asBytes(&value));
+                return self.handleFrom(offset);
+            },
             .Union => |meta| {
                 inline for (meta.fields) |field| {
                     if (comptime isSerializableChild(field.type)) continue;
                     compileErrorFmt("Union field `{}.{s}` is not encodeable", .{ T, field.name });
                 }
 
-                try self.writeValue(allocator, T, value);
+                const offset = try self.writePadding(allocator, @alignOf(T));
+                try self.buffer.appendSlice(allocator, mem.asBytes(&value));
+                return self.handleFrom(offset);
             },
             inline .Optional, .Array, .Vector => |meta| {
-                if (comptime isSerializableChild(meta.child)) {
-                    try self.writeValue(allocator, T, value);
-                } else {
+                if (!comptime isSerializableChild(meta.child)) {
                     compileErrorFmt("Type `{}` child is not encodeable", .{T});
                 }
+
+                const offset = try self.writePadding(allocator, @alignOf(T));
+                try self.buffer.appendSlice(allocator, mem.asBytes(&value));
+                return self.handleFrom(offset);
             },
             .Pointer => |meta| {
                 switch (@typeInfo(meta.child)) {
@@ -61,8 +76,9 @@ pub const SerialWriter = struct {
 
                 switch (meta.size) {
                     .One => {
-                        try self.writePadding(allocator, meta.alignment);
+                        const offset = try self.writePadding(allocator, meta.alignment);
                         try self.buffer.appendSlice(allocator, mem.asBytes(value));
+                        return self.handleFrom(offset);
                     },
                     .Many => {
                         const opaque_sent = meta.sentinel orelse {
@@ -70,7 +86,7 @@ pub const SerialWriter = struct {
                         };
                         const sentinel = comptime @as(*const meta.child, @ptrCast(@alignCast(opaque_sent))).*;
                         const slice = mem.sliceTo(value, sentinel);
-                        try self.append(allocator, @TypeOf(slice), slice);
+                        return self.append(allocator, @TypeOf(slice), slice);
                     },
                     .Slice => {
                         // Length bytes count
@@ -88,14 +104,17 @@ pub const SerialWriter = struct {
                         }
 
                         // Items
-                        try self.writePadding(allocator, meta.alignment);
+                        _ = try self.writePadding(allocator, meta.alignment);
                         try self.buffer.appendSlice(allocator, value);
+                        const handle = self.handleFrom(initial_cursor);
 
                         // Sentinel
                         if (meta.sentinel) |opq| {
                             const sentinel = comptime @as(*const meta.child, @ptrCast(@alignCast(opq))).*;
-                            try self.append(allocator, meta.child, sentinel);
+                            _ = try self.append(allocator, meta.child, sentinel);
                         }
+
+                        return handle;
                     },
                     .C => @compileError("Encoding ‘c’ pointer is unsupported"),
                 }
@@ -105,63 +124,96 @@ pub const SerialWriter = struct {
                     compileErrorFmt("Struct `{}` contains non-encodeable field", .{T});
                 }
 
+                var offset: usize = 0;
                 inline for (meta.fields) |field| {
-                    try self.append(allocator, field.type, @field(value, field.name));
+                    const val = @field(value, field.name);
+                    const handle = try self.append(allocator, field.type, val);
+                    if (offset == 0) offset = handle.offset;
                 }
+
+                return if (offset > 0) self.handleFrom(offset) else SerialHandle.empty;
             },
             else => compileErrorFmt("Unsupported encoding type `{}`", .{T}),
         }
     }
 
-    fn writeValue(self: *SerialWriter, allocator: Allocator, comptime T: type, value: T) !void {
-        try self.writePadding(allocator, @alignOf(T));
-        try self.buffer.appendSlice(allocator, mem.asBytes(&value));
+    pub fn appendFmt(self: *SerialWriter, allocator: Allocator, comptime format: []const u8, args: anytype) !SerialHandle {
+        const offset = self.length();
+        errdefer self.buffer.shrinkRetainingCapacity(offset);
+
+        const size_bytes = try self.buffer.addManyAsSlice(allocator, 3);
+        try self.buffer.writer(allocator).print(format, args);
+
+        const len = self.length() - offset - size_bytes.len;
+        if (len > std.math.maxInt(u16)) return error.StringOverflow;
+        mem.writeInt(u16, size_bytes[1..3], @truncate(len), ENDIAN);
+        size_bytes[0] = 2;
+
+        return .{ .offset = offset, .length = len + size_bytes.len };
     }
 
-    fn writePadding(self: *SerialWriter, allocator: Allocator, comptime alignment: comptime_int) !void {
+    fn writePadding(self: *SerialWriter, allocator: Allocator, comptime alignment: comptime_int) !usize {
         const initial = self.length();
         const target = mem.alignForward(usize, initial, alignment);
         if (target > initial) try self.buffer.resize(allocator, target);
+        return target;
     }
 
     fn length(self: SerialWriter) usize {
         return self.buffer.items.len;
     }
+
+    fn handleFrom(self: SerialWriter, offset: usize) SerialHandle {
+        const len = self.length() - offset;
+        return .{ .offset = offset, .length = len };
+    }
 };
+
+inline fn expectAppend(writer: *SerialWriter, offset: usize, length: usize, comptime T: type, value: T) !void {
+    try testing.expectEqualDeep(SerialHandle{
+        .offset = offset,
+        .length = length,
+    }, try writer.append(test_alloc, T, value));
+}
 
 test "SerialWriter" {
     const slice = blk: {
         var writer = SerialWriter{};
         errdefer writer.deinit(test_alloc);
 
-        try writer.append(test_alloc, bool, true);
-        try writer.append(test_alloc, bool, false);
+        try expectAppend(&writer, 0, 1, bool, true);
+        try expectAppend(&writer, 1, 1, bool, false);
 
-        try writer.append(test_alloc, u8, 108);
-        try writer.append(test_alloc, u16, 801);
-        try writer.append(test_alloc, i32, -108);
-        try writer.append(test_alloc, f32, 1.08);
+        try expectAppend(&writer, 2, 1, u8, 108);
+        try expectAppend(&writer, 4, 2, u16, 801);
+        try expectAppend(&writer, 8, 4, i32, -108);
+        try expectAppend(&writer, 12, 4, f32, 1.08);
 
-        try writer.append(test_alloc, TestEnum, .bar);
-        try writer.append(test_alloc, TestUnion, .bar);
-        try writer.append(test_alloc, TestUnion, .{ .baz = 108 });
+        try expectAppend(&writer, 16, 1, TestEnum, .bar);
+        try expectAppend(&writer, 17, 2, TestUnion, .bar);
+        try expectAppend(&writer, 19, 2, TestUnion, .{ .baz = 108 });
 
-        try writer.append(test_alloc, ?u8, null);
-        try writer.append(test_alloc, ?u8, 108);
+        try expectAppend(&writer, 21, 2, ?u8, null);
+        try expectAppend(&writer, 23, 2, ?u8, 108);
 
-        try writer.append(test_alloc, [2]u8, .{ 101, 102 });
-        try writer.append(test_alloc, @Vector(2, u8), .{ 103, 104 });
+        try expectAppend(&writer, 25, 2, [2]u8, .{ 101, 102 });
+        try expectAppend(&writer, 28, 2, @Vector(2, u8), .{ 103, 104 });
 
-        try writer.append(test_alloc, *const u8, &108);
-        try writer.append(test_alloc, [*:0]const u8, &.{ 108, 109 });
-        try writer.append(test_alloc, [:0]const u8, &.{ 108, 109 });
-        try writer.append(test_alloc, []const u8, &.{ 108, 109 });
+        try expectAppend(&writer, 30, 1, *const u8, &108);
+        try expectAppend(&writer, 31, 4, [*:0]const u8, &.{ 108, 109 });
+        try expectAppend(&writer, 36, 4, [:0]const u8, &.{ 108, 109 });
+        try expectAppend(&writer, 41, 4, []const u8, &.{ 108, 109 });
 
         const align_slice: [2]u8 align(2) = .{ 108, 109 };
-        try writer.append(test_alloc, []align(2) const u8, &align_slice);
+        try expectAppend(&writer, 45, 5, []align(2) const u8, &align_slice);
 
-        try writer.append(test_alloc, TestStructAuto, .{ .int = 108, .string = "foo" });
-        try writer.append(test_alloc, TestStructPack, .{ .c0 = 101, .c1 = 102, .c2 = 103 });
+        try expectAppend(&writer, 50, 6, TestStructAuto, .{ .int = 108, .string = "foo" });
+        try expectAppend(&writer, 56, 3, TestStructPack, .{ .c0 = 101, .c1 = 102, .c2 = 103 });
+
+        try testing.expectEqualDeep(SerialHandle{
+            .offset = 59,
+            .length = 10,
+        }, try writer.appendFmt(test_alloc, "foo {d}", .{108}));
 
         break :blk try writer.consumeSlice(test_alloc);
     };
@@ -373,7 +425,7 @@ inline fn compileErrorFmt(comptime format: []const u8, args: anytype) void {
 
 const UNDF = 0xAA;
 const TEST_SLICE = TEST_BOOLS ++ TEST_NUMS ++ TEST_TAGS ++ TEST_OPTION ++
-    TEST_LISTS ++ TEST_POINTERS ++ TEST_STRUCTS;
+    TEST_LISTS ++ TEST_POINTERS ++ TEST_STRUCTS ++ TEST_FMT;
 
 const TEST_BOOLS: []const u8 = &.{ 1, 0 }; // true, false
 
@@ -421,3 +473,5 @@ const TEST_STRUCTS: []const u8 = &[_]u8{
     108, 1, 3, 'f', 'o', 'o', // auto
     101, 102, 103, // pack
 };
+
+const TEST_FMT = (if (ENDIAN == .little) &[_]u8{ 2, 7, 0 } else &[_]u8{ 2, 0, 7 }) ++ "foo 108";
