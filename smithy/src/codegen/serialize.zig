@@ -120,18 +120,22 @@ pub const SerialWriter = struct {
                 }
             },
             .Struct => |meta| {
-                if (comptime !serializable(T)) {
+                if (meta.layout == .@"packed") {
+                    const offset = try self.writePadding(allocator, @alignOf(T));
+                    try self.buffer.appendSlice(allocator, mem.asBytes(&value));
+                    return self.handleFrom(offset);
+                } else if (comptime !serializable(T)) {
                     compileErrorFmt("Struct `{}` contains non-encodeable field", .{T});
                 }
 
-                var offset: usize = 0;
+                var offset: usize = std.math.maxInt(usize);
                 inline for (meta.fields) |field| {
                     const val = @field(value, field.name);
                     const handle = try self.append(allocator, field.type, val);
-                    if (offset == 0) offset = handle.offset;
+                    if (offset == std.math.maxInt(usize)) offset = handle.offset;
                 }
 
-                return if (offset > 0) self.handleFrom(offset) else SerialHandle.empty;
+                return if (offset != std.math.maxInt(usize)) self.handleFrom(offset) else SerialHandle.empty;
             },
             else => compileErrorFmt("Unsupported encoding type `{}`", .{T}),
         }
@@ -141,15 +145,17 @@ pub const SerialWriter = struct {
         const offset = self.length();
         errdefer self.buffer.shrinkRetainingCapacity(offset);
 
-        const size_bytes = try self.buffer.addManyAsSlice(allocator, 3);
+        _ = try self.buffer.addManyAsSlice(allocator, 3);
         try self.buffer.writer(allocator).print(format, args);
 
-        const len = self.length() - offset - size_bytes.len;
+        const len = self.length() - offset - 3;
         if (len > std.math.maxInt(u16)) return error.StringOverflow;
-        mem.writeInt(u16, size_bytes[1..3], @truncate(len), ENDIAN);
-        size_bytes[0] = 2;
 
-        return .{ .offset = offset, .length = len + size_bytes.len };
+        self.buffer.items[offset] = 2;
+        const size_bytes = self.buffer.items[offset + 1 ..][0..2];
+        mem.writeInt(u16, size_bytes, @truncate(len), ENDIAN);
+
+        return .{ .offset = offset, .length = len + 3 };
     }
 
     fn writePadding(self: *SerialWriter, allocator: Allocator, comptime alignment: comptime_int) !usize {
@@ -157,6 +163,12 @@ pub const SerialWriter = struct {
         const target = mem.alignForward(usize, initial, alignment);
         if (target > initial) try self.buffer.resize(allocator, target);
         return target;
+    }
+
+    pub fn TEMP_override(self: *SerialWriter, handle: SerialHandle, bytes: []const u8) void {
+        std.debug.assert(handle.length == bytes.len);
+        std.debug.assert(handle.offset + handle.length <= self.length());
+        self.buffer.replaceRangeAssumeCapacity(handle.offset, handle.length, bytes);
     }
 
     fn length(self: SerialWriter) usize {
@@ -207,13 +219,13 @@ test "SerialWriter" {
         const align_slice: [2]u8 align(2) = .{ 108, 109 };
         try expectAppend(&writer, 45, 5, []align(2) const u8, &align_slice);
 
-        try expectAppend(&writer, 50, 6, TestStructAuto, .{ .int = 108, .string = "foo" });
-        try expectAppend(&writer, 56, 3, TestStructPack, .{ .c0 = 101, .c1 = 102, .c2 = 103 });
-
         try testing.expectEqualDeep(SerialHandle{
-            .offset = 59,
+            .offset = 50,
             .length = 10,
         }, try writer.appendFmt(test_alloc, "foo {d}", .{108}));
+
+        try expectAppend(&writer, 60, 6, TestStructAuto, .{ .int = 108, .string = "foo" });
+        try expectAppend(&writer, 68, 4, TestStructPack, .{ .c0 = 101, .c1 = 102, .c2 = 103 });
 
         break :blk try writer.consumeSlice(test_alloc);
     };
@@ -289,6 +301,10 @@ pub const SerialReader = struct {
                 }
             },
             .Struct => |meta| {
+                if (meta.layout == .@"packed") {
+                    return self.nextValue(T);
+                }
+
                 inline for (meta.fields) |field| {
                     if (comptime serializable(field.type)) continue;
                     compileErrorFmt("Struct field `{}.{s}` is not decodeable", .{ T, field.name });
@@ -315,21 +331,16 @@ pub const SerialReader = struct {
     }
 
     fn TypeSlice(comptime T: type, comptime alignment: ?u29) type {
-        if (alignment) |a| {
-            if (a != @alignOf(T)) return []align(a) const u8;
-        }
+        if (alignment) |a| if (a != @alignOf(T)) {
+            return []align(a) const u8;
+        };
 
         return []const u8;
     }
 
     fn takeSliceType(self: *SerialReader, comptime T: type, comptime alignment: ?u29) TypeSlice(T, alignment) {
-        switch (@typeInfo(T)) {
-            .Bool, .Int, .Float, .Enum, .Union, .Optional, .Array, .Vector => {
-                const slice = self.takeNextRange(self.cursor, @sizeOf(T));
-                return @alignCast(slice);
-            },
-            else => unreachable,
-        }
+        const slice = self.takeNextRange(self.cursor, @sizeOf(T));
+        return @alignCast(slice);
     }
 
     fn takeNextRange(self: *SerialReader, start: usize, n: usize) []const u8 {
@@ -371,6 +382,8 @@ test "SerialReader" {
 
     const align_slice: [2]u8 align(2) = .{ 108, 109 };
     try testing.expectEqualSlices(u8, &align_slice, reader.next([]align(2) const u8));
+
+    try testing.expectEqualStrings("foo 108", reader.next([]const u8));
 
     try testing.expectEqualDeep(
         TestStructAuto{ .int = 108, .string = "foo" },
@@ -414,7 +427,8 @@ fn serializable(comptime T: type) bool {
 
 fn isSerializableChild(comptime T: type) bool {
     return switch (@typeInfo(T)) {
-        .Pointer, .Struct => false,
+        .Pointer => false,
+        .Struct => |meta| meta.layout == .@"packed",
         else => true,
     };
 }
@@ -425,7 +439,7 @@ inline fn compileErrorFmt(comptime format: []const u8, args: anytype) void {
 
 const UNDF = 0xAA;
 const TEST_SLICE = TEST_BOOLS ++ TEST_NUMS ++ TEST_TAGS ++ TEST_OPTION ++
-    TEST_LISTS ++ TEST_POINTERS ++ TEST_STRUCTS ++ TEST_FMT;
+    TEST_LISTS ++ TEST_POINTERS ++ TEST_FMT ++ TEST_STRUCTS;
 
 const TEST_BOOLS: []const u8 = &.{ 1, 0 }; // true, false
 
@@ -467,11 +481,11 @@ const TEST_POINTERS: []const u8 = &.{
     1, 2, UNDF, 108, 109, // slice align(2)
 };
 
+const TEST_FMT = (if (ENDIAN == .little) &[_]u8{ 2, 7, 0 } else &[_]u8{ 2, 0, 7 }) ++ "foo 108";
+
 const TestStructAuto = struct { int: u8, string: []const u8 };
 const TestStructPack = packed struct { c0: u8, c1: u8, c2: u8 };
 const TEST_STRUCTS: []const u8 = &[_]u8{
     108, 1, 3, 'f', 'o', 'o', // auto
-    101, 102, 103, // pack
+    UNDF, UNDF, 101, 102, 103, 0, // pack
 };
-
-const TEST_FMT = (if (ENDIAN == .little) &[_]u8{ 2, 7, 0 } else &[_]u8{ 2, 0, 7 }) ++ "foo 108";

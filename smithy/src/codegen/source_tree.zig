@@ -2,14 +2,19 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
+const serial = @import("serialize.zig");
 
 const Indexer = u32;
 
-pub const SourceHandle = struct {
+pub const SourceHandle = packed struct {
     offset: Indexer,
     length: Indexer,
 
     pub const empty = SourceHandle{ .offset = 0, .length = 0 };
+
+    pub fn isEmpty(self: SourceHandle) bool {
+        return self.length == 0;
+    }
 };
 
 pub fn SourceTree(comptime Tag: type) type {
@@ -74,6 +79,13 @@ pub fn SourceTree(comptime Tag: type) type {
                 return self.tree.node(self.children_ids[index]);
             }
 
+            pub fn payload(self: Node, comptime T: type) T {
+                var reader = serial.SerialReader{
+                    .buffer = self.raw_payload,
+                };
+                return reader.next(T);
+            }
+
             pub fn iterate(self: Node) Iterator {
                 return Iterator{
                     .tree = self.tree,
@@ -109,16 +121,17 @@ pub fn SourceTree(comptime Tag: type) type {
 }
 
 test "SouceTree" {
+    const payload = &[_]u8{2} ++ std.mem.asBytes(&@as(u16, 6)) ++ "foo108" ++ &[_]u8{ 1, 3 } ++ "bar";
     const tree = SourceTree(u64){
-        .raw_payload = "foo108bar",
+        .raw_payload = payload,
         .children_ids = &.{ 2, 3, 1, 4 },
         .nodes_tag = &.{ 0, 101, 201, 202, 102 },
         .nodes_payload = &.{
             SourceHandle.empty,
             SourceHandle.empty,
-            .{ .offset = 6, .length = 3 },
+            .{ .offset = 9, .length = 5 },
             SourceHandle.empty,
-            .{ .offset = 0, .length = 6 },
+            .{ .offset = 0, .length = 9 },
         },
         .nodes_children = &.{
             .{ .offset = 2, .length = 2 },
@@ -246,7 +259,7 @@ pub fn SourceTreeAuthor(comptime Tag: type) type {
             errdefer _ = self.nodes_children.pop();
         }
 
-        fn sealNode(self: *Self, index: Indexer, payload: Node.Payload, children: []const Indexer) !void {
+        fn sealNode(self: *Self, index: Indexer, payload: SourceHandle, children: []const Indexer) !void {
             const children_len: Indexer = @truncate(children.len);
             const children_offset: Indexer = @truncate(self.children.items.len);
             try self.children.appendSlice(self.allocator, children);
@@ -254,26 +267,13 @@ pub fn SourceTreeAuthor(comptime Tag: type) type {
                 .offset = children_offset,
                 .length = children_len,
             };
-            errdefer {
-                self.nodes_children.items[index] = SourceHandle.empty;
-                self.children.items.len -= children.len;
-                self.children.capacity += children.len;
-            }
 
-            switch (payload) {
-                .none => {},
-                .handle => |slice| {
-                    self.nodes_payload.items[index] = slice;
-                },
-                .raw => |bytes| {
-                    self.nodes_payload.items[index] = try self.payload.putRaw(self.allocator, bytes);
-                },
-            }
+            self.nodes_payload.items[index] = payload;
         }
 
-        pub fn overrideRawPayload(self: *Self, node_idx: Indexer, bytes: []const u8) void {
+        pub fn TEMP_overridePayload(self: *Self, node_idx: Indexer, bytes: []const u8) void {
             const handle = self.nodes_payload.items[node_idx];
-            self.payload.override(handle, bytes);
+            self.payload.TEMP_override(handle, bytes);
         }
 
         pub fn cacheRawPayload(self: *Self, bytes: []const u8) !SourceHandle {
@@ -284,14 +284,8 @@ pub fn SourceTreeAuthor(comptime Tag: type) type {
             allocator: Allocator,
             tree: *Self,
             index: Indexer,
-            payload: Payload = .none,
+            payload: SourceHandle = SourceHandle.empty,
             children: std.ArrayListUnmanaged(Indexer) = .{},
-
-            const Payload = union(enum) {
-                none,
-                raw: []const u8,
-                handle: SourceHandle,
-            };
 
             pub fn deinit(self: *Node) void {
                 self.children.deinit(self.allocator);
@@ -310,16 +304,18 @@ pub fn SourceTreeAuthor(comptime Tag: type) type {
                 return node;
             }
 
-            pub fn setPayloadRaw(self: *Node, payload: []const u8) void {
-                std.debug.assert(self.payload == .none);
-                self.payload = .{ .raw = payload };
+            pub fn setPayload(self: *Node, comptime T: type, value: T) !void {
+                std.debug.assert(self.payload.isEmpty());
+                self.payload = try self.tree.payload.putValue(self.tree.allocator, T, value);
             }
 
             pub fn setPayloadFmt(self: *Node, comptime format: []const u8, args: anytype) !usize {
-                std.debug.assert(self.payload == .none);
+                std.debug.assert(self.payload.isEmpty());
                 const handle = try self.tree.payload.putFmt(self.tree.allocator, format, args);
-                self.payload = .{ .handle = handle };
-                return handle.length;
+                self.payload = handle;
+                return handle.length
+                // TODO: Remove \/ (when MD no longer requires the text len)
+                - 3;
             }
         };
     };
@@ -332,17 +328,17 @@ test "SourceTreeAuthor" {
 
         try testing.expectEqualDeep(SourceHandle{
             .offset = 0,
-            .length = 3,
+            .length = 5,
         }, try author.cacheRawPayload("foo"));
 
         try testing.expectEqualDeep(SourceHandle{
-            .offset = 3,
-            .length = 3,
+            .offset = 5,
+            .length = 5,
         }, try author.cacheRawPayload("bar"));
 
         try testing.expectEqualDeep(SourceHandle{
             .offset = 0,
-            .length = 3,
+            .length = 5,
         }, try author.cacheRawPayload("foo"));
 
         var node = try author.append(101);
@@ -351,10 +347,10 @@ test "SourceTreeAuthor" {
         var child = try node.append(201);
         errdefer child.deinit();
 
-        child.setPayloadRaw("qux");
+        try child.setPayload([]const u8, "qux");
         try child.seal();
 
-        author.overrideRawPayload(child.index, "bar");
+        author.TEMP_overridePayload(child.index, &[_]u8{ 1, 3 } ++ "bar");
 
         child = try node.append(202);
         try child.seal();
@@ -385,75 +381,72 @@ fn expectTree(tree: SourceTree(u64)) !void {
     var chuld_iter = node.iterate();
     var child = chuld_iter.next().?;
     try testing.expectEqual(201, child.tag);
-    try testing.expectEqualStrings("bar", child.raw_payload);
+    try testing.expectEqualStrings("bar", child.payload([]const u8));
     child = chuld_iter.next().?;
     try testing.expectEqual(202, child.tag);
     try testing.expectEqual(null, chuld_iter.next());
 
     node = iter.next().?;
     try testing.expectEqual(102, node.tag);
-    try testing.expectEqualStrings("foo108", node.raw_payload);
+    try testing.expectEqualStrings("foo108", node.payload([]const u8));
     try testing.expectEqual(null, iter.next());
 }
 
 const PayloadStoreUnmanaged = struct {
-    buffer: std.ArrayListUnmanaged(u8) = .{},
+    serial: serial.SerialWriter = .{},
     cache: std.StringHashMapUnmanaged(SourceHandle) = .{},
 
     pub fn deinit(self: *PayloadStoreUnmanaged, allocator: Allocator) void {
-        self.buffer.deinit(allocator);
+        self.serial.deinit(allocator);
         self.cache.deinit(allocator);
     }
 
     pub fn consume(self: *PayloadStoreUnmanaged, allocator: Allocator) ![]const u8 {
-        const buffer = try self.buffer.toOwnedSlice(allocator);
+        const buffer = try self.serial.consumeSlice(allocator);
         self.cache.deinit(allocator);
         return buffer;
     }
 
-    pub fn cacheRaw(self: *PayloadStoreUnmanaged, allocator: Allocator, bytes: []const u8) !SourceHandle {
-        const result = try self.cache.getOrPut(allocator, bytes);
-        if (result.found_existing) return result.value_ptr.*;
-
-        self.buffer.appendSlice(allocator, bytes) catch |err| {
-            _ = self.cache.remove(bytes);
-            return err;
-        };
-
-        const data = SourceHandle{
-            .offset = @truncate(self.length() - bytes.len),
-            .length = @truncate(bytes.len),
-        };
-        result.value_ptr.* = data;
-        return data;
-    }
-
-    pub fn putRaw(self: *PayloadStoreUnmanaged, allocator: Allocator, bytes: []const u8) !SourceHandle {
-        const offset = self.length();
-        try self.buffer.appendSlice(allocator, bytes);
-        return .{
-            .offset = @truncate(offset),
-            .length = @truncate(bytes.len),
-        };
+    pub fn putValue(self: *PayloadStoreUnmanaged, allocator: Allocator, comptime T: type, value: T) !SourceHandle {
+        const handle = try self.serial.append(allocator, T, value);
+        return fromSerialHandle(handle);
     }
 
     pub fn putFmt(self: *PayloadStoreUnmanaged, allocator: Allocator, comptime format: []const u8, args: anytype) !SourceHandle {
-        const offset = self.length();
-        try self.buffer.writer(allocator).print(format, args);
+        const handle = try self.serial.appendFmt(allocator, format, args);
+        return fromSerialHandle(handle);
+    }
+
+    pub fn cacheRaw(self: *PayloadStoreUnmanaged, allocator: Allocator, bytes: []const u8) !SourceHandle {
+        const result = try self.cache.getOrPut(allocator, bytes);
+        errdefer _ = self.cache.remove(bytes);
+
+        if (result.found_existing) {
+            return result.value_ptr.*;
+        } else {
+            const serial_handle = try self.serial.append(allocator, []const u8, bytes);
+            const source_handle = fromSerialHandle(serial_handle);
+            result.value_ptr.* = source_handle;
+            return source_handle;
+        }
+    }
+
+    pub fn TEMP_override(self: *PayloadStoreUnmanaged, handle: SourceHandle, bytes: []const u8) void {
+        self.serial.TEMP_override(toSerialHandle(handle), bytes);
+    }
+
+    fn fromSerialHandle(handle: serial.SerialHandle) SourceHandle {
         return .{
-            .offset = @truncate(offset),
-            .length = @truncate(self.length() - offset),
+            .offset = @truncate(handle.offset),
+            .length = @truncate(handle.length),
         };
     }
 
-    pub fn override(self: *PayloadStoreUnmanaged, handle: SourceHandle, bytes: []const u8) void {
-        std.debug.assert(handle.length == bytes.len);
-        const dest = self.buffer.items[handle.offset..][0..handle.length];
-        @memcpy(dest, bytes);
-    }
-
-    fn length(self: PayloadStoreUnmanaged) usize {
-        return self.buffer.items.len;
+    fn toSerialHandle(handle: SourceHandle) serial.SerialHandle {
+        return .{
+            .offset = handle.offset,
+            .length = handle.length,
+        };
     }
 };
 
@@ -462,37 +455,40 @@ test "PayloadStoreUnmanaged" {
         var store = PayloadStoreUnmanaged{};
         errdefer store.deinit(test_alloc);
 
-        var handle = try store.putRaw(test_alloc, "qux");
+        var handle = try store.putValue(test_alloc, []const u8, "qux");
         try testing.expectEqualDeep(SourceHandle{
             .offset = 0,
-            .length = 3,
+            .length = 5,
         }, handle);
-        store.override(handle, "foo");
+        store.TEMP_override(handle, &[_]u8{ 1, 3 } ++ "foo");
 
         handle = try store.putFmt(test_alloc, " bar {s}", .{"baz"});
         try testing.expectEqualDeep(SourceHandle{
-            .offset = 3,
-            .length = 8,
+            .offset = 5,
+            .length = 11,
         }, handle);
 
         try testing.expectEqualDeep(SourceHandle{
-            .offset = 11,
-            .length = 3,
+            .offset = 16,
+            .length = 5,
         }, try store.cacheRaw(test_alloc, "foo"));
 
         try testing.expectEqualDeep(SourceHandle{
-            .offset = 14,
-            .length = 3,
+            .offset = 21,
+            .length = 5,
         }, try store.cacheRaw(test_alloc, "bar"));
 
         try testing.expectEqualDeep(SourceHandle{
-            .offset = 11,
-            .length = 3,
+            .offset = 16,
+            .length = 5,
         }, try store.cacheRaw(test_alloc, "foo"));
 
         break :blk try store.consume(test_alloc);
     };
 
     defer test_alloc.free(buffer);
-    try testing.expectEqualStrings("foo bar bazfoobar", buffer);
+    const expected = &[_]u8{ 1, 3 } ++ "foo" ++
+        &[_]u8{2} ++ std.mem.asBytes(&@as(u16, 8)) ++ " bar baz" ++
+        &[_]u8{ 1, 3 } ++ "foo" ++ &[_]u8{ 1, 3 } ++ "bar";
+    try testing.expectEqualSlices(u8, expected, buffer);
 }

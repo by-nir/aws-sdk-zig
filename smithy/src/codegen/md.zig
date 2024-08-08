@@ -16,6 +16,9 @@ const source_tree = @import("source_tree.zig");
 
 pub const html = @import("md/html.zig");
 
+pub const ListKind = enum(u8) { unordered, ordered };
+pub const ColumnAlign = enum(u8) { left, center, right };
+
 pub const DocumentClosure = *const fn (*DocumentAuthor) anyerror!void;
 
 // TODO: Support soft/hard width guidelines
@@ -58,8 +61,10 @@ const Mark = enum(u64) {
 const MarkTree = source_tree.SourceTree(Mark);
 const MarkTreeAuthor = source_tree.SourceTreeAuthor(Mark);
 
-pub const ListKind = enum(u8) { unordered, ordered };
-pub const ColumnAlign = enum(u8) { left, center, right };
+const MarkHeading = struct {
+    level: u8,
+    text: []const u8,
+};
 
 const MAX_TABLE_COLUMNS = 16;
 
@@ -94,23 +99,24 @@ pub const Document = struct {
 
     fn writeNode(node: MarkTree.Node, writer: *Writer) anyerror!void {
         switch (node.tag) {
-            .block_raw, .text_plain => try writer.appendString(node.raw_payload),
-            .text_italic => try writer.appendFmt("_{s}_", .{node.raw_payload}),
-            .text_bold => try writer.appendFmt("**{s}**", .{node.raw_payload}),
-            .text_bold_italic => try writer.appendFmt("***{s}***", .{node.raw_payload}),
-            .text_code => try writer.appendFmt("`{s}`", .{node.raw_payload}),
+            .block_raw, .text_plain => try writer.appendString(node.payload([]const u8)),
+            .text_italic => try writer.appendFmt("_{s}_", .{node.payload([]const u8)}),
+            .text_bold => try writer.appendFmt("**{s}**", .{node.payload([]const u8)}),
+            .text_bold_italic => try writer.appendFmt("***{s}***", .{node.payload([]const u8)}),
+            .text_code => try writer.appendFmt("`{s}`", .{node.payload([]const u8)}),
             .text_link => {
+                // TODO: [foo](href "title")
                 try writer.appendChar('[');
                 try writeNodeChildren(node, .inlined, writer);
-                try writer.appendFmt("]({s})", .{node.raw_payload});
+                try writer.appendFmt("]({s})", .{node.payload([]const u8)});
             },
-            .block_comment => try writer.appendFmt("<!-- {s} -->", .{node.raw_payload}),
+            .block_comment => try writer.appendFmt("<!-- {s} -->", .{node.payload([]const u8)}),
             .block_paragraph => try writeNodeChildren(node, .inlined, writer),
             .block_heading => {
-                const level: u8 = node.raw_payload[0];
-                std.debug.assert(level > 0 and level <= 6);
-                const prefix = "#######"[6 - level .. 6];
-                try writer.appendFmt("{s} {s}", .{ prefix, node.raw_payload[1..node.raw_payload.len] });
+                const heading = node.payload(MarkHeading);
+                std.debug.assert(heading.level > 0 and heading.level <= 6);
+                const prefix = "#######"[6 - heading.level .. 6];
+                try writer.appendFmt("{s} {s}", .{ prefix, heading.text });
             },
             .block_quote => {
                 try writer.pushIndent("> ");
@@ -119,16 +125,14 @@ pub const Document = struct {
                 try writeNodeChildren(node, .inlined, writer);
             },
             .block_code => {
-                std.debug.assert(node.raw_payload.len == @sizeOf(usize));
-                const code: *const zig.Container = @ptrFromInt(mem.bytesToValue(usize, node.raw_payload));
+                const code: *const zig.Container = @ptrFromInt(node.payload(usize));
 
                 try writer.appendString("```zig\n");
                 try code.write(writer);
                 try writer.breakString("```");
             },
             .block_list => {
-                std.debug.assert(node.raw_payload.len == 1);
-                const kind: ListKind = @enumFromInt(node.raw_payload[0]);
+                const kind = node.payload(ListKind);
 
                 var i: usize = 1;
                 var items = node.iterate();
@@ -150,8 +154,7 @@ pub const Document = struct {
                 }
             },
             .block_table => {
-                std.debug.assert(node.raw_payload.len == 1);
-                const col_len = node.raw_payload[0];
+                const col_len = node.payload(u8);
 
                 const whitespace = " " ** 255;
                 const separator = "-" ** 255;
@@ -162,7 +165,7 @@ pub const Document = struct {
                 try writer.appendChar('|');
                 for (0..col_len) |i| {
                     const col_node = node.child(i).?;
-                    const column: MarkColumn = mem.bytesAsValue(MarkColumn, col_node.raw_payload).*;
+                    const column = col_node.payload(MarkColumn);
                     widths[i] = column.dynamic_width;
                     const padding = column.dynamic_width - column.self_width;
 
@@ -176,7 +179,7 @@ pub const Document = struct {
                 try writer.breakChar('|');
                 for (0..col_len) |i| {
                     const item = node.child(i).?;
-                    const column: MarkColumn = mem.bytesAsValue(MarkColumn, item.raw_payload).*;
+                    const column = item.payload(MarkColumn);
                     switch (column.aligns) {
                         .left => try writer.appendFmt(
                             ":{s}|",
@@ -202,8 +205,7 @@ pub const Document = struct {
                     var i: usize = 0;
                     var row = row_node.iterate();
                     while (row.next()) |cell_node| : (i += 1) {
-                        std.debug.assert(cell_node.raw_payload.len == 1);
-                        const padding = widths[i] - cell_node.raw_payload[0];
+                        const padding = widths[i] - cell_node.payload(u8);
 
                         try writer.appendChar(' ');
                         try writeNodeChildren(cell_node, .inlined, writer);
@@ -261,7 +263,7 @@ pub const Document = struct {
 
     fn writeNodeInlineSpace(writer: *Writer, next: ?MarkTree.Node) !void {
         const node = next orelse return;
-        if (mem.indexOfScalar(u8, ".,;:?!", node.raw_payload[0]) != null) return;
+        if (mem.indexOfScalar(u8, ".,;:?!", node.payload([]const u8)[0]) != null) return;
 
         try writer.appendChar(' ');
     }
@@ -275,11 +277,11 @@ test "Document: Raw" {
         {
             var node = try tree.append(.block_raw);
             errdefer node.deinit();
-            node.setPayloadRaw("foo");
+            try node.setPayload([]const u8, "foo");
             try node.seal();
 
             node = try tree.append(.block_raw);
-            node.setPayloadRaw("bar");
+            try node.setPayload([]const u8, "bar");
             try node.seal();
         }
 
@@ -301,7 +303,7 @@ test "Document: Comment" {
         {
             var node = try tree.append(.block_comment);
             errdefer node.deinit();
-            node.setPayloadRaw("foo");
+            try node.setPayload([]const u8, "foo");
             try node.seal();
         }
 
@@ -322,30 +324,30 @@ test "Document: Paragraph & Text" {
 
             var child = try node.append(.text_plain);
             errdefer child.deinit();
-            child.setPayloadRaw("text");
+            try child.setPayload([]const u8, "text");
             try child.seal();
 
             child = try node.append(.text_italic);
-            child.setPayloadRaw("italic");
+            try child.setPayload([]const u8, "italic");
             try child.seal();
 
             child = try node.append(.text_bold);
-            child.setPayloadRaw("bold");
+            try child.setPayload([]const u8, "bold");
             try child.seal();
 
             child = try node.append(.text_bold_italic);
-            child.setPayloadRaw("bold italic");
+            try child.setPayload([]const u8, "bold italic");
             try child.seal();
 
             child = try node.append(.text_code);
-            child.setPayloadRaw("code");
+            try child.setPayload([]const u8, "code");
             try child.seal();
 
             child = try node.append(.text_link);
-            child.setPayloadRaw("#");
+            try child.setPayload([]const u8, "#");
             var link_text = try child.append(.text_plain);
             errdefer link_text.deinit();
-            link_text.setPayloadRaw("link");
+            try link_text.setPayload([]const u8, "link");
             try link_text.seal();
             try child.seal();
 
@@ -366,7 +368,10 @@ test "Document: Heading" {
         {
             var node = try tree.append(.block_heading);
             errdefer node.deinit();
-            node.setPayloadRaw(&[_]u8{2} ++ "Foo");
+            try node.setPayload(MarkHeading, .{
+                .level = 2,
+                .text = "Foo",
+            });
             try node.seal();
         }
 
@@ -387,7 +392,7 @@ test "Document: Quote" {
 
             var child = try node.append(.text_plain);
             errdefer child.deinit();
-            child.setPayloadRaw("foo");
+            try child.setPayload([]const u8, "foo");
             try child.seal();
 
             try node.seal();
@@ -397,13 +402,13 @@ test "Document: Quote" {
             var para = try node.append(.block_paragraph);
             errdefer para.deinit();
             child = try para.append(.text_plain);
-            child.setPayloadRaw("bar");
+            try child.setPayload([]const u8, "bar");
             try child.seal();
             try para.seal();
 
             para = try node.append(.block_paragraph);
             child = try para.append(.text_plain);
-            child.setPayloadRaw("baz");
+            try child.setPayload([]const u8, "baz");
             try child.seal();
             try para.seal();
 
@@ -431,7 +436,7 @@ test "Document: Code" {
         {
             var node = try tree.append(.block_code);
             errdefer node.deinit();
-            node.setPayloadRaw(&mem.toBytes(@intFromPtr(&code)));
+            try node.setPayload(usize, @intFromPtr(&code));
 
             try node.seal();
         }
@@ -454,13 +459,13 @@ test "Document: List" {
         {
             var node = try tree.append(.block_list);
             errdefer node.deinit();
-            node.setPayloadRaw(&.{@intFromEnum(ListKind.unordered)});
+            try node.setPayload(ListKind, .unordered);
 
             var item = try node.append(.block_list_item);
             errdefer item.deinit();
             var child = try item.append(.text_plain);
             errdefer child.deinit();
-            child.setPayloadRaw("foo");
+            try child.setPayload([]const u8, "foo");
             try child.seal();
             try item.seal();
 
@@ -469,13 +474,13 @@ test "Document: List" {
             var para = try item.append(.block_paragraph);
             errdefer para.deinit();
             child = try para.append(.text_plain);
-            child.setPayloadRaw("bar");
+            try child.setPayload([]const u8, "bar");
             try child.seal();
             try para.seal();
 
             para = try item.append(.block_paragraph);
             child = try para.append(.text_plain);
-            child.setPayloadRaw("baz");
+            try child.setPayload([]const u8, "baz");
             try child.seal();
             try para.seal();
 
@@ -483,39 +488,39 @@ test "Document: List" {
 
             item = try node.append(.block_list_item);
             child = try item.append(.text_plain);
-            child.setPayloadRaw("qux");
+            try child.setPayload([]const u8, "qux");
             try child.seal();
             try item.seal();
 
             try node.seal();
 
             node = try tree.append(.block_list);
-            node.setPayloadRaw(&.{@intFromEnum(ListKind.ordered)});
+            try node.setPayload(ListKind, .ordered);
 
             item = try node.append(.block_list_item);
             child = try item.append(.text_plain);
-            child.setPayloadRaw("foo");
+            try child.setPayload([]const u8, "foo");
             try child.seal();
             try item.seal();
 
             item = try node.append(.block_list_item);
             child = try item.append(.text_plain);
-            child.setPayloadRaw("bar");
+            try child.setPayload([]const u8, "bar");
             try child.seal();
             try item.seal();
 
             var sublist = try node.append(.block_list);
-            sublist.setPayloadRaw(&.{@intFromEnum(ListKind.ordered)});
+            try sublist.setPayload(ListKind, .ordered);
 
             item = try sublist.append(.block_list_item);
             child = try item.append(.text_plain);
-            child.setPayloadRaw("baz");
+            try child.setPayload([]const u8, "baz");
             try child.seal();
             try item.seal();
 
             item = try sublist.append(.block_list_item);
             child = try item.append(.text_plain);
-            child.setPayloadRaw("qux");
+            try child.setPayload([]const u8, "qux");
             try child.seal();
             try item.seal();
 
@@ -548,40 +553,40 @@ test "Document: Table" {
         {
             var table = try tree.append(.block_table);
             errdefer table.deinit();
-            table.setPayloadRaw(&.{3});
+            try table.setPayload(u8, 3);
 
             var cell = try table.append(.block_table_column);
             errdefer cell.deinit();
-            cell.setPayloadRaw(&mem.toBytes(MarkColumn{
+            try cell.setPayload(MarkColumn, .{
                 .aligns = .right,
                 .self_width = 1,
                 .dynamic_width = 8,
-            }));
+            });
             var child = try cell.append(.text_plain);
             errdefer child.deinit();
-            child.setPayloadRaw("A");
+            try child.setPayload([]const u8, "A");
             try child.seal();
             try cell.seal();
 
             cell = try table.append(.block_table_column);
-            cell.setPayloadRaw(&mem.toBytes(MarkColumn{
+            try cell.setPayload(MarkColumn, .{
                 .aligns = .center,
                 .self_width = 1,
                 .dynamic_width = 11,
-            }));
+            });
             child = try cell.append(.text_plain);
-            child.setPayloadRaw("B");
+            try child.setPayload([]const u8, "B");
             try child.seal();
             try cell.seal();
 
             cell = try table.append(.block_table_column);
-            cell.setPayloadRaw(&mem.toBytes(MarkColumn{
+            try cell.setPayload(MarkColumn, .{
                 .aligns = .left,
                 .self_width = 1,
                 .dynamic_width = 7,
-            }));
+            });
             child = try cell.append(.text_plain);
-            child.setPayloadRaw("C");
+            try child.setPayload([]const u8, "C");
             try child.seal();
             try cell.seal();
 
@@ -589,47 +594,23 @@ test "Document: Table" {
             errdefer row.deinit();
 
             cell = try row.append(.block_table_cell);
-            cell.setPayloadRaw(&.{8});
+            try cell.setPayload(u8, 8);
             child = try cell.append(.text_plain);
-            child.setPayloadRaw("A01 Foo!");
+            try child.setPayload([]const u8, "A01 Foo!");
             try child.seal();
             try cell.seal();
 
             cell = try row.append(.block_table_cell);
-            cell.setPayloadRaw(&.{3});
+            try cell.setPayload(u8, 3);
             child = try cell.append(.text_plain);
-            child.setPayloadRaw("B01");
+            try child.setPayload([]const u8, "B01");
             try child.seal();
             try cell.seal();
 
             cell = try row.append(.block_table_cell);
-            cell.setPayloadRaw(&.{3});
+            try cell.setPayload(u8, 3);
             child = try cell.append(.text_plain);
-            child.setPayloadRaw("C01");
-            try child.seal();
-            try cell.seal();
-
-            try row.seal();
-            row = try table.append(.block_table_row);
-
-            cell = try row.append(.block_table_cell);
-            cell.setPayloadRaw(&.{3});
-            child = try cell.append(.text_plain);
-            child.setPayloadRaw("A02");
-            try child.seal();
-            try cell.seal();
-
-            cell = try row.append(.block_table_cell);
-            cell.setPayloadRaw(&.{11});
-            child = try cell.append(.text_plain);
-            child.setPayloadRaw("B02 Bar Baz");
-            try child.seal();
-            try cell.seal();
-
-            cell = try row.append(.block_table_cell);
-            cell.setPayloadRaw(&.{3});
-            child = try cell.append(.text_plain);
-            child.setPayloadRaw("C02");
+            try child.setPayload([]const u8, "C01");
             try child.seal();
             try cell.seal();
 
@@ -637,23 +618,47 @@ test "Document: Table" {
             row = try table.append(.block_table_row);
 
             cell = try row.append(.block_table_cell);
-            cell.setPayloadRaw(&.{3});
+            try cell.setPayload(u8, 3);
             child = try cell.append(.text_plain);
-            child.setPayloadRaw("A03");
+            try child.setPayload([]const u8, "A02");
             try child.seal();
             try cell.seal();
 
             cell = try row.append(.block_table_cell);
-            cell.setPayloadRaw(&.{3});
+            try cell.setPayload(u8, 11);
             child = try cell.append(.text_plain);
-            child.setPayloadRaw("B03");
+            try child.setPayload([]const u8, "B02 Bar Baz");
             try child.seal();
             try cell.seal();
 
             cell = try row.append(.block_table_cell);
-            cell.setPayloadRaw(&.{7});
+            try cell.setPayload(u8, 3);
             child = try cell.append(.text_plain);
-            child.setPayloadRaw("C03 Qux");
+            try child.setPayload([]const u8, "C02");
+            try child.seal();
+            try cell.seal();
+
+            try row.seal();
+            row = try table.append(.block_table_row);
+
+            cell = try row.append(.block_table_cell);
+            try cell.setPayload(u8, 3);
+            child = try cell.append(.text_plain);
+            try child.setPayload([]const u8, "A03");
+            try child.seal();
+            try cell.seal();
+
+            cell = try row.append(.block_table_cell);
+            try cell.setPayload(u8, 3);
+            child = try cell.append(.text_plain);
+            try child.setPayload([]const u8, "B03");
+            try child.seal();
+            try cell.seal();
+
+            cell = try row.append(.block_table_cell);
+            try cell.setPayload(u8, 7);
+            child = try cell.append(.text_plain);
+            try child.setPayload([]const u8, "C03 Qux");
             try child.seal();
             try cell.seal();
 
@@ -691,7 +696,7 @@ pub const DocumentAuthor = struct {
     pub fn raw(self: *DocumentAuthor, value: []const u8) !void {
         var node = try self.tree.append(.block_raw);
         errdefer node.deinit();
-        node.setPayloadRaw(value);
+        try node.setPayload([]const u8, value);
         try node.seal();
     }
 
@@ -705,7 +710,7 @@ pub const DocumentAuthor = struct {
     pub fn comment(self: *DocumentAuthor, text: []const u8) !void {
         var node = try self.tree.append(.block_comment);
         errdefer node.deinit();
-        node.setPayloadRaw(text);
+        try node.setPayload([]const u8, text);
         try node.seal();
     }
 
@@ -720,7 +725,10 @@ pub const DocumentAuthor = struct {
         if (level == 0 or level > 6) return error.InvalidHeadingLevel;
         var node = try self.tree.append(.block_heading);
         errdefer node.deinit();
-        _ = try node.setPayloadFmt("{c}{s}", .{ level, text });
+        try node.setPayload(MarkHeading, .{
+            .level = level,
+            .text = text,
+        });
         try node.seal();
     }
 
@@ -728,7 +736,14 @@ pub const DocumentAuthor = struct {
         if (level == 0 or level > 6) return error.InvalidHeadingLevel;
         var node = try self.tree.append(.block_heading);
         errdefer node.deinit();
-        _ = try node.setPayloadFmt("{c}" ++ format, .{level} ++ args);
+
+        var buffer: [256]u8 = undefined;
+        const text = try std.fmt.bufPrint(&buffer, format, args);
+
+        try node.setPayload(MarkHeading, .{
+            .level = level,
+            .text = text,
+        });
         try node.seal();
     }
 
@@ -790,7 +805,7 @@ pub const DocumentAuthor = struct {
 
         var node = try self.tree.append(.block_code);
         errdefer node.deinit();
-        node.setPayloadRaw(&mem.toBytes(@intFromPtr(data)));
+        try node.setPayload(usize, @intFromPtr(data));
         try node.seal();
     }
 };
@@ -864,7 +879,7 @@ pub const ContainerAuthor = struct {
 
         var node = try self.parent.append(.block_code);
         errdefer node.deinit();
-        node.setPayloadRaw(&mem.toBytes(@intFromPtr(data)));
+        try node.setPayload(usize, @intFromPtr(data));
         try node.seal();
     }
 };
@@ -895,7 +910,7 @@ pub const StyledAuthor = struct {
         errdefer parent.deinit();
         var child = try parent.append(.text_plain);
         errdefer child.deinit();
-        child.setPayloadRaw(text);
+        try child.setPayload([]const u8, text);
         try child.seal();
         try parent.seal();
     }
@@ -922,7 +937,7 @@ pub const StyledAuthor = struct {
     pub fn plain(self: *StyledAuthor, text: []const u8) !void {
         var node = try self.parent.append(.text_plain);
         errdefer node.deinit();
-        node.setPayloadRaw(text);
+        try node.setPayload([]const u8, text);
         try node.seal();
 
         if (self.callback) |*cb| cb.increment(text.len);
@@ -940,7 +955,7 @@ pub const StyledAuthor = struct {
     pub fn italic(self: *StyledAuthor, text: []const u8) !void {
         var node = try self.parent.append(.text_italic);
         errdefer node.deinit();
-        node.setPayloadRaw(text);
+        try node.setPayload([]const u8, text);
         try node.seal();
 
         if (self.callback) |*cb| cb.increment(2 + text.len);
@@ -958,7 +973,7 @@ pub const StyledAuthor = struct {
     pub fn bold(self: *StyledAuthor, text: []const u8) !void {
         var node = try self.parent.append(.text_bold);
         errdefer node.deinit();
-        node.setPayloadRaw(text);
+        try node.setPayload([]const u8, text);
         try node.seal();
 
         if (self.callback) |*cb| cb.increment(4 + text.len);
@@ -976,7 +991,7 @@ pub const StyledAuthor = struct {
     pub fn boldItalic(self: *StyledAuthor, text: []const u8) !void {
         var node = try self.parent.append(.text_bold_italic);
         errdefer node.deinit();
-        node.setPayloadRaw(text);
+        try node.setPayload([]const u8, text);
         try node.seal();
 
         if (self.callback) |*cb| cb.increment(6 + text.len);
@@ -994,7 +1009,7 @@ pub const StyledAuthor = struct {
     pub fn code(self: *StyledAuthor, text: []const u8) !void {
         var node = try self.parent.append(.text_code);
         errdefer node.deinit();
-        node.setPayloadRaw(text);
+        try node.setPayload([]const u8, text);
         try node.seal();
 
         if (self.callback) |*cb| cb.increment(2 + text.len);
@@ -1011,7 +1026,7 @@ pub const StyledAuthor = struct {
 
     pub fn link(self: *StyledAuthor, href: []const u8, text: []const u8) !void {
         var node = try self.parent.append(.text_link);
-        node.setPayloadRaw(href);
+        try node.setPayload([]const u8, href);
         try StyledAuthor.createPlain(&node, text);
 
         if (self.callback) |*cb| cb.increment(4 + href.len + text.len);
@@ -1019,7 +1034,7 @@ pub const StyledAuthor = struct {
 
     pub fn linkFmt(self: *StyledAuthor, href: []const u8, comptime format: []const u8, args: anytype) !void {
         var node = try self.parent.append(.text_link);
-        node.setPayloadRaw(href);
+        try node.setPayload([]const u8, href);
         const len = try StyledAuthor.createPlainFmt(&node, format, args);
 
         if (self.callback) |*cb| cb.increment(4 + href.len + len);
@@ -1027,7 +1042,7 @@ pub const StyledAuthor = struct {
 
     pub fn linkStyled(self: *StyledAuthor, href: []const u8) !StyledAuthor {
         var node = try self.parent.append(.text_link);
-        node.setPayloadRaw(href);
+        try node.setPayload([]const u8, href);
 
         if (self.callback) |*cb| {
             cb.increment(4 + href.len);
@@ -1060,7 +1075,7 @@ pub const ListAuthor = struct {
 
     pub fn seal(self: *ListAuthor) !void {
         if (self.parent.children.items.len == 0) return error.EmptyList;
-        self.parent.setPayloadRaw(&.{@intFromEnum(self.kind)});
+        try self.parent.setPayload(ListKind, self.kind);
         try self.parent.seal();
     }
 
@@ -1107,10 +1122,10 @@ pub const TableAuthor = struct {
 
         for (self.columns.items, 0..) |col, i| {
             const child = self.parent.children.items[i];
-            self.parent.tree.overrideRawPayload(child, &mem.toBytes(col));
+            self.parent.tree.TEMP_overridePayload(child, mem.asBytes(&col));
         }
 
-        self.parent.setPayloadRaw(&.{@truncate(col_len)});
+        try self.parent.setPayload(u8, @truncate(col_len));
         try self.parent.seal();
 
         self.columns.deinit(self.parent.allocator);
@@ -1128,7 +1143,7 @@ pub const TableAuthor = struct {
         errdefer _ = self.columns.pop();
 
         var child = try self.parent.append(.block_table_column);
-        child.setPayloadRaw(&mem.toBytes(MarkColumn{}));
+        try child.setPayload(MarkColumn, .{});
         try StyledAuthor.createPlain(&child, value);
     }
 
@@ -1141,7 +1156,7 @@ pub const TableAuthor = struct {
         if (self.columns_sealed) return error.TableColumnAfterRows;
 
         var child = try self.parent.append(.block_table_column);
-        child.setPayloadRaw(&mem.toBytes(MarkColumn{}));
+        try child.setPayload(MarkColumn, .{});
         errdefer child.deinit();
 
         const len = try StyledAuthor.createPlainFmt(&child, format, args);
@@ -1173,7 +1188,7 @@ pub const TableAuthor = struct {
 
     fn setStyledColumnWidth(ctx: *anyopaque, node: *MarkTreeAuthor.Node, index: usize, width: usize) !void {
         if (width > 255) return error.CellValueTooLong;
-        node.setPayloadRaw(&mem.toBytes(MarkColumn{}));
+        try node.setPayload(MarkColumn, .{});
         const self: *std.ArrayListUnmanaged(MarkColumn) = @ptrCast(@alignCast(ctx));
         const col = &self.items[index];
         col.self_width = @truncate(width);
@@ -1191,7 +1206,7 @@ pub const TableAuthor = struct {
 
             var child = try tbl_row.append(.block_table_cell);
             errdefer child.deinit();
-            child.setPayloadRaw(&.{@truncate(cell.len)});
+            try child.setPayload(u8, @truncate(cell.len));
             try StyledAuthor.createPlain(&child, cell);
             const col = &self.columns.items[i];
             if (cell.len > col.dynamic_width) col.dynamic_width = @truncate(cell.len);
@@ -1213,7 +1228,6 @@ pub const TableAuthor = struct {
     pub const Row = struct {
         parent: MarkTreeAuthor.Node,
         columns: *std.ArrayListUnmanaged(MarkColumn),
-        len_payload: [1]u8 = undefined,
 
         pub fn deinit(self: *Row) void {
             self.parent.deinit();
@@ -1229,7 +1243,7 @@ pub const TableAuthor = struct {
 
             const col = &self.columns.items[col_index];
             var child = try self.parent.append(.block_table_cell);
-            child.setPayloadRaw(&.{@truncate(value.len)});
+            try child.setPayload(u8, @truncate(value.len));
             try StyledAuthor.createPlain(&child, value);
             if (value.len > col.dynamic_width) col.dynamic_width = @truncate(value.len);
         }
@@ -1248,7 +1262,7 @@ pub const TableAuthor = struct {
             if (width > col.dynamic_width) col.dynamic_width = @truncate(width);
             try text.seal();
 
-            child.setPayloadRaw(&.{@truncate(width)});
+            try child.setPayload(u8, @truncate(width));
             try child.seal();
         }
 
@@ -1270,8 +1284,8 @@ pub const TableAuthor = struct {
         fn updateStyledCellWidth(ctx: *anyopaque, node: *MarkTreeAuthor.Node, index: usize, width: usize) !void {
             if (width > 255) return error.CellValueTooLong;
             const self: *Row = @ptrCast(@alignCast(ctx));
-            self.len_payload[0] = @truncate(width);
-            node.setPayloadRaw(&self.len_payload);
+            try node.setPayload(u8, @truncate(width));
+
             const col = &self.columns.items[index];
             if (width > col.dynamic_width) col.dynamic_width = @truncate(width);
         }
