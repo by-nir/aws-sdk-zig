@@ -1,4 +1,7 @@
 const std = @import("std");
+const pipez = @import("pipez");
+const Task = pipez.Task;
+const Delegate = pipez.Delegate;
 const cdgn = @import("codegen");
 const md = cdgn.md;
 const zig = cdgn.zig;
@@ -8,9 +11,6 @@ const SmithyTask = smithy.SmithyTask;
 const SmithyOptions = smithy.SmithyOptions;
 const SmithyService = smithy.SmithyService;
 const SymbolsProvider = smithy.SymbolsProvider;
-const pipez = smithy.pipez;
-const Task = pipez.Task;
-const Delegate = pipez.Delegate;
 const name_util = smithy.name_util;
 const files_tasks = smithy.files_tasks;
 const codegen_tasks = smithy.codegen_tasks;

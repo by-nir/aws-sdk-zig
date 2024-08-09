@@ -1,12 +1,9 @@
 .{
-    .name = "smithy",
+    .name = "pipez",
     .version = "0.0.0",
     .minimum_zig_version = "0.14.0",
 
-    .dependencies = .{
-        .pipez = .{ .path = "../pipez" },
-        .codegen = .{ .path = "../codegen" },
-    },
+    .dependencies = .{},
 
     .paths = .{
         "build.zig",

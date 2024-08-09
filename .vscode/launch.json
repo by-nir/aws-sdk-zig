@@ -2,6 +2,15 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "Pipez",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/pipez/zig-out/bin/test",
+      "args": [],
+      "cwd": "${workspaceFolder}/pipez",
+      "preLaunchTask": "pipez:build-tests"
+    },
+    {
       "name": "Codegen",
       "type": "lldb",
       "request": "launch",

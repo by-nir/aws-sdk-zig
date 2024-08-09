@@ -1,7 +1,5 @@
 pub const config = @import("config.zig");
 
-pub const pipez = @import("pipeline/root.zig");
-
 pub const files_tasks = @import("tasks/files.zig");
 pub const codegen_tasks = @import("tasks/codegen.zig");
 
@@ -74,6 +72,5 @@ test {
     _ = smithy_parse;
     _ = smithy;
 
-    _ = pipez;
     _ = prelude;
 }

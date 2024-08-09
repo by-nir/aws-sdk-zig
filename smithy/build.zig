@@ -9,6 +9,11 @@ pub fn build(b: *std.Build) void {
     // Dependencies
     //
 
+    const pipez = b.dependency("pipez", .{
+        .target = target,
+        .optimize = optimize,
+    }).module("pipez");
+
     const codegen = b.dependency("codegen", .{
         .target = target,
         .optimize = optimize,
@@ -29,6 +34,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .root_source_file = b.path("src/root.zig"),
         .imports = &.{
+            .{ .name = "pipez", .module = pipez },
             .{ .name = "codegen", .module = codegen },
         },
     });
@@ -58,6 +64,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .root_source_file = b.path("src/root.zig"),
     });
+    test_codegen_exe.root_module.addImport("pipez", pipez);
     test_codegen_exe.root_module.addImport("codegen", codegen);
     test_codegen_step.dependOn(&b.addRunArtifact(test_codegen_exe).step);
     test_all_step.dependOn(test_codegen_step);
