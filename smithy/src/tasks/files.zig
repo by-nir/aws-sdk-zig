@@ -7,9 +7,9 @@ const Task = pipez.Task;
 const Delegate = pipez.Delegate;
 const AbstractTask = pipez.AbstractTask;
 const AbstractEval = pipez.AbstractEval;
-const md = @import("../codegen/md.zig");
-const zig = @import("../codegen/zig/scope.zig");
-const Writer = @import("../codegen/CodegenWriter.zig");
+const codegen = @import("codegen");
+const md = codegen.md;
+const Writer = codegen.CodegenWriter;
 
 const FilesScope = enum {
     work_dir,

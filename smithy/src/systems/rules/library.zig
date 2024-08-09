@@ -5,16 +5,15 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = std.testing.allocator;
+const cdgn = @import("codegen");
+const Expr = cdgn.zig.Expr;
+const ExprBuild = cdgn.zig.ExprBuild;
+const config = @import("../../config.zig");
 const rls = @import("model.zig");
 const Generator = @import("Generator.zig");
 const symbols = @import("../symbols.zig");
 const idHash = symbols.idHash;
-const zig = @import("../../codegen/zig.zig");
-const Expr = zig.Expr;
-const ExprBuild = zig.ExprBuild;
-const ContainerBuild = zig.ContainerBuild;
 const name_util = @import("../../utils/names.zig");
-const config = @import("../../config.zig");
 
 pub fn Registry(comptime T: type) type {
     return []const struct { T.Id, T };

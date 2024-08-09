@@ -1,10 +1,11 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const zig = @import("codegen").zig;
 const smithy = @import("smithy");
 const pipez = smithy.pipez;
 const Delegate = pipez.Delegate;
 const codegen_tasks = smithy.codegen_tasks;
-const zig = smithy.codegen_zig;
+
 const name_util = smithy.name_util;
 
 pub const RegionDef = struct {

@@ -156,7 +156,7 @@ pub fn SourceTreeAuthor(comptime Tag: type) type {
         nodes_payload: std.ArrayListUnmanaged(SourceHandle),
         nodes_children: std.ArrayListUnmanaged(SourceHandle),
         root_children: std.ArrayListUnmanaged(Indexer) = .{},
-        payload: PayloadStoreUnmanaged = .{},
+        payload: AuthorPayload = .{},
         children: std.ArrayListUnmanaged(Indexer) = .{},
 
         pub fn init(allocator: Allocator) !Self {
@@ -180,6 +180,7 @@ pub fn SourceTreeAuthor(comptime Tag: type) type {
             };
         }
 
+        /// Do not call if already consumed.
         pub fn deinit(self: *Self) void {
             self.payload.deinit(self.allocator);
             self.children.deinit(self.allocator);
@@ -392,32 +393,32 @@ fn expectTree(tree: SourceTree(u64)) !void {
     try testing.expectEqual(null, iter.next());
 }
 
-const PayloadStoreUnmanaged = struct {
+const AuthorPayload = struct {
     serial: serial.SerialWriter = .{},
     cache: std.StringHashMapUnmanaged(SourceHandle) = .{},
 
-    pub fn deinit(self: *PayloadStoreUnmanaged, allocator: Allocator) void {
+    pub fn deinit(self: *AuthorPayload, allocator: Allocator) void {
         self.serial.deinit(allocator);
         self.cache.deinit(allocator);
     }
 
-    pub fn consume(self: *PayloadStoreUnmanaged, allocator: Allocator) ![]const u8 {
+    pub fn consume(self: *AuthorPayload, allocator: Allocator) ![]const u8 {
         const buffer = try self.serial.consumeSlice(allocator);
         self.cache.deinit(allocator);
         return buffer;
     }
 
-    pub fn putValue(self: *PayloadStoreUnmanaged, allocator: Allocator, comptime T: type, value: T) !SourceHandle {
+    pub fn putValue(self: *AuthorPayload, allocator: Allocator, comptime T: type, value: T) !SourceHandle {
         const handle = try self.serial.append(allocator, T, value);
         return fromSerialHandle(handle);
     }
 
-    pub fn putFmt(self: *PayloadStoreUnmanaged, allocator: Allocator, comptime format: []const u8, args: anytype) !SourceHandle {
+    pub fn putFmt(self: *AuthorPayload, allocator: Allocator, comptime format: []const u8, args: anytype) !SourceHandle {
         const handle = try self.serial.appendFmt(allocator, format, args);
         return fromSerialHandle(handle);
     }
 
-    pub fn cacheRaw(self: *PayloadStoreUnmanaged, allocator: Allocator, bytes: []const u8) !SourceHandle {
+    pub fn cacheRaw(self: *AuthorPayload, allocator: Allocator, bytes: []const u8) !SourceHandle {
         const result = try self.cache.getOrPut(allocator, bytes);
         errdefer _ = self.cache.remove(bytes);
 
@@ -431,7 +432,7 @@ const PayloadStoreUnmanaged = struct {
         }
     }
 
-    pub fn TEMP_override(self: *PayloadStoreUnmanaged, handle: SourceHandle, bytes: []const u8) void {
+    pub fn TEMP_override(self: *AuthorPayload, handle: SourceHandle, bytes: []const u8) void {
         self.serial.TEMP_override(toSerialHandle(handle), bytes);
     }
 
@@ -450,19 +451,19 @@ const PayloadStoreUnmanaged = struct {
     }
 };
 
-test "PayloadStoreUnmanaged" {
+test "AuthorPayload" {
     const buffer = blk: {
-        var store = PayloadStoreUnmanaged{};
-        errdefer store.deinit(test_alloc);
+        var author = AuthorPayload{};
+        errdefer author.deinit(test_alloc);
 
-        var handle = try store.putValue(test_alloc, []const u8, "qux");
+        var handle = try author.putValue(test_alloc, []const u8, "qux");
         try testing.expectEqualDeep(SourceHandle{
             .offset = 0,
             .length = 5,
         }, handle);
-        store.TEMP_override(handle, &[_]u8{ 1, 3 } ++ "foo");
+        author.TEMP_override(handle, &[_]u8{ 1, 3 } ++ "foo");
 
-        handle = try store.putFmt(test_alloc, " bar {s}", .{"baz"});
+        handle = try author.putFmt(test_alloc, " bar {s}", .{"baz"});
         try testing.expectEqualDeep(SourceHandle{
             .offset = 5,
             .length = 11,
@@ -471,19 +472,19 @@ test "PayloadStoreUnmanaged" {
         try testing.expectEqualDeep(SourceHandle{
             .offset = 16,
             .length = 5,
-        }, try store.cacheRaw(test_alloc, "foo"));
+        }, try author.cacheRaw(test_alloc, "foo"));
 
         try testing.expectEqualDeep(SourceHandle{
             .offset = 21,
             .length = 5,
-        }, try store.cacheRaw(test_alloc, "bar"));
+        }, try author.cacheRaw(test_alloc, "bar"));
 
         try testing.expectEqualDeep(SourceHandle{
             .offset = 16,
             .length = 5,
-        }, try store.cacheRaw(test_alloc, "foo"));
+        }, try author.cacheRaw(test_alloc, "foo"));
 
-        break :blk try store.consume(test_alloc);
+        break :blk try author.consume(test_alloc);
     };
 
     defer test_alloc.free(buffer);

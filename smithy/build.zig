@@ -6,6 +6,15 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     //
+    // Dependencies
+    //
+
+    const codegen = b.dependency("codegen", .{
+        .target = target,
+        .optimize = optimize,
+    }).module("codegen");
+
+    //
     // Modules
     //
 
@@ -19,6 +28,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .root_source_file = b.path("src/root.zig"),
+        .imports = &.{
+            .{ .name = "codegen", .module = codegen },
+        },
     });
 
     //
@@ -46,6 +58,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .root_source_file = b.path("src/root.zig"),
     });
+    test_codegen_exe.root_module.addImport("codegen", codegen);
     test_codegen_step.dependOn(&b.addRunArtifact(test_codegen_exe).step);
     test_all_step.dependOn(test_codegen_step);
     test_all_step.dependOn(&b.addInstallArtifact(test_codegen_exe, .{

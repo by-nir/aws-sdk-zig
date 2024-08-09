@@ -2,6 +2,15 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "Codegen",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/codegen/zig-out/bin/test",
+      "args": [],
+      "cwd": "${workspaceFolder}/codegen",
+      "preLaunchTask": "codegen:build-tests"
+    },
+    {
       "name": "Smithy: Codegen",
       "type": "lldb",
       "request": "launch",

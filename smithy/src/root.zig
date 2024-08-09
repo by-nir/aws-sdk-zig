@@ -2,9 +2,6 @@ pub const config = @import("config.zig");
 
 pub const pipez = @import("pipeline/root.zig");
 
-pub const codegen_md = @import("codegen/md.zig");
-pub const codegen_zig = @import("codegen/zig.zig");
-
 pub const files_tasks = @import("tasks/files.zig");
 pub const codegen_tasks = @import("tasks/codegen.zig");
 
@@ -60,7 +57,6 @@ pub const name_util = @import("utils/names.zig");
 
 test {
     // Utils
-    _ = @import("utils/declarative.zig");
     _ = name_util;
     _ = IssuesBag;
     _ = JsonReader;
@@ -69,13 +65,6 @@ test {
     _ = syb;
     _ = trt;
     _ = rls;
-
-    // Codegen
-    _ = @import("codegen/serialize.zig");
-    _ = @import("codegen/source_tree.zig");
-    _ = @import("codegen/CodegenWriter.zig");
-    _ = codegen_md;
-    _ = codegen_zig;
 
     // Tasks
     _ = files_tasks;

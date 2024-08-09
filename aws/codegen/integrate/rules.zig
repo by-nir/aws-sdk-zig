@@ -1,3 +1,6 @@
+const cdgn = @import("codegen");
+const Expr = cdgn.zig.Expr;
+const ExprBuild = cdgn.zig.ExprBuild;
 const smithy = @import("smithy");
 const config = smithy.config;
 const Function = smithy.RulesFunc;
@@ -6,8 +9,6 @@ const FunctionsRegistry = smithy.RulesFuncsRegistry;
 const BuiltInsRegistry = smithy.RulesBuiltInsRegistry;
 const Generator = smithy.RulesGenerator;
 const ArgValue = smithy.RulesArgValue;
-const Expr = smithy.codegen_zig.Expr;
-const ExprBuild = smithy.codegen_zig.ExprBuild;
 
 pub const std_builtins: BuiltInsRegistry = &.{
     .{ BuiltIn.Id.of("AWS::Region"), BuiltIn{

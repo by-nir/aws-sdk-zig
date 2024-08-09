@@ -5,13 +5,13 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
+const zig = @import("codegen").zig;
 const smithy = @import("smithy");
 const pipez = smithy.pipez;
 const Delegate = pipez.Delegate;
 const files_tasks = smithy.files_tasks;
 const codegen_tasks = smithy.codegen_tasks;
 const JsonReader = smithy.JsonReader;
-const zig = smithy.codegen_zig;
 const PascalCase = smithy.name_util.PascalCase;
 const RegionDef = @import("config_region.zig").RegionDef;
 

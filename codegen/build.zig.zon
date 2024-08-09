@@ -1,11 +1,9 @@
 .{
-    .name = "smithy",
+    .name = "codegen",
     .version = "0.0.0",
     .minimum_zig_version = "0.14.0",
 
-    .dependencies = .{
-        .codegen = .{ .path = "../codegen" },
-    },
+    .dependencies = .{},
 
     .paths = .{
         "build.zig",

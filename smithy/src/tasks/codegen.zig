@@ -6,12 +6,13 @@ const Task = pipez.Task;
 const Delegate = pipez.Delegate;
 const AbstractTask = pipez.AbstractTask;
 const AbstractEval = pipez.AbstractEval;
-const md = @import("../codegen/md.zig");
-const zig = @import("../codegen/zig/scope.zig");
-const Writer = @import("../codegen/CodegenWriter.zig");
+const cdgn = @import("codegen");
+const md = cdgn.md;
+const zig = cdgn.zig;
+const Writer = cdgn.CodegenWriter;
 
-const MD_HEAD = @embedFile("../codegen/template/head.md.template");
-const ZIG_HEAD = @embedFile("../codegen/template/head.zig.template");
+const MD_HEAD = @embedFile("../template/head.md.template");
+const ZIG_HEAD = @embedFile("../template/head.zig.template");
 
 pub const MarkdownDoc = AbstractTask.Define("Markdown Codegen", markdownDocTask, .{
     .varyings = &.{*md.DocumentAuthor},

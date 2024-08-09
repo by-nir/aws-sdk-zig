@@ -5,7 +5,6 @@ const test_alloc = testing.allocator;
 const mdl = @import("model.zig");
 const lib = @import("library.zig");
 const Generator = @import("Generator.zig");
-const ContainerBuild = @import("../../codegen/zig.zig").ContainerBuild;
 
 const Self = @This();
 
