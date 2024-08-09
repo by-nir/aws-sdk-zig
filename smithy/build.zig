@@ -32,7 +32,7 @@ pub fn build(b: *std.Build) void {
     _ = b.addModule("codegen", .{
         .target = target,
         .optimize = optimize,
-        .root_source_file = b.path("src/root.zig"),
+        .root_source_file = b.path("codegen/root.zig"),
         .imports = &.{
             .{ .name = "pipez", .module = pipez },
             .{ .name = "codegen", .module = codegen },
@@ -62,7 +62,7 @@ pub fn build(b: *std.Build) void {
     const test_codegen_exe = b.addTest(.{
         .target = target,
         .optimize = optimize,
-        .root_source_file = b.path("src/root.zig"),
+        .root_source_file = b.path("codegen/root.zig"),
     });
     test_codegen_exe.root_module.addImport("pipez", pipez);
     test_codegen_exe.root_module.addImport("codegen", codegen);
