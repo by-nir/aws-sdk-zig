@@ -3,12 +3,16 @@ const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 
-pub const Options = struct {};
+pub const Options = struct {
+    reverse: bool = false,
+    mutable: bool = false,
+};
 
-pub fn Iterator(comptime T: type, comptime _: Options) type {
+pub fn Iterator(comptime T: type, comptime options: Options) type {
+    const Item = if (options.mutable) *T else T;
     return struct {
         cursor: usize = 0,
-        items: []const T,
+        items: if (options.mutable) []T else []const T,
 
         const Self = @This();
 
@@ -17,15 +21,15 @@ pub fn Iterator(comptime T: type, comptime _: Options) type {
             self.cursor += count;
         }
 
-        pub fn peek(self: Self) ?T {
+        pub fn peek(self: Self) ?Item {
             if (self.cursor == self.items.len) return null;
-            return self.items[self.cursor];
+            return self.getItem(self.cursor);
         }
 
-        pub fn next(self: *Self) ?T {
+        pub fn next(self: *Self) ?Item {
             if (self.cursor == self.items.len) return null;
             defer self.cursor += 1;
-            return self.items[self.cursor];
+            return self.getItem(self.cursor);
         }
 
         pub fn reset(self: *Self) void {
@@ -34,6 +38,11 @@ pub fn Iterator(comptime T: type, comptime _: Options) type {
 
         pub fn length(self: Self) usize {
             return self.items.len;
+        }
+
+        fn getItem(self: Self, cursor: usize) Item {
+            const index = if (options.reverse) self.items.len - 1 - cursor else cursor;
+            return if (options.mutable) &self.items[index] else self.items[index];
         }
     };
 }
@@ -49,9 +58,32 @@ pub fn expectIterator(iterator: anytype, comptime T: type, items: []const T) !vo
 }
 
 test "Iterator" {
-    var it = Iterator(u8, .{}){ .items = &.{} };
+    var it = Iterator(u8, .{}){
+        .items = &.{},
+    };
     try expectIterator(&it, u8, &.{});
 
-    it = Iterator(u8, .{}){ .items = &.{ 1, 2, 3 } };
+    it = Iterator(u8, .{}){
+        .items = &.{ 1, 2, 3 },
+    };
     try expectIterator(&it, u8, &.{ 1, 2, 3 });
+
+    var it_rev = Iterator(u8, .{
+        .reverse = true,
+    }){
+        .items = &.{ 1, 2, 3 },
+    };
+    try expectIterator(&it_rev, u8, &.{ 3, 2, 1 });
+
+    var items: [1]u8 = .{1};
+    var it_mut = Iterator(u8, .{
+        .mutable = true,
+    }){
+        .items = &items,
+    };
+
+    const item: *u8 = it_mut.next().?;
+    try testing.expectEqualDeep(1, item.*);
+    item.* = 2;
+    try testing.expectEqualDeep(2, items[0]);
 }
