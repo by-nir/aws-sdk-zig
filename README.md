@@ -68,7 +68,7 @@ However, we welcome contributions related to the **runtime and AWS-related behav
 | [aws/runtime](aws/runtime/)       | SDK runtime shared by all the services                          |
 | [aws/codegen](aws/codegen/)       | AWS-specific source generation pipeline                         |
 | [smithy/runtime](smithy/runtime/) | [Smithy 2.0](https://smithy.io/2.0) client runtime              |
-| [smithy/src](smithy/src/)         | [Smithy 2.0](https://smithy.io/2.0) source generation pipeline  |
+| [smithy/codegen](smithy/codegen/) | [Smithy 2.0](https://smithy.io/2.0) source generation pipeline  |
 
 ### CLI Commands
 

@@ -6,7 +6,9 @@ pub const source_tree = @import("source_tree.zig");
 pub const serialize = @import("serialize.zig");
 
 test {
+    _ = @import("utils/iterator.zig");
     _ = @import("utils/declarative.zig");
+    _ = @import("utils/tree.zig");
 
     _ = serialize;
     _ = source_tree;
