@@ -1,8 +1,9 @@
 const std = @import("std");
-const Allocator = std.mem.Allocator;
 const debug = std.debug;
+const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
+const slt = @import("slots.zig");
 const iter = @import("iterator.zig");
 
 fn NodeHandle(comptime T: type) type {
@@ -42,27 +43,26 @@ pub fn MutableTree(comptime Payload: type) type {
 
         allocator: Allocator,
         nodes: std.MultiArrayList(Node) = .{},
+        nodes_gaps: slt.DynamicSlots(Indexer) = .{},
         children: std.ArrayListUnmanaged(ChildrenList) = .{},
+        children_gaps: slt.DynamicSlots(Indexer) = .{},
         payload: if (with_payload) std.ArrayListUnmanaged(Payload) else void =
+            if (with_payload) .{} else {},
+        payload_gaps: if (with_payload) slt.DynamicSlots(Indexer) else void =
             if (with_payload) .{} else {},
 
         /// Do not call if already consumed.
         pub fn deinit(self: *Self) void {
-            if (self.children.items.len > 0) self.children.items[0].deinit(self.allocator);
-            const slice = self.nodes.slice();
-            const children = slice.items(.children);
-            for (slice.items(.tag), 0..) |tag, i| {
-                if (tag == 0) continue;
-
-                const list_handle = children[i];
-                if (list_handle != .none) {
-                    self.children.items[@intFromEnum(list_handle)].deinit(self.allocator);
-                }
-            }
+            for (self.children.items) |*list| list.deinit(self.allocator);
 
             self.nodes.deinit(self.allocator);
+            self.nodes_gaps.deinit(self.allocator);
             self.children.deinit(self.allocator);
-            if (with_payload) self.payload.deinit(self.allocator);
+            self.children_gaps.deinit(self.allocator);
+            if (with_payload) {
+                self.payload.deinit(self.allocator);
+                self.payload_gaps.deinit(self.allocator);
+            }
         }
 
         pub fn appendNode(self: *Self, parent: Handle, tag: u64) !Handle {
@@ -157,11 +157,16 @@ pub fn MutableTree(comptime Payload: type) type {
                 .root => {
                     if (self.children.items.len == 0) return;
                     self.removeNodes(&multi, @enumFromInt(0));
-                    self.children.items[0].clearAndFree(self.allocator);
                 },
                 else => {
-                    const list_handle = self.nodes.items(.children)[@intFromEnum(parent)];
-                    if (list_handle != .none) self.removeNodes(&multi, list_handle);
+                    const handles = multi.items(.children);
+                    switch (handles[@intFromEnum(parent)]) {
+                        .none => return,
+                        else => |handle| {
+                            self.removeNodes(&multi, handle);
+                            handles[@intFromEnum(parent)] = .none;
+                        },
+                    }
                 },
             }
         }
@@ -214,6 +219,12 @@ pub fn MutableTree(comptime Payload: type) type {
             return Iterator{ .items = nodes };
         }
 
+        fn removeNodes(self: *Self, multi: *NodesMuliSlice, list: Resource) void {
+            const children = self.children.items[@intFromEnum(list)].items;
+            for (children) |child| self.removeNode(multi, child);
+            self.releaseChildrenHandle(list);
+        }
+
         /// Does not remove the node from its parent’s children list.
         fn removeNode(self: *Self, multi: *NodesMuliSlice, node: Handle) void {
             const children = multi.items(.children)[@intFromEnum(node)];
@@ -224,23 +235,27 @@ pub fn MutableTree(comptime Payload: type) type {
             if (children != .none) self.removeNodes(multi, children);
         }
 
-        fn removeNodes(self: *Self, multi: *NodesMuliSlice, list: Resource) void {
-            const children = self.children.items[@intFromEnum(list)].items;
-            for (children) |child| self.removeNode(multi, child);
-            self.releaseChildrenHandle(list);
-        }
-
         fn claimNodeHandle(self: *Self, tag: u64, payload: Resource) !Handle {
-            const handle: Handle = @enumFromInt(self.nodes.len);
-            try self.nodes.append(self.allocator, if (with_payload) .{
+            const node: Node = if (with_payload) .{
                 .tag = tag,
                 .payload = payload,
-            } else .{ .tag = tag });
-            return handle;
+            } else .{
+                .tag = tag,
+            };
+
+            if (self.nodes_gaps.takeLast()) |slot| {
+                self.nodes.set(slot, node);
+                return @enumFromInt(slot);
+            } else {
+                const handle: Handle = @enumFromInt(self.nodes.len);
+                try self.nodes.append(self.allocator, node);
+                return handle;
+            }
         }
 
-        fn releaseNodeHandle(_: *Self, multi: *NodesMuliSlice, node: Handle) void {
+        fn releaseNodeHandle(self: *Self, multi: *NodesMuliSlice, node: Handle) void {
             multi.set(@intFromEnum(node), .{ .tag = 0 });
+            self.nodes_gaps.put(self.allocator, @intFromEnum(node)) catch {};
         }
 
         fn addChild(self: *Self, list: Resource, index: ?usize, child: Handle) !void {
@@ -268,13 +283,24 @@ pub fn MutableTree(comptime Payload: type) type {
         }
 
         fn claimChildrenHandle(self: *Self) !Resource {
-            const handle: Resource = @enumFromInt(self.children.items.len);
-            try self.children.append(self.allocator, .{});
-            return handle;
+            if (self.children_gaps.takeLast()) |slot| {
+                return @enumFromInt(slot);
+            } else {
+                const handle: Resource = @enumFromInt(self.children.items.len);
+                try self.children.append(self.allocator, .{});
+                return handle;
+            }
         }
 
         fn releaseChildrenHandle(self: *Self, handle: Resource) void {
-            self.children.items[@intFromEnum(handle)].clearAndFree(self.allocator);
+            const i: Indexer = @intFromEnum(handle);
+            if (i > 0 and self.children.items.len == i + 1) {
+                var list = self.children.pop();
+                list.deinit(self.allocator);
+            } else {
+                self.children.items[i].clearAndFree(self.allocator);
+                self.children_gaps.put(self.allocator, i) catch {};
+            }
         }
 
         pub fn getNodeTag(self: Self, node: Handle) u64 {
@@ -285,7 +311,7 @@ pub fn MutableTree(comptime Payload: type) type {
             return tag;
         }
 
-        pub fn hasNodePayload(self: *Self, node: Handle) bool {
+        pub fn nodeHasPayload(self: *Self, node: Handle) bool {
             comptime debug.assert(with_payload);
             debug.assert(node != .root);
 
@@ -370,17 +396,24 @@ pub fn MutableTree(comptime Payload: type) type {
         }
 
         fn claimPayloadHandle(self: *Self, payload: ?Payload) !Resource {
-            const handle: Resource = @enumFromInt(self.payload.items.len);
-            if (payload) |value| {
-                try self.payload.append(self.allocator, value);
+            if (self.payload_gaps.takeLast()) |slot| {
+                self.payload.items[slot] = payload orelse std.mem.zeroes(Payload);
+                return @enumFromInt(slot);
             } else {
-                const val = try self.payload.addOne(self.allocator);
-                val.* = std.mem.zeroes(Payload);
+                const handle: Resource = @enumFromInt(self.payload.items.len);
+                if (payload) |value| {
+                    try self.payload.append(self.allocator, value);
+                } else {
+                    const val = try self.payload.addOne(self.allocator);
+                    val.* = std.mem.zeroes(Payload);
+                }
+                return handle;
             }
-            return handle;
         }
 
-        fn releasePayloadHandle(_: *Self, _: Resource) void {}
+        fn releasePayloadHandle(self: *Self, handle: Resource) void {
+            self.payload_gaps.put(self.allocator, @intFromEnum(handle)) catch {};
+        }
     };
 }
 
@@ -464,12 +497,12 @@ test "MutableTree: payload" {
     defer tree.deinit();
 
     const node = try tree.appendNode(.root, 1);
-    try testing.expectEqual(false, tree.hasNodePayload(node));
+    try testing.expectEqual(false, tree.nodeHasPayload(node));
     try testing.expectEqual(null, tree.getNodePayloadOrNull(node));
     try testing.expectEqual(null, tree.refNodePayloadOrNull(node));
 
     try tree.setNodePayload(node, 1); // create
-    try testing.expectEqual(true, tree.hasNodePayload(node));
+    try testing.expectEqual(true, tree.nodeHasPayload(node));
     try testing.expectEqual(1, tree.getNodePayload(node));
     try testing.expectEqual(1, tree.getNodePayloadOrNull(node));
 
@@ -487,7 +520,7 @@ test "MutableTree: payload" {
     try testing.expectEqual(4, tree.getNodePayload(node));
 
     tree.unsetNodePayload(node);
-    try testing.expectEqual(false, tree.hasNodePayload(node));
+    try testing.expectEqual(false, tree.nodeHasPayload(node));
 
     ref = try tree.refOrCreateNodePayload(node); // create
     try testing.expectEqualDeep(0, ref.*);

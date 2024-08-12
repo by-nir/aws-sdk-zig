@@ -189,8 +189,8 @@ pub fn DynamicSlots(comptime Indexer: type) type {
             } else if (sid < val) {
                 return .{ .insert = @truncate(start_idx) };
             } else {
-            return .append;
-        }
+                return .append;
+            }
         }
 
         fn insert(self: *Self, allocator: Allocator, i: Indexer) !void {
