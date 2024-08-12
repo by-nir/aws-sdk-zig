@@ -3,12 +3,12 @@ const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 
-pub const Options = struct {
+pub const IteratorOptions = struct {
     reverse: bool = false,
     mutable: bool = false,
 };
 
-pub fn Iterator(comptime T: type, comptime options: Options) type {
+pub fn Iterator(comptime T: type, comptime options: IteratorOptions) type {
     const Item = if (options.mutable) *T else T;
     return struct {
         cursor: usize = 0,
