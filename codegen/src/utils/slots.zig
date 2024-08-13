@@ -6,20 +6,20 @@ const test_alloc = testing.allocator;
 pub fn FixedSlots(comptime size: comptime_int) type {
     const Mask = usize;
     const Shift: type = std.math.Log2Int(Mask);
-    const LEN = (size + @bitSizeOf(Mask) - 1) / @bitSizeOf(Mask);
-    if (LEN > 1024) @compileError("FixedSlots supports up to 1024 slots, use DynamicSlots instead.");
+    const len = (size + @bitSizeOf(Mask) - 1) / @bitSizeOf(Mask);
+    if (len > 1024) @compileError("FixedSlots supports up to 1024 slots, use DynamicSlots instead.");
 
     return struct {
         const Self = @This();
         pub const Indexer: type = std.math.IntFittingRange(0, size - 1);
 
-        segments: [LEN]Mask = (&[_]Mask{0} ** LEN).*,
+        segments: [len]Mask = (&[_]Mask{0} ** len).*,
 
         pub const empty = Self{};
-        pub const full = Self{ .segments = (&[_]Mask{1} ** LEN).* };
+        pub const full = Self{ .segments = (&[_]Mask{1} ** len).* };
 
         pub fn takeFirst(self: *Self) ?Indexer {
-            for (0..LEN) |i| {
+            for (0..len) |i| {
                 const mask = self.segments[@truncate(i)];
                 const bit = firstBit(Indexer, Mask, mask) orelse continue;
                 return self.take(@truncate(i), bit);
@@ -28,8 +28,8 @@ pub fn FixedSlots(comptime size: comptime_int) type {
         }
 
         pub fn takeLast(self: *Self) ?Indexer {
-            for (1..LEN + 1) |l| {
-                const i: Indexer = @truncate(LEN - l);
+            for (1..len + 1) |l| {
+                const i: Indexer = @truncate(len - l);
                 const bit = lastBit(Indexer, Mask, self.segments[i]) orelse continue;
                 return self.take(@truncate(i), bit);
             }
@@ -79,7 +79,7 @@ pub fn DynamicSlots(comptime Indexer: type) type {
     const Shift: type = std.math.Log2Int(Indexer);
 
     // The last index is reserved for the empty tag.
-    const MAX_INDEX = std.math.maxInt(Indexer) - @bitSizeOf(Indexer);
+    const max_index = std.math.maxInt(Indexer) - @bitSizeOf(Indexer);
 
     const Segment = struct {
         id: Indexer = 0,
@@ -131,7 +131,7 @@ pub fn DynamicSlots(comptime Indexer: type) type {
         }
 
         pub fn put(self: *Self, allocator: Allocator, index: Indexer) !void {
-            std.debug.assert(index <= MAX_INDEX);
+            std.debug.assert(index <= max_index);
             const sid = extractSegment(Indexer, Shift, index);
             const segment = try self.mutateSegment(allocator, sid);
             const mask = bitMask(Indexer, Indexer, Shift, index);

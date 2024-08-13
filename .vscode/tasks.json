@@ -42,8 +42,7 @@
         "reveal": "silent",
         "focus": false,
         "panel": "shared",
-        "showReuseMessage": false,
-        "close": true
+        "showReuseMessage": false
       },
       "problemMatcher": [],
       "group": {
@@ -90,11 +89,10 @@
       },
       "presentation": {
         "echo": true,
-        "reveal": "silent",
+        "reveal": "always",
         "focus": false,
         "panel": "shared",
-        "showReuseMessage": false,
-        "close": true
+        "showReuseMessage": false
       },
       "problemMatcher": [],
       "group": {
@@ -175,8 +173,7 @@
         "reveal": "silent",
         "focus": false,
         "panel": "shared",
-        "showReuseMessage": false,
-        "close": true
+        "showReuseMessage": false
       },
       "problemMatcher": [],
       "group": {
@@ -257,8 +254,7 @@
         "reveal": "silent",
         "focus": false,
         "panel": "shared",
-        "showReuseMessage": false,
-        "close": true
+        "showReuseMessage": false
       },
       "problemMatcher": [],
       "group": {
