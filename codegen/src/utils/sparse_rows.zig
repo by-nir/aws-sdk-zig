@@ -4,7 +4,7 @@ const Allocator = mem.Allocator;
 const assert = std.debug.assert;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const iter = @import("iterator.zig");
+const iter = @import("iterate.zig");
 const Reorder = @import("shared.zig").Reorder;
 const DynamicSlots = @import("slots.zig").DynamicSlots;
 const DefaultIndexer = @import("shared.zig").DefaultIndexer;
@@ -42,17 +42,16 @@ pub fn SparseRows(comptime T: type, comptime options: SparseRowsOptions(T)) type
         bytes: [*]align(@alignOf(T)) const u8,
         allocated: I,
         row_count: I,
+        records_offset: I,
 
         pub fn deinit(self: Self, allocator: Allocator) void {
-            const offset = mem.alignForward(usize, Record.byte_len * self.row_count, @alignOf(T));
-            const slice = (self.bytes - offset)[0..self.allocated];
+            const slice = (self.bytes - self.records_offset)[0..self.allocated];
             allocator.free(slice);
         }
 
         fn rowRecord(self: Self, row: I) Record {
             assert(row < self.row_count);
-            const byte_len = Record.byte_len * self.row_count;
-            const records = self.bytes - mem.alignForward(usize, byte_len, @alignOf(T));
+            const records = self.bytes - self.records_offset;
             const slice = records[row * Record.byte_len ..][0..Record.byte_len];
             return mem.bytesToValue(Record, slice);
         }
@@ -207,9 +206,10 @@ pub fn SparseRowsAuthor(comptime T: type, comptime options: SparseRowsOptions(T)
             self.items.deinit(self.allocator);
 
             return SparseRows(T, options){
-                .bytes = bytes[offset..].ptr,
-                .allocated = @intCast(size),
                 .row_count = row_count,
+                .records_offset = @intCast(offset),
+                .allocated = @intCast(size),
+                .bytes = bytes[offset..].ptr,
             };
         }
     };
@@ -280,6 +280,8 @@ pub fn MutableSparseRows(comptime T: type, comptime options: SparseRowsOptions(T
 
         pub fn claimRowWithSlice(self: *Self, allocator: Allocator, items: []const T) !I {
             if (self.gaps.takeLast()) |gap| {
+                errdefer self.gaps.put(allocator, gap) catch {};
+                try self.rows.items[gap].appendSlice(allocator, items);
                 return @intCast(gap);
             } else {
                 assert(self.rows.items.len < std.math.maxInt(I));
