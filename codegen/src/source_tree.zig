@@ -120,7 +120,7 @@ pub fn SourceTree(comptime Tag: type) type {
     };
 }
 
-test "SouceTree" {
+test "SourceTree" {
     const payload = &[_]u8{2} ++ std.mem.asBytes(&@as(u16, 6)) ++ "foo108" ++ &[_]u8{ 1, 3 } ++ "bar";
     const tree = SourceTree(u64){
         .raw_payload = payload,

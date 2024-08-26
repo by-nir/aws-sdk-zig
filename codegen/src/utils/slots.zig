@@ -1,13 +1,52 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 
+const MAX_FIXED = 256;
+
+pub fn AutoSlots(comptime Indexer: type) type {
+    const size = std.math.maxInt(Indexer);
+    const is_fixed = size <= MAX_FIXED;
+    const Impl = comptime if (is_fixed) FixedSlots(size) else DynamicSlots(Indexer);
+
+    return struct {
+        const Self = @This();
+
+        impl: Impl = .{},
+
+        pub fn deinit(self: *Self, allocator: Allocator) void {
+            if (!is_fixed) self.impl.deinit(allocator);
+        }
+
+        pub fn put(self: *Self, allocator: Allocator, index: Indexer) !void {
+            if (is_fixed) {
+                try self.impl.put(index);
+            } else {
+                try self.impl.put(allocator, index);
+            }
+        }
+
+        pub fn takeFirst(self: *Self) ?Indexer {
+            return self.impl.takeFirst();
+        }
+
+        pub fn takeLast(self: *Self) ?Indexer {
+            return self.impl.takeLast();
+        }
+    };
+}
+
+// TODO: union, intersect, xor, isSubset, isSuperset, isEql, isComplement, etc...
 pub fn FixedSlots(comptime size: comptime_int) type {
     const Mask = usize;
     const Shift: type = std.math.Log2Int(Mask);
     const len = (size + @bitSizeOf(Mask) - 1) / @bitSizeOf(Mask);
-    if (len > 1024) @compileError("FixedSlots supports up to 1024 slots, use DynamicSlots instead.");
+    if (len > MAX_FIXED) @compileError(std.fmt.comptimePrint(
+        "FixedSlots supports up to {d} slots, use DynamicSlots instead.",
+        .{MAX_FIXED},
+    ));
 
     return struct {
         const Self = @This();
@@ -42,10 +81,10 @@ pub fn FixedSlots(comptime size: comptime_int) type {
         }
 
         pub fn put(self: *Self, index: usize) !void {
-            std.debug.assert(index < size);
+            assert(index < size);
             const i = extractSegment(Indexer, Shift, @truncate(index));
             const mask = bitMask(Indexer, Mask, Shift, @truncate(index));
-            std.debug.assert(self.segments[i] & mask == 0);
+            assert(self.segments[i] & mask == 0);
             self.segments[i] |= mask;
         }
     };
@@ -131,11 +170,11 @@ pub fn DynamicSlots(comptime Indexer: type) type {
         }
 
         pub fn put(self: *Self, allocator: Allocator, index: Indexer) !void {
-            std.debug.assert(index <= max_index);
+            assert(index <= max_index);
             const sid = extractSegment(Indexer, Shift, index);
             const segment = try self.mutateSegment(allocator, sid);
             const mask = bitMask(Indexer, Indexer, Shift, index);
-            std.debug.assert(segment.* & mask == 0);
+            assert(segment.* & mask == 0);
             segment.* |= mask;
         }
 

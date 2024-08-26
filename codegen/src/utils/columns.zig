@@ -4,14 +4,14 @@ const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const DynamicSlots = @import("slots.zig").DynamicSlots;
-const DefaultIndexer = @import("shared.zig").DefaultIndexer;
+const AutoSlots = @import("slots.zig").AutoSlots;
+const DefaultIndexer = @import("common.zig").DefaultIndexer;
 
-pub const SparseColumnsOptions = struct {
+pub const ColumnsOptions = struct {
     Indexer: type = DefaultIndexer,
 };
 
-pub fn SparseColumnsQuery(comptime I: type, comptime T: type) type {
+pub fn ColumnsQuery(comptime Indexer: type, comptime T: type) type {
     const Column: type = meta.FieldEnum(T);
     const MultiSlice = std.MultiArrayList(T).Slice;
 
@@ -20,11 +20,11 @@ pub fn SparseColumnsQuery(comptime I: type, comptime T: type) type {
 
         multi: MultiSlice,
 
-        pub inline fn peekItem(self: Self, i: I) T {
+        pub inline fn peekItem(self: Self, i: Indexer) T {
             return self.multi.get(i);
         }
 
-        pub inline fn peekField(self: Self, i: I, comptime column: Column) meta.FieldType(T, column) {
+        pub inline fn peekField(self: Self, i: Indexer, comptime column: Column) meta.FieldType(T, column) {
             return self.multi.items(column)[i];
         }
 
@@ -34,11 +34,11 @@ pub fn SparseColumnsQuery(comptime I: type, comptime T: type) type {
     };
 }
 
-pub fn SparseColumns(comptime T: type, comptime options: SparseColumnsOptions) type {
+pub fn ReadOnlyColumns(comptime T: type, comptime options: ColumnsOptions) type {
     return struct {
         const Self = @This();
-        const I = options.Indexer;
-        pub const Query = SparseColumnsQuery(I, T);
+        const Idx = options.Indexer;
+        pub const Query = ColumnsQuery(Idx, T);
 
         columns: std.MultiArrayList(T).Slice,
 
@@ -53,7 +53,7 @@ pub fn SparseColumns(comptime T: type, comptime options: SparseColumnsOptions) t
     };
 }
 
-test "SparseColumns" {
+test "ReadOnlyolumns" {
     var cols = blk: {
         var multilist = std.MultiArrayList(Vec3){};
         errdefer multilist.deinit(test_alloc);
@@ -61,7 +61,7 @@ test "SparseColumns" {
         try multilist.append(test_alloc, .{ .x = 1, .y = 2, .z = 3 });
         try multilist.append(test_alloc, .{ .x = 7, .y = 8, .z = 9 });
 
-        break :blk SparseColumns(Vec3, .{}){ .columns = multilist.toOwnedSlice() };
+        break :blk ReadOnlyColumns(Vec3, .{}){ .columns = multilist.toOwnedSlice() };
     };
     defer cols.deinit(test_alloc);
 
@@ -71,15 +71,15 @@ test "SparseColumns" {
 }
 
 /// Columnar storage
-pub fn MutableSparseColumns(comptime T: type, comptime options: SparseColumnsOptions) type {
+pub fn MutableColumns(comptime T: type, comptime options: ColumnsOptions) type {
     return struct {
         const Self = @This();
-        const I = options.Indexer;
+        const Idx = options.Indexer;
         const Column: type = meta.FieldEnum(T);
-        pub const Query = SparseColumnsQuery(I, T);
+        pub const Query = ColumnsQuery(Idx, T);
 
         columns: std.MultiArrayList(T) = .{},
-        gaps: DynamicSlots(I) = .{},
+        gaps: AutoSlots(Idx) = .{},
 
         /// Do not call if already consumed.
         pub fn deinit(self: *Self, allocator: Allocator) void {
@@ -88,24 +88,24 @@ pub fn MutableSparseColumns(comptime T: type, comptime options: SparseColumnsOpt
         }
 
         /// No need to call deinit after consuming.
-        pub fn consume(self: *Self) SparseColumns(T, options) {
+        pub fn consume(self: *Self) ReadOnlyColumns(T, options) {
             return .{ .columns = self.columns.toOwnedSlice() };
         }
 
-        pub fn claimItem(self: *Self, allocator: Allocator, item: ?T) !I {
+        pub fn claimItem(self: *Self, allocator: Allocator, item: T) !Idx {
             if (self.gaps.takeLast()) |gap| {
                 errdefer self.gaps.put(allocator, gap) catch {};
-                self.columns.set(gap, item orelse std.mem.zeroes(T));
+                self.columns.set(gap, item);
                 return @intCast(gap);
             } else {
                 const i = self.columns.len;
-                assert(self.columns.len < std.math.maxInt(I));
-                try self.columns.append(allocator, item orelse std.mem.zeroes(T));
+                assert(self.columns.len < std.math.maxInt(Idx));
+                try self.columns.append(allocator, item);
                 return @intCast(i);
             }
         }
 
-        pub fn releaseItem(self: *Self, allocator: Allocator, item: I) void {
+        pub fn releaseItem(self: *Self, allocator: Allocator, item: Idx) void {
             if (self.columns.len == item + 1) {
                 _ = self.columns.pop();
             } else {
@@ -114,15 +114,15 @@ pub fn MutableSparseColumns(comptime T: type, comptime options: SparseColumnsOpt
             }
         }
 
-        pub fn setItem(self: *Self, i: I, item: T) void {
+        pub fn setItem(self: *Self, i: Idx, item: T) void {
             self.columns.set(i, item);
         }
 
-        pub fn setField(self: *Self, i: I, comptime column: Column, value: meta.FieldType(T, column)) void {
+        pub fn setField(self: *Self, i: Idx, comptime column: Column, value: meta.FieldType(T, column)) void {
             self.columns.items(column)[i] = value;
         }
 
-        pub fn mutateField(self: *Self, i: I, comptime column: Column) *meta.FieldType(T, column) {
+        pub fn refField(self: *Self, i: Idx, comptime column: Column) *meta.FieldType(T, column) {
             return &self.columns.items(column)[i];
         }
 
@@ -132,26 +132,26 @@ pub fn MutableSparseColumns(comptime T: type, comptime options: SparseColumnsOpt
     };
 }
 
-test "MutableSparseColumns" {
-    var cols = MutableSparseColumns(Vec3, .{}){};
+test "MutableColumns" {
+    var cols = MutableColumns(Vec3, .{}){};
     defer cols.deinit(test_alloc);
 
-    const t0 = try cols.claimItem(test_alloc, null);
+    const t0 = try cols.claimItem(test_alloc, Vec3.zero);
     try testing.expectEqual(0, cols.query().peekField(t0, .y));
-    try testing.expectEqualDeep(Vec3{ .x = 0, .y = 0, .z = 0 }, cols.query().peekItem(t0));
+    try testing.expectEqualDeep(Vec3.zero, cols.query().peekItem(t0));
 
     const t1 = try cols.claimItem(test_alloc, .{ .x = 1, .y = 2, .z = 3 });
     try testing.expectEqual(2, cols.query().peekField(t1, .y));
     try testing.expectEqualDeep(Vec3{ .x = 1, .y = 2, .z = 3 }, cols.query().peekItem(t1));
 
     cols.releaseItem(test_alloc, t1);
-    try testing.expectEqual(t1, try cols.claimItem(test_alloc, null));
+    try testing.expectEqual(t1, try cols.claimItem(test_alloc, Vec3.zero));
     try testing.expectEqual(0, cols.query().peekField(t1, .y));
 
     cols.setField(t1, .y, 8);
     try testing.expectEqual(8, cols.query().peekField(t1, .y));
 
-    const field = cols.mutateField(t1, .y);
+    const field = cols.refField(t1, .y);
     try testing.expectEqual(8, field.*);
     field.* = 9;
     try testing.expectEqual(9, cols.query().peekField(t1, .y));
@@ -162,9 +162,9 @@ test "MutableSparseColumns" {
     try testing.expectEqualSlices(i32, &.{ 0, 4 }, cols.query().peekColumn(.y));
 }
 
-test "MutableSparseColumns: consume" {
+test "MutableColumns: consume" {
     var cols = blk: {
-        var mut = MutableSparseColumns(Vec3, .{}){};
+        var mut = MutableColumns(Vec3, .{}){};
         errdefer mut.deinit(test_alloc);
 
         _ = try mut.claimItem(test_alloc, .{ .x = 1, .y = 2, .z = 3 });
@@ -179,4 +179,10 @@ test "MutableSparseColumns: consume" {
     try testing.expectEqualSlices(i32, &.{ 3, 9 }, cols.query().peekColumn(.z));
 }
 
-const Vec3 = struct { x: i32, y: i32, z: i32 };
+const Vec3 = struct {
+    x: i32,
+    y: i32,
+    z: i32,
+
+    pub const zero = Vec3{ .x = 0, .y = 0, .z = 0 };
+};

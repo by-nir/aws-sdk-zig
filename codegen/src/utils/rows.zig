@@ -5,62 +5,66 @@ const assert = std.debug.assert;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const iter = @import("iterate.zig");
-const Reorder = @import("shared.zig").Reorder;
-const DynamicSlots = @import("slots.zig").DynamicSlots;
-const DefaultIndexer = @import("shared.zig").DefaultIndexer;
+const Reorder = @import("common.zig").Reorder;
+const DefaultIndexer = @import("common.zig").DefaultIndexer;
+const AutoSlots = @import("slots.zig").AutoSlots;
 
-pub fn SparseRowsOptions(comptime T: type) type {
+pub fn RowsOptions(comptime T: type) type {
     return struct {
         Indexer: type = DefaultIndexer,
         equalFn: ?fn (a: T, b: T) bool = null,
     };
 }
 
-fn RowRecord(comptime I: type) type {
+fn RowRecord(comptime Idx: type) type {
     return packed struct {
         offset: u32,
-        len: I,
+        len: Idx,
 
         pub const byte_len = @divExact(@bitSizeOf(@This()), 8);
     };
 }
 
-pub fn SparseRows(comptime T: type, comptime options: SparseRowsOptions(T)) type {
-    const I = options.Indexer;
-    const Record = RowRecord(I);
+pub fn ReadOnlyRows(comptime T: type, comptime options: RowsOptions(T)) type {
+    const Idx = options.Indexer;
+    const Record = RowRecord(Idx);
     const utils = RowsUtils(T, options);
 
     return struct {
         const Self = @This();
-        pub const Query = SparseRowsQuery(I, T);
-        pub const Author = SparseRowsAuthor(T, options);
+        pub const Query = RowsQuery(Idx, T);
 
         /// A packed array of Records, followed by an array of T.
         ///
         /// The 0 address if the first T, to compute the allocated buffer offset
         /// the size of all records and add padding to align with the first T.
         bytes: [*]align(@alignOf(T)) const u8,
-        allocated: I,
-        row_count: I,
-        records_offset: I,
+        allocated: Idx,
+        row_count: Idx,
+        records_offset: Idx,
+
+        pub fn author(allocator: Allocator) Author {
+            return Author{ .allocator = allocator };
+        }
 
         pub fn deinit(self: Self, allocator: Allocator) void {
-            const slice = (self.bytes - self.records_offset)[0..self.allocated];
+            const records = self.bytes - self.records_offset;
+            const slice: []align(@alignOf(T)) const u8 = @alignCast(records[0..self.allocated]);
             allocator.free(slice);
         }
 
-        fn rowRecord(self: Self, row: I) Record {
+        fn rowRecord(self: Self, row: Idx) Record {
             assert(row < self.row_count);
             const records = self.bytes - self.records_offset;
             const slice = records[row * Record.byte_len ..][0..Record.byte_len];
             return mem.bytesToValue(Record, slice);
         }
 
-        fn rowSlice(self: Self, row: I) []const T {
+        fn rowSlice(self: Self, row: Idx) []const T {
             const record = self.rowRecord(row);
             const byte_len = record.len * @sizeOf(T);
             const bytes = self.bytes[record.offset..][0..byte_len];
-            return mem.bytesAsSlice(T, bytes);
+            return @alignCast(mem.bytesAsSlice(T, bytes));
         }
 
         // Query Row ///////////////////////////////////////////////////////////
@@ -91,135 +95,125 @@ pub fn SparseRows(comptime T: type, comptime options: SparseRowsOptions(T)) type
             return @ptrCast(@alignCast(ctx));
         }
 
-        fn count(ctx: *const anyopaque, row: I) I {
+        fn count(ctx: *const anyopaque, row: Idx) Idx {
             return cast(ctx).rowRecord(row).len;
         }
 
-        fn contains(ctx: *const anyopaque, row: I, item: T) bool {
+        fn contains(ctx: *const anyopaque, row: Idx, item: T) bool {
             const slice = cast(ctx).rowSlice(row);
             return utils.indexOf(slice, item) != null;
         }
 
-        fn containsSlice(ctx: *const anyopaque, row: I, items: []const T) bool {
+        fn containsSlice(ctx: *const anyopaque, row: Idx, items: []const T) bool {
             const slice = cast(ctx).rowSlice(row);
             return utils.indexOfSlice(slice, items) != null;
         }
 
-        fn orderOf(ctx: *const anyopaque, row: I, item: T) I {
+        fn orderOf(ctx: *const anyopaque, row: Idx, item: T) Idx {
             const slice = cast(ctx).rowSlice(row);
             return utils.indexOf(slice, item) orelse unreachable;
         }
 
-        fn orderOfSlice(ctx: *const anyopaque, row: I, items: []const T) I {
+        fn orderOfSlice(ctx: *const anyopaque, row: Idx, items: []const T) Idx {
             const slice = cast(ctx).rowSlice(row);
             return utils.indexOfSlice(slice, items) orelse unreachable;
         }
 
-        fn view(ctx: *const anyopaque, row: I) []const T {
+        fn view(ctx: *const anyopaque, row: Idx) []const T {
             return cast(ctx).rowSlice(row);
         }
 
-        fn peekAt(ctx: *const anyopaque, row: I, i: I) T {
+        fn peekAt(ctx: *const anyopaque, row: Idx, i: Idx) T {
             return cast(ctx).rowSlice(row)[i];
         }
 
-        fn peekSlice(ctx: *const anyopaque, row: I, i: I, n: I) []const T {
+        fn peekSlice(ctx: *const anyopaque, row: Idx, i: Idx, n: Idx) []const T {
             const slice = cast(ctx).rowSlice(row);
             assert(i <= slice.len and n <= slice.len - i);
             return slice[i..][0..n];
         }
 
-        fn peekLast(ctx: *const anyopaque, row: I) T {
+        fn peekLast(ctx: *const anyopaque, row: Idx) T {
             const slice = cast(ctx).rowSlice(row);
             assert(slice.len > 0);
             return slice[slice.len - 1];
         }
 
-        fn peekLastSlice(ctx: *const anyopaque, row: I, n: I) []const T {
+        fn peekLastSlice(ctx: *const anyopaque, row: Idx, n: Idx) []const T {
             const slice = cast(ctx).rowSlice(row);
             assert(slice.len >= n);
             return slice[slice.len - n ..][0..n];
         }
 
-        fn iterate(ctx: *const anyopaque, row: I) iter.Iterator(T, .{}) {
+        fn iterate(ctx: *const anyopaque, row: Idx) iter.Iterator(T, .{}) {
             const slice = cast(ctx).rowSlice(row);
             return .{ .items = slice };
         }
 
-        fn iterateReverse(ctx: *const anyopaque, row: I) iter.Iterator(T, .{ .reverse = true }) {
+        fn iterateReverse(ctx: *const anyopaque, row: Idx) iter.Iterator(T, .{ .reverse = true }) {
             const slice = cast(ctx).rowSlice(row);
             return .{ .items = slice };
         }
-    };
-}
 
-pub fn SparseRowsAuthor(comptime T: type, comptime options: SparseRowsOptions(T)) type {
-    const I = options.Indexer;
-    const Record = RowRecord(I);
+        pub const Author = struct {
+            allocator: Allocator,
+            records: std.ArrayListUnmanaged(u8) = .{},
+            items: std.ArrayListUnmanaged(T) = .{},
 
-    return struct {
-        const Self = @This();
+            pub fn deinit(self: *Author) void {
+                self.records.deinit(self.allocator);
+                self.items.deinit(self.allocator);
+            }
 
-        allocator: Allocator,
-        records: std.ArrayListUnmanaged(u8) = .{},
-        items: std.ArrayListUnmanaged(T) = .{},
+            pub fn count(self: Author) Idx {
+                const len = self.records.items.len / Record.byte_len;
+                return @intCast(len);
+            }
 
-        pub fn deinit(self: *Self) void {
-            self.records.deinit(self.allocator);
-            self.items.deinit(self.allocator);
-        }
+            pub fn appendRow(self: *Author, items: []const T) !Idx {
+                const index = self.count();
+                assert(index < std.math.maxInt(Idx));
+                assert(items.len <= std.math.maxInt(Idx));
 
-        pub fn count(self: Self) I {
-            const len = self.records.items.len / Record.byte_len;
-            return @intCast(len);
-        }
+                try self.records.appendSlice(self.allocator, mem.asBytes(&Record{
+                    .len = @intCast(items.len),
+                    .offset = @intCast(self.items.items.len * @sizeOf(T)),
+                })[0..Record.byte_len]);
+                errdefer self.records.shrinkRetainingCapacity(self.records.items.len - Record.byte_len);
 
-        pub fn appendRow(self: *Self, items: []const T) !I {
-            const index = self.count();
-            assert(index < std.math.maxInt(I));
-            assert(items.len <= std.math.maxInt(I));
+                try self.items.appendSlice(self.allocator, items);
+                return index;
+            }
 
-            try self.records.appendSlice(self.allocator, mem.asBytes(&Record{
-                .len = @intCast(items.len),
-                .offset = @intCast(self.items.items.len * @sizeOf(T)),
-            })[0..Record.byte_len]);
-            errdefer self.records.shrinkRetainingCapacity(self.records.items.len - Record.byte_len);
+            pub fn consume(self: *Author, allocator: Allocator) !ReadOnlyRows(T, options) {
+                const row_count = self.count();
+                const record_len = self.records.items.len;
 
-            try self.items.appendSlice(self.allocator, items);
+                const offset = mem.alignForward(usize, record_len, @alignOf(T));
+                const size = offset + self.items.items.len * @sizeOf(T);
+                assert(size <= std.math.maxInt(Idx));
 
-            return index;
-        }
+                const bytes = try allocator.allocWithOptions(u8, size, @alignOf(T), null);
+                @memcpy(bytes[0..record_len], self.records.items);
+                @memcpy(bytes[offset..size], mem.sliceAsBytes(self.items.items));
 
-        pub fn consume(self: *Self, allocator: Allocator) !SparseRows(T, options) {
-            const row_count = self.count();
-            const record_len = self.records.items.len;
+                self.records.deinit(self.allocator);
+                self.items.deinit(self.allocator);
 
-            const offset = mem.alignForward(usize, record_len, @alignOf(T));
-            const size = offset + self.items.items.len * @sizeOf(T);
-            assert(size <= std.math.maxInt(I));
-
-            const bytes = try allocator.allocWithOptions(u8, size, @alignOf(T), null);
-            @memcpy(bytes[0..record_len], self.records.items);
-            @memcpy(bytes[offset..size], mem.sliceAsBytes(self.items.items));
-
-            self.records.deinit(self.allocator);
-            self.items.deinit(self.allocator);
-
-            return SparseRows(T, options){
-                .row_count = row_count,
-                .records_offset = @intCast(offset),
-                .allocated = @intCast(size),
-                .bytes = bytes[offset..].ptr,
-            };
-        }
-    };
-}
-
-test "SparseRows" {
-    const rows = blk: {
-        var author = SparseRowsAuthor(u8, .{}){
-            .allocator = test_alloc,
+                return ReadOnlyRows(T, options){
+                    .row_count = row_count,
+                    .records_offset = @intCast(offset),
+                    .allocated = @intCast(size),
+                    .bytes = @alignCast(bytes[offset..].ptr),
+                };
+            }
         };
+    };
+}
+
+test "ReadOnlyRows" {
+    const rows = blk: {
+        var author = ReadOnlyRows(u8, .{}).author(test_alloc);
         errdefer author.deinit();
 
         try testing.expectEqual(0, try author.appendRow(&.{ 1, 2, 3 }));
@@ -248,17 +242,17 @@ test "SparseRows" {
     try testing.expectEqual(null, it.next());
 }
 
-pub fn MutableSparseRows(comptime T: type, comptime options: SparseRowsOptions(T)) type {
+pub fn MutableRows(comptime T: type, comptime options: RowsOptions(T)) type {
     const utils = RowsUtils(T, options);
-    const I = options.Indexer;
+    const Idx = options.Indexer;
     const Row = std.ArrayListUnmanaged(T);
 
     return struct {
         const Self = @This();
-        pub const Query = SparseRowsQuery(I, T);
+        pub const Query = RowsQuery(Idx, T);
 
         rows: std.ArrayListUnmanaged(Row) = .{},
-        gaps: DynamicSlots(I) = .{},
+        gaps: AutoSlots(Idx) = .{},
 
         pub fn deinit(self: *Self, allocator: Allocator) void {
             for (self.rows.items) |*row| row.deinit(allocator);
@@ -266,11 +260,11 @@ pub fn MutableSparseRows(comptime T: type, comptime options: SparseRowsOptions(T
             self.gaps.deinit(allocator);
         }
 
-        pub fn claimRow(self: *Self, allocator: Allocator) !I {
+        pub fn claimRow(self: *Self, allocator: Allocator) !Idx {
             if (self.gaps.takeLast()) |gap| {
                 return @intCast(gap);
             } else {
-                assert(self.rows.items.len < std.math.maxInt(I));
+                assert(self.rows.items.len < std.math.maxInt(Idx));
 
                 const i = self.rows.items.len;
                 try self.rows.append(allocator, Row{});
@@ -278,13 +272,13 @@ pub fn MutableSparseRows(comptime T: type, comptime options: SparseRowsOptions(T
             }
         }
 
-        pub fn claimRowWithSlice(self: *Self, allocator: Allocator, items: []const T) !I {
+        pub fn claimRowWithSlice(self: *Self, allocator: Allocator, items: []const T) !Idx {
             if (self.gaps.takeLast()) |gap| {
                 errdefer self.gaps.put(allocator, gap) catch {};
                 try self.rows.items[gap].appendSlice(allocator, items);
                 return @intCast(gap);
             } else {
-                assert(self.rows.items.len < std.math.maxInt(I));
+                assert(self.rows.items.len < std.math.maxInt(Idx));
 
                 var row = Row{};
                 try row.appendSlice(allocator, items);
@@ -296,7 +290,7 @@ pub fn MutableSparseRows(comptime T: type, comptime options: SparseRowsOptions(T
             }
         }
 
-        pub fn releaseRow(self: *Self, allocator: Allocator, row: I) void {
+        pub fn releaseRow(self: *Self, allocator: Allocator, row: Idx) void {
             if (self.rows.items.len == row + 1) {
                 var list = self.rows.pop();
                 list.deinit(allocator);
@@ -308,22 +302,22 @@ pub fn MutableSparseRows(comptime T: type, comptime options: SparseRowsOptions(T
 
         // Mutate Row //////////////////////////////////////////////////////////
 
-        pub fn append(self: *Self, allocator: Allocator, row: I, item: T) !void {
+        pub fn append(self: *Self, allocator: Allocator, row: Idx, item: T) !void {
             const list = &self.rows.items[row];
-            assert(list.items.len < std.math.maxInt(I));
+            assert(list.items.len < std.math.maxInt(Idx));
             try list.append(allocator, item);
         }
 
-        pub fn appendSlice(self: *Self, allocator: Allocator, row: I, items: []const T) !void {
+        pub fn appendSlice(self: *Self, allocator: Allocator, row: Idx, items: []const T) !void {
             const list = &self.rows.items[row];
-            assert(list.items.len < std.math.maxInt(I) - items.len);
+            assert(list.items.len < std.math.maxInt(Idx) - items.len);
             try list.appendSlice(allocator, items);
         }
 
-        pub fn insert(self: *Self, allocator: Allocator, layout: Reorder, row: I, i: I, item: T) !void {
+        pub fn insert(self: *Self, allocator: Allocator, layout: Reorder, row: Idx, i: Idx, item: T) !void {
             const list = &self.rows.items[row];
             assert(i <= list.items.len);
-            assert(list.items.len < std.math.maxInt(I));
+            assert(list.items.len < std.math.maxInt(Idx));
             switch (layout) {
                 .ordered => try list.insert(allocator, i, item),
                 .swap => {
@@ -337,11 +331,11 @@ pub fn MutableSparseRows(comptime T: type, comptime options: SparseRowsOptions(T
             }
         }
 
-        pub fn insertSlice(self: *Self, allocator: Allocator, layout: Reorder, row: I, i: I, items: []const T) !void {
+        pub fn insertSlice(self: *Self, allocator: Allocator, layout: Reorder, row: Idx, i: Idx, items: []const T) !void {
             const list = &self.rows.items[row];
             const row_len = list.items.len;
             assert(i <= row_len);
-            assert(row_len < std.math.maxInt(I) - items.len);
+            assert(row_len < std.math.maxInt(Idx) - items.len);
             switch (layout) {
                 .ordered => try list.insertSlice(allocator, i, items),
                 .swap => {
@@ -363,19 +357,19 @@ pub fn MutableSparseRows(comptime T: type, comptime options: SparseRowsOptions(T
             }
         }
 
-        pub fn pop(self: *Self, row: I) T {
+        pub fn pop(self: *Self, row: Idx) T {
             var list = &self.rows.items[row];
             return list.pop();
         }
 
-        pub fn popSlice(self: *Self, row: I, n: I) []const T {
+        pub fn popSlice(self: *Self, row: Idx, n: Idx) []const T {
             var list = &self.rows.items[row];
             const i = list.items.len - n;
             defer list.shrinkRetainingCapacity(i);
             return list.items[i..][0..n];
         }
 
-        pub fn drop(self: *Self, layout: Reorder, row: I, item: T) void {
+        pub fn drop(self: *Self, layout: Reorder, row: Idx, item: T) void {
             var list = &self.rows.items[row];
             const i = utils.indexOf(list.items, item) orelse unreachable;
             switch (layout) {
@@ -384,7 +378,7 @@ pub fn MutableSparseRows(comptime T: type, comptime options: SparseRowsOptions(T
             }
         }
 
-        pub fn dropAt(self: *Self, layout: Reorder, row: I, i: I) T {
+        pub fn dropAt(self: *Self, layout: Reorder, row: Idx, i: Idx) T {
             var list = &self.rows.items[row];
             return switch (layout) {
                 .swap => list.swapRemove(i),
@@ -392,7 +386,7 @@ pub fn MutableSparseRows(comptime T: type, comptime options: SparseRowsOptions(T
             };
         }
 
-        pub fn dropSlice(self: *Self, layout: Reorder, row: I, i: I, n: I) []const T {
+        pub fn dropSlice(self: *Self, layout: Reorder, row: Idx, i: Idx, n: Idx) []const T {
             var list = &self.rows.items[row];
             const list_len = list.items.len;
             assert(i <= list_len and n <= list_len - i);
@@ -419,7 +413,7 @@ pub fn MutableSparseRows(comptime T: type, comptime options: SparseRowsOptions(T
             return list.items[new_len..][0..n];
         }
 
-        pub fn move(self: *Self, layout: Reorder, row: I, item: T, to: I) void {
+        pub fn move(self: *Self, layout: Reorder, row: Idx, item: T, to: Idx) void {
             const slice = self.rows.items[row].items;
             const i = utils.indexOf(slice, item) orelse unreachable;
             if (i == to) return;
@@ -438,7 +432,7 @@ pub fn MutableSparseRows(comptime T: type, comptime options: SparseRowsOptions(T
             }
         }
 
-        pub fn moveAt(self: *Self, layout: Reorder, row: I, i: I, to: I) void {
+        pub fn moveAt(self: *Self, layout: Reorder, row: Idx, i: Idx, to: Idx) void {
             if (i == to) return;
             const slice = self.rows.items[row].items;
             switch (layout) {
@@ -457,7 +451,7 @@ pub fn MutableSparseRows(comptime T: type, comptime options: SparseRowsOptions(T
             }
         }
 
-        pub fn moveSlice(self: *Self, layout: Reorder, row: I, i: I, n: I, to: I) void {
+        pub fn moveSlice(self: *Self, layout: Reorder, row: Idx, i: Idx, n: Idx, to: Idx) void {
             const items = self.rows.items[row].items;
             assert(i <= items.len and n <= items.len - i);
 
@@ -489,29 +483,29 @@ pub fn MutableSparseRows(comptime T: type, comptime options: SparseRowsOptions(T
             @memcpy(items[to..][0..n], buffer[0..n]);
         }
 
-        pub fn mutateAt(self: *Self, row: I, i: I) *T {
+        pub fn refAt(self: *Self, row: Idx, i: Idx) *T {
             const slice = self.rows.items[row].items;
             return &slice[i];
         }
 
-        pub fn mutateSlice(self: *Self, row: I, i: I, n: I) []T {
+        pub fn refSlice(self: *Self, row: Idx, i: Idx, n: Idx) []T {
             const slice = self.rows.items[row].items;
             assert(i <= slice.len and n <= slice.len - i);
             return slice[i..][0..n];
         }
 
-        pub fn mutateLast(self: *Self, row: I) *T {
+        pub fn refLast(self: *Self, row: Idx) *T {
             const slice = self.rows.items[row].items;
             return &slice[slice.len - 1];
         }
 
-        pub fn mutateLastSlice(self: *Self, row: I, n: I) []T {
+        pub fn refLastSlice(self: *Self, row: Idx, n: Idx) []T {
             const slice = self.rows.items[row].items;
             assert(slice.len >= n);
             return slice[slice.len - n ..][0..n];
         }
 
-        pub fn iterateMutable(self: *Self, row: I) iter.Iterator(T, .{ .mutable = true }) {
+        pub fn iterateMutable(self: *Self, row: Idx) iter.Iterator(T, .{ .mutable = true }) {
             return .{ .items = self.rows.items[row].items };
         }
 
@@ -543,101 +537,101 @@ pub fn MutableSparseRows(comptime T: type, comptime options: SparseRowsOptions(T
             return @ptrCast(@alignCast(ctx));
         }
 
-        fn count(ctx: *const anyopaque, row: I) I {
+        fn count(ctx: *const anyopaque, row: Idx) Idx {
             return @intCast(cast(ctx).rows.items[row].items.len);
         }
 
-        fn contains(ctx: *const anyopaque, row: I, item: T) bool {
+        fn contains(ctx: *const anyopaque, row: Idx, item: T) bool {
             const slice = cast(ctx).rows.items[row].items;
             return utils.indexOf(slice, item) != null;
         }
 
-        fn containsSlice(ctx: *const anyopaque, row: I, items: []const T) bool {
+        fn containsSlice(ctx: *const anyopaque, row: Idx, items: []const T) bool {
             const slice = cast(ctx).rows.items[row].items;
             return utils.indexOfSlice(slice, items) != null;
         }
 
-        fn orderOf(ctx: *const anyopaque, row: I, item: T) I {
+        fn orderOf(ctx: *const anyopaque, row: Idx, item: T) Idx {
             const slice = cast(ctx).rows.items[row].items;
             return utils.indexOf(slice, item) orelse unreachable;
         }
 
-        fn orderOfSlice(ctx: *const anyopaque, row: I, items: []const T) I {
+        fn orderOfSlice(ctx: *const anyopaque, row: Idx, items: []const T) Idx {
             const slice = cast(ctx).rows.items[row].items;
             return utils.indexOfSlice(slice, items) orelse unreachable;
         }
 
-        fn view(ctx: *const anyopaque, row: I) []const T {
+        fn view(ctx: *const anyopaque, row: Idx) []const T {
             return cast(ctx).rows.items[row].items;
         }
 
-        fn peekAt(ctx: *const anyopaque, row: I, i: I) T {
+        fn peekAt(ctx: *const anyopaque, row: Idx, i: Idx) T {
             return cast(ctx).rows.items[row].items[i];
         }
 
-        fn peekSlice(ctx: *const anyopaque, row: I, i: I, n: I) []const T {
+        fn peekSlice(ctx: *const anyopaque, row: Idx, i: Idx, n: Idx) []const T {
             const slice = cast(ctx).rows.items[row].items;
             assert(i <= slice.len and n <= slice.len - i);
             return slice[i..][0..n];
         }
 
-        fn peekLast(ctx: *const anyopaque, row: I) T {
+        fn peekLast(ctx: *const anyopaque, row: Idx) T {
             const slice = cast(ctx).rows.items[row].items;
             assert(slice.len > 0);
             return slice[slice.len - 1];
         }
 
-        fn peekLastSlice(ctx: *const anyopaque, row: I, n: I) []const T {
+        fn peekLastSlice(ctx: *const anyopaque, row: Idx, n: Idx) []const T {
             const slice = cast(ctx).rows.items[row].items;
             assert(slice.len >= n);
             return slice[slice.len - n ..][0..n];
         }
 
-        fn iterate(ctx: *const anyopaque, row: I) iter.Iterator(T, .{}) {
+        fn iterate(ctx: *const anyopaque, row: Idx) iter.Iterator(T, .{}) {
             const slice = cast(ctx).rows.items[row].items;
             return .{ .items = slice };
         }
 
-        fn iterateReverse(ctx: *const anyopaque, row: I) iter.Iterator(T, .{ .reverse = true }) {
+        fn iterateReverse(ctx: *const anyopaque, row: Idx) iter.Iterator(T, .{ .reverse = true }) {
             const slice = cast(ctx).rows.items[row].items;
             return .{ .items = slice };
         }
     };
 }
 
-test "MutableSparseRows: Query" {
-    var row0: [3]u8 = .{ 1, 2, 3 };
-    var row1: [2]u8 = .{ 4, 5 };
-    var rows: [2]std.ArrayListUnmanaged(u8) = .{
-        std.ArrayListUnmanaged(u8).initBuffer(&row0),
-        std.ArrayListUnmanaged(u8).initBuffer(&row1),
+test "MutableRows: Query" {
+    var t0: [3]u8 = .{ 1, 2, 3 };
+    var t1: [2]u8 = .{ 4, 5 };
+    var items: [2]std.ArrayListUnmanaged(u8) = .{
+        std.ArrayListUnmanaged(u8).initBuffer(&t0),
+        std.ArrayListUnmanaged(u8).initBuffer(&t1),
     };
-    rows[0].items.len = 3;
-    rows[1].items.len = 2;
-    var sparse = MutableSparseRows(u8, .{}){};
-    sparse.rows.items = &rows;
+    items[0].items.len = 3;
+    items[1].items.len = 2;
+    var rows = MutableRows(u8, .{}){};
+    rows.rows.items = &items;
 
-    try testing.expectEqual(3, sparse.query().count(0));
-    try testing.expectEqual(false, sparse.query().contains(0, 8));
-    try testing.expectEqual(true, sparse.query().contains(1, 5));
-    try testing.expectEqual(false, sparse.query().containsSlice(0, &.{ 1, 3 }));
-    try testing.expectEqual(true, sparse.query().containsSlice(0, &.{ 2, 3 }));
-    try testing.expectEqual(1, sparse.query().orderOf(0, 2));
-    try testing.expectEqual(1, sparse.query().orderOfSlice(0, &.{ 2, 3 }));
-    try testing.expectEqualSlices(u8, &[_]u8{ 4, 5 }, sparse.query().view(1));
-    try testing.expectEqual(3, sparse.query().peekAt(0, 2));
-    try testing.expectEqualSlices(u8, &[_]u8{ 2, 3 }, sparse.query().peekSlice(0, 1, 2));
-    try testing.expectEqual(3, sparse.query().peekLast(0));
-    try testing.expectEqualSlices(u8, &[_]u8{ 2, 3 }, sparse.query().peekLastSlice(0, 2));
-    try testing.expectEqualSlices(u8, &[_]u8{ 4, 5 }, sparse.query().iterate(1).items);
+    try testing.expectEqual(3, rows.query().count(0));
+    try testing.expectEqual(false, rows.query().contains(0, 8));
+    try testing.expectEqual(true, rows.query().contains(1, 5));
+    try testing.expectEqual(false, rows.query().containsSlice(0, &.{ 1, 3 }));
+    try testing.expectEqual(true, rows.query().containsSlice(0, &.{ 2, 3 }));
+    try testing.expectEqual(1, rows.query().orderOf(0, 2));
+    try testing.expectEqual(1, rows.query().orderOfSlice(0, &.{ 2, 3 }));
+    try testing.expectEqualSlices(u8, &[_]u8{ 4, 5 }, rows.query().view(1));
+    try testing.expectEqual(3, rows.query().peekAt(0, 2));
+    try testing.expectEqualSlices(u8, &[_]u8{ 2, 3 }, rows.query().peekSlice(0, 1, 2));
+    try testing.expectEqual(3, rows.query().peekLast(0));
+    try testing.expectEqualSlices(u8, &[_]u8{ 2, 3 }, rows.query().peekLastSlice(0, 2));
+    try testing.expectEqualSlices(u8, &[_]u8{ 4, 5 }, rows.query().iterate(1).items);
 
-    var it = sparse.query().iterateReverse(1);
+    var it = rows.query().iterateReverse(1);
     for (&[_]u8{ 5, 4 }) |expected| try testing.expectEqual(expected, it.next());
     try testing.expectEqual(null, it.next());
 }
 
-test "MutableSparseRows: mutate" {
-    var rows = MutableSparseRows(u8, .{}){};
+test "MutableRows: mutate" {
+    var rows = MutableRows(u8, .{}){};
     defer rows.deinit(test_alloc);
 
     const r0 = try rows.claimRow(test_alloc);
@@ -684,14 +678,14 @@ test "MutableSparseRows: mutate" {
     try testing.expectEqualSlices(u8, &[_]u8{ 1, 4 }, rows.dropSlice(.swap, r0, 0, 2));
     try testing.expectEqualSlices(u8, &[_]u8{ 6, 7, 5 }, rows.query().view(r0));
 
-    rows.mutateAt(r0, 0).* += 2;
-    rows.mutateSlice(r0, 1, 2)[1] += 1;
+    rows.refAt(r0, 0).* += 2;
+    rows.refSlice(r0, 1, 2)[1] += 1;
     try testing.expectEqualSlices(u8, &[_]u8{ 8, 7, 6 }, rows.query().view(r0));
 
-    rows.mutateLast(r0).* -= 4;
+    rows.refLast(r0).* -= 4;
     try testing.expectEqual(2, rows.query().peekLast(r0));
 
-    rows.mutateLastSlice(r0, 2)[0] -= 2;
+    rows.refLastSlice(r0, 2)[0] -= 2;
     try testing.expectEqualSlices(u8, &[_]u8{ 8, 5, 2 }, rows.query().view(r0));
 
     const r1 = try rows.claimRowWithSlice(test_alloc, &.{ 1, 2, 3, 4, 5 });
@@ -731,8 +725,8 @@ test "MutableSparseRows: mutate" {
     try testing.expectEqualSlices(u8, &[_]u8{ 4, 6 }, rows.query().view(r1));
 }
 
-fn RowsUtils(comptime T: type, comptime options: SparseRowsOptions(T)) type {
-    const I = options.Indexer;
+fn RowsUtils(comptime T: type, comptime options: RowsOptions(T)) type {
+    const Idx = options.Indexer;
     const eqlFn = comptime options.equalFn orelse std.meta.eql;
     const equatable = switch (@typeInfo(T)) {
         .Struct, .ErrorUnion, .Union, .Array, .Vector, .Pointer, .Optional => false,
@@ -740,7 +734,7 @@ fn RowsUtils(comptime T: type, comptime options: SparseRowsOptions(T)) type {
     };
 
     return struct {
-        pub fn indexOf(haystack: []const T, needle: T) ?I {
+        pub fn indexOf(haystack: []const T, needle: T) ?Idx {
             if (comptime equatable and options.equalFn == null) {
                 return if (mem.indexOfScalar(T, haystack, needle)) |i| @intCast(i) else null;
             } else {
@@ -751,7 +745,7 @@ fn RowsUtils(comptime T: type, comptime options: SparseRowsOptions(T)) type {
             }
         }
 
-        pub fn indexOfSlice(haystack: []const T, needle: []const T) ?I {
+        pub fn indexOfSlice(haystack: []const T, needle: []const T) ?Idx {
             if (comptime equatable and options.equalFn == null) {
                 return if (mem.indexOf(T, haystack, needle)) |i| @intCast(i) else null;
             } else {
@@ -768,7 +762,7 @@ fn RowsUtils(comptime T: type, comptime options: SparseRowsOptions(T)) type {
     };
 }
 
-pub fn SparseRowsQuery(comptime I: type, comptime T: type) type {
+pub fn RowsQuery(comptime Indexer: type, comptime T: type) type {
     return struct {
         const Self = @This();
 
@@ -776,65 +770,65 @@ pub fn SparseRowsQuery(comptime I: type, comptime T: type) type {
         vtable: *const VTable,
 
         pub const VTable = struct {
-            count: *const fn (ctx: *const anyopaque, row: I) I,
-            contains: *const fn (ctx: *const anyopaque, row: I, item: T) bool,
-            containsSlice: *const fn (ctx: *const anyopaque, row: I, items: []const T) bool,
-            orderOf: *const fn (ctx: *const anyopaque, row: I, item: T) I,
-            orderOfSlice: *const fn (ctx: *const anyopaque, row: I, items: []const T) I,
-            view: *const fn (ctx: *const anyopaque, row: I) []const T,
-            peekAt: *const fn (ctx: *const anyopaque, row: I, i: I) T,
-            peekSlice: *const fn (ctx: *const anyopaque, row: I, i: I, n: I) []const T,
-            peekLast: *const fn (ctx: *const anyopaque, row: I) T,
-            peekLastSlice: *const fn (ctx: *const anyopaque, row: I, n: I) []const T,
-            iterate: *const fn (ctx: *const anyopaque, row: I) iter.Iterator(T, .{}),
-            iterateReverse: *const fn (ctx: *const anyopaque, row: I) iter.Iterator(T, .{ .reverse = true }),
+            count: *const fn (ctx: *const anyopaque, row: Indexer) Indexer,
+            contains: *const fn (ctx: *const anyopaque, row: Indexer, item: T) bool,
+            containsSlice: *const fn (ctx: *const anyopaque, row: Indexer, items: []const T) bool,
+            orderOf: *const fn (ctx: *const anyopaque, row: Indexer, item: T) Indexer,
+            orderOfSlice: *const fn (ctx: *const anyopaque, row: Indexer, items: []const T) Indexer,
+            view: *const fn (ctx: *const anyopaque, row: Indexer) []const T,
+            peekAt: *const fn (ctx: *const anyopaque, row: Indexer, i: Indexer) T,
+            peekSlice: *const fn (ctx: *const anyopaque, row: Indexer, i: Indexer, n: Indexer) []const T,
+            peekLast: *const fn (ctx: *const anyopaque, row: Indexer) T,
+            peekLastSlice: *const fn (ctx: *const anyopaque, row: Indexer, n: Indexer) []const T,
+            iterate: *const fn (ctx: *const anyopaque, row: Indexer) iter.Iterator(T, .{}),
+            iterateReverse: *const fn (ctx: *const anyopaque, row: Indexer) iter.Iterator(T, .{ .reverse = true }),
         };
 
-        pub inline fn count(self: Self, row: I) I {
+        pub inline fn count(self: Self, row: Indexer) Indexer {
             return self.vtable.count(self.ctx, row);
         }
 
-        pub inline fn contains(self: Self, row: I, item: T) bool {
+        pub inline fn contains(self: Self, row: Indexer, item: T) bool {
             return self.vtable.contains(self.ctx, row, item);
         }
 
-        pub inline fn containsSlice(self: Self, row: I, items: []const T) bool {
+        pub inline fn containsSlice(self: Self, row: Indexer, items: []const T) bool {
             return self.vtable.containsSlice(self.ctx, row, items);
         }
 
-        pub inline fn orderOf(self: Self, row: I, item: T) I {
+        pub inline fn orderOf(self: Self, row: Indexer, item: T) Indexer {
             return self.vtable.orderOf(self.ctx, row, item);
         }
 
-        pub inline fn orderOfSlice(self: Self, row: I, items: []const T) I {
+        pub inline fn orderOfSlice(self: Self, row: Indexer, items: []const T) Indexer {
             return self.vtable.orderOfSlice(self.ctx, row, items);
         }
 
-        pub inline fn view(self: Self, row: I) []const T {
+        pub inline fn view(self: Self, row: Indexer) []const T {
             return self.vtable.view(self.ctx, row);
         }
 
-        pub inline fn peekAt(self: Self, row: I, i: I) T {
+        pub inline fn peekAt(self: Self, row: Indexer, i: Indexer) T {
             return self.vtable.peekAt(self.ctx, row, i);
         }
 
-        pub inline fn peekSlice(self: Self, row: I, i: I, n: I) []const T {
+        pub inline fn peekSlice(self: Self, row: Indexer, i: Indexer, n: Indexer) []const T {
             return self.vtable.peekSlice(self.ctx, row, i, n);
         }
 
-        pub inline fn peekLast(self: Self, row: I) T {
+        pub inline fn peekLast(self: Self, row: Indexer) T {
             return self.vtable.peekLast(self.ctx, row);
         }
 
-        pub inline fn peekLastSlice(self: Self, row: I, n: I) []const T {
+        pub inline fn peekLastSlice(self: Self, row: Indexer, n: Indexer) []const T {
             return self.vtable.peekLastSlice(self.ctx, row, n);
         }
 
-        pub inline fn iterate(self: Self, row: I) iter.Iterator(T, .{}) {
+        pub inline fn iterate(self: Self, row: Indexer) iter.Iterator(T, .{}) {
             return self.vtable.iterate(self.ctx, row);
         }
 
-        pub inline fn iterateReverse(self: Self, row: I) iter.Iterator(T, .{ .reverse = true }) {
+        pub inline fn iterateReverse(self: Self, row: Indexer) iter.Iterator(T, .{ .reverse = true }) {
             return self.vtable.iterateReverse(self.ctx, row);
         }
     };
