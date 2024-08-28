@@ -200,8 +200,9 @@ pub const ContainerBuild = struct {
         ctx: anytype,
         closure: Closure(@TypeOf(ctx), md.DocumentClosure),
     ) !void {
-        const doc = try md.authorDocument(self.allocator, ctx, closure);
+        var doc = try md.authorDocument(self.allocator, ctx, closure);
         errdefer doc.deinit(self.allocator);
+
         try self.appendStatement(.{ .comment = .{
             .kind = kind,
             .source = .{ .markdown = doc },
@@ -599,8 +600,9 @@ pub const BlockBuild = struct {
         ctx: anytype,
         closure: Closure(@TypeOf(ctx), md.DocumentClosure),
     ) !void {
-        const doc = try md.authorDocument(self.allocator, ctx, closure);
+        var doc = try md.authorDocument(self.allocator, ctx, closure);
         errdefer doc.deinit(self.allocator);
+
         try self.append(.{ .comment = .{
             .kind = kind,
             .source = .{ .markdown = doc },

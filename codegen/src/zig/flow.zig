@@ -733,8 +733,9 @@ pub const Switch = struct {
             closure: Closure(@TypeOf(ctx), md.DocumentClosure),
         ) !void {
             assert(self.state == .idle or self.state == .inlined);
-            const doc = try md.authorDocument(self.allocator, ctx, closure);
+            var doc = try md.authorDocument(self.allocator, ctx, closure);
             errdefer doc.deinit(self.allocator);
+
             try self.statements.append(self.allocator, .{ .comment = ExprComment{
                 .kind = .normal,
                 .source = .{ .markdown = doc },

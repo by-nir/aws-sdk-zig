@@ -42,9 +42,9 @@ pub fn ReadOnlyColumns(comptime T: type, comptime options: ColumnsOptions) type 
 
         columns: std.MultiArrayList(T).Slice,
 
-        // TODO: non-mutable
-        pub fn deinit(self: *Self, allocator: Allocator) void {
-            self.columns.deinit(allocator);
+        pub fn deinit(self: Self, allocator: Allocator) void {
+            var cols = self.columns.toMultiArrayList();
+            cols.deinit(allocator);
         }
 
         pub fn query(self: Self) Query {
@@ -54,7 +54,7 @@ pub fn ReadOnlyColumns(comptime T: type, comptime options: ColumnsOptions) type 
 }
 
 test "ReadOnlyolumns" {
-    var cols = blk: {
+    const cols = blk: {
         var multilist = std.MultiArrayList(Vec3){};
         errdefer multilist.deinit(test_alloc);
 
@@ -163,7 +163,7 @@ test "MutableColumns" {
 }
 
 test "MutableColumns: consume" {
-    var cols = blk: {
+    const cols = blk: {
         var mut = MutableColumns(Vec3, .{}){};
         errdefer mut.deinit(test_alloc);
 

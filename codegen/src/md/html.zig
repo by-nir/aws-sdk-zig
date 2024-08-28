@@ -360,10 +360,7 @@ fn convertNode(bld: NodeBuilder, node: *const HtmlNode) !void {
                 }
 
                 if (styled) |*t| try t.seal();
-                try container.seal();
             }
-
-            try list.seal();
         },
         else => {
             // TODO: Custom tag handlers
@@ -473,13 +470,13 @@ fn expect(source: []const u8, expected: []const u8) !void {
     const arena_alloc = arena.allocator();
     defer arena.deinit();
 
-    const doc = blk: {
+    var doc = blk: {
         var build = try md.DocumentAuthor.init(arena_alloc);
         errdefer build.deinit();
 
         try convert(arena_alloc, &build, source);
 
-        break :blk try build.consume();
+        break :blk try build.consume(arena_alloc);
     };
     errdefer doc.deinit(arena_alloc);
 

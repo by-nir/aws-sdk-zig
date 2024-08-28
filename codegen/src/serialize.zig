@@ -3,15 +3,11 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
+const common = @import("utils/common.zig");
 
+const UNDF = 0xAA;
 const ENDIAN = @import("builtin").cpu.arch.endian();
-
-pub const SerialHandle = struct {
-    offset: usize,
-    length: usize,
-
-    pub const empty = .{ .offset = 0, .length = 0 };
-};
+pub const SerialHandle = common.RangeHandle(u32);
 
 /// Do not use for encoding permanent storage or transmission as the serial format is platform-dependent.
 pub const SerialWriter = struct {
@@ -36,6 +32,10 @@ pub const SerialWriter = struct {
     /// Appending values may invalidate the slice.
     pub fn view(self: SerialWriter) []const u8 {
         return self.buffer.items;
+    }
+
+    pub fn length(self: SerialWriter) u32 {
+        return @intCast(self.buffer.items.len);
     }
 
     pub fn append(self: *SerialWriter, allocator: Allocator, comptime T: type, value: T) !SerialHandle {
@@ -81,25 +81,21 @@ pub const SerialWriter = struct {
                         return self.handleFrom(offset);
                     },
                     .Many => {
-                        const opaque_sent = meta.sentinel orelse {
-                            @compileError("Encoding many-item pointer expects sentinel-terminated");
-                        };
-                        const sentinel = comptime @as(*const meta.child, @ptrCast(@alignCast(opaque_sent))).*;
-                        const slice = mem.sliceTo(value, sentinel);
+                        const slice = mem.sliceTo(value, pointerSentinel(meta));
                         return self.append(allocator, @TypeOf(slice), slice);
                     },
                     .Slice => {
                         // Length bytes count
-                        const len_size: u8 = (std.math.log2_int_ceil(usize, value.len + 1) + 7) / 8;
-                        try self.buffer.ensureUnusedCapacity(allocator, len_size + 1);
-                        self.buffer.appendAssumeCapacity(len_size);
+                        const size_len = sizeByteLen(value.len);
+                        try self.buffer.ensureUnusedCapacity(allocator, size_len + 1);
+                        self.buffer.appendAssumeCapacity(size_len);
 
                         // Length
                         const len_bytes = mem.asBytes(&value.len);
                         if (ENDIAN == .little) {
-                            self.buffer.appendSliceAssumeCapacity(len_bytes[0..len_size]);
+                            self.buffer.appendSliceAssumeCapacity(len_bytes[0..size_len]);
                         } else {
-                            const slice = len_bytes[len_bytes.len - len_size ..][0..len_size];
+                            const slice = len_bytes[len_bytes.len - size_len ..][0..size_len];
                             self.buffer.appendSliceAssumeCapacity(slice);
                         }
 
@@ -155,29 +151,135 @@ pub const SerialWriter = struct {
         const size_bytes = self.buffer.items[offset + 1 ..][0..2];
         mem.writeInt(u16, size_bytes, @truncate(len), ENDIAN);
 
-        return .{ .offset = offset, .length = len + 3 };
+        return .{
+            .offset = @intCast(offset),
+            .length = @intCast(len + 3),
+        };
     }
 
-    fn writePadding(self: *SerialWriter, allocator: Allocator, comptime alignment: comptime_int) !usize {
+    /// Enabling `auto_align` maintains a log2 alignment matching the source address.
+    pub fn appendRaw(self: *SerialWriter, allocator: Allocator, bytes: []const u8, comptime auto_align: bool) !SerialHandle {
+        const initial = self.length();
+        errdefer self.buffer.shrinkRetainingCapacity(initial);
+
+        const offset = if (!auto_align) initial else blk: {
+            const addr = @intFromPtr(bytes.ptr);
+            const is_64b = comptime @bitSizeOf(usize) > 32;
+            if (is_64b and mem.isAligned(addr, 8))
+                break :blk try self.writePadding(allocator, 8)
+            else if (mem.isAligned(addr, 4))
+                break :blk try self.writePadding(allocator, 4)
+            else if (mem.isAligned(addr, 2))
+                break :blk try self.writePadding(allocator, 2)
+            else
+                break :blk initial;
+        };
+
+        try self.buffer.appendSlice(allocator, bytes);
+        return self.handleFrom(offset);
+    }
+
+    pub fn drop(self: *SerialWriter, count: usize) void {
+        const len = self.length();
+        std.debug.assert(count <= len);
+        self.buffer.shrinkRetainingCapacity(len - count);
+    }
+
+    /// Only when runtime safety is enabled.
+    pub fn invalidate(self: *SerialWriter, handle: SerialHandle) void {
+        comptime if (!std.debug.runtime_safety) return;
+        const slice = self.buffer.items[handle.offset..][0..handle.length];
+        @memset(slice, UNDF);
+    }
+
+    /// Assumes a valid handle.
+    pub fn canOverride(handle: SerialHandle, comptime T: type, value: T) bool {
+        switch (@typeInfo(@TypeOf(value))) {
+            .Struct => return false, // TODO
+            .Pointer => |meta| {
+                switch (@typeInfo(meta.child)) {
+                    .Struct, .Pointer => return false,
+                    else => {},
+                }
+
+                switch (meta.size) {
+                    .C => @compileError("Encoding ‘c’ pointer is unsupported"),
+                    .One => return handle.length == @sizeOf(meta.child),
+                    else => {
+                        const size_len = sizeByteLen(value.len);
+                        var head = handle.offset + 1 + size_len;
+                        head = mem.alignForward(u32, head, @alignOf(meta.child)) - handle.offset;
+                        return handle.length == head + value.len * @sizeOf(meta.child);
+                    },
+                }
+            },
+            else => return handle.length == @sizeOf(T),
+        }
+    }
+
+    pub fn override(self: *SerialWriter, handle: SerialHandle, comptime T: type, value: T) void {
+        std.debug.assert(canOverride(handle, T, value));
+        std.debug.assert(handle.offset + handle.length <= self.length());
+
+        switch (@typeInfo(@TypeOf(value))) {
+            .Struct => unreachable, // TODO
+            .Pointer => |meta| switch (meta.size) {
+                .C => @compileError("Encoding ‘c’ pointer is unsupported"),
+                .One => self.buffer.replaceRangeAssumeCapacity(handle.offset, handle.length, mem.asBytes(value)),
+                .Many => {
+                    const slice = mem.sliceTo(value, pointerSentinel(meta));
+                    self.override(handle, @TypeOf(slice), slice);
+                },
+                .Slice => {
+                    var count_len: u8 = self.buffer.items[handle.offset];
+                    const count = readBufferInt(self.buffer.items[handle.offset + 1 ..][0..count_len]);
+
+                    if (value.len != count) {
+                        const new_count_len = sizeByteLen(value.len);
+                        if (count_len != new_count_len) {
+                            count_len = new_count_len;
+                            self.buffer.items[handle.offset] = new_count_len;
+                        }
+
+                        const count_bytes = mem.asBytes(&value.len);
+                        self.buffer.replaceRangeAssumeCapacity(handle.offset + 1, count_len, switch (ENDIAN) {
+                            .little => count_bytes[0..count_len],
+                            .big => count_bytes[count_bytes.len - count_len ..][0..count_len],
+                        });
+                    }
+
+                    const offset = mem.alignForward(usize, handle.offset + 1 + count_len, @alignOf(meta.child));
+                    self.buffer.replaceRangeAssumeCapacity(offset, value.len * @sizeOf(meta.child), mem.sliceAsBytes(value));
+                },
+            },
+            else => self.buffer.replaceRangeAssumeCapacity(handle.offset, handle.length, mem.asBytes(&value)),
+        }
+    }
+
+    fn handleFrom(self: SerialWriter, offset: usize) SerialHandle {
+        return .{
+            .offset = @intCast(offset),
+            .length = @intCast(self.length() - offset),
+        };
+    }
+
+    fn sizeByteLen(count: usize) u8 {
+        const bits = std.math.log2_int_ceil(usize, count + 1) + 7;
+        return bits / 8;
+    }
+
+    fn pointerSentinel(comptime meta: std.builtin.Type.Pointer) meta.child {
+        const opaque_sent = meta.sentinel orelse {
+            @compileError("Encoding many-item pointer expects sentinel-terminated");
+        };
+        return comptime @as(*const meta.child, @ptrCast(@alignCast(opaque_sent))).*;
+    }
+
+    fn writePadding(self: *SerialWriter, allocator: Allocator, alignment: u29) !usize {
         const initial = self.length();
         const target = mem.alignForward(usize, initial, alignment);
         if (target > initial) try self.buffer.resize(allocator, target);
         return target;
-    }
-
-    pub fn TEMP_override(self: *SerialWriter, handle: SerialHandle, bytes: []const u8) void {
-        std.debug.assert(handle.length == bytes.len);
-        std.debug.assert(handle.offset + handle.length <= self.length());
-        self.buffer.replaceRangeAssumeCapacity(handle.offset, handle.length, bytes);
-    }
-
-    fn length(self: SerialWriter) usize {
-        return self.buffer.items.len;
-    }
-
-    fn handleFrom(self: SerialWriter, offset: usize) SerialHandle {
-        const len = self.length() - offset;
-        return .{ .offset = offset, .length = len };
     }
 };
 
@@ -227,11 +329,34 @@ test "SerialWriter" {
         try expectAppend(&writer, 60, 6, TestStructAuto, .{ .int = 108, .string = "foo" });
         try expectAppend(&writer, 68, 4, TestStructPack, .{ .c0 = 101, .c1 = 102, .c2 = 103 });
 
+        const str_align: [3]u8 align(4) = "foo".*;
+        try testing.expectEqualDeep(SerialHandle{
+            .offset = 72,
+            .length = 3,
+        }, try writer.appendRaw(test_alloc, &str_align, false));
+        try testing.expectEqualDeep(SerialHandle{
+            .offset = 80,
+            .length = 3,
+        }, try writer.appendRaw(test_alloc, &str_align, true));
+
+        const val = try writer.append(test_alloc, []const u8, "foo");
+        try testing.expectEqual(true, SerialWriter.canOverride(val, []const u8, "bar"));
+        try testing.expectEqual(false, SerialWriter.canOverride(val, []const u8, "bazqux"));
+        writer.override(val, []const u8, "bar");
+
+        writer.invalidate(try writer.appendRaw(test_alloc, "foo", false));
+        writer.drop(1);
+
         break :blk try writer.consumeSlice(test_alloc);
     };
 
     defer test_alloc.free(slice);
-    try testing.expectEqualSlices(u8, TEST_SLICE, slice);
+    try testing.expectEqualSlices(u8, TEST_SLICE ++ .{
+        'f', 'o', 'o', //
+        UNDF, UNDF, UNDF, UNDF, UNDF, 'f', 'o', 'o', //
+        1, 3, 'b', 'a', 'r', //
+        UNDF, UNDF, //
+    }, slice);
 }
 
 /// Do not use for decoding permanent storage or transmission as the serial format is platform-dependent.
@@ -280,16 +405,9 @@ pub const SerialReader = struct {
                     },
                     .Slice => {
                         const len = blk: {
-                            var value: usize = 0;
                             const size = self.nextValue(u8);
                             const source = self.takeNextRange(self.cursor, size);
-                            if (ENDIAN == .little) {
-                                @memcpy(mem.asBytes(&value)[0..size], source);
-                            } else {
-                                const dest = mem.asBytes(&value);
-                                @memcpy(dest[dest.len - size ..][0..size], source);
-                            }
-                            break :blk value;
+                            break :blk readBufferInt(source);
                         };
 
                         self.skipPadding(meta.alignment);
@@ -353,6 +471,18 @@ pub const SerialReader = struct {
         std.debug.assert(self.cursor + n <= self.buffer.len);
     }
 };
+
+fn readBufferInt(source: []const u8) usize {
+    const len = source.len;
+    var value: usize = 0;
+    if (ENDIAN == .little) {
+        @memcpy(mem.asBytes(&value)[0..len], source);
+    } else {
+        const dest = mem.asBytes(&value);
+        @memcpy(dest[dest.len - len ..][0..len], source);
+    }
+    return value;
+}
 
 test "SerialReader" {
     var reader = SerialReader{ .buffer = TEST_SLICE };
@@ -437,7 +567,6 @@ inline fn compileErrorFmt(comptime format: []const u8, args: anytype) void {
     @compileError(std.fmt.comptimePrint(format, args));
 }
 
-const UNDF = 0xAA;
 const TEST_SLICE = TEST_BOOLS ++ TEST_NUMS ++ TEST_TAGS ++ TEST_OPTION ++
     TEST_LISTS ++ TEST_POINTERS ++ TEST_FMT ++ TEST_STRUCTS;
 

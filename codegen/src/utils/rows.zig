@@ -84,6 +84,7 @@ pub fn ReadOnlyRows(comptime T: type, comptime options: RowsOptions(T)) type {
             .orderOfSlice = orderOfSlice,
             .view = view,
             .peekAt = peekAt,
+            .peekAtOrNull = peekAtOrNull,
             .peekSlice = peekSlice,
             .peekLast = peekLast,
             .peekLastSlice = peekLastSlice,
@@ -127,6 +128,11 @@ pub fn ReadOnlyRows(comptime T: type, comptime options: RowsOptions(T)) type {
             return cast(ctx).rowSlice(row)[i];
         }
 
+        fn peekAtOrNull(ctx: *const anyopaque, row: Idx, i: Idx) ?T {
+            const items = cast(ctx).rowSlice(row);
+            return if (i < items.len) items[i] else null;
+        }
+
         fn peekSlice(ctx: *const anyopaque, row: Idx, i: Idx, n: Idx) []const T {
             const slice = cast(ctx).rowSlice(row);
             assert(i <= slice.len and n <= slice.len - i);
@@ -154,6 +160,18 @@ pub fn ReadOnlyRows(comptime T: type, comptime options: RowsOptions(T)) type {
             const slice = cast(ctx).rowSlice(row);
             return .{ .items = slice };
         }
+
+        pub const ReservedRow = struct {
+            index: Idx,
+            items_count: Idx,
+            items_offset: Idx,
+            items_buffer: *std.ArrayListUnmanaged(T),
+
+            pub fn setItem(self: ReservedRow, i: usize, item: T) void {
+                assert(i < self.items_count);
+                self.items_buffer.items[self.items_offset + i] = item;
+            }
+        };
 
         pub const Author = struct {
             allocator: Allocator,
@@ -183,6 +201,27 @@ pub fn ReadOnlyRows(comptime T: type, comptime options: RowsOptions(T)) type {
 
                 try self.items.appendSlice(self.allocator, items);
                 return index;
+            }
+
+            pub fn reserveRow(self: *Author, n: Idx, value: T) !ReservedRow {
+                const index = self.count();
+                assert(n <= std.math.maxInt(Idx));
+                assert(index < std.math.maxInt(Idx));
+
+                const offset = self.items.items.len;
+                try self.records.appendSlice(self.allocator, mem.asBytes(&Record{
+                    .len = @intCast(n),
+                    .offset = @intCast(offset * @sizeOf(T)),
+                })[0..Record.byte_len]);
+                errdefer self.records.shrinkRetainingCapacity(self.records.items.len - Record.byte_len);
+
+                try self.items.appendNTimes(self.allocator, value, n);
+                return .{
+                    .index = index,
+                    .items_count = n,
+                    .items_offset = @intCast(offset),
+                    .items_buffer = &self.items,
+                };
             }
 
             pub fn consume(self: *Author, allocator: Allocator) !ReadOnlyRows(T, options) {
@@ -217,7 +256,11 @@ test "ReadOnlyRows" {
         errdefer author.deinit();
 
         try testing.expectEqual(0, try author.appendRow(&.{ 1, 2, 3 }));
-        try testing.expectEqual(1, try author.appendRow(&.{ 4, 5 }));
+
+        const reserved = try author.reserveRow(2, 0);
+        try testing.expectEqual(1, reserved.index);
+        reserved.setItem(0, 4);
+        reserved.setItem(1, 5);
 
         break :blk try author.consume(test_alloc);
     };
@@ -236,6 +279,9 @@ test "ReadOnlyRows" {
     try testing.expectEqual(3, rows.query().peekLast(0));
     try testing.expectEqualSlices(u8, &[_]u8{ 2, 3 }, rows.query().peekLastSlice(0, 2));
     try testing.expectEqualSlices(u8, &[_]u8{ 4, 5 }, rows.query().iterate(1).items);
+    try testing.expectEqual(5, rows.query().peekAt(1, 1));
+    try testing.expectEqual(5, rows.query().peekAtOrNull(1, 1));
+    try testing.expectEqualDeep(null, rows.query().peekAtOrNull(1, 2));
 
     var it = rows.query().iterateReverse(1);
     for (&[_]u8{ 5, 4 }) |expected| try testing.expectEqual(expected, it.next());
@@ -526,6 +572,7 @@ pub fn MutableRows(comptime T: type, comptime options: RowsOptions(T)) type {
             .orderOfSlice = orderOfSlice,
             .view = view,
             .peekAt = peekAt,
+            .peekAtOrNull = peekAtOrNull,
             .peekSlice = peekSlice,
             .peekLast = peekLast,
             .peekLastSlice = peekLastSlice,
@@ -567,6 +614,11 @@ pub fn MutableRows(comptime T: type, comptime options: RowsOptions(T)) type {
 
         fn peekAt(ctx: *const anyopaque, row: Idx, i: Idx) T {
             return cast(ctx).rows.items[row].items[i];
+        }
+
+        fn peekAtOrNull(ctx: *const anyopaque, row: Idx, i: Idx) ?T {
+            const items = cast(ctx).rows.items[row].items;
+            return if (i < items.len) items[i] else null;
         }
 
         fn peekSlice(ctx: *const anyopaque, row: Idx, i: Idx, n: Idx) []const T {
@@ -624,6 +676,9 @@ test "MutableRows: Query" {
     try testing.expectEqual(3, rows.query().peekLast(0));
     try testing.expectEqualSlices(u8, &[_]u8{ 2, 3 }, rows.query().peekLastSlice(0, 2));
     try testing.expectEqualSlices(u8, &[_]u8{ 4, 5 }, rows.query().iterate(1).items);
+    try testing.expectEqual(5, rows.query().peekAt(1, 1));
+    try testing.expectEqual(5, rows.query().peekAtOrNull(1, 1));
+    try testing.expectEqualDeep(null, rows.query().peekAtOrNull(1, 2));
 
     var it = rows.query().iterateReverse(1);
     for (&[_]u8{ 5, 4 }) |expected| try testing.expectEqual(expected, it.next());
@@ -777,6 +832,7 @@ pub fn RowsQuery(comptime Indexer: type, comptime T: type) type {
             orderOfSlice: *const fn (ctx: *const anyopaque, row: Indexer, items: []const T) Indexer,
             view: *const fn (ctx: *const anyopaque, row: Indexer) []const T,
             peekAt: *const fn (ctx: *const anyopaque, row: Indexer, i: Indexer) T,
+            peekAtOrNull: *const fn (ctx: *const anyopaque, row: Indexer, i: Indexer) ?T,
             peekSlice: *const fn (ctx: *const anyopaque, row: Indexer, i: Indexer, n: Indexer) []const T,
             peekLast: *const fn (ctx: *const anyopaque, row: Indexer) T,
             peekLastSlice: *const fn (ctx: *const anyopaque, row: Indexer, n: Indexer) []const T,
@@ -810,6 +866,10 @@ pub fn RowsQuery(comptime Indexer: type, comptime T: type) type {
 
         pub inline fn peekAt(self: Self, row: Indexer, i: Indexer) T {
             return self.vtable.peekAt(self.ctx, row, i);
+        }
+
+        pub inline fn peekAtOrNull(self: Self, row: Indexer, i: Indexer) ?T {
+            return self.vtable.peekAtOrNull(self.ctx, row, i);
         }
 
         pub inline fn peekSlice(self: Self, row: Indexer, i: Indexer, n: Indexer) []const T {

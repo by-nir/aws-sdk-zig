@@ -22,9 +22,12 @@ pub fn Iterator(comptime T: type, comptime options: IteratorOptions) type {
         }
 
         pub fn next(self: *Self) ?Item {
-            if (self.cursor == self.items.len) return null;
-            defer self.cursor += 1;
-            return self.getItem(self.cursor);
+            if (self.cursor == self.items.len) {
+                return null;
+            } else {
+                defer self.cursor += 1;
+                return self.getItem(self.cursor);
+            }
         }
 
         pub fn skip(self: *Self, count: usize) void {
@@ -88,18 +91,18 @@ test "Iterator" {
     try testing.expectEqualDeep(2, items[0]);
 }
 
-pub fn Walker(comptime T: type, comptime Cursor: type) type {
+pub fn Walker(comptime Ctx: type, comptime Cursor: type, comptime T: type) type {
     return struct {
         const Self = @This();
 
+        ctx: Ctx,
         cursor: Cursor,
-        ctx: *const anyopaque,
         vtable: *const VTable,
 
         pub const VTable = struct {
-            peek: *const fn (ctx: *const anyopaque, cursor: Cursor) ?T,
-            next: *const fn (ctx: *const anyopaque, cursor: *Cursor) ?T,
-            skip: *const fn (ctx: *const anyopaque, cursor: *Cursor) void,
+            peek: *const fn (ctx: Ctx, cursor: Cursor) ?T,
+            next: *const fn (ctx: Ctx, cursor: *Cursor) ?T,
+            skip: *const fn (ctx: Ctx, cursor: *Cursor) void,
         };
 
         pub inline fn peek(self: Self) ?T {
@@ -111,14 +114,14 @@ pub fn Walker(comptime T: type, comptime Cursor: type) type {
         }
 
         pub inline fn skip(self: *Self) void {
-            self.vtable.next(self.ctx, &self.cursor);
+            self.vtable.skip(self.ctx, &self.cursor);
         }
     };
 }
 
 test "Walker" {
     const Tester = struct {
-        pub const vtable = Walker(usize, usize).VTable{
+        pub const vtable = Walker(*const anyopaque, usize, usize).VTable{
             .peek = peek,
             .next = next,
             .skip = skip,
@@ -131,9 +134,12 @@ test "Walker" {
 
         fn next(ctx: *const anyopaque, cursor: *usize) ?usize {
             const target = cast(ctx);
-            if (cursor.* > target) return null;
-            defer cursor.* += 1;
-            return cursor.*;
+            if (cursor.* > target) {
+                return null;
+            } else {
+                defer cursor.* += 1;
+                return cursor.*;
+            }
         }
 
         fn skip(_: *const anyopaque, cursor: *usize) void {
@@ -145,7 +151,7 @@ test "Walker" {
         }
     };
 
-    var walker = Walker(usize, usize){
+    var walker = Walker(*const anyopaque, usize, usize){
         .cursor = 0,
         .ctx = &@as(usize, 2),
         .vtable = &Tester.vtable,
