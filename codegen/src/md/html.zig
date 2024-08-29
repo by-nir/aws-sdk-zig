@@ -395,7 +395,7 @@ fn convertStyledNode(bld: *md.StyledAuthor, node: *const HtmlNode) !void {
             const href = node.raw[start..end];
 
             const text = TEMP_extractNodeText(node);
-            try bld.link(href, text);
+            try bld.link(href, null, text);
         },
         else => {
             // TODO: Custom tag handlers

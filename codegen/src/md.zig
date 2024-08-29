@@ -34,7 +34,7 @@ pub fn authorDocument(
     return author.consume(test_alloc);
 }
 
-const Mark = enum(u64) {
+const Mark = enum {
     document,
     block_raw,
     block_comment,
@@ -63,17 +63,17 @@ const Mark = enum(u64) {
 const MutableTree = srct.MutableSourceTree(Mark);
 const ReadOnlyTree = srct.ReadOnlySourceTree(Mark);
 
-const MarkHeading = struct {
-    level: u8,
-    text: []const u8,
-};
-
 const MAX_TABLE_COLUMNS = 16;
 
 const MarkColumn = packed struct(u24) {
     aligns: ColumnAlign = .left,
     self_width: u8 = 0,
     dynamic_width: u8 = 0,
+};
+
+const MarkLink = struct {
+    href: []const u8,
+    title: []const u8 = "",
 };
 
 pub const Document = struct {
@@ -106,18 +106,26 @@ pub const Document = struct {
             .text_bold_italic => try writer.appendFmt("***{s}***", .{tree.payload(node, []const u8)}),
             .text_code => try writer.appendFmt("`{s}`", .{tree.payload(node, []const u8)}),
             .text_link => {
-                // TODO: [foo](href "title")
+                const payload = tree.payload(node, MarkLink);
                 try writer.appendChar('[');
                 try writeNodeChildren(writer, tree, node, .inlined);
-                try writer.appendFmt("]({s})", .{tree.payload(node, []const u8)});
+                try writer.appendString("](");
+                if (payload.title.len > 0) {
+                    try writer.appendFmt("{s} \"{s}\"", .{ payload.href, payload.title });
+                } else {
+                    try writer.appendString(payload.href);
+                }
+                try writer.appendChar(')');
             },
             .block_comment => try writer.appendFmt("<!-- {s} -->", .{tree.payload(node, []const u8)}),
             .block_paragraph => try writeNodeChildren(writer, tree, node, .inlined),
             .block_heading => {
-                const heading = tree.payload(node, MarkHeading);
-                std.debug.assert(heading.level > 0 and heading.level <= 6);
-                const prefix = "#######"[6 - heading.level .. 6];
-                try writer.appendFmt("{s} {s}", .{ prefix, heading.text });
+                const level = tree.payload(node, u8);
+                std.debug.assert(level > 0 and level <= 6);
+
+                const prefix = "#######"[6 - level .. 6];
+                try writer.appendFmt("{s} ", .{prefix});
+                try writeNodeChildren(writer, tree, node, .inlined);
             },
             .block_quote => {
                 try writer.pushIndent("> ");
@@ -316,7 +324,7 @@ test "Document: Paragraph & Text" {
         _ = try tree.appendNodePayload(node, .text_bold_italic, []const u8, "bold italic");
         _ = try tree.appendNodePayload(node, .text_code, []const u8, "code");
 
-        const child = try tree.appendNodePayload(node, .text_link, []const u8, "#");
+        const child = try tree.appendNodePayload(node, .text_link, MarkLink, .{ .href = "#" });
         _ = try tree.appendNodePayload(child, .text_plain, []const u8, "link");
 
         break :blk Document{ .tree = try tree.consumeReadOnly(test_alloc) };
@@ -330,10 +338,8 @@ test "Document: Heading" {
         var tree = try MutableTree.init(test_alloc, .document);
         errdefer tree.deinit();
 
-        _ = try tree.appendNodePayload(srct.ROOT, .block_heading, MarkHeading, .{
-            .level = 2,
-            .text = "Foo",
-        });
+        const node = try tree.appendNodePayload(srct.ROOT, .block_heading, u8, 2);
+        _ = try tree.appendNodePayload(node, .text_plain, []const u8, "Foo");
 
         break :blk Document{ .tree = try tree.consumeReadOnly(test_alloc) };
     };
@@ -557,24 +563,25 @@ pub const DocumentAuthor = struct {
 
     pub fn heading(self: *DocumentAuthor, level: u8, text: []const u8) !void {
         if (level == 0 or level > 6) return error.InvalidHeadingLevel;
-        _ = try self.tree.appendNodePayload(srct.ROOT, .block_heading, MarkHeading, .{
-            .level = level,
-            .text = text,
-        });
+        const node = try self.tree.appendNodePayload(srct.ROOT, .block_heading, u8, level);
+        errdefer self.tree.dropNode(node);
+
+        _ = try self.tree.appendNodePayload(node, .text_plain, []const u8, text);
     }
 
     pub fn headingFmt(self: *DocumentAuthor, level: u8, comptime format: []const u8, args: anytype) !void {
         if (level == 0 or level > 6) return error.InvalidHeadingLevel;
-        const node = try self.tree.appendNode(srct.ROOT, .block_heading);
+        const node = try self.tree.appendNodePayload(srct.ROOT, .block_heading, u8, level);
         errdefer self.tree.dropNode(node);
 
-        var buffer: [256]u8 = undefined;
-        const text = try std.fmt.bufPrint(&buffer, format, args);
+        _ = try StyledAuthor.createPlainFmt(&self.tree, node, format, args);
+    }
 
-        try self.tree.setPayload(node, MarkHeading, .{
-            .level = level,
-            .text = text,
-        });
+    pub fn headingStyled(self: *DocumentAuthor, level: u8) !StyledAuthor {
+        return StyledAuthor{
+            .tree = &self.tree,
+            .parent = try self.tree.appendNodePayload(srct.ROOT, .block_heading, u8, level),
+        };
     }
 
     pub fn paragraph(self: *DocumentAuthor, text: []const u8) !void {
@@ -849,24 +856,33 @@ pub const StyledAuthor = struct {
         if (self.callback) |*cb| cb.increment(2 + len);
     }
 
-    pub fn link(self: *StyledAuthor, href: []const u8, text: []const u8) !void {
-        const node = try self.tree.appendNodePayload(self.parent, .text_link, []const u8, href);
+    pub fn link(self: *StyledAuthor, href: []const u8, title: ?[]const u8, text: []const u8) !void {
+        const node = try self.tree.appendNodePayload(self.parent, .text_link, MarkLink, .{
+            .href = href,
+            .title = title orelse "",
+        });
         errdefer self.tree.dropNode(node);
 
         _ = try self.tree.appendNodePayload(node, .text_plain, []const u8, text);
         if (self.callback) |*cb| cb.increment(4 + href.len + text.len);
     }
 
-    pub fn linkFmt(self: *StyledAuthor, href: []const u8, comptime format: []const u8, args: anytype) !void {
-        const node = try self.tree.appendNodePayload(self.parent, .text_link, []const u8, href);
+    pub fn linkFmt(self: *StyledAuthor, href: []const u8, title: ?[]const u8, comptime format: []const u8, args: anytype) !void {
+        const node = try self.tree.appendNodePayload(self.parent, .text_link, MarkLink, .{
+            .href = href,
+            .title = title orelse "",
+        });
         errdefer self.tree.dropNode(node);
 
         const len = try StyledAuthor.createPlainFmt(self.tree, node, format, args);
         if (self.callback) |*cb| cb.increment(4 + href.len + len);
     }
 
-    pub fn linkStyled(self: *StyledAuthor, href: []const u8) !StyledAuthor {
-        const node = try self.tree.appendNodePayload(self.parent, .text_link, []const u8, href);
+    pub fn linkStyled(self: *StyledAuthor, href: []const u8, title: ?[]const u8) !StyledAuthor {
+        const node = try self.tree.appendNodePayload(self.parent, .text_link, MarkLink, .{
+            .href = href,
+            .title = title orelse "",
+        });
 
         if (self.callback) |*cb| {
             cb.increment(4 + href.len);
@@ -1181,10 +1197,10 @@ test "DocumentAuthor: Paragraph & Text" {
         try style.boldItalicFmt("bold italic {d}", .{108});
         try style.code("code");
         try style.codeFmt("code {d}", .{108});
-        try style.link("#", "link");
-        try style.linkFmt("#", "link {d}", .{108});
+        try style.link("#", "title", "link");
+        try style.linkFmt("#", null, "link {d}", .{108});
 
-        var link = try style.linkStyled("#");
+        var link = try style.linkStyled("#", null);
         errdefer link.deinit();
         try link.plain("link style");
         try link.seal();
@@ -1199,7 +1215,7 @@ test "DocumentAuthor: Paragraph & Text" {
         \\bar108
         \\
         \\text text108 _italic_ _italic 108_ **bold** **bold 108** ***bold italic***
-    ++ " ***bold italic 108*** `code` `code 108` [link](#) [link 108](#) [link style](#)", doc);
+    ++ " ***bold italic 108*** `code` `code 108` [link](# \"title\") [link 108](#) [link style](#)", doc);
 }
 
 test "DocumentAuthor: Heading" {
@@ -1208,7 +1224,11 @@ test "DocumentAuthor: Heading" {
         errdefer md.deinit();
 
         try md.heading(2, "Foo");
-        try md.headingFmt(2, "Bar {d}", .{108});
+        try md.headingFmt(4, "Bar {d}", .{108});
+
+        var style = try md.headingStyled(6);
+        try style.plain("Baz Style");
+        try style.seal();
 
         break :blk try md.consume(test_alloc);
     };
@@ -1216,7 +1236,9 @@ test "DocumentAuthor: Heading" {
     try Writer.expectValue(
         \\## Foo
         \\
-        \\## Bar 108
+        \\#### Bar 108
+        \\
+        \\###### Baz Style
     , doc);
 }
 
