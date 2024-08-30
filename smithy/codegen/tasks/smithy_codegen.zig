@@ -432,9 +432,9 @@ fn serviceReadmeTask(
 }
 
 fn processIntro(allocator: Allocator, source: []const u8) ![]const u8 {
-    var build = try md.DocumentAuthor.init(allocator);
-    try md.html.convert(allocator, &build, source);
-    const markdown = try build.consume();
+    var build = try md.MarkdownAuthor.init(allocator);
+    try md.html.convert(allocator, build.root(), source);
+    const markdown = try build.consume(allocator);
     defer markdown.deinit(allocator);
 
     var str = std.ArrayList(u8).init(allocator);
@@ -452,7 +452,7 @@ test "ServiceReadme" {
         var builder = pipez.InvokerBuilder{};
 
         _ = builder.Override(ServiceReadmeHook, "Test Readme", struct {
-            fn f(_: *const Delegate, bld: *md.DocumentAuthor, metadata: ReadmeMetadata) anyerror!void {
+            fn f(_: *const Delegate, bld: md.ContainerAuthor, metadata: ReadmeMetadata) anyerror!void {
                 try bld.heading(2, metadata.title);
             }
         }.f, .{});

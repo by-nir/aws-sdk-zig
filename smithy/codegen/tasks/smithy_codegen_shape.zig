@@ -934,7 +934,10 @@ fn writeDocComment(
         };
     } orelse return;
 
-    try bld.commentMarkdownWith(.doc, md.html.CallbackContext{ .allocator = arena, .html = docs }, md.html.callback);
+    try bld.commentMarkdownWith(.doc, md.html.CallbackContext{
+        .allocator = arena,
+        .html = docs,
+    }, md.html.callback);
 }
 
 pub fn writeDocument(x: ExprBuild, json_val: JsonValue) !zig.Expr {

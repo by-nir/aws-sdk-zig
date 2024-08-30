@@ -156,12 +156,24 @@ pub fn MutableSourceTree(comptime Tag: type) type {
             return self.hierarchy.appendNode(self.allocator, parent, tag, payload);
         }
 
+        pub fn appendNodePayloadFmt(self: *Self, parent: NodeHandle, tag: Tag, comptime format: []const u8, args: anytype) !NodeHandle {
+            const payload = try self.payload.putFmt(self.allocator, format, args);
+            errdefer self.payload.drop(payload);
+            return self.hierarchy.appendNode(self.allocator, parent, tag, payload);
+        }
+
         pub fn insertNode(self: *Self, parent: NodeHandle, i: Indexer, tag: Tag) !NodeHandle {
             return self.hierarchy.insertNode(self.allocator, parent, i, tag, PayloadHandle.empty);
         }
 
         pub fn insertNodePayload(self: *Self, parent: NodeHandle, i: Indexer, tag: Tag, comptime T: type, value: T) !NodeHandle {
             const payload = try self.payload.putValue(self.allocator, T, value);
+            errdefer self.payload.drop(payload);
+            return self.hierarchy.insertNode(self.allocator, parent, i, tag, payload);
+        }
+
+        pub fn insertNodePayloadFmt(self: *Self, parent: NodeHandle, i: Indexer, tag: Tag, comptime format: []const u8, args: anytype) !NodeHandle {
+            const payload = try self.payload.putFmt(self.allocator, format, args);
             errdefer self.payload.drop(payload);
             return self.hierarchy.insertNode(self.allocator, parent, i, tag, payload);
         }
@@ -190,7 +202,7 @@ pub fn MutableSourceTree(comptime Tag: type) type {
             if (!handle.*.isEmpty()) self.payload.drop(handle.*);
 
             handle.* = string;
-            return string.length - 3;
+            return string.length - 3; // 3 bytes are used to encode string’s length
         }
 
         pub fn childCount(self: Self, parent: NodeHandle) Indexer {
@@ -207,6 +219,15 @@ pub fn MutableSourceTree(comptime Tag: type) type {
 
         pub fn iterateChildren(self: Self, parent: NodeHandle) Iterator {
             return self.hierarchy.query().iterateChildren(parent);
+        }
+
+        pub fn getNodeTag(self: Self, node: NodeHandle) Tag {
+            return self.hierarchy.query().getTag(node);
+        }
+
+        pub fn getNodePayload(self: Self, comptime T: type, node: NodeHandle) T {
+            const handle = self.hierarchy.query().getPayload(node);
+            return self.payload.getValue(T, handle);
         }
     };
 }
@@ -286,6 +307,11 @@ const PayloadAuthor = struct {
         const buffer = self.serial.buffer.items;
         assert(handle.offset + handle.length <= buffer.len);
         return buffer[handle.offset..][0..handle.length];
+    }
+
+    pub fn getValue(self: PayloadAuthor, comptime T: type, handle: PayloadHandle) T {
+        var reader = srl.SerialReader{ .buffer = self.getRaw(handle) };
+        return reader.next(T);
     }
 
     pub fn putRaw(self: *PayloadAuthor, allocator: Allocator, bytes: []const u8) !PayloadHandle {

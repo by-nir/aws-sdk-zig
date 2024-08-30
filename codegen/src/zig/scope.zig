@@ -214,7 +214,7 @@ pub const ContainerBuild = struct {
         errdefer b.deinit();
 
         try b.commentMarkdown(.doc, struct {
-            fn f(m: *md.DocumentAuthor) !void {
+            fn f(m: md.ContainerAuthor) !void {
                 try m.heading(1, "qux");
             }
         }.f);
@@ -614,7 +614,7 @@ pub const BlockBuild = struct {
         errdefer b.deinit();
 
         try b.commentMarkdown(.doc, struct {
-            fn f(m: *md.DocumentAuthor) !void {
+            fn f(m: md.ContainerAuthor) !void {
                 try m.heading(1, "qux");
             }
         }.f);

@@ -110,7 +110,7 @@ test "If" {
         .body(_raw("bar"))
         .elseIf(_raw("baz")).body(_raw("qux"))
         .commentMarkdown(struct {
-        fn f(b: *md.DocumentAuthor) !void {
+        fn f(b: md.ContainerAuthor) !void {
             try b.heading(1, "foo");
         }
     }.f)
@@ -903,7 +903,7 @@ test "Switch" {
     try b.branch().caseRange(b.x.raw("18"), b.x.raw("108"))
         .body(b.x.raw("unreachable"));
     try b.commentMarkdown(struct {
-        fn f(m: *md.DocumentAuthor) !void {
+        fn f(m: md.ContainerAuthor) !void {
             try m.heading(1, "foo");
         }
     }.f);

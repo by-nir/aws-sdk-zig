@@ -1,9 +1,12 @@
+//! HTML source with partial spec support.
 const std = @import("std");
 const mem = std.mem;
 const Allocator = mem.Allocator;
+const assert = std.debug.assert;
 const testing = std.testing;
-const test_alloc = std.testing.allocator;
+const test_alloc = testing.allocator;
 const md = @import("../md.zig");
+const srct = @import("../tree.zig");
 const Writer = @import("../CodegenWriter.zig");
 
 const log = std.log.scoped(.html_to_md);
@@ -13,13 +16,13 @@ pub const CallbackContext = struct {
     html: []const u8,
 };
 
-pub fn callback(ctx: CallbackContext, b: *md.DocumentAuthor) !void {
+pub fn callback(ctx: CallbackContext, b: md.ContainerAuthor) !void {
     try convert(ctx.allocator, b, ctx.html);
 }
 
 const HtmlTag = enum(u32) {
-    ROOT = 0,
-    TEXT = std.math.maxInt(u32),
+    document = 0,
+    text = std.math.maxInt(u32),
     p = hash("p"),
     ul = hash("ul"),
     ol = hash("ol"),
@@ -37,7 +40,7 @@ const HtmlTag = enum(u32) {
     }
 
     fn hash(str: []const u8) u64 {
-        std.debug.assert(str.len > 0 and str.len <= 32);
+        assert(str.len > 0 and str.len <= 32);
         var output: [32]u8 = undefined;
         const name = std.ascii.lowerString(&output, str);
         return std.hash.CityHash32.hash(name);
@@ -45,23 +48,22 @@ const HtmlTag = enum(u32) {
 
     pub fn isInline(self: HtmlTag) bool {
         return switch (self) {
-            .TEXT, .a, .b, .strong, .i, .em, .code => true,
+            .text, .a, .b, .strong, .i, .em, .code => true,
             else => false,
         };
     }
 };
 
 const HtmlTagInfo = struct {
-    raw: []const u8,
-    tag: HtmlTag,
     kind: Kind,
+    tag: HtmlTag,
+    attrs: ?[]const u8 = null,
 
     pub const Kind = enum { open, close, self_close };
 
     pub fn parse(raw: []const u8) HtmlTagInfo {
-        std.debug.assert(raw.len > 2);
-        std.debug.assert(raw[0] == '<' and raw[raw.len - 1] == '>');
-        std.debug.assert(!mem.eql(u8, "</>", raw));
+        assert(raw.len > 2 and raw[0] == '<' and raw[raw.len - 1] == '>');
+        assert(!mem.eql(u8, "</>", raw));
 
         const kind: Kind = if (raw[raw.len - 2] == '/')
             .self_close
@@ -70,25 +72,29 @@ const HtmlTagInfo = struct {
         else
             .open;
 
-        const tag = blk: {
-            const start: usize = if (kind == .close) 2 else 1;
-            const end: usize = if (kind == .self_close) raw.len - 2 else raw.len - 1;
-            const name = if (mem.indexOfScalarPos(u8, raw, start, ' ')) |idx| raw[start..idx] else raw[start..end];
-            break :blk HtmlTag.parse(name);
-        };
+        const start: usize = if (kind == .close) 2 else 1;
+        const end: usize = if (kind == .self_close) raw.len - 2 else raw.len - 1;
+        const name = if (mem.indexOfAnyPos(u8, raw, start, &std.ascii.whitespace)) |idx| raw[start..idx] else raw[start..end];
+        const attrs = if (start + name.len == end) "" else mem.trim(u8, raw[start + name.len + 1 .. end], &std.ascii.whitespace);
 
         return .{
-            .raw = raw,
-            .tag = tag,
             .kind = kind,
+            .tag = HtmlTag.parse(name),
+            .attrs = if (attrs.len > 0) attrs else null,
         };
     }
 };
 
 test "HtmlTagInfo" {
-    try testing.expectEqualDeep(HtmlTagInfo{ .raw = "<p>", .tag = .p, .kind = .open }, HtmlTagInfo.parse("<p>"));
-    try testing.expectEqualDeep(HtmlTagInfo{ .raw = "</p>", .tag = .p, .kind = .close }, HtmlTagInfo.parse("</p>"));
-    try testing.expectEqualDeep(HtmlTagInfo{ .raw = "<p />", .tag = .p, .kind = .self_close }, HtmlTagInfo.parse("<p />"));
+    try testing.expectEqualDeep(HtmlTagInfo{ .kind = .open, .tag = .p }, HtmlTagInfo.parse("<p>"));
+    try testing.expectEqualDeep(HtmlTagInfo{ .kind = .close, .tag = .p }, HtmlTagInfo.parse("</p>"));
+    try testing.expectEqualDeep(HtmlTagInfo{ .kind = .self_close, .tag = .p }, HtmlTagInfo.parse("<p />"));
+
+    try testing.expectEqualDeep(HtmlTagInfo{
+        .kind = .self_close,
+        .tag = .p,
+        .attrs = "style=\"foo\"",
+    }, HtmlTagInfo.parse("<p style=\"foo\" />"));
 }
 
 /// Naively parse HTML source, normalize whitespace, and convert entities to unicode.
@@ -120,8 +126,9 @@ const HtmlFragmenter = struct {
         self.buffer.deinit(self.allocator);
     }
 
+    /// The returned fragment is invalidated by the next call to `next`.
     pub fn next(self: *HtmlFragmenter) !?Fragment {
-        errdefer self.buffer.deinit(self.allocator);
+        self.buffer.clearRetainingCapacity();
         while (true) {
             const idx = mem.indexOfAny(u8, self.token, "<>") orelse {
                 try self.appendToBuffer(self.token);
@@ -155,12 +162,11 @@ const HtmlFragmenter = struct {
                 if (buffer.len > 2 and buffer[1] == '/' and buffer[buffer.len - 2] == '/') continue; // `</>`, `</···/>`
 
                 // Valid tag
-                const fragment = try self.buffer.toOwnedSlice(self.allocator);
-                return Fragment{ .tag = fragment };
+                return Fragment{ .tag = buffer };
             }
         }
 
-        const fragment = try self.buffer.toOwnedSlice(self.allocator);
+        const fragment = self.buffer.items;
         if (fragment.len > 0) {
             return Fragment{ .text = fragment };
         } else {
@@ -180,95 +186,52 @@ const HtmlFragmenter = struct {
         // TODO: convert entities to unicode https://html.spec.whatwg.org/entities.json
         try self.buffer.appendSlice(self.allocator, text);
     }
-
-    fn expectNext(self: *HtmlFragmenter, expected: Fragment) !void {
-        const frag = (try self.next()) orelse return error.FragmentsDepleted;
-        defer frag.deinit(test_alloc);
-        try testing.expectEqualDeep(expected, frag);
-    }
 };
 
 test "HtmlFragmenter" {
-    var frags = HtmlFragmenter.init(test_alloc, "foo bar<baz>qux</baz><foo /></invalid/></invalid /></>");
-    errdefer frags.deinit();
+    var frags = HtmlFragmenter.init(test_alloc, "foo bar<baz>qux</baz><foo /></invalid/></invalid /></><img src=\"#\" />");
+    defer frags.deinit();
 
-    try frags.expectNext(.{ .text = "foo bar" });
-    try frags.expectNext(.{ .tag = "<baz>" });
-    try frags.expectNext(.{ .text = "qux" });
-    try frags.expectNext(.{ .tag = "</baz>" });
-    try frags.expectNext(.{ .tag = "<foo />" });
-    try frags.expectNext(.{ .text = "</invalid/>" });
-    try frags.expectNext(.{ .text = "</invalid />" });
-    try frags.expectNext(.{ .text = "</>" });
+    try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .text = "foo bar" }, (try frags.next()).?);
+    try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .tag = "<baz>" }, (try frags.next()).?);
+    try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .text = "qux" }, (try frags.next()).?);
+    try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .tag = "</baz>" }, (try frags.next()).?);
+    try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .tag = "<foo />" }, (try frags.next()).?);
+    try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .text = "</invalid/>" }, (try frags.next()).?);
+    try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .text = "</invalid />" }, (try frags.next()).?);
+    try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .text = "</>" }, (try frags.next()).?);
+    try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .tag = "<img src=\"#\" />" }, (try frags.next()).?);
     try testing.expectEqual(null, try frags.next());
 }
 
-const HtmlNode = struct {
-    const Self = @This();
+const HtmlTree = srct.MutableSourceTree(HtmlTag);
 
-    tag: HtmlTag,
-    raw: []const u8,
-    children: std.ArrayListUnmanaged(*HtmlNode) = .{},
+fn parse(mut_alloc: Allocator, html: []const u8) !HtmlTree {
+    var frags = HtmlFragmenter.init(mut_alloc, html);
+    defer frags.deinit();
 
-    pub fn init(allocator: Allocator, tag: HtmlTag, raw: []const u8) !*Self {
-        const self = try allocator.create(Self);
-        self.* = .{ .tag = tag, .raw = raw };
-        return self;
-    }
+    var tree = try HtmlTree.init(mut_alloc, .document);
+    errdefer tree.deinit();
 
-    pub fn deinit(self: *Self, allocator: Allocator) void {
-        for (self.children.items) |node| node.deinit(allocator);
-        self.children.deinit(allocator);
-        if (self.raw.len > 0) allocator.free(self.raw);
-        allocator.destroy(self);
-    }
-
-    pub fn appendChild(self: *Self, allocator: Allocator, tag: HtmlTag, raw: []const u8) !*Self {
-        const child = try init(allocator, tag, raw);
-        errdefer child.deinit(allocator);
-        try self.children.append(allocator, child);
-        return child;
-    }
-
-    pub fn iterate(self: Self) Iterator {
-        return .{ .children = self.children.items };
-    }
-
-    pub const Iterator = struct {
-        index: usize = 0,
-        children: []const *HtmlNode,
-
-        pub fn next(self: *Iterator) ?*HtmlNode {
-            if (self.index >= self.children.len) return null;
-            defer self.index += 1;
-            return self.children[self.index];
-        }
-    };
-};
-
-fn buildTree(allocator: Allocator, html: []const u8) !*HtmlNode {
-    var frags = HtmlFragmenter.init(allocator, html);
-    const meta = HtmlTagInfo{ .tag = .ROOT, .kind = .open, .raw = "" };
-    const root = try HtmlNode.init(allocator, .ROOT, "");
-    try buildNode(allocator, &frags, root, meta);
-    return root;
+    try parseNode(&frags, &tree, srct.ROOT, .document);
+    return tree;
 }
 
-fn buildNode(allocator: Allocator, frags: *HtmlFragmenter, node: *HtmlNode, meta: HtmlTagInfo) !void {
+fn parseNode(frags: *HtmlFragmenter, tree: *HtmlTree, parent: srct.NodeHandle, parent_tag: HtmlTag) !void {
     while (try frags.next()) |frag| {
         switch (frag) {
-            .text => |s| _ = try node.appendChild(allocator, .TEXT, s),
+            .text => |payload| _ = try tree.appendNodePayload(parent, .text, []const u8, payload),
             .tag => |s| {
-                const child_meta = HtmlTagInfo.parse(s);
-                switch (child_meta.kind) {
-                    .close => {
-                        allocator.free(child_meta.raw);
-                        return if (child_meta.tag == meta.tag) {} else error.UnexpectedClosingTag;
-                    },
+                const meta = HtmlTagInfo.parse(s);
+                switch (meta.kind) {
+                    .close => if (meta.tag == parent_tag) return else return error.UnexpectedClosingTag,
                     inline else => |g| {
-                        errdefer allocator.free(child_meta.raw);
-                        const child_node = try node.appendChild(allocator, child_meta.tag, child_meta.raw);
-                        if (g == .open) try buildNode(allocator, frags, child_node, child_meta);
+                        const node = if (meta.attrs) |attrs|
+                            try tree.appendNodePayload(parent, meta.tag, []const u8, attrs)
+                        else
+                            try tree.appendNode(parent, meta.tag);
+
+                        if (g == .open) try parseNode(frags, tree, node, meta.tag);
                     },
                 }
             },
@@ -276,67 +239,61 @@ fn buildNode(allocator: Allocator, frags: *HtmlFragmenter, node: *HtmlNode, meta
     }
 }
 
-test "buildTree" {
-    const tree = try buildTree(test_alloc, "foo<p /><ul><li /></ul>");
-    defer tree.deinit(test_alloc);
+test "parse" {
+    var tree = try parse(test_alloc, "foo<p /><ul><li /></ul>");
+    defer tree.deinit();
 
-    var it = tree.iterate();
-    try testing.expectEqualDeep(&HtmlNode{ .tag = .TEXT, .raw = "foo" }, it.next().?);
-    try testing.expectEqualDeep(&HtmlNode{ .tag = .p, .raw = "<p />" }, it.next().?);
+    var it = tree.iterateChildren(srct.ROOT);
 
-    const list = it.next().?;
-    try testing.expectEqual(HtmlTag.ul, list.tag);
+    var node = it.next().?;
+    try testing.expectEqual(.text, tree.getNodeTag(node));
+    try testing.expectEqualStrings("foo", tree.getNodePayload([]const u8, node));
+
+    try testing.expectEqual(.p, tree.getNodeTag(it.next().?));
+
+    node = it.next().?;
+    try testing.expectEqual(.ul, tree.getNodeTag(node));
     try testing.expectEqual(null, it.next());
 
-    it = list.iterate();
-    try testing.expectEqualDeep(&HtmlNode{ .tag = .li, .raw = "<li />" }, it.next().?);
+    it = tree.iterateChildren(node);
+    try testing.expectEqual(.li, tree.getNodeTag(it.next().?));
     try testing.expectEqual(null, it.next());
 }
 
 /// Write Markdown source using an **extremely naive and partial** Markdown parser.
-pub fn convert(allocator: Allocator, bld: *md.DocumentAuthor, html: []const u8) !void {
-    const tree = try buildTree(allocator, html);
-    errdefer tree.deinit(allocator);
+pub fn convert(allocator: Allocator, bld: md.ContainerAuthor, html: []const u8) !void {
+    var tree = try parse(allocator, html);
+    defer tree.deinit();
 
-    var it = tree.iterate();
+    var it = tree.iterateChildren(srct.ROOT);
     while (it.next()) |node| {
-        try convertNode(.{ .document = bld }, node);
+        try convertNode(bld, &tree, node);
     }
 }
 
-const NodeBuilder = union(enum) {
-    document: *md.DocumentAuthor,
-    container: *md.ContainerAuthor,
-};
-
-fn convertNode(bld: NodeBuilder, node: *const HtmlNode) !void {
-    switch (node.tag) {
-        .TEXT => switch (bld) {
-            inline else => |t| try t.paragraph(node.raw),
-        },
+fn convertNode(bld: md.ContainerAuthor, html: *const HtmlTree, node: srct.NodeHandle) !void {
+    const tag = html.getNodeTag(node);
+    switch (tag) {
+        .text => try bld.paragraph(html.getNodePayload([]const u8, node)),
         .p => {
-            var paragraph: md.StyledAuthor = switch (bld) {
-                inline else => |t| try t.paragraphStyled(),
-            };
+            var paragraph: md.StyledAuthor = try bld.paragraphStyled();
             errdefer paragraph.deinit();
 
-            var it = node.iterate();
+            var it = html.iterateChildren(node);
             while (it.next()) |child| {
-                try convertStyledNode(&paragraph, child);
+                try convertStyledNode(&paragraph, html, child, html.getNodeTag(child));
             }
 
             try paragraph.seal();
         },
-        inline .ul, .ol => |tag| {
-            const kind: md.ListKind = if (tag == .ul) .unordered else .ordered;
-            var list: md.ListAuthor = switch (bld) {
-                inline else => |t| try t.list(kind),
-            };
+        inline .ul, .ol => |list_tag| {
+            const kind: md.ListKind = if (list_tag == .ul) .unordered else .ordered;
+            var list: md.ListAuthor = try bld.list(kind);
             errdefer list.deinit();
 
-            var it = node.iterate();
+            var it = html.iterateChildren(node);
             while (it.next()) |child| {
-                std.debug.assert(child.tag == .li);
+                assert(.li == html.getNodeTag(child));
 
                 var container = try list.container();
                 errdefer container.deinit();
@@ -344,18 +301,19 @@ fn convertNode(bld: NodeBuilder, node: *const HtmlNode) !void {
                 var styled: ?md.StyledAuthor = null;
                 errdefer if (styled) |*t| t.deinit();
 
-                var item_it = child.iterate();
+                var item_it = html.iterateChildren(child);
                 while (item_it.next()) |item| {
-                    if (item.tag.isInline()) {
+                    const item_tag = html.getNodeTag(item);
+                    if (item_tag.isInline()) {
                         if (styled == null) styled = try container.paragraphStyled();
-                        try convertStyledNode(&styled.?, item);
+                        try convertStyledNode(&styled.?, html, item, item_tag);
                     } else {
                         if (styled) |*t| {
                             defer styled = null;
                             try t.seal();
                         }
 
-                        try convertNode(.{ .container = &container }, item);
+                        try convertNode(container, html, item);
                     }
                 }
 
@@ -363,74 +321,72 @@ fn convertNode(bld: NodeBuilder, node: *const HtmlNode) !void {
             }
         },
         else => {
-            // TODO: Custom tag handlers
-            log.warn("Unrecognized tag: `<{}>`", .{node.tag});
+            log.warn("Unrecognized tag: `<{s}>`", .{@tagName(tag)});
 
-            var it = node.iterate();
+            var it = html.iterateChildren(node);
             while (it.next()) |child| {
-                try convertNode(bld, child);
+                try convertNode(bld, html, child);
             }
         },
     }
 }
 
-fn convertStyledNode(bld: *md.StyledAuthor, node: *const HtmlNode) !void {
-    switch (node.tag) {
-        .TEXT => try bld.plain(node.raw),
+fn convertStyledNode(bld: *md.StyledAuthor, html: *const HtmlTree, node: srct.NodeHandle, tag: HtmlTag) !void {
+    switch (tag) {
+        .text => try bld.plain(html.getNodePayload([]const u8, node)),
         .b, .strong => {
-            const text = TEMP_extractNodeText(node);
+            const text = TEMP_extractNodeText(html, node);
             try bld.bold(text);
         },
         .i, .em => {
-            const text = TEMP_extractNodeText(node);
+            const text = TEMP_extractNodeText(html, node);
             try bld.italic(text);
         },
         .code => {
-            const text = TEMP_extractNodeText(node);
+            const text = TEMP_extractNodeText(html, node);
             try bld.code(text);
         },
         .a => {
-            const start = 6 + (mem.indexOf(u8, node.raw, "href=\"") orelse return error.MissingHrefAttribute);
-            const end = mem.indexOfScalarPos(u8, node.raw, start, '"') orelse return error.MissingHrefAttribute;
-            const href = node.raw[start..end];
+            const payload = html.getNodePayload([]const u8, node);
+            const start = 6 + (mem.indexOf(u8, payload, "href=\"") orelse return error.MissingHrefAttribute);
+            const end = mem.indexOfScalarPos(u8, payload, start, '"') orelse return error.MissingHrefAttribute;
+            const href = payload[start..end];
 
-            const text = TEMP_extractNodeText(node);
+            const text = TEMP_extractNodeText(html, node);
             try bld.link(href, null, text);
         },
         else => {
-            // TODO: Custom tag handlers
-            log.warn("Unrecognized tag: `<{}>`", .{node.tag});
+            log.warn("Unrecognized tag: `<{s}>`", .{@tagName(tag)});
         },
     }
 }
 
-// TODO: Support dynamic children
-fn TEMP_extractNodeText(node: *const HtmlNode) []const u8 {
-    std.debug.assert(node.children.items.len == 1);
-    return node.children.items[0].raw;
+fn TEMP_extractNodeText(html: *const HtmlTree, node: srct.NodeHandle) []const u8 {
+    assert(html.childCount(node) == 1);
+    return html.getNodePayload([]const u8, html.childAt(node, 0));
 }
 
 test "convert" {
-    try expect("<p>foo</p>", "foo");
+    try expectConvert("<p>foo</p>", "foo");
 
-    try expect("Foo.\n    <p>Bar baz\n    <qux.</p>",
+    try expectConvert("Foo.\n    <p>Bar baz\n    <qux.</p>",
         \\Foo.
         \\
         \\Bar baz <qux.
     );
 
-    try expect(
+    try expectConvert(
         "<p>Inline: <a href=\"#\">foo\n    106</a>, <i>bar \n    107</i>, <b>baz \n    108</b>, <code>qux \n    109</code>.</p>",
         "Inline: [foo 106](#), _bar 107_, **baz 108**, `qux 109`.",
     );
 
-    try expect("<ul>\n<li>\nFoo 106\n</li>\n<li><code>Bar\n107</code></li>\n<li><p>Baz 108</p></li></ul>",
+    try expectConvert("<ul>\n<li>\nFoo 106\n</li>\n<li><code>Bar\n107</code></li>\n<li><p>Baz 108</p></li></ul>",
         \\- Foo 106
         \\- `Bar 107`
         \\- Baz 108
     );
 
-    try expect(
+    try expectConvert(
         \\<ul>
         \\    <li>
         \\        <p>Foo</p>
@@ -445,7 +401,7 @@ test "convert" {
         \\- Baz
     );
 
-    try expect(
+    try expectConvert(
         \\<ul>
         \\    <li>
         \\        <p>Foo</p>
@@ -465,17 +421,15 @@ test "convert" {
     );
 }
 
-fn expect(source: []const u8, expected: []const u8) !void {
+fn expectConvert(source: []const u8, expected: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const arena_alloc = arena.allocator();
     defer arena.deinit();
 
     var doc = blk: {
-        var build = try md.DocumentAuthor.init(arena_alloc);
+        var build = try md.MarkdownAuthor.init(arena_alloc);
         errdefer build.deinit();
-
-        try convert(arena_alloc, &build, source);
-
+        try convert(arena_alloc, build.root(), source);
         break :blk try build.consume(arena_alloc);
     };
     errdefer doc.deinit(arena_alloc);

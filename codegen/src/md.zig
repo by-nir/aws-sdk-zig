@@ -19,20 +19,37 @@ pub const html = @import("md/html.zig");
 pub const ListKind = enum(u8) { unordered, ordered };
 pub const ColumnAlign = enum(u8) { left, center, right };
 
-pub const DocumentClosure = *const fn (*DocumentAuthor) anyerror!void;
+const MutableTree = srct.MutableSourceTree(Mark);
+const ReadOnlyTree = srct.ReadOnlySourceTree(Mark);
+
+pub const DocumentClosure = *const fn (ContainerAuthor) anyerror!void;
 
 // TODO: Support soft/hard width guidelines
 pub fn authorDocument(
     allocator: Allocator,
     ctx: anytype,
     closure: Closure(@TypeOf(ctx), DocumentClosure),
-) !Document {
-    var author = try DocumentAuthor.init(allocator);
+) !MarkdownDocument {
+    var author = try MarkdownAuthor.init(allocator);
     errdefer author.deinit();
 
-    try callClosure(ctx, closure, .{&author});
+    try callClosure(ctx, closure, .{author.root()});
     return author.consume(test_alloc);
 }
+
+const INDENT = " " ** 4;
+const MAX_TABLE_COLUMNS = 16;
+
+const MarkColumn = packed struct(u24) {
+    aligns: ColumnAlign = .left,
+    self_width: u8 = 0,
+    dynamic_width: u8 = 0,
+};
+
+const MarkLink = struct {
+    href: []const u8,
+    title: []const u8 = "",
+};
 
 const Mark = enum {
     document,
@@ -60,36 +77,18 @@ const Mark = enum {
     }
 };
 
-const MutableTree = srct.MutableSourceTree(Mark);
-const ReadOnlyTree = srct.ReadOnlySourceTree(Mark);
-
-const MAX_TABLE_COLUMNS = 16;
-
-const MarkColumn = packed struct(u24) {
-    aligns: ColumnAlign = .left,
-    self_width: u8 = 0,
-    dynamic_width: u8 = 0,
-};
-
-const MarkLink = struct {
-    href: []const u8,
-    title: []const u8 = "",
-};
-
-pub const Document = struct {
+pub const MarkdownDocument = struct {
     tree: ReadOnlyTree,
 
-    const INDENT = " " ** 4;
-
-    pub fn author(allocator: Allocator) !DocumentAuthor {
-        return DocumentAuthor.init(allocator);
+    pub fn author(allocator: Allocator) !MarkdownAuthor {
+        return MarkdownAuthor.init(allocator);
     }
 
-    pub fn deinit(self: Document, allocator: Allocator) void {
+    pub fn deinit(self: MarkdownDocument, allocator: Allocator) void {
         self.tree.deinit(allocator);
     }
 
-    pub fn write(self: Document, writer: *Writer) !void {
+    pub fn write(self: MarkdownDocument, writer: *Writer) !void {
         var first = true;
         var it = self.tree.iterateChildren(srct.ROOT);
         while (it.next()) |node| : (first = false) {
@@ -278,7 +277,7 @@ pub const Document = struct {
     }
 };
 
-test "Document: Raw" {
+test "MarkdownDocument: Raw" {
     const doc = blk: {
         var tree = try MutableTree.init(test_alloc, .document);
         errdefer tree.deinit();
@@ -286,7 +285,7 @@ test "Document: Raw" {
         _ = try tree.appendNodePayload(srct.ROOT, .block_raw, []const u8, "foo");
         _ = try tree.appendNodePayload(srct.ROOT, .block_raw, []const u8, "bar");
 
-        break :blk Document{
+        break :blk MarkdownDocument{
             .tree = try tree.consumeReadOnly(test_alloc),
         };
     };
@@ -298,20 +297,20 @@ test "Document: Raw" {
     , doc);
 }
 
-test "Document: Comment" {
+test "MarkdownDocument: Comment" {
     const doc = blk: {
         var tree = try MutableTree.init(test_alloc, .document);
         errdefer tree.deinit();
 
         _ = try tree.appendNodePayload(srct.ROOT, .block_comment, []const u8, "foo");
 
-        break :blk Document{ .tree = try tree.consumeReadOnly(test_alloc) };
+        break :blk MarkdownDocument{ .tree = try tree.consumeReadOnly(test_alloc) };
     };
     defer doc.deinit(test_alloc);
     try Writer.expectValue("<!-- foo -->", doc);
 }
 
-test "Document: Paragraph & Text" {
+test "MarkdownDocument: Paragraph & Text" {
     const doc = blk: {
         var tree = try MutableTree.init(test_alloc, .document);
         errdefer tree.deinit();
@@ -327,13 +326,13 @@ test "Document: Paragraph & Text" {
         const child = try tree.appendNodePayload(node, .text_link, MarkLink, .{ .href = "#" });
         _ = try tree.appendNodePayload(child, .text_plain, []const u8, "link");
 
-        break :blk Document{ .tree = try tree.consumeReadOnly(test_alloc) };
+        break :blk MarkdownDocument{ .tree = try tree.consumeReadOnly(test_alloc) };
     };
     defer doc.deinit(test_alloc);
     try Writer.expectValue("text _italic_ **bold** ***bold italic*** `code` [link](#)", doc);
 }
 
-test "Document: Heading" {
+test "MarkdownDocument: Heading" {
     const doc = blk: {
         var tree = try MutableTree.init(test_alloc, .document);
         errdefer tree.deinit();
@@ -341,13 +340,13 @@ test "Document: Heading" {
         const node = try tree.appendNodePayload(srct.ROOT, .block_heading, u8, 2);
         _ = try tree.appendNodePayload(node, .text_plain, []const u8, "Foo");
 
-        break :blk Document{ .tree = try tree.consumeReadOnly(test_alloc) };
+        break :blk MarkdownDocument{ .tree = try tree.consumeReadOnly(test_alloc) };
     };
     defer doc.deinit(test_alloc);
     try Writer.expectValue("## Foo", doc);
 }
 
-test "Document: Quote" {
+test "MarkdownDocument: Quote" {
     const doc = blk: {
         var tree = try MutableTree.init(test_alloc, .document);
         errdefer tree.deinit();
@@ -363,7 +362,7 @@ test "Document: Quote" {
         para = try tree.appendNode(node, .block_paragraph);
         _ = try tree.appendNodePayload(para, .text_plain, []const u8, "baz");
 
-        break :blk Document{ .tree = try tree.consumeReadOnly(test_alloc) };
+        break :blk MarkdownDocument{ .tree = try tree.consumeReadOnly(test_alloc) };
     };
     defer doc.deinit(test_alloc);
     try Writer.expectValue(
@@ -375,7 +374,7 @@ test "Document: Quote" {
     , doc);
 }
 
-test "Document: Code" {
+test "MarkdownDocument: Code" {
     const code = zig.Container{ .statements = &.{} };
     const doc = blk: {
         var tree = try MutableTree.init(test_alloc, .document);
@@ -383,7 +382,7 @@ test "Document: Code" {
 
         _ = try tree.appendNodePayload(srct.ROOT, .block_code, usize, @intFromPtr(&code));
 
-        break :blk Document{ .tree = try tree.consumeReadOnly(test_alloc) };
+        break :blk MarkdownDocument{ .tree = try tree.consumeReadOnly(test_alloc) };
     };
     defer doc.deinit(test_alloc);
     try Writer.expectValue(
@@ -393,7 +392,7 @@ test "Document: Code" {
     , doc);
 }
 
-test "Document: List" {
+test "MarkdownDocument: List" {
     const doc = blk: {
         var tree = try MutableTree.init(test_alloc, .document);
         errdefer tree.deinit();
@@ -434,7 +433,7 @@ test "Document: List" {
             _ = try tree.appendNodePayload(item, .text_plain, []const u8, "qux");
         }
 
-        break :blk Document{ .tree = try tree.consumeReadOnly(test_alloc) };
+        break :blk MarkdownDocument{ .tree = try tree.consumeReadOnly(test_alloc) };
     };
     defer doc.deinit(test_alloc);
     try Writer.expectValue(
@@ -451,7 +450,7 @@ test "Document: List" {
     , doc);
 }
 
-test "Document: Table" {
+test "MarkdownDocument: Table" {
     const doc = blk: {
         var tree = try MutableTree.init(test_alloc, .document);
         errdefer tree.deinit();
@@ -512,7 +511,7 @@ test "Document: Table" {
         cell = try tree.appendNodePayload(row, .block_table_cell, u8, 7);
         _ = try tree.appendNodePayload(cell, .text_plain, []const u8, "C03 Qux");
 
-        break :blk Document{ .tree = try tree.consumeReadOnly(test_alloc) };
+        break :blk MarkdownDocument{ .tree = try tree.consumeReadOnly(test_alloc) };
     };
     defer doc.deinit(test_alloc);
     try Writer.expectValue(
@@ -524,142 +523,26 @@ test "Document: Table" {
     , doc);
 }
 
-pub const DocumentAuthor = struct {
+pub const MarkdownAuthor = struct {
     tree: MutableTree,
 
-    pub fn init(mut_alloc: Allocator) !DocumentAuthor {
+    pub fn init(mut_alloc: Allocator) !MarkdownAuthor {
         return .{ .tree = try MutableTree.init(mut_alloc, .document) };
     }
 
-    pub fn deinit(self: *DocumentAuthor) void {
+    pub fn deinit(self: *MarkdownAuthor) void {
         self.tree.deinit();
     }
 
-    pub fn consume(self: *DocumentAuthor, immut_alloc: Allocator) !Document {
-        return Document{ .tree = try self.tree.consumeReadOnly(immut_alloc) };
+    pub fn consume(self: *MarkdownAuthor, immut_alloc: Allocator) !MarkdownDocument {
+        return .{ .tree = try self.tree.consumeReadOnly(immut_alloc) };
     }
 
-    pub fn raw(self: *DocumentAuthor, value: []const u8) !void {
-        _ = try self.tree.appendNodePayload(srct.ROOT, .block_raw, []const u8, value);
-    }
-
-    pub fn rawFmt(self: *DocumentAuthor, comptime format: []const u8, args: anytype) !void {
-        const node = try self.tree.appendNode(srct.ROOT, .block_raw);
-        errdefer self.tree.dropNode(node);
-
-        _ = try self.tree.setPayloadFmt(node, format, args);
-    }
-
-    pub fn comment(self: *DocumentAuthor, text: []const u8) !void {
-        _ = try self.tree.appendNodePayload(srct.ROOT, .block_comment, []const u8, text);
-    }
-
-    pub fn commentFmt(self: *DocumentAuthor, comptime format: []const u8, args: anytype) !void {
-        const node = try self.tree.appendNode(srct.ROOT, .block_comment);
-        errdefer self.tree.dropNode(node);
-
-        _ = try self.tree.setPayloadFmt(node, format, args);
-    }
-
-    pub fn heading(self: *DocumentAuthor, level: u8, text: []const u8) !void {
-        if (level == 0 or level > 6) return error.InvalidHeadingLevel;
-        const node = try self.tree.appendNodePayload(srct.ROOT, .block_heading, u8, level);
-        errdefer self.tree.dropNode(node);
-
-        _ = try self.tree.appendNodePayload(node, .text_plain, []const u8, text);
-    }
-
-    pub fn headingFmt(self: *DocumentAuthor, level: u8, comptime format: []const u8, args: anytype) !void {
-        if (level == 0 or level > 6) return error.InvalidHeadingLevel;
-        const node = try self.tree.appendNodePayload(srct.ROOT, .block_heading, u8, level);
-        errdefer self.tree.dropNode(node);
-
-        _ = try StyledAuthor.createPlainFmt(&self.tree, node, format, args);
-    }
-
-    pub fn headingStyled(self: *DocumentAuthor, level: u8) !StyledAuthor {
-        return StyledAuthor{
+    pub fn root(self: *MarkdownAuthor) ContainerAuthor {
+        return .{
             .tree = &self.tree,
-            .parent = try self.tree.appendNodePayload(srct.ROOT, .block_heading, u8, level),
+            .parent = srct.ROOT,
         };
-    }
-
-    pub fn paragraph(self: *DocumentAuthor, text: []const u8) !void {
-        const node = try self.tree.appendNode(srct.ROOT, .block_paragraph);
-        errdefer self.tree.dropNode(node);
-
-        _ = try self.tree.appendNodePayload(node, .text_plain, []const u8, text);
-    }
-
-    pub fn paragraphFmt(self: *DocumentAuthor, comptime format: []const u8, args: anytype) !void {
-        const node = try self.tree.appendNode(srct.ROOT, .block_paragraph);
-        errdefer self.tree.dropNode(node);
-
-        _ = try StyledAuthor.createPlainFmt(&self.tree, node, format, args);
-    }
-
-    pub fn paragraphStyled(self: *DocumentAuthor) !StyledAuthor {
-        return StyledAuthor{
-            .tree = &self.tree,
-            .parent = try self.tree.appendNode(srct.ROOT, .block_paragraph),
-        };
-    }
-
-    pub fn quote(self: *DocumentAuthor, text: []const u8) !void {
-        const node = try self.tree.appendNode(srct.ROOT, .block_quote);
-        errdefer self.tree.dropNode(node);
-
-        _ = try self.tree.appendNodePayload(node, .text_plain, []const u8, text);
-    }
-
-    pub fn quoteFmt(self: *DocumentAuthor, comptime format: []const u8, args: anytype) !void {
-        const node = try self.tree.appendNode(srct.ROOT, .block_quote);
-        errdefer self.tree.dropNode(node);
-
-        _ = try StyledAuthor.createPlainFmt(&self.tree, node, format, args);
-    }
-
-    pub fn quoteStyled(self: *DocumentAuthor) !StyledAuthor {
-        return StyledAuthor{
-            .tree = &self.tree,
-            .parent = try self.tree.appendNode(srct.ROOT, .block_quote),
-        };
-    }
-
-    pub fn quoteContainer(self: *DocumentAuthor) !ContainerAuthor {
-        return ContainerAuthor{
-            .tree = &self.tree,
-            .parent = try self.tree.appendNode(srct.ROOT, .block_quote),
-        };
-    }
-
-    pub fn list(self: *DocumentAuthor, kind: ListKind) !ListAuthor {
-        return ListAuthor{
-            .tree = &self.tree,
-            .parent = try self.tree.appendNodePayload(srct.ROOT, .block_list, ListKind, kind),
-        };
-    }
-
-    pub fn table(self: *DocumentAuthor) !TableAuthor {
-        return TableAuthor{
-            .tree = &self.tree,
-            .parent = try self.tree.appendNode(srct.ROOT, .block_table),
-        };
-    }
-
-    pub fn code(self: *DocumentAuthor, closure: zig.ContainerClosure) !void {
-        try self.codeWith({}, closure);
-    }
-
-    pub fn codeWith(self: *DocumentAuthor, ctx: anytype, closure: Closure(@TypeOf(ctx), zig.ContainerClosure)) !void {
-        const alloc = self.tree.allocator;
-        const data = try alloc.create(zig.Container);
-        errdefer alloc.destroy(data);
-
-        data.* = try zig.Container.init(alloc, ctx, closure);
-        errdefer data.deinit(alloc);
-
-        _ = try self.tree.appendNodePayload(srct.ROOT, .block_code, usize, @intFromPtr(data));
     }
 };
 
@@ -668,78 +551,124 @@ pub const ContainerAuthor = struct {
     parent: srct.NodeHandle,
 
     pub fn deinit(self: ContainerAuthor) void {
+        std.debug.assert(self.parent != srct.ROOT);
         self.tree.dropNode(self.parent);
     }
 
-    pub fn paragraph(self: *ContainerAuthor, text: []const u8) !void {
+    pub fn raw(self: ContainerAuthor, value: []const u8) !void {
+        _ = try self.tree.appendNodePayload(self.parent, .block_raw, []const u8, value);
+    }
+
+    pub fn rawFmt(self: ContainerAuthor, comptime format: []const u8, args: anytype) !void {
+        const node = try self.tree.appendNode(self.parent, .block_raw);
+        errdefer self.tree.dropNode(node);
+
+        _ = try self.tree.setPayloadFmt(node, format, args);
+    }
+
+    pub fn comment(self: ContainerAuthor, text: []const u8) !void {
+        _ = try self.tree.appendNodePayload(self.parent, .block_comment, []const u8, text);
+    }
+
+    pub fn commentFmt(self: ContainerAuthor, comptime format: []const u8, args: anytype) !void {
+        const node = try self.tree.appendNode(self.parent, .block_comment);
+        errdefer self.tree.dropNode(node);
+
+        _ = try self.tree.setPayloadFmt(node, format, args);
+    }
+
+    pub fn heading(self: ContainerAuthor, level: u8, text: []const u8) !void {
+        if (level == 0 or level > 6) return error.InvalidHeadingLevel;
+        const node = try self.tree.appendNodePayload(self.parent, .block_heading, u8, level);
+        errdefer self.tree.dropNode(node);
+
+        _ = try self.tree.appendNodePayload(node, .text_plain, []const u8, text);
+    }
+
+    pub fn headingFmt(self: ContainerAuthor, level: u8, comptime format: []const u8, args: anytype) !void {
+        if (level == 0 or level > 6) return error.InvalidHeadingLevel;
+        const node = try self.tree.appendNodePayload(self.parent, .block_heading, u8, level);
+        errdefer self.tree.dropNode(node);
+
+        _ = try self.tree.appendNodePayloadFmt(node, .text_plain, format, args);
+    }
+
+    pub fn headingStyled(self: ContainerAuthor, level: u8) !StyledAuthor {
+        return StyledAuthor{
+            .tree = self.tree,
+            .parent = try self.tree.appendNodePayload(self.parent, .block_heading, u8, level),
+        };
+    }
+
+    pub fn paragraph(self: ContainerAuthor, text: []const u8) !void {
         const node = try self.tree.appendNode(self.parent, .block_paragraph);
         errdefer self.tree.dropNode(node);
 
         _ = try self.tree.appendNodePayload(node, .text_plain, []const u8, text);
     }
 
-    pub fn paragraphFmt(self: *ContainerAuthor, comptime format: []const u8, args: anytype) !void {
+    pub fn paragraphFmt(self: ContainerAuthor, comptime format: []const u8, args: anytype) !void {
         const node = try self.tree.appendNode(self.parent, .block_paragraph);
         errdefer self.tree.dropNode(node);
 
-        _ = try StyledAuthor.createPlainFmt(self.tree, node, format, args);
+        _ = try self.tree.appendNodePayloadFmt(node, .text_plain, format, args);
     }
 
-    pub fn paragraphStyled(self: *ContainerAuthor) !StyledAuthor {
+    pub fn paragraphStyled(self: ContainerAuthor) !StyledAuthor {
         return StyledAuthor{
             .tree = self.tree,
             .parent = try self.tree.appendNode(self.parent, .block_paragraph),
         };
     }
 
-    pub fn quote(self: *ContainerAuthor, text: []const u8) !void {
+    pub fn quote(self: ContainerAuthor, text: []const u8) !void {
         const node = try self.tree.appendNode(self.parent, .block_quote);
         errdefer self.tree.dropNode(node);
 
         _ = try self.tree.appendNodePayload(node, .text_plain, []const u8, text);
     }
 
-    pub fn quoteFmt(self: *ContainerAuthor, comptime format: []const u8, args: anytype) !void {
+    pub fn quoteFmt(self: ContainerAuthor, comptime format: []const u8, args: anytype) !void {
         const node = try self.tree.appendNode(self.parent, .block_quote);
         errdefer self.tree.dropNode(node);
 
-        _ = try StyledAuthor.createPlainFmt(self.tree, node, format, args);
+        _ = try self.tree.appendNodePayloadFmt(node, .text_plain, format, args);
     }
 
-    pub fn quoteStyled(self: *ContainerAuthor) !StyledAuthor {
+    pub fn quoteStyled(self: ContainerAuthor) !StyledAuthor {
         return StyledAuthor{
             .tree = self.tree,
             .parent = try self.tree.appendNode(self.parent, .block_quote),
         };
     }
 
-    pub fn quoteContainer(self: *ContainerAuthor) !ContainerAuthor {
+    pub fn quoteContainer(self: ContainerAuthor) !ContainerAuthor {
         return ContainerAuthor{
             .tree = self.tree,
             .parent = try self.tree.appendNode(self.parent, .block_quote),
         };
     }
 
-    pub fn list(self: *ContainerAuthor, kind: ListKind) !ListAuthor {
+    pub fn list(self: ContainerAuthor, kind: ListKind) !ListAuthor {
         return ListAuthor{
             .tree = self.tree,
             .parent = try self.tree.appendNodePayload(self.parent, .block_list, ListKind, kind),
         };
     }
 
-    pub fn table(self: *ContainerAuthor) !TableAuthor {
+    pub fn table(self: ContainerAuthor) !TableAuthor {
         return TableAuthor{
-            .tree = &self.tree,
-            .node = try self.tree.appendNode(srct.ROOT, .block_table),
+            .tree = self.tree,
+            .parent = try self.tree.appendNode(self.parent, .block_table),
         };
     }
 
-    pub fn code(self: *ContainerAuthor, closure: zig.ContainerClosure) !void {
+    pub fn code(self: ContainerAuthor, closure: zig.ContainerClosure) !void {
         try self.codeWith({}, closure);
     }
 
     pub fn codeWith(
-        self: *ContainerAuthor,
+        self: ContainerAuthor,
         ctx: anytype,
         closure: Closure(@TypeOf(ctx), zig.ContainerClosure),
     ) !void {
@@ -775,13 +704,6 @@ pub const StyledAuthor = struct {
             try self.func(self.context, parent, self.index, self.length);
         }
     };
-
-    fn createPlainFmt(tree: *MutableTree, parent: srct.NodeHandle, comptime format: []const u8, args: anytype) !usize {
-        const child = try tree.appendNode(parent, .text_plain);
-        errdefer tree.dropNode(child);
-
-        return tree.setPayloadFmt(child, format, args);
-    }
 
     pub fn deinit(self: StyledAuthor) void {
         self.tree.dropNode(self.parent);
@@ -874,7 +796,10 @@ pub const StyledAuthor = struct {
         });
         errdefer self.tree.dropNode(node);
 
-        const len = try StyledAuthor.createPlainFmt(self.tree, node, format, args);
+        const child = try self.tree.appendNode(node, .text_plain);
+        errdefer self.tree.dropNode(child);
+
+        const len = try self.tree.setPayloadFmt(child, format, args);
         if (self.callback) |*cb| cb.increment(4 + href.len + len);
     }
 
@@ -928,7 +853,7 @@ pub const ListAuthor = struct {
         const child = try self.tree.appendNode(self.parent, .block_list_item);
         errdefer self.tree.dropNode(child);
 
-        _ = try StyledAuthor.createPlainFmt(self.tree, child, format, args);
+        _ = try self.tree.appendNodePayloadFmt(child, .text_plain, format, args);
     }
 
     pub fn textStyled(self: ListAuthor) !StyledAuthor {
@@ -996,18 +921,16 @@ pub const TableAuthor = struct {
         _ = try self.tree.appendNodePayload(child, .text_plain, []const u8, value);
     }
 
-    pub fn columnFmt(
-        self: *TableAuthor,
-        aligns: ColumnAlign,
-        comptime format: []const u8,
-        args: anytype,
-    ) !void {
+    pub fn columnFmt(self: *TableAuthor, aligns: ColumnAlign, comptime format: []const u8, args: anytype) !void {
         if (self.columns_sealed) return error.TableColumnAfterRows;
 
         const child = try self.tree.appendNodePayload(self.parent, .block_table_column, MarkColumn, .{});
         errdefer self.tree.dropNode(child);
 
-        const len = try StyledAuthor.createPlainFmt(self.tree, child, format, args);
+        const text = try self.tree.appendNode(child, .text_plain);
+        errdefer self.tree.dropNode(text);
+
+        const len = try self.tree.setPayloadFmt(text, format, args);
         if (len > 255) return error.CellValueTooLong;
 
         try self.columns.append(self.tree.allocator, MarkColumn{
@@ -1141,13 +1064,13 @@ pub const TableAuthor = struct {
     };
 };
 
-test "DocumentAuthor: Raw" {
+test "MarkdownAuthor: Raw" {
     const doc = blk: {
-        var md = try DocumentAuthor.init(test_alloc);
+        var md = try MarkdownAuthor.init(test_alloc);
         errdefer md.deinit();
 
-        try md.raw("foo");
-        try md.rawFmt("bar {d}", .{108});
+        try md.root().raw("foo");
+        try md.root().rawFmt("bar {d}", .{108});
 
         break :blk try md.consume(test_alloc);
     };
@@ -1159,13 +1082,13 @@ test "DocumentAuthor: Raw" {
     , doc);
 }
 
-test "DocumentAuthor: Comment" {
+test "MarkdownAuthor: Comment" {
     const doc = blk: {
-        var md = try DocumentAuthor.init(test_alloc);
+        var md = try MarkdownAuthor.init(test_alloc);
         errdefer md.deinit();
 
-        try md.comment("foo");
-        try md.commentFmt("bar {d}", .{108});
+        try md.root().comment("foo");
+        try md.root().commentFmt("bar {d}", .{108});
 
         break :blk try md.consume(test_alloc);
     };
@@ -1177,15 +1100,15 @@ test "DocumentAuthor: Comment" {
     , doc);
 }
 
-test "DocumentAuthor: Paragraph & Text" {
+test "MarkdownAuthor: Paragraph & Text" {
     const doc = blk: {
-        var md = try DocumentAuthor.init(test_alloc);
+        var md = try MarkdownAuthor.init(test_alloc);
         errdefer md.deinit();
 
-        try md.paragraph("foo");
-        try md.paragraphFmt("bar{d}", .{108});
+        try md.root().paragraph("foo");
+        try md.root().paragraphFmt("bar{d}", .{108});
 
-        var style = try md.paragraphStyled();
+        var style = try md.root().paragraphStyled();
         errdefer style.deinit();
         try style.plain("text");
         try style.plainFmt("text{d}", .{108});
@@ -1218,15 +1141,15 @@ test "DocumentAuthor: Paragraph & Text" {
     ++ " ***bold italic 108*** `code` `code 108` [link](# \"title\") [link 108](#) [link style](#)", doc);
 }
 
-test "DocumentAuthor: Heading" {
+test "MarkdownAuthor: Heading" {
     const doc = blk: {
-        var md = try DocumentAuthor.init(test_alloc);
+        var md = try MarkdownAuthor.init(test_alloc);
         errdefer md.deinit();
 
-        try md.heading(2, "Foo");
-        try md.headingFmt(4, "Bar {d}", .{108});
+        try md.root().heading(2, "Foo");
+        try md.root().headingFmt(4, "Bar {d}", .{108});
 
-        var style = try md.headingStyled(6);
+        var style = try md.root().headingStyled(6);
         try style.plain("Baz Style");
         try style.seal();
 
@@ -1242,19 +1165,19 @@ test "DocumentAuthor: Heading" {
     , doc);
 }
 
-test "DocumentAuthor: Quote" {
+test "MarkdownAuthor: Quote" {
     const doc = blk: {
-        var md = try DocumentAuthor.init(test_alloc);
+        var md = try MarkdownAuthor.init(test_alloc);
         errdefer md.deinit();
 
-        try md.quote("foo");
-        try md.quoteFmt("bar {d}", .{108});
+        try md.root().quote("foo");
+        try md.root().quoteFmt("bar {d}", .{108});
 
-        var style = try md.quoteStyled();
+        var style = try md.root().quoteStyled();
         try style.plain("baz style");
         try style.seal();
 
-        var container = try md.quoteContainer();
+        var container = try md.root().quoteContainer();
         try container.paragraph("qux 0");
         try container.paragraph("qux 1");
 
@@ -1274,16 +1197,16 @@ test "DocumentAuthor: Quote" {
     , doc);
 }
 
-test "DocumentAuthor: Code" {
+test "MarkdownAuthor: Code" {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const arena_alloc = arena.allocator();
     defer arena.deinit();
 
     const doc = blk: {
-        var md = try DocumentAuthor.init(arena_alloc);
+        var md = try MarkdownAuthor.init(arena_alloc);
         errdefer md.deinit();
 
-        try md.code(struct {
+        try md.root().code(struct {
             fn f(_: *zig.ContainerBuild) !void {}
         }.f);
 
@@ -1297,12 +1220,12 @@ test "DocumentAuthor: Code" {
     , doc);
 }
 
-test "DocumentAuthor: List" {
+test "MarkdownAuthor: List" {
     const doc = blk: {
-        var md = try DocumentAuthor.init(test_alloc);
+        var md = try MarkdownAuthor.init(test_alloc);
         errdefer md.deinit();
 
-        const list = try md.list(.unordered);
+        const list = try md.root().list(.unordered);
         try list.text("foo");
         try list.textFmt("bar {d}", .{108});
 
@@ -1333,13 +1256,13 @@ test "DocumentAuthor: List" {
     , doc);
 }
 
-test "DocumentAuthor: Table" {
+test "MarkdownAuthor: Table" {
     const doc = blk: {
-        var md = try DocumentAuthor.init(test_alloc);
+        var md = try MarkdownAuthor.init(test_alloc);
         errdefer md.deinit();
 
         {
-            var table = try md.table();
+            var table = try md.root().table();
             errdefer table.deinit();
 
             try table.column(.right, "A");

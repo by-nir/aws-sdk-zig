@@ -284,7 +284,7 @@ pub const ExprComment = struct {
     pub const Kind = enum { normal, doc, doc_top };
     pub const Source = union(enum) {
         plain: []const u8,
-        markdown: md.Document,
+        markdown: md.MarkdownDocument,
     };
 
     pub fn deinit(self: ExprComment, allocator: Allocator) void {
