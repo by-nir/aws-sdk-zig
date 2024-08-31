@@ -34,7 +34,7 @@ pub fn authorDocument(
     errdefer author.deinit();
 
     try callClosure(ctx, closure, .{author.root()});
-    return author.consume(test_alloc);
+    return author.consume(allocator);
 }
 
 const INDENT = " " ** 4;

@@ -99,39 +99,32 @@ test "HtmlTagInfo" {
 
 /// Naively parse HTML source, normalize whitespace, and convert entities to unicode.
 const HtmlFragmenter = struct {
-    allocator: Allocator,
     token: []const u8 = "",
+    scratch: std.ArrayList(u8),
     stream: mem.TokenIterator(u8, .any),
-    buffer: std.ArrayListUnmanaged(u8) = .{},
 
     pub const Fragment = union(enum) {
         tag: []const u8,
         text: []const u8,
-
-        pub fn deinit(self: Fragment, allocator: Allocator) void {
-            switch (self) {
-                inline else => |s| allocator.free(s),
-            }
-        }
     };
 
     pub fn init(allocator: Allocator, html: []const u8) HtmlFragmenter {
         return .{
-            .allocator = allocator,
+            .scratch = std.ArrayList(u8).init(allocator),
             .stream = mem.tokenizeAny(u8, html, &std.ascii.whitespace),
         };
     }
 
-    pub fn deinit(self: *HtmlFragmenter) void {
-        self.buffer.deinit(self.allocator);
+    pub fn deinit(self: HtmlFragmenter) void {
+        self.scratch.deinit();
     }
 
     /// The returned fragment is invalidated by the next call to `next`.
     pub fn next(self: *HtmlFragmenter) !?Fragment {
-        self.buffer.clearRetainingCapacity();
+        self.scratch.clearRetainingCapacity();
         while (true) {
             const idx = mem.indexOfAny(u8, self.token, "<>") orelse {
-                try self.appendToBuffer(self.token);
+                try self.appendToScratch(self.token);
                 if (self.stream.next()) |token| {
                     self.token = token;
                     continue;
@@ -143,30 +136,30 @@ const HtmlFragmenter = struct {
 
             if (self.token[idx] == '<') {
                 // Tag opening
-                try self.appendToBuffer(self.token[0..idx]);
+                try self.appendToScratch(self.token[0..idx]);
                 self.token = self.token[idx..self.token.len];
 
                 // Has buffered text?
-                if (self.buffer.items.len > 0) break;
+                if (self.scratch.items.len > 0) break;
 
-                try self.appendToBuffer("<");
+                try self.appendToScratch("<");
                 self.token = self.token[1..self.token.len];
             } else {
                 // Tag closing
-                try self.appendToBuffer(self.token[0 .. idx + 1]);
+                try self.appendToScratch(self.token[0 .. idx + 1]);
                 self.token = self.token[idx + 1 .. self.token.len];
 
                 // If not a valid tag continue parsing as raw text
-                const buffer = self.buffer.items;
-                if (buffer.len == idx + 1 or buffer[0] != '<') continue;
-                if (buffer.len > 2 and buffer[1] == '/' and buffer[buffer.len - 2] == '/') continue; // `</>`, `</···/>`
+                const scratch = self.scratch.items;
+                if (scratch.len == idx + 1 or scratch[0] != '<') continue;
+                if (scratch.len > 2 and scratch[1] == '/' and scratch[scratch.len - 2] == '/') continue; // `</>`, `</···/>`
 
                 // Valid tag
-                return Fragment{ .tag = buffer };
+                return Fragment{ .tag = scratch };
             }
         }
 
-        const fragment = self.buffer.items;
+        const fragment = self.scratch.items;
         if (fragment.len > 0) {
             return Fragment{ .text = fragment };
         } else {
@@ -174,17 +167,17 @@ const HtmlFragmenter = struct {
         }
     }
 
-    fn appendToBuffer(self: *HtmlFragmenter, text: []const u8) !void {
+    fn appendToScratch(self: *HtmlFragmenter, text: []const u8) !void {
         if (text.len == 0) return;
 
-        const buffer = self.buffer.items;
-        const is_open_only = mem.eql(u8, buffer, "<");
-        if (!is_open_only and (buffer.len > 0 or mem.startsWith(u8, text, "/>"))) {
-            try self.buffer.append(self.allocator, ' ');
+        const scratch = self.scratch.items;
+        const is_open_only = mem.eql(u8, scratch, "<");
+        if (!is_open_only and (scratch.len > 0 or mem.startsWith(u8, text, "/>"))) {
+            try self.scratch.append(' ');
         }
 
         // TODO: convert entities to unicode https://html.spec.whatwg.org/entities.json
-        try self.buffer.appendSlice(self.allocator, text);
+        try self.scratch.appendSlice(text);
     }
 };
 
