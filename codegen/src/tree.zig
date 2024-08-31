@@ -23,23 +23,23 @@ fn optnsFor(comptime Tag: type) hrcy.HieararchyOptions {
     };
 }
 
-pub fn ReadOnlySourceTree(comptime Tag: type) type {
+pub fn SourceTree(comptime Tag: type) type {
     return struct {
         const Self = @This();
-        pub const Query = SourceQuery(Tag);
+        pub const Viewer = SourceViewer(Tag);
 
-        serial: srl.SerialQuery,
-        hierarchy: hrcy.ReadOnlyHierarchy(optnsFor(Tag)),
+        payload: srl.SerialViewer,
+        hierarchy: hrcy.Hierarchy(optnsFor(Tag)),
 
         pub fn deinit(self: Self, allocator: Allocator) void {
             self.hierarchy.deinit(allocator);
-            allocator.free(self.serial.buffer);
+            allocator.free(self.payload.buffer);
         }
 
-        pub fn query(self: *const Self) Query {
+        pub fn view(self: *const Self) Viewer {
             return .{
-                .serial = self.serial,
-                .hierarchy = self.hierarchy.query(),
+                .serial = self.payload,
+                .hierarchy = self.hierarchy.view(),
             };
         }
     };
@@ -50,11 +50,11 @@ pub fn MutableSourceTree(comptime Tag: type) type {
 
     return struct {
         const Self = @This();
-        pub const Query = SourceQuery(Tag);
+        pub const Viewer = SourceViewer(Tag);
 
         allocator: Allocator,
         hierarchy: Hierarchy = .{},
-        payload: PayloadAuthor = .{},
+        payload: MutablePayload = .{},
 
         pub fn init(allocator: Allocator, root: Tag) !Self {
             var self = Self{ .allocator = allocator };
@@ -68,26 +68,27 @@ pub fn MutableSourceTree(comptime Tag: type) type {
             self.hierarchy.deinit(self.allocator);
         }
 
-        pub fn query(self: *const Self) Query {
+        pub fn view(self: *const Self) Viewer {
             return .{
-                .serial = self.payload.serial.query(),
-                .hierarchy = self.hierarchy.query(),
+                .serial = self.payload.serial.view(),
+                .hierarchy = self.hierarchy.view(),
             };
         }
 
-        pub fn consumeReadOnly(self: *Self, immut_alloc: Allocator) !ReadOnlySourceTree(Tag) {
-            var payload: PayloadAuthor = .{};
-            var hierarchy = hrcy.ReadOnlyHierarchy(optnsFor(Tag)).author(immut_alloc);
+        /// The caller owns the returned memory. Clears the mutable tree.
+        pub fn toReadOnly(self: *Self, immut_alloc: Allocator) !SourceTree(Tag) {
+            var payload: MutablePayload = .{};
+            var hierarchy = hrcy.Hierarchy(optnsFor(Tag)).author(immut_alloc);
             errdefer hierarchy.deinit();
 
-            const q = self.hierarchy.query();
-            const handle = self.consumeNode(immut_alloc, q, &hierarchy, &payload, .none, ROOT) catch |err| {
+            const hier_view = self.hierarchy.view();
+            const handle = self.toOwnedNode(immut_alloc, hier_view, &hierarchy, &payload, .none, ROOT) catch |err| {
                 payload.deinit(immut_alloc);
                 return err;
             };
             assert(handle == ROOT);
 
-            const ro_payload = payload.consume(immut_alloc) catch |err| {
+            const ro_payload = payload.toOwnedSerial(immut_alloc) catch |err| {
                 payload.deinit(immut_alloc);
                 return err;
             };
@@ -98,34 +99,34 @@ pub fn MutableSourceTree(comptime Tag: type) type {
 
             self.deinit();
             return .{
-                .serial = ro_payload,
+                .payload = ro_payload,
                 .hierarchy = ro_hierarchy,
             };
         }
 
-        fn consumeNode(
+        fn toOwnedNode(
             self: *const Self,
             immut_alloc: Allocator,
-            qry: Hierarchy.Query,
-            hierarchy: *hrcy.ReadOnlyHierarchy(optnsFor(Tag)).Author,
-            payload: *PayloadAuthor,
+            hier_view: Hierarchy.Viewer,
+            hier_author: *hrcy.Hierarchy(optnsFor(Tag)).Author,
+            payload: *MutablePayload,
             parent: NodeHandle,
             node: NodeHandle,
         ) !NodeHandle {
             const new_payload = blk: {
-                const handle: PayloadHandle = qry.getPayload(node);
+                const handle: PayloadHandle = hier_view.payload(node);
                 if (handle.isEmpty())
                     break :blk PayloadHandle.empty
                 else
                     break :blk try payload.putRaw(immut_alloc, self.payload.getRaw(handle));
             };
-            const new_node = try hierarchy.appendNode(parent, qry.getTag(node), new_payload);
-            const children = try hierarchy.reserveChildren(new_node, qry.childCount(node));
+            const new_node = try hier_author.appendNode(parent, hier_view.tag(node), new_payload);
+            const children = try hier_author.reserveChildren(new_node, hier_view.countChildren(node));
 
             var i: usize = 0;
-            var it = qry.iterateChildren(node);
+            var it = hier_view.iterateChildren(node);
             while (it.next()) |child| : (i += 1) {
-                const item = try self.consumeNode(immut_alloc, qry, hierarchy, payload, new_node, child);
+                const item = try self.toOwnedNode(immut_alloc, hier_view, hier_author, payload, new_node, child);
                 children.setItem(i, item);
             }
 
@@ -172,7 +173,7 @@ pub fn MutableSourceTree(comptime Tag: type) type {
             const handle: *PayloadHandle = self.hierarchy.refPayload(node);
             if (handle.*.isEmpty()) {
                 handle.* = try self.payload.putValue(self.allocator, T, value);
-            } else if (PayloadAuthor.canOverride(handle.*, T, value)) {
+            } else if (MutablePayload.canOverride(handle.*, T, value)) {
                 self.payload.override(handle.*, T, value);
             } else {
                 const new_handle = try self.payload.putValue(self.allocator, T, value);
@@ -193,24 +194,24 @@ pub fn MutableSourceTree(comptime Tag: type) type {
     };
 }
 
-pub fn SourceQuery(comptime Tag: type) type {
+pub fn SourceViewer(comptime Tag: type) type {
     return struct {
         const Self = @This();
 
-        serial: srl.SerialQuery,
-        hierarchy: hrcy.HierarchyQuery(optnsFor(Tag)),
+        serial: srl.SerialViewer,
+        hierarchy: hrcy.HierarchyViewer(optnsFor(Tag)),
 
         pub fn tag(self: Self, node: NodeHandle) Tag {
-            return self.hierarchy.getTag(node);
+            return self.hierarchy.tag(node);
         }
 
         pub fn payload(self: Self, node: NodeHandle, comptime T: type) T {
-            const handle = self.hierarchy.getPayload(node);
+            const handle = self.hierarchy.payload(node);
             return self.serial.get(T, handle);
         }
 
-        pub fn childCount(self: Self, parent: NodeHandle) Indexer {
-            return self.hierarchy.childCount(parent);
+        pub fn countChildren(self: Self, parent: NodeHandle) Indexer {
+            return self.hierarchy.countChildren(parent);
         }
 
         pub fn childAt(self: Self, parent: NodeHandle, index: usize) NodeHandle {
@@ -227,26 +228,26 @@ pub fn SourceQuery(comptime Tag: type) type {
     };
 }
 
-test "SourceTree" {
+test {
     const tree = blk: {
         var tree = try MutableSourceTree(u8).init(test_alloc, 0);
         errdefer tree.deinit();
 
-        try testing.expectEqual(0, tree.query().childCount(ROOT));
+        try testing.expectEqual(0, tree.view().countChildren(ROOT));
 
         var node1 = try tree.appendNodePayload(ROOT, 0, []const u8, "baz");
         try testing.expectEqual(1, @intFromEnum(node1));
-        try testing.expectEqual(1, tree.query().childCount(ROOT));
+        try testing.expectEqual(1, tree.view().countChildren(ROOT));
 
         tree.dropNode(node1);
-        try testing.expectEqual(0, tree.query().childCount(ROOT));
+        try testing.expectEqual(0, tree.view().countChildren(ROOT));
 
         const node2 = try tree.appendNode(ROOT, 2);
 
         node1 = try tree.insertNode(ROOT, 0, 1);
-        try testing.expectEqual(node1, tree.query().childAt(ROOT, 0));
-        try testing.expectEqual(node1, tree.query().childAtOrNull(ROOT, 0));
-        try testing.expectEqual(null, tree.query().childAtOrNull(ROOT, 2));
+        try testing.expectEqual(node1, tree.view().childAt(ROOT, 0));
+        try testing.expectEqual(node1, tree.view().childAtOrNull(ROOT, 0));
+        try testing.expectEqual(null, tree.view().childAtOrNull(ROOT, 2));
 
         try tree.setPayload(node1, []const u8, "foo"); // new
         try tree.setPayload(node1, []const u8, "bar"); // override matching
@@ -255,74 +256,75 @@ test "SourceTree" {
         try testing.expectEqual(6, try tree.setPayloadFmt(node2, "foo{d}", .{107})); // new
         try testing.expectEqual(6, try tree.setPayloadFmt(node2, "bar{d}", .{108})); // override
 
-        var it = tree.query().iterateChildren(ROOT);
+        var it = tree.view().iterateChildren(ROOT);
         try testing.expectEqual(node1, it.next());
         try testing.expectEqual(node2, it.next());
         try testing.expectEqual(null, it.next());
 
-        break :blk try tree.consumeReadOnly(test_alloc);
+        break :blk try tree.toReadOnly(test_alloc);
     };
 
-    const query = tree.query();
+    const view = tree.view();
     defer tree.deinit(test_alloc);
 
-    try testing.expectEqual(0, query.tag(ROOT));
-    try testing.expectEqual(2, query.childCount(ROOT));
-    try testing.expectEqual(NodeHandle.of(2), query.childAt(ROOT, 1));
-    try testing.expectEqual(NodeHandle.of(2), query.childAtOrNull(ROOT, 1));
-    try testing.expectEqual(null, query.childAtOrNull(ROOT, 2));
+    try testing.expectEqual(0, view.tag(ROOT));
+    try testing.expectEqual(2, view.countChildren(ROOT));
+    try testing.expectEqual(NodeHandle.of(2), view.childAt(ROOT, 1));
+    try testing.expectEqual(NodeHandle.of(2), view.childAtOrNull(ROOT, 1));
+    try testing.expectEqual(null, view.childAtOrNull(ROOT, 2));
 
-    try testing.expectEqual(1, query.tag(NodeHandle.of(1)));
-    try testing.expectEqual(0, query.childCount(NodeHandle.of(1)));
-    try testing.expectEqualStrings("foo108", query.payload(NodeHandle.of(1), []const u8));
+    try testing.expectEqual(1, view.tag(NodeHandle.of(1)));
+    try testing.expectEqual(0, view.countChildren(NodeHandle.of(1)));
+    try testing.expectEqualStrings("foo108", view.payload(NodeHandle.of(1), []const u8));
 
-    try testing.expectEqual(2, query.tag(NodeHandle.of(2)));
-    try testing.expectEqualStrings("bar108", query.payload(NodeHandle.of(2), []const u8));
+    try testing.expectEqual(2, view.tag(NodeHandle.of(2)));
+    try testing.expectEqualStrings("bar108", view.payload(NodeHandle.of(2), []const u8));
 
-    var it = query.iterateChildren(ROOT);
+    var it = view.iterateChildren(ROOT);
     try testing.expectEqual(NodeHandle.of(1), it.next());
     try testing.expectEqual(NodeHandle.of(2), it.next());
     try testing.expectEqual(null, it.next());
 }
 
-const PayloadAuthor = struct {
+const MutablePayload = struct {
     serial: srl.SerialWriter = .{},
     cache: std.StringHashMapUnmanaged(PayloadHandle) = .{},
 
-    pub fn deinit(self: *PayloadAuthor, allocator: Allocator) void {
+    pub fn deinit(self: *MutablePayload, allocator: Allocator) void {
         self.serial.deinit(allocator);
         self.cache.deinit(allocator);
     }
 
-    pub fn consume(self: *PayloadAuthor, allocator: Allocator) !srl.SerialQuery {
-        const query = try self.serial.consumeQuery(allocator);
+    /// The caller owns the returned memory.
+    pub fn toOwnedSerial(self: *MutablePayload, allocator: Allocator) !srl.SerialViewer {
+        const view = try self.serial.toOwnedViewer(allocator);
         self.cache.deinit(allocator);
-        return query;
+        return view;
     }
 
-    pub fn getRaw(self: PayloadAuthor, handle: PayloadHandle) []const u8 {
+    pub fn getRaw(self: MutablePayload, handle: PayloadHandle) []const u8 {
         const buffer = self.serial.buffer.items;
         assert(handle.offset + handle.length <= buffer.len);
         return buffer[handle.offset..][0..handle.length];
     }
 
-    pub fn getValue(self: PayloadAuthor, comptime T: type, handle: PayloadHandle) T {
-        return self.serial.query().get(T, handle);
+    pub fn getValue(self: MutablePayload, comptime T: type, handle: PayloadHandle) T {
+        return self.serial.view().get(T, handle);
     }
 
-    pub fn putRaw(self: *PayloadAuthor, allocator: Allocator, bytes: []const u8) !PayloadHandle {
+    pub fn putRaw(self: *MutablePayload, allocator: Allocator, bytes: []const u8) !PayloadHandle {
         return self.serial.appendRaw(allocator, bytes, true);
     }
 
-    pub fn putValue(self: *PayloadAuthor, allocator: Allocator, comptime T: type, value: T) !PayloadHandle {
+    pub fn putValue(self: *MutablePayload, allocator: Allocator, comptime T: type, value: T) !PayloadHandle {
         return self.serial.append(allocator, T, value);
     }
 
-    pub fn putFmt(self: *PayloadAuthor, allocator: Allocator, comptime format: []const u8, args: anytype) !PayloadHandle {
+    pub fn putFmt(self: *MutablePayload, allocator: Allocator, comptime format: []const u8, args: anytype) !PayloadHandle {
         return self.serial.appendFmt(allocator, format, args);
     }
 
-    pub fn cacheRaw(self: *PayloadAuthor, allocator: Allocator, bytes: []const u8) !PayloadHandle {
+    pub fn cacheRaw(self: *MutablePayload, allocator: Allocator, bytes: []const u8) !PayloadHandle {
         const result = try self.cache.getOrPut(allocator, bytes);
         errdefer _ = self.cache.remove(bytes);
 
@@ -339,11 +341,11 @@ const PayloadAuthor = struct {
         return srl.SerialWriter.canOverride(handle, T, value);
     }
 
-    pub fn override(self: *PayloadAuthor, handle: PayloadHandle, comptime T: type, value: T) void {
+    pub fn override(self: *MutablePayload, handle: PayloadHandle, comptime T: type, value: T) void {
         self.serial.override(handle, T, value);
     }
 
-    pub fn drop(self: *PayloadAuthor, handle: PayloadHandle) void {
+    pub fn drop(self: *MutablePayload, handle: PayloadHandle) void {
         if (self.serial.length() == handle.offset + handle.length) {
             self.serial.drop(handle.length);
         } else {
@@ -352,9 +354,9 @@ const PayloadAuthor = struct {
     }
 };
 
-test "PayloadAuthor" {
-    const query = blk: {
-        var author = PayloadAuthor{};
+test "MutablePayload" {
+    const view = blk: {
+        var author = MutablePayload{};
         errdefer author.deinit(test_alloc);
 
         var handle = try author.putValue(test_alloc, []const u8, "qux");
@@ -392,12 +394,12 @@ test "PayloadAuthor" {
         }, raw_handle);
         try testing.expectEqualStrings("foo", author.getRaw(raw_handle));
 
-        break :blk try author.consume(test_alloc);
+        break :blk try author.toOwnedSerial(test_alloc);
     };
 
-    defer test_alloc.free(query.buffer);
+    defer view.deinit(test_alloc);
     const expected = &[_]u8{ 1, 3 } ++ "foo" ++
         &[_]u8{2} ++ std.mem.asBytes(&@as(u16, 8)) ++ " bar baz" ++
         &[_]u8{ 1, 3 } ++ "foo" ++ &[_]u8{ 1, 3 } ++ "bar" ++ "foo";
-    try testing.expectEqualSlices(u8, expected, query.buffer);
+    try testing.expectEqualSlices(u8, expected, view.buffer);
 }

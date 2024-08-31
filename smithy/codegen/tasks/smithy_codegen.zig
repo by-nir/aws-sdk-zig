@@ -432,9 +432,9 @@ fn serviceReadmeTask(
 }
 
 fn processIntro(allocator: Allocator, source: []const u8) ![]const u8 {
-    var build = try md.MarkdownAuthor.init(allocator);
+    var build = try md.MutableDocument.init(allocator);
     try md.html.convert(allocator, build.root(), source);
-    const markdown = try build.consume(allocator);
+    const markdown = try build.toReadOnly(allocator);
     defer markdown.deinit(allocator);
 
     var str = std.ArrayList(u8).init(allocator);

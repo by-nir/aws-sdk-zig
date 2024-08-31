@@ -19,22 +19,19 @@ pub const html = @import("md/html.zig");
 pub const ListKind = enum(u8) { unordered, ordered };
 pub const ColumnAlign = enum(u8) { left, center, right };
 
-const TreeQuery = srct.SourceQuery(Mark);
-const TreeAuthor = srct.MutableSourceTree(Mark);
+const TreeViewer = srct.SourceViewer(Mark);
+const MutableTree = srct.MutableSourceTree(Mark);
 
 pub const DocumentClosure = *const fn (ContainerAuthor) anyerror!void;
 
 // TODO: Support soft/hard width guidelines
-pub fn authorDocument(
-    allocator: Allocator,
-    ctx: anytype,
-    closure: Closure(@TypeOf(ctx), DocumentClosure),
-) !MarkdownDocument {
-    var author = try MarkdownAuthor.init(allocator);
+
+pub fn authorDocument(allocator: Allocator, ctx: anytype, closure: Closure(@TypeOf(ctx), DocumentClosure)) !Document {
+    var author = try MutableDocument.init(allocator);
     errdefer author.deinit();
 
     try callClosure(ctx, closure, .{author.root()});
-    return author.consume(allocator);
+    return author.toReadOnly(allocator);
 }
 
 const INDENT = " " ** 4;
@@ -77,20 +74,16 @@ const Mark = enum {
     }
 };
 
-pub const MarkdownDocument = struct {
-    tree: srct.ReadOnlySourceTree(Mark),
+pub const Document = struct {
+    tree: srct.SourceTree(Mark),
 
-    pub fn author(allocator: Allocator) !MarkdownAuthor {
-        return MarkdownAuthor.init(allocator);
-    }
-
-    pub fn deinit(self: MarkdownDocument, allocator: Allocator) void {
+    pub fn deinit(self: Document, allocator: Allocator) void {
         self.tree.deinit(allocator);
     }
 
-    pub fn write(self: MarkdownDocument, writer: *Writer) !void {
+    pub fn write(self: Document, writer: *Writer) !void {
         var first = true;
-        const tree = self.tree.query();
+        const tree = self.tree.view();
         var it = tree.iterateChildren(srct.ROOT);
         while (it.next()) |node| : (first = false) {
             if (!first) try writeNodeLineBreak(writer);
@@ -98,7 +91,7 @@ pub const MarkdownDocument = struct {
         }
     }
 
-    fn writeNode(writer: *Writer, tree: TreeQuery, node: srct.NodeHandle) anyerror!void {
+    fn writeNode(writer: *Writer, tree: TreeViewer, node: srct.NodeHandle) anyerror!void {
         switch (tree.tag(node)) {
             .block_raw, .text_plain => try writer.appendString(tree.payload(node, []const u8)),
             .text_italic => try writer.appendFmt("_{s}_", .{tree.payload(node, []const u8)}),
@@ -228,7 +221,7 @@ pub const MarkdownDocument = struct {
     }
 
     const Concat = enum { blocks, inlined, inlined_or_indent };
-    fn writeNodeChildren(writer: *Writer, tree: TreeQuery, parent: srct.NodeHandle, concat: Concat) !void {
+    fn writeNodeChildren(writer: *Writer, tree: TreeViewer, parent: srct.NodeHandle, concat: Concat) !void {
         var inlined = false;
         var defer_pop_indent = false;
 
@@ -271,7 +264,7 @@ pub const MarkdownDocument = struct {
         try writer.breakString("");
     }
 
-    fn writeNodeInlineSpace(writer: *Writer, tree: TreeQuery, next: ?srct.NodeHandle) !void {
+    fn writeNodeInlineSpace(writer: *Writer, tree: TreeViewer, next: ?srct.NodeHandle) !void {
         const node = next orelse return;
         if (mem.indexOfScalar(u8, ".,;:?!", tree.payload(node, []const u8)[0]) != null) return;
         try writer.appendChar(' ');
@@ -280,14 +273,14 @@ pub const MarkdownDocument = struct {
 
 test "MarkdownDocument: Raw" {
     const doc = blk: {
-        var tree = try TreeAuthor.init(test_alloc, .document);
+        var tree = try MutableTree.init(test_alloc, .document);
         errdefer tree.deinit();
 
         _ = try tree.appendNodePayload(srct.ROOT, .block_raw, []const u8, "foo");
         _ = try tree.appendNodePayload(srct.ROOT, .block_raw, []const u8, "bar");
 
-        break :blk MarkdownDocument{
-            .tree = try tree.consumeReadOnly(test_alloc),
+        break :blk Document{
+            .tree = try tree.toReadOnly(test_alloc),
         };
     };
     defer doc.deinit(test_alloc);
@@ -300,12 +293,12 @@ test "MarkdownDocument: Raw" {
 
 test "MarkdownDocument: Comment" {
     const doc = blk: {
-        var tree = try TreeAuthor.init(test_alloc, .document);
+        var tree = try MutableTree.init(test_alloc, .document);
         errdefer tree.deinit();
 
         _ = try tree.appendNodePayload(srct.ROOT, .block_comment, []const u8, "foo");
 
-        break :blk MarkdownDocument{ .tree = try tree.consumeReadOnly(test_alloc) };
+        break :blk Document{ .tree = try tree.toReadOnly(test_alloc) };
     };
     defer doc.deinit(test_alloc);
     try Writer.expectValue("<!-- foo -->", doc);
@@ -313,7 +306,7 @@ test "MarkdownDocument: Comment" {
 
 test "MarkdownDocument: Paragraph & Text" {
     const doc = blk: {
-        var tree = try TreeAuthor.init(test_alloc, .document);
+        var tree = try MutableTree.init(test_alloc, .document);
         errdefer tree.deinit();
 
         const node = try tree.appendNode(srct.ROOT, .block_paragraph);
@@ -327,7 +320,7 @@ test "MarkdownDocument: Paragraph & Text" {
         const child = try tree.appendNodePayload(node, .text_link, MarkLink, .{ .href = "#" });
         _ = try tree.appendNodePayload(child, .text_plain, []const u8, "link");
 
-        break :blk MarkdownDocument{ .tree = try tree.consumeReadOnly(test_alloc) };
+        break :blk Document{ .tree = try tree.toReadOnly(test_alloc) };
     };
     defer doc.deinit(test_alloc);
     try Writer.expectValue("text _italic_ **bold** ***bold italic*** `code` [link](#)", doc);
@@ -335,13 +328,13 @@ test "MarkdownDocument: Paragraph & Text" {
 
 test "MarkdownDocument: Heading" {
     const doc = blk: {
-        var tree = try TreeAuthor.init(test_alloc, .document);
+        var tree = try MutableTree.init(test_alloc, .document);
         errdefer tree.deinit();
 
         const node = try tree.appendNodePayload(srct.ROOT, .block_heading, u8, 2);
         _ = try tree.appendNodePayload(node, .text_plain, []const u8, "Foo");
 
-        break :blk MarkdownDocument{ .tree = try tree.consumeReadOnly(test_alloc) };
+        break :blk Document{ .tree = try tree.toReadOnly(test_alloc) };
     };
     defer doc.deinit(test_alloc);
     try Writer.expectValue("## Foo", doc);
@@ -349,7 +342,7 @@ test "MarkdownDocument: Heading" {
 
 test "MarkdownDocument: Quote" {
     const doc = blk: {
-        var tree = try TreeAuthor.init(test_alloc, .document);
+        var tree = try MutableTree.init(test_alloc, .document);
         errdefer tree.deinit();
 
         var node = try tree.appendNode(srct.ROOT, .block_quote);
@@ -363,7 +356,7 @@ test "MarkdownDocument: Quote" {
         para = try tree.appendNode(node, .block_paragraph);
         _ = try tree.appendNodePayload(para, .text_plain, []const u8, "baz");
 
-        break :blk MarkdownDocument{ .tree = try tree.consumeReadOnly(test_alloc) };
+        break :blk Document{ .tree = try tree.toReadOnly(test_alloc) };
     };
     defer doc.deinit(test_alloc);
     try Writer.expectValue(
@@ -378,12 +371,12 @@ test "MarkdownDocument: Quote" {
 test "MarkdownDocument: Code" {
     const code = zig.Container{ .statements = &.{} };
     const doc = blk: {
-        var tree = try TreeAuthor.init(test_alloc, .document);
+        var tree = try MutableTree.init(test_alloc, .document);
         errdefer tree.deinit();
 
         _ = try tree.appendNodePayload(srct.ROOT, .block_code, usize, @intFromPtr(&code));
 
-        break :blk MarkdownDocument{ .tree = try tree.consumeReadOnly(test_alloc) };
+        break :blk Document{ .tree = try tree.toReadOnly(test_alloc) };
     };
     defer doc.deinit(test_alloc);
     try Writer.expectValue(
@@ -395,7 +388,7 @@ test "MarkdownDocument: Code" {
 
 test "MarkdownDocument: List" {
     const doc = blk: {
-        var tree = try TreeAuthor.init(test_alloc, .document);
+        var tree = try MutableTree.init(test_alloc, .document);
         errdefer tree.deinit();
 
         {
@@ -434,7 +427,7 @@ test "MarkdownDocument: List" {
             _ = try tree.appendNodePayload(item, .text_plain, []const u8, "qux");
         }
 
-        break :blk MarkdownDocument{ .tree = try tree.consumeReadOnly(test_alloc) };
+        break :blk Document{ .tree = try tree.toReadOnly(test_alloc) };
     };
     defer doc.deinit(test_alloc);
     try Writer.expectValue(
@@ -453,7 +446,7 @@ test "MarkdownDocument: List" {
 
 test "MarkdownDocument: Table" {
     const doc = blk: {
-        var tree = try TreeAuthor.init(test_alloc, .document);
+        var tree = try MutableTree.init(test_alloc, .document);
         errdefer tree.deinit();
 
         const table = try tree.appendNodePayload(srct.ROOT, .block_table, u8, 3);
@@ -512,7 +505,7 @@ test "MarkdownDocument: Table" {
         cell = try tree.appendNodePayload(row, .block_table_cell, u8, 7);
         _ = try tree.appendNodePayload(cell, .text_plain, []const u8, "C03 Qux");
 
-        break :blk MarkdownDocument{ .tree = try tree.consumeReadOnly(test_alloc) };
+        break :blk Document{ .tree = try tree.toReadOnly(test_alloc) };
     };
     defer doc.deinit(test_alloc);
     try Writer.expectValue(
@@ -524,22 +517,23 @@ test "MarkdownDocument: Table" {
     , doc);
 }
 
-pub const MarkdownAuthor = struct {
-    tree: TreeAuthor,
+pub const MutableDocument = struct {
+    tree: MutableTree,
 
-    pub fn init(mut_alloc: Allocator) !MarkdownAuthor {
-        return .{ .tree = try TreeAuthor.init(mut_alloc, .document) };
+    pub fn init(mut_alloc: Allocator) !MutableDocument {
+        return .{ .tree = try MutableTree.init(mut_alloc, .document) };
     }
 
-    pub fn deinit(self: *MarkdownAuthor) void {
+    pub fn deinit(self: *MutableDocument) void {
         self.tree.deinit();
     }
 
-    pub fn consume(self: *MarkdownAuthor, immut_alloc: Allocator) !MarkdownDocument {
-        return .{ .tree = try self.tree.consumeReadOnly(immut_alloc) };
+    /// The caller owns the returned memory. Clears the mutable document.
+    pub fn toReadOnly(self: *MutableDocument, immut_alloc: Allocator) !Document {
+        return .{ .tree = try self.tree.toReadOnly(immut_alloc) };
     }
 
-    pub fn root(self: *MarkdownAuthor) ContainerAuthor {
+    pub fn root(self: *MutableDocument) ContainerAuthor {
         return .{
             .tree = &self.tree,
             .parent = srct.ROOT,
@@ -548,7 +542,7 @@ pub const MarkdownAuthor = struct {
 };
 
 pub const ContainerAuthor = struct {
-    tree: *TreeAuthor,
+    tree: *MutableTree,
     parent: srct.NodeHandle,
 
     pub fn deinit(self: ContainerAuthor) void {
@@ -685,7 +679,7 @@ pub const ContainerAuthor = struct {
 };
 
 pub const StyledAuthor = struct {
-    tree: *TreeAuthor,
+    tree: *MutableTree,
     parent: srct.NodeHandle,
     callback: ?Callback = null,
 
@@ -836,7 +830,7 @@ pub const StyledAuthor = struct {
 };
 
 pub const ListAuthor = struct {
-    tree: *TreeAuthor,
+    tree: *MutableTree,
     parent: srct.NodeHandle,
 
     pub fn deinit(self: ListAuthor) void {
@@ -880,7 +874,7 @@ pub const ListAuthor = struct {
 };
 
 pub const TableAuthor = struct {
-    tree: *TreeAuthor,
+    tree: *MutableTree,
     parent: srct.NodeHandle,
     columns_sealed: bool = false,
     columns: std.ArrayListUnmanaged(MarkColumn) = .{},
@@ -891,14 +885,15 @@ pub const TableAuthor = struct {
     }
 
     pub fn seal(self: *TableAuthor) !void {
-        const query = self.tree.query();
+        const tree = self.tree.view();
         const col_len = self.columns.items.len;
         if (col_len == 0) return error.EmptyTable;
         if (col_len > MAX_TABLE_COLUMNS) return error.TooManyTableColumns;
-        if (col_len == query.childCount(self.parent)) return error.EmptyTable;
+        if (col_len == tree.countChildren(self.parent)) return error.EmptyTable;
 
+        // TODO: This is hacky...
         for (self.columns.items, 0..) |col, i| {
-            const child = query.childAt(self.parent, i);
+            const child = tree.childAt(self.parent, i);
             try self.tree.setPayload(child, MarkColumn, col);
         }
 
@@ -1002,7 +997,7 @@ pub const TableAuthor = struct {
     }
 
     pub const Row = struct {
-        tree: *TreeAuthor,
+        tree: *MutableTree,
         parent: srct.NodeHandle,
         columns: *std.ArrayListUnmanaged(MarkColumn),
 
@@ -1011,7 +1006,7 @@ pub const TableAuthor = struct {
         }
 
         pub fn cell(self: Row, value: []const u8) !void {
-            const col_index = self.tree.query().childCount(self.parent);
+            const col_index = self.tree.view().countChildren(self.parent);
             if (col_index >= self.columns.items.len) return error.RowColumnsMismatch;
 
             const col = &self.columns.items[col_index];
@@ -1024,7 +1019,7 @@ pub const TableAuthor = struct {
         }
 
         pub fn cellFmt(self: Row, comptime format: []const u8, args: anytype) !void {
-            const col_index = self.tree.query().childCount(self.parent);
+            const col_index = self.tree.view().countChildren(self.parent);
             if (col_index >= self.columns.items.len) return error.RowColumnsMismatch;
 
             const col = &self.columns.items[col_index];
@@ -1041,7 +1036,7 @@ pub const TableAuthor = struct {
         }
 
         pub fn cellStyled(self: *Row) !StyledAuthor {
-            const col_index = self.tree.query().childCount(self.parent);
+            const col_index = self.tree.view().countChildren(self.parent);
             if (col_index >= self.columns.items.len) return error.RowColumnsMismatch;
 
             return StyledAuthor{
@@ -1066,15 +1061,15 @@ pub const TableAuthor = struct {
     };
 };
 
-test "MarkdownAuthor: Raw" {
+test "MutableDocument: Raw" {
     const doc = blk: {
-        var md = try MarkdownAuthor.init(test_alloc);
+        var md = try MutableDocument.init(test_alloc);
         errdefer md.deinit();
 
         try md.root().raw("foo");
         try md.root().rawFmt("bar {d}", .{108});
 
-        break :blk try md.consume(test_alloc);
+        break :blk try md.toReadOnly(test_alloc);
     };
     defer doc.deinit(test_alloc);
     try Writer.expectValue(
@@ -1084,15 +1079,15 @@ test "MarkdownAuthor: Raw" {
     , doc);
 }
 
-test "MarkdownAuthor: Comment" {
+test "MutableDocument: Comment" {
     const doc = blk: {
-        var md = try MarkdownAuthor.init(test_alloc);
+        var md = try MutableDocument.init(test_alloc);
         errdefer md.deinit();
 
         try md.root().comment("foo");
         try md.root().commentFmt("bar {d}", .{108});
 
-        break :blk try md.consume(test_alloc);
+        break :blk try md.toReadOnly(test_alloc);
     };
     defer doc.deinit(test_alloc);
     try Writer.expectValue(
@@ -1102,9 +1097,9 @@ test "MarkdownAuthor: Comment" {
     , doc);
 }
 
-test "MarkdownAuthor: Paragraph & Text" {
+test "MutableDocument: Paragraph & Text" {
     const doc = blk: {
-        var md = try MarkdownAuthor.init(test_alloc);
+        var md = try MutableDocument.init(test_alloc);
         errdefer md.deinit();
 
         try md.root().paragraph("foo");
@@ -1131,7 +1126,7 @@ test "MarkdownAuthor: Paragraph & Text" {
         try link.seal();
 
         try style.seal();
-        break :blk try md.consume(test_alloc);
+        break :blk try md.toReadOnly(test_alloc);
     };
     defer doc.deinit(test_alloc);
     try Writer.expectValue(
@@ -1143,9 +1138,9 @@ test "MarkdownAuthor: Paragraph & Text" {
     ++ " ***bold italic 108*** `code` `code 108` [link](# \"title\") [link 108](#) [link style](#)", doc);
 }
 
-test "MarkdownAuthor: Heading" {
+test "MutableDocument: Heading" {
     const doc = blk: {
-        var md = try MarkdownAuthor.init(test_alloc);
+        var md = try MutableDocument.init(test_alloc);
         errdefer md.deinit();
 
         try md.root().heading(2, "Foo");
@@ -1155,7 +1150,7 @@ test "MarkdownAuthor: Heading" {
         try style.plain("Baz Style");
         try style.seal();
 
-        break :blk try md.consume(test_alloc);
+        break :blk try md.toReadOnly(test_alloc);
     };
     defer doc.deinit(test_alloc);
     try Writer.expectValue(
@@ -1167,9 +1162,9 @@ test "MarkdownAuthor: Heading" {
     , doc);
 }
 
-test "MarkdownAuthor: Quote" {
+test "MutableDocument: Quote" {
     const doc = blk: {
-        var md = try MarkdownAuthor.init(test_alloc);
+        var md = try MutableDocument.init(test_alloc);
         errdefer md.deinit();
 
         try md.root().quote("foo");
@@ -1183,7 +1178,7 @@ test "MarkdownAuthor: Quote" {
         try container.paragraph("qux 0");
         try container.paragraph("qux 1");
 
-        break :blk try md.consume(test_alloc);
+        break :blk try md.toReadOnly(test_alloc);
     };
     defer doc.deinit(test_alloc);
     try Writer.expectValue(
@@ -1199,20 +1194,20 @@ test "MarkdownAuthor: Quote" {
     , doc);
 }
 
-test "MarkdownAuthor: Code" {
+test "MutableDocument: Code" {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const arena_alloc = arena.allocator();
     defer arena.deinit();
 
     const doc = blk: {
-        var md = try MarkdownAuthor.init(arena_alloc);
+        var md = try MutableDocument.init(arena_alloc);
         errdefer md.deinit();
 
         try md.root().code(struct {
             fn f(_: *zig.ContainerBuild) !void {}
         }.f);
 
-        break :blk try md.consume(arena_alloc);
+        break :blk try md.toReadOnly(arena_alloc);
     };
     defer doc.deinit(arena_alloc);
     try Writer.expectValue(
@@ -1222,9 +1217,9 @@ test "MarkdownAuthor: Code" {
     , doc);
 }
 
-test "MarkdownAuthor: List" {
+test "MutableDocument: List" {
     const doc = blk: {
-        var md = try MarkdownAuthor.init(test_alloc);
+        var md = try MutableDocument.init(test_alloc);
         errdefer md.deinit();
 
         const list = try md.root().list(.unordered);
@@ -1243,7 +1238,7 @@ test "MarkdownAuthor: List" {
         try container.paragraph("qux");
         try container.paragraph("paragraph");
 
-        break :blk try md.consume(test_alloc);
+        break :blk try md.toReadOnly(test_alloc);
     };
     defer doc.deinit(test_alloc);
     try Writer.expectValue(
@@ -1258,9 +1253,9 @@ test "MarkdownAuthor: List" {
     , doc);
 }
 
-test "MarkdownAuthor: Table" {
+test "MutableDocument: Table" {
     const doc = blk: {
-        var md = try MarkdownAuthor.init(test_alloc);
+        var md = try MutableDocument.init(test_alloc);
         errdefer md.deinit();
 
         {
@@ -1294,7 +1289,7 @@ test "MarkdownAuthor: Table" {
             try table.seal();
         }
 
-        break :blk try md.consume(test_alloc);
+        break :blk try md.toReadOnly(test_alloc);
     };
     defer doc.deinit(test_alloc);
     try Writer.expectValue(

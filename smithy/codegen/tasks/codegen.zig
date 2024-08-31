@@ -25,13 +25,13 @@ fn markdownDocTask(
     var codegen = Writer.init(self.alloc(), writer);
     defer codegen.deinit();
 
-    var build = try md.MarkdownAuthor.init(self.alloc());
+    var build = try md.MutableDocument.init(self.alloc());
     task.evaluate(.{build.root()}) catch |err| {
         build.deinit();
         return err;
     };
 
-    const document = try build.consume(self.alloc());
+    const document = try build.toReadOnly(self.alloc());
     defer document.deinit(self.alloc());
     try codegen.appendFmt(MD_HEAD ++ "\n\n{}\n", .{document});
 }

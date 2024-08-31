@@ -34,18 +34,18 @@ fn HierarchyNode(options: HieararchyOptions) type {
     };
 }
 
-pub fn ReadOnlyHierarchy(options: HieararchyOptions) type {
+pub fn Hierarchy(options: HieararchyOptions) type {
     const Idx = options.Indexer;
     const Node = HierarchyNode(options);
 
     return struct {
         const Self = @This();
         pub const Handle = common.Handle(Idx);
+        pub const Viewer = HierarchyViewer(options);
         pub const Iterator = iter.Iterator(Handle, .{});
-        pub const Query = HierarchyQuery(options);
 
-        nodes: cols.ReadOnlyColumns(Node, .{ .Indexer = Idx }),
-        adjacents: rows.ReadOnlyRows(Handle, .{ .Indexer = Idx }),
+        nodes: cols.Columns(Node, .{ .Indexer = Idx }),
+        adjacents: rows.Rows(Handle, .{ .Indexer = Idx }),
 
         pub fn author(allocator: Allocator) Author {
             return Author.init(allocator);
@@ -56,15 +56,15 @@ pub fn ReadOnlyHierarchy(options: HieararchyOptions) type {
             self.adjacents.deinit(allocator);
         }
 
-        pub fn query(self: *const Self) Query {
+        pub fn view(self: *const Self) Viewer {
             return .{
-                .nodes = self.nodes.query(),
-                .adjacents = self.adjacents.query(),
+                .nodes = self.nodes.view(),
+                .adjacents = self.adjacents.view(),
             };
         }
 
         pub const Author = struct {
-            const Adjacents = rows.ReadOnlyRows(Handle, .{ .Indexer = Idx });
+            const Adjacents = rows.Rows(Handle, .{ .Indexer = Idx });
 
             allocator: Allocator,
             nodes: std.MultiArrayList(Node) = .{},
@@ -82,12 +82,11 @@ pub fn ReadOnlyHierarchy(options: HieararchyOptions) type {
                 self.adjacents.deinit();
             }
 
+            /// The caller owns the returned memory.
             pub fn consume(self: *Author) !Self {
                 return .{
                     .adjacents = try self.adjacents.consume(self.allocator),
-                    .nodes = .{
-                        .columns = self.nodes.toOwnedSlice(),
-                    },
+                    .nodes = .{ .columns = self.nodes.toOwnedSlice() },
                 };
             }
 
@@ -126,8 +125,8 @@ pub fn ReadOnlyHierarchy(options: HieararchyOptions) type {
     };
 }
 
-test "ReadOnlyHierarchy" {
-    const Tree = ReadOnlyHierarchy(.{ .Tag = u8 });
+test "Hierarchy" {
+    const Tree = Hierarchy(.{ .Tag = u8 });
     const tree = blk: {
         var author = Tree.author(test_alloc);
         errdefer author.deinit();
@@ -146,11 +145,11 @@ test "ReadOnlyHierarchy" {
     defer tree.deinit(test_alloc);
 
     const root = Tree.Handle.of(0);
-    try testing.expectEqual(2, tree.query().childCount(root));
-    try testing.expectEqual(1, tree.query().orderOf(root, Tree.Handle.of(2)));
-    try expectTags(u8, tree.query(), root, &.{ 1, 2 });
+    try testing.expectEqual(2, tree.view().countChildren(root));
+    try testing.expectEqual(1, tree.view().findChild(root, Tree.Handle.of(2)));
+    try expectTags(u8, tree.view(), root, &.{ 1, 2 });
 
-    try expectTags(u8, tree.query(), Tree.Handle.of(2), &.{ 21, 22 });
+    try expectTags(u8, tree.view(), Tree.Handle.of(2), &.{ 21, 22 });
 }
 
 pub fn MutableHierarchy(options: HieararchyOptions, hooks: HierarchyHooks(options.Indexer)) type {
@@ -164,8 +163,8 @@ pub fn MutableHierarchy(options: HieararchyOptions, hooks: HierarchyHooks(option
     return struct {
         const Self = @This();
         pub const Handle = common.Handle(options.Indexer);
+        pub const Viewer = HierarchyViewer(options);
         pub const Iterator = iter.Iterator(Handle, .{});
-        pub const Query = HierarchyQuery(options);
         const Adjacents = rows.MutableRows(Handle, .{ .Indexer = options.Indexer });
 
         nodes: Nodes = .{},
@@ -177,10 +176,10 @@ pub fn MutableHierarchy(options: HieararchyOptions, hooks: HierarchyHooks(option
             self.adjacents.deinit(allocator);
         }
 
-        pub fn query(self: *const Self) Query {
+        pub fn view(self: *const Self) Viewer {
             return .{
-                .nodes = self.nodes.query(),
-                .adjacents = self.adjacents.query(),
+                .nodes = self.nodes.view(),
+                .adjacents = self.adjacents.view(),
             };
         }
 
@@ -238,25 +237,25 @@ pub fn MutableHierarchy(options: HieararchyOptions, hooks: HierarchyHooks(option
         ) void {
             assert(node != .none);
             const nid = @intFromEnum(node);
-            const node_qry = self.nodes.query();
-            const adjs_qry = self.adjacents.query();
+            const node_view = self.nodes.view();
+            const adjs_view = self.adjacents.view();
 
             self.onWillDropNode(node);
-            switch (node_qry.peekField(nid, .children)) {
+            switch (node_view.peekField(nid, .children)) {
                 .none => {},
                 else => |child_list| {
-                    self.dropListChildren(allocator, node_qry, adjs_qry, child_list);
+                    self.dropListChildren(allocator, node_view, adjs_view, child_list);
                     self.releaseListHandle(allocator, child_list);
                 },
             }
 
-            switch (if (options.inverse) node_qry.peekField(nid, .parent) else parent) {
+            switch (if (options.inverse) node_view.peekField(nid, .parent) else parent) {
                 .none => {},
                 else => |pid| {
                     const parent_list = self.nodes.refField(@intFromEnum(pid), .children);
                     const lid = @intFromEnum(parent_list.*);
                     assert(parent_list.* != .none);
-                    switch (adjs_qry.count(lid)) {
+                    switch (adjs_view.countItems(lid)) {
                         0 => unreachable,
                         1 => {
                             self.releaseListHandle(allocator, parent_list.*);
@@ -276,7 +275,7 @@ pub fn MutableHierarchy(options: HieararchyOptions, hooks: HierarchyHooks(option
             const list = self.nodes.refField(@intFromEnum(parent), .children);
             assert(list.* != .none);
 
-            self.dropListChildren(allocator, self.nodes.query(), self.adjacents.query(), list.*);
+            self.dropListChildren(allocator, self.nodes.view(), self.adjacents.view(), list.*);
             self.releaseListHandle(allocator, list.*);
             list.* = .none;
         }
@@ -284,11 +283,11 @@ pub fn MutableHierarchy(options: HieararchyOptions, hooks: HierarchyHooks(option
         fn dropListChildren(
             self: *Self,
             allocator: Allocator,
-            node_qry: Nodes.Query,
-            adjs_qry: Adjacents.Query,
+            node_qry: Nodes.Viewer,
+            adjs_qry: Adjacents.Viewer,
             row: Handle,
         ) void {
-            var children = adjs_qry.iterate(@intFromEnum(row));
+            var children = adjs_qry.iterateItems(@intFromEnum(row));
             while (children.next()) |child| {
                 self.onWillDropNode(child);
                 switch (node_qry.peekField(@intFromEnum(child), .children)) {
@@ -364,11 +363,11 @@ pub fn MutableHierarchy(options: HieararchyOptions, hooks: HierarchyHooks(option
     };
 }
 
-fn expectTags(comptime G: type, query: anytype, parent: anytype, tags: []const G) !void {
-    var it = query.iterateChildren(parent);
+fn expectTags(comptime G: type, view: anytype, parent: anytype, tags: []const G) !void {
+    var it = view.iterateChildren(parent);
     try testing.expectEqual(tags.len, it.length());
 
-    for (tags) |tag| try testing.expectEqual(tag, query.getTag(it.next().?));
+    for (tags) |tag| try testing.expectEqual(tag, view.tag(it.next().?));
     try testing.expectEqual(null, it.next());
 }
 
@@ -378,64 +377,64 @@ test "MutableHierarchy" {
     defer author.deinit(test_alloc);
 
     const root = try author.appendNode(test_alloc, .none, 0, {});
-    try testing.expectEqual(0, author.query().childCount(root));
-    try testing.expectEqual(null, author.query().childAtOrNull(root, 0));
+    try testing.expectEqual(0, author.view().countChildren(root));
+    try testing.expectEqual(null, author.view().childAtOrNull(root, 0));
 
     var node1 = try author.appendNode(test_alloc, root, 1, {});
-    try testing.expectEqual(1, author.query().childCount(root));
-    try testing.expectEqual(0, author.query().orderOf(root, node1));
-    try testing.expectEqual(node1, author.query().childAt(root, 0));
-    try testing.expectEqualDeep(node1, author.query().childAtOrNull(root, 0));
+    try testing.expectEqual(1, author.view().countChildren(root));
+    try testing.expectEqual(0, author.view().findChild(root, node1));
+    try testing.expectEqual(node1, author.view().childAt(root, 0));
+    try testing.expectEqualDeep(node1, author.view().childAtOrNull(root, 0));
 
     const node2 = try author.appendNode(test_alloc, root, 2, {});
-    try testing.expectEqual(2, author.query().childCount(root));
-    try testing.expectEqual(1, author.query().orderOf(root, node2));
-    try testing.expectEqual(node2, author.query().childAt(root, 1));
-    try expectTags(u8, author.query(), root, &.{ 1, 2 });
+    try testing.expectEqual(2, author.view().countChildren(root));
+    try testing.expectEqual(1, author.view().findChild(root, node2));
+    try testing.expectEqual(node2, author.view().childAt(root, 1));
+    try expectTags(u8, author.view(), root, &.{ 1, 2 });
 
     author.dropNode(test_alloc, .ordered, root, node1);
-    try testing.expectEqual(1, author.query().childCount(root));
+    try testing.expectEqual(1, author.view().countChildren(root));
 
     node1 = try author.insertNode(test_alloc, root, 0, 1, {});
-    try testing.expectEqual(2, author.query().childCount(root));
-    try testing.expectEqual(0, author.query().orderOf(root, node1));
-    try testing.expectEqual(node1, author.query().childAt(root, 0));
-    try testing.expectEqual(node2, author.query().childAt(root, 1));
-    try expectTags(u8, author.query(), root, &.{ 1, 2 });
+    try testing.expectEqual(2, author.view().countChildren(root));
+    try testing.expectEqual(0, author.view().findChild(root, node1));
+    try testing.expectEqual(node1, author.view().childAt(root, 0));
+    try testing.expectEqual(node2, author.view().childAt(root, 1));
+    try expectTags(u8, author.view(), root, &.{ 1, 2 });
 
-    try testing.expectEqual(0, author.query().childCount(node2));
+    try testing.expectEqual(0, author.view().countChildren(node2));
 
     var node21 = try author.appendNode(test_alloc, node2, 21, {});
-    try testing.expectEqual(1, author.query().childCount(node2));
-    try testing.expectEqual(0, author.query().orderOf(node2, node21));
+    try testing.expectEqual(1, author.view().countChildren(node2));
+    try testing.expectEqual(0, author.view().findChild(node2, node21));
 
     const node22 = try author.appendNode(test_alloc, node2, 22, {});
-    try testing.expectEqual(2, author.query().childCount(node2));
-    try testing.expectEqual(1, author.query().orderOf(node2, node22));
-    try expectTags(u8, author.query(), node2, &.{ 21, 22 });
+    try testing.expectEqual(2, author.view().countChildren(node2));
+    try testing.expectEqual(1, author.view().findChild(node2, node22));
+    try expectTags(u8, author.view(), node2, &.{ 21, 22 });
 
     author.dropNode(test_alloc, .ordered, node2, node21);
-    try testing.expectEqual(1, author.query().childCount(node2));
+    try testing.expectEqual(1, author.view().countChildren(node2));
 
     node21 = try author.insertNode(test_alloc, node2, 0, 21, {});
-    try testing.expectEqual(2, author.query().childCount(node2));
-    try testing.expectEqual(0, author.query().orderOf(node2, node21));
-    try expectTags(u8, author.query(), node2, &.{ 21, 22 });
+    try testing.expectEqual(2, author.view().countChildren(node2));
+    try testing.expectEqual(0, author.view().findChild(node2, node21));
+    try expectTags(u8, author.view(), node2, &.{ 21, 22 });
 
     author.dropNode(test_alloc, .ordered, root, node2);
-    try testing.expectEqual(1, author.query().childCount(root));
+    try testing.expectEqual(1, author.view().countChildren(root));
 
     const node11 = try author.appendNode(test_alloc, node1, 11, {});
     _ = try author.appendNode(test_alloc, node1, 12, {});
-    try testing.expectEqual(2, author.query().childCount(node1));
+    try testing.expectEqual(2, author.view().countChildren(node1));
 
     _ = try author.appendNode(test_alloc, node11, 111, {});
 
     author.dropChildren(test_alloc, node1);
-    try testing.expectEqual(0, author.query().childCount(node1));
+    try testing.expectEqual(0, author.view().countChildren(node1));
 
     author.dropChildren(test_alloc, root);
-    try testing.expectEqual(0, author.query().childCount(root));
+    try testing.expectEqual(0, author.view().countChildren(root));
 }
 
 test "MutableHierarchy: inverse" {
@@ -447,16 +446,16 @@ test "MutableHierarchy: inverse" {
     defer author.deinit(test_alloc);
 
     const root = try author.appendNode(test_alloc, .none, 0, {});
-    try testing.expectEqual(0, author.query().childCount(root));
+    try testing.expectEqual(0, author.view().countChildren(root));
 
     const node1 = try author.appendNode(test_alloc, root, 1, {});
-    try testing.expectEqual(1, author.query().childCount(root));
-    try testing.expectEqual(0, author.query().orderOf({}, node1));
+    try testing.expectEqual(1, author.view().countChildren(root));
+    try testing.expectEqual(0, author.view().findChild({}, node1));
 
     const node2 = try author.insertNode(test_alloc, root, 0, 2, {});
-    try testing.expectEqual(2, author.query().childCount(root));
-    try testing.expectEqual(0, author.query().orderOf({}, node2));
-    try expectTags(u8, author.query(), root, &.{ 2, 1 });
+    try testing.expectEqual(2, author.view().countChildren(root));
+    try testing.expectEqual(0, author.view().findChild({}, node2));
+    try expectTags(u8, author.view(), root, &.{ 2, 1 });
 }
 
 test "MutableHierarchy: paylod" {
@@ -465,19 +464,19 @@ test "MutableHierarchy: paylod" {
     defer author.deinit(test_alloc);
 
     const node1 = try author.appendNode(test_alloc, .none, {}, 1);
-    try testing.expectEqual(1, author.query().getPayload(node1));
+    try testing.expectEqual(1, author.view().payload(node1));
 
     const node2 = try author.appendNode(test_alloc, .none, {}, 2);
-    try testing.expectEqual(2, author.query().getPayload(node2));
+    try testing.expectEqual(2, author.view().payload(node2));
     author.dropNode(test_alloc, .ordered, .none, node2);
 
     author.setPayload(node1, 18);
-    try testing.expectEqual(18, author.query().getPayload(node1));
+    try testing.expectEqual(18, author.view().payload(node1));
 
     const ref = author.refPayload(node1);
     try testing.expectEqual(18, ref.*);
     ref.* = 8;
-    try testing.expectEqual(8, author.query().getPayload(node1));
+    try testing.expectEqual(8, author.view().payload(node1));
 }
 
 test "MutableHierarchy: hooks" {
@@ -517,29 +516,45 @@ test "MutableHierarchy: hooks" {
     try testing.expectEqual(node2, Test.nodes[1]);
 }
 
-pub fn HierarchyQuery(comptime options: HieararchyOptions) type {
+pub fn HierarchyViewer(comptime options: HieararchyOptions) type {
     const Handle = common.Handle(options.Indexer);
     const Iterator = iter.Iterator(Handle, .{});
 
     return struct {
         const Self = @This();
 
-        nodes: cols.ColumnsQuery(options.Indexer, HierarchyNode(options)),
-        adjacents: rows.RowsQuery(options.Indexer, Handle),
+        nodes: cols.ColumnsViewer(options.Indexer, HierarchyNode(options)),
+        adjacents: rows.RowsViewer(options.Indexer, Handle),
 
-        pub fn getTag(self: Self, node: Handle) options.Tag {
+        pub fn tag(self: Self, node: Handle) options.Tag {
             comptime assert(options.Tag != void);
             assert(node != .none);
             return self.nodes.peekField(@intFromEnum(node), .tag);
         }
 
-        pub fn getPayload(self: Self, node: Handle) options.Payload {
+        pub fn payload(self: Self, node: Handle) options.Payload {
             comptime assert(options.Payload != void);
             assert(node != .none);
             return self.nodes.peekField(@intFromEnum(node), .payload);
         }
 
-        pub fn orderOf(self: Self, parent: if (options.inverse) void else Handle, child: Handle) options.Indexer {
+        pub fn childAt(self: Self, parent: Handle, i: usize) Handle {
+            assert(parent != .none);
+            const list = self.nodes.peekField(@intFromEnum(parent), .children);
+            assert(list != .none);
+            return self.adjacents.itemAt(@intFromEnum(list), @intCast(i));
+        }
+
+        pub fn childAtOrNull(self: Self, parent: Handle, i: usize) ?Handle {
+            assert(parent != .none);
+            const list = self.nodes.peekField(@intFromEnum(parent), .children);
+            return switch (list) {
+                .none => null,
+                else => self.adjacents.itemAtOrNull(@intFromEnum(list), @intCast(i)),
+            };
+        }
+
+        pub fn findChild(self: Self, parent: if (options.inverse) void else Handle, child: Handle) options.Indexer {
             assert(child != .none);
 
             const pid = if (options.inverse) self.nodes.peekField(@intFromEnum(child), .parent) else parent;
@@ -548,30 +563,14 @@ pub fn HierarchyQuery(comptime options: HieararchyOptions) type {
             const list = self.nodes.peekField(@intFromEnum(pid), .children);
             assert(list != .none);
 
-            return self.adjacents.orderOf(@intFromEnum(list), child);
+            return self.adjacents.findItem(@intFromEnum(list), child);
         }
 
-        pub fn childAt(self: Self, parent: Handle, i: usize) Handle {
-            assert(parent != .none);
-            const list = self.nodes.peekField(@intFromEnum(parent), .children);
-            assert(list != .none);
-            return self.adjacents.peekAt(@intFromEnum(list), @intCast(i));
-        }
-
-        pub fn childAtOrNull(self: Self, parent: Handle, i: usize) ?Handle {
-            assert(parent != .none);
-            const list = self.nodes.peekField(@intFromEnum(parent), .children);
-            return switch (list) {
-                .none => null,
-                else => self.adjacents.peekAtOrNull(@intFromEnum(list), @intCast(i)),
-            };
-        }
-
-        pub fn childCount(self: Self, parent: Handle) options.Indexer {
+        pub fn countChildren(self: Self, parent: Handle) options.Indexer {
             assert(parent != .none);
             return switch (self.nodes.peekField(@intFromEnum(parent), .children)) {
                 .none => 0,
-                else => |list| self.adjacents.count(@intFromEnum(list)),
+                else => |list| self.adjacents.countItems(@intFromEnum(list)),
             };
         }
 
@@ -579,7 +578,7 @@ pub fn HierarchyQuery(comptime options: HieararchyOptions) type {
             assert(parent != .none);
             return switch (self.nodes.peekField(@intFromEnum(parent), .children)) {
                 .none => .{ .items = &.{} },
-                else => |list| self.adjacents.iterate(@intFromEnum(list)),
+                else => |list| self.adjacents.iterateItems(@intFromEnum(list)),
             };
         }
     };

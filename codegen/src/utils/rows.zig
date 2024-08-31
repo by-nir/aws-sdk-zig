@@ -25,14 +25,14 @@ fn RowRecord(comptime Idx: type) type {
     };
 }
 
-pub fn ReadOnlyRows(comptime T: type, comptime options: RowsOptions(T)) type {
+pub fn Rows(comptime T: type, comptime options: RowsOptions(T)) type {
     const Idx = options.Indexer;
     const Record = RowRecord(Idx);
     const utils = RowsUtils(T, options);
 
     return struct {
         const Self = @This();
-        pub const Query = RowsQuery(Idx, T);
+        pub const Viewer = RowsViewer(Idx, T);
 
         /// A packed array of Records, followed by an array of T.
         ///
@@ -67,96 +67,90 @@ pub fn ReadOnlyRows(comptime T: type, comptime options: RowsOptions(T)) type {
             return @alignCast(mem.bytesAsSlice(T, bytes));
         }
 
-        // Query Row ///////////////////////////////////////////////////////////
+        // Viewer //////////////////////////////////////////////////////////////
 
-        pub fn query(self: *const Self) Query {
+        pub fn view(self: *const Self) Viewer {
             return .{
                 .ctx = self,
-                .vtable = &query_vtable,
+                .vtable = &viewer_vtable,
             };
         }
 
-        const query_vtable = Query.VTable{
-            .count = count,
-            .contains = contains,
-            .containsSlice = containsSlice,
-            .orderOf = orderOf,
-            .orderOfSlice = orderOfSlice,
-            .view = view,
-            .peekAt = peekAt,
-            .peekAtOrNull = peekAtOrNull,
-            .peekSlice = peekSlice,
-            .peekLast = peekLast,
-            .peekLastSlice = peekLastSlice,
-            .iterate = iterate,
-            .iterateReverse = iterateReverse,
+        const viewer_vtable = Viewer.VTable{
+            .allItems = allItems,
+            .countItems = countItems,
+            .hasItem = hasItem,
+            .hasItems = hasItems,
+            .findItem = findItem,
+            .findItems = findItems,
+            .itemAt = itemAt,
+            .itemAtOrNull = itemAtOrNull,
+            .itemsRange = itemsRange,
+            .lastItem = lastItem,
+            .lastItems = lastItems,
+            .iterateItems = iterate,
         };
 
         fn cast(ctx: *const anyopaque) *const Self {
             return @ptrCast(@alignCast(ctx));
         }
 
-        fn count(ctx: *const anyopaque, row: Idx) Idx {
+        fn allItems(ctx: *const anyopaque, row: Idx) []const T {
+            return cast(ctx).rowSlice(row);
+        }
+
+        fn countItems(ctx: *const anyopaque, row: Idx) Idx {
             return cast(ctx).rowRecord(row).len;
         }
 
-        fn contains(ctx: *const anyopaque, row: Idx, item: T) bool {
+        fn hasItem(ctx: *const anyopaque, row: Idx, item: T) bool {
             const slice = cast(ctx).rowSlice(row);
             return utils.indexOf(slice, item) != null;
         }
 
-        fn containsSlice(ctx: *const anyopaque, row: Idx, items: []const T) bool {
+        fn hasItems(ctx: *const anyopaque, row: Idx, items: []const T) bool {
             const slice = cast(ctx).rowSlice(row);
             return utils.indexOfSlice(slice, items) != null;
         }
 
-        fn orderOf(ctx: *const anyopaque, row: Idx, item: T) Idx {
+        fn findItem(ctx: *const anyopaque, row: Idx, item: T) Idx {
             const slice = cast(ctx).rowSlice(row);
             return utils.indexOf(slice, item) orelse unreachable;
         }
 
-        fn orderOfSlice(ctx: *const anyopaque, row: Idx, items: []const T) Idx {
+        fn findItems(ctx: *const anyopaque, row: Idx, items: []const T) Idx {
             const slice = cast(ctx).rowSlice(row);
             return utils.indexOfSlice(slice, items) orelse unreachable;
         }
 
-        fn view(ctx: *const anyopaque, row: Idx) []const T {
-            return cast(ctx).rowSlice(row);
-        }
-
-        fn peekAt(ctx: *const anyopaque, row: Idx, i: Idx) T {
+        fn itemAt(ctx: *const anyopaque, row: Idx, i: Idx) T {
             return cast(ctx).rowSlice(row)[i];
         }
 
-        fn peekAtOrNull(ctx: *const anyopaque, row: Idx, i: Idx) ?T {
+        fn itemAtOrNull(ctx: *const anyopaque, row: Idx, i: Idx) ?T {
             const items = cast(ctx).rowSlice(row);
             return if (i < items.len) items[i] else null;
         }
 
-        fn peekSlice(ctx: *const anyopaque, row: Idx, i: Idx, n: Idx) []const T {
+        fn itemsRange(ctx: *const anyopaque, row: Idx, i: Idx, n: Idx) []const T {
             const slice = cast(ctx).rowSlice(row);
             assert(i <= slice.len and n <= slice.len - i);
             return slice[i..][0..n];
         }
 
-        fn peekLast(ctx: *const anyopaque, row: Idx) T {
+        fn lastItem(ctx: *const anyopaque, row: Idx) T {
             const slice = cast(ctx).rowSlice(row);
             assert(slice.len > 0);
             return slice[slice.len - 1];
         }
 
-        fn peekLastSlice(ctx: *const anyopaque, row: Idx, n: Idx) []const T {
+        fn lastItems(ctx: *const anyopaque, row: Idx, n: Idx) []const T {
             const slice = cast(ctx).rowSlice(row);
             assert(slice.len >= n);
             return slice[slice.len - n ..][0..n];
         }
 
         fn iterate(ctx: *const anyopaque, row: Idx) iter.Iterator(T, .{}) {
-            const slice = cast(ctx).rowSlice(row);
-            return .{ .items = slice };
-        }
-
-        fn iterateReverse(ctx: *const anyopaque, row: Idx) iter.Iterator(T, .{ .reverse = true }) {
             const slice = cast(ctx).rowSlice(row);
             return .{ .items = slice };
         }
@@ -224,7 +218,8 @@ pub fn ReadOnlyRows(comptime T: type, comptime options: RowsOptions(T)) type {
                 };
             }
 
-            pub fn consume(self: *Author, allocator: Allocator) !ReadOnlyRows(T, options) {
+            /// The caller owns the returned memory.
+            pub fn consume(self: *Author, allocator: Allocator) !Rows(T, options) {
                 const row_count = self.count();
                 const record_len = self.records.items.len;
 
@@ -239,7 +234,7 @@ pub fn ReadOnlyRows(comptime T: type, comptime options: RowsOptions(T)) type {
                 self.records.deinit(self.allocator);
                 self.items.deinit(self.allocator);
 
-                return ReadOnlyRows(T, options){
+                return Rows(T, options){
                     .row_count = row_count,
                     .records_offset = @intCast(offset),
                     .allocated = @intCast(size),
@@ -250,9 +245,9 @@ pub fn ReadOnlyRows(comptime T: type, comptime options: RowsOptions(T)) type {
     };
 }
 
-test "ReadOnlyRows" {
+test "Rows" {
     const rows = blk: {
-        var author = ReadOnlyRows(u8, .{}).author(test_alloc);
+        var author = Rows(u8, .{}).author(test_alloc);
         errdefer author.deinit();
 
         try testing.expectEqual(0, try author.appendRow(&.{ 1, 2, 3 }));
@@ -266,26 +261,22 @@ test "ReadOnlyRows" {
     };
     defer rows.deinit(test_alloc);
 
-    try testing.expectEqual(3, rows.query().count(0));
-    try testing.expectEqual(false, rows.query().contains(0, 8));
-    try testing.expectEqual(true, rows.query().contains(1, 5));
-    try testing.expectEqual(false, rows.query().containsSlice(0, &.{ 1, 3 }));
-    try testing.expectEqual(true, rows.query().containsSlice(0, &.{ 2, 3 }));
-    try testing.expectEqual(1, rows.query().orderOf(0, 2));
-    try testing.expectEqual(1, rows.query().orderOfSlice(0, &.{ 2, 3 }));
-    try testing.expectEqualSlices(u8, &[_]u8{ 4, 5 }, rows.query().view(1));
-    try testing.expectEqual(3, rows.query().peekAt(0, 2));
-    try testing.expectEqualSlices(u8, &[_]u8{ 2, 3 }, rows.query().peekSlice(0, 1, 2));
-    try testing.expectEqual(3, rows.query().peekLast(0));
-    try testing.expectEqualSlices(u8, &[_]u8{ 2, 3 }, rows.query().peekLastSlice(0, 2));
-    try testing.expectEqualSlices(u8, &[_]u8{ 4, 5 }, rows.query().iterate(1).items);
-    try testing.expectEqual(5, rows.query().peekAt(1, 1));
-    try testing.expectEqual(5, rows.query().peekAtOrNull(1, 1));
-    try testing.expectEqualDeep(null, rows.query().peekAtOrNull(1, 2));
-
-    var it = rows.query().iterateReverse(1);
-    for (&[_]u8{ 5, 4 }) |expected| try testing.expectEqual(expected, it.next());
-    try testing.expectEqual(null, it.next());
+    try testing.expectEqual(3, rows.view().countItems(0));
+    try testing.expectEqual(false, rows.view().hasItem(0, 8));
+    try testing.expectEqual(true, rows.view().hasItem(1, 5));
+    try testing.expectEqual(false, rows.view().hasItems(0, &.{ 1, 3 }));
+    try testing.expectEqual(true, rows.view().hasItems(0, &.{ 2, 3 }));
+    try testing.expectEqual(1, rows.view().findItem(0, 2));
+    try testing.expectEqual(1, rows.view().findItems(0, &.{ 2, 3 }));
+    try testing.expectEqualSlices(u8, &[_]u8{ 4, 5 }, rows.view().allItems(1));
+    try testing.expectEqual(3, rows.view().itemAt(0, 2));
+    try testing.expectEqualSlices(u8, &[_]u8{ 2, 3 }, rows.view().itemsRange(0, 1, 2));
+    try testing.expectEqual(3, rows.view().lastItem(0));
+    try testing.expectEqualSlices(u8, &[_]u8{ 2, 3 }, rows.view().lastItems(0, 2));
+    try testing.expectEqualSlices(u8, &[_]u8{ 4, 5 }, rows.view().iterateItems(1).items);
+    try testing.expectEqual(5, rows.view().itemAt(1, 1));
+    try testing.expectEqual(5, rows.view().itemAtOrNull(1, 1));
+    try testing.expectEqualDeep(null, rows.view().itemAtOrNull(1, 2));
 }
 
 pub fn MutableRows(comptime T: type, comptime options: RowsOptions(T)) type {
@@ -295,7 +286,7 @@ pub fn MutableRows(comptime T: type, comptime options: RowsOptions(T)) type {
 
     return struct {
         const Self = @This();
-        pub const Query = RowsQuery(Idx, T);
+        pub const Viewer = RowsViewer(Idx, T);
 
         rows: std.ArrayListUnmanaged(Row) = .{},
         gaps: AutoSlots(Idx) = .{},
@@ -555,85 +546,84 @@ pub fn MutableRows(comptime T: type, comptime options: RowsOptions(T)) type {
             return .{ .items = self.rows.items[row].items };
         }
 
-        // Query Row ///////////////////////////////////////////////////////////
+        // Viewer //////////////////////////////////////////////////////////////
 
-        pub fn query(self: *const Self) Query {
+        pub fn view(self: *const Self) Viewer {
             return .{
                 .ctx = self,
-                .vtable = &query_vtable,
+                .vtable = &viewer_vtable,
             };
         }
 
-        const query_vtable = Query.VTable{
-            .count = count,
-            .contains = contains,
-            .containsSlice = containsSlice,
-            .orderOf = orderOf,
-            .orderOfSlice = orderOfSlice,
-            .view = view,
-            .peekAt = peekAt,
-            .peekAtOrNull = peekAtOrNull,
-            .peekSlice = peekSlice,
-            .peekLast = peekLast,
-            .peekLastSlice = peekLastSlice,
-            .iterate = iterate,
-            .iterateReverse = iterateReverse,
+        const viewer_vtable = Viewer.VTable{
+            .allItems = allItems,
+            .countItems = countItems,
+            .hasItem = hasItem,
+            .hasItems = hasItems,
+            .findItem = findItem,
+            .findItems = findItems,
+            .itemAt = itemAt,
+            .itemAtOrNull = itemAtOrNull,
+            .itemsRange = itemsRange,
+            .lastItem = lastItem,
+            .lastItems = lastItems,
+            .iterateItems = iterate,
         };
 
         fn cast(ctx: *const anyopaque) *const Self {
             return @ptrCast(@alignCast(ctx));
         }
 
-        fn count(ctx: *const anyopaque, row: Idx) Idx {
+        fn allItems(ctx: *const anyopaque, row: Idx) []const T {
+            return cast(ctx).rows.items[row].items;
+        }
+
+        fn countItems(ctx: *const anyopaque, row: Idx) Idx {
             return @intCast(cast(ctx).rows.items[row].items.len);
         }
 
-        fn contains(ctx: *const anyopaque, row: Idx, item: T) bool {
+        fn hasItem(ctx: *const anyopaque, row: Idx, item: T) bool {
             const slice = cast(ctx).rows.items[row].items;
             return utils.indexOf(slice, item) != null;
         }
 
-        fn containsSlice(ctx: *const anyopaque, row: Idx, items: []const T) bool {
+        fn hasItems(ctx: *const anyopaque, row: Idx, items: []const T) bool {
             const slice = cast(ctx).rows.items[row].items;
             return utils.indexOfSlice(slice, items) != null;
         }
 
-        fn orderOf(ctx: *const anyopaque, row: Idx, item: T) Idx {
+        fn findItem(ctx: *const anyopaque, row: Idx, item: T) Idx {
             const slice = cast(ctx).rows.items[row].items;
             return utils.indexOf(slice, item) orelse unreachable;
         }
 
-        fn orderOfSlice(ctx: *const anyopaque, row: Idx, items: []const T) Idx {
+        fn findItems(ctx: *const anyopaque, row: Idx, items: []const T) Idx {
             const slice = cast(ctx).rows.items[row].items;
             return utils.indexOfSlice(slice, items) orelse unreachable;
         }
 
-        fn view(ctx: *const anyopaque, row: Idx) []const T {
-            return cast(ctx).rows.items[row].items;
-        }
-
-        fn peekAt(ctx: *const anyopaque, row: Idx, i: Idx) T {
+        fn itemAt(ctx: *const anyopaque, row: Idx, i: Idx) T {
             return cast(ctx).rows.items[row].items[i];
         }
 
-        fn peekAtOrNull(ctx: *const anyopaque, row: Idx, i: Idx) ?T {
+        fn itemAtOrNull(ctx: *const anyopaque, row: Idx, i: Idx) ?T {
             const items = cast(ctx).rows.items[row].items;
             return if (i < items.len) items[i] else null;
         }
 
-        fn peekSlice(ctx: *const anyopaque, row: Idx, i: Idx, n: Idx) []const T {
+        fn itemsRange(ctx: *const anyopaque, row: Idx, i: Idx, n: Idx) []const T {
             const slice = cast(ctx).rows.items[row].items;
             assert(i <= slice.len and n <= slice.len - i);
             return slice[i..][0..n];
         }
 
-        fn peekLast(ctx: *const anyopaque, row: Idx) T {
+        fn lastItem(ctx: *const anyopaque, row: Idx) T {
             const slice = cast(ctx).rows.items[row].items;
             assert(slice.len > 0);
             return slice[slice.len - 1];
         }
 
-        fn peekLastSlice(ctx: *const anyopaque, row: Idx, n: Idx) []const T {
+        fn lastItems(ctx: *const anyopaque, row: Idx, n: Idx) []const T {
             const slice = cast(ctx).rows.items[row].items;
             assert(slice.len >= n);
             return slice[slice.len - n ..][0..n];
@@ -643,15 +633,10 @@ pub fn MutableRows(comptime T: type, comptime options: RowsOptions(T)) type {
             const slice = cast(ctx).rows.items[row].items;
             return .{ .items = slice };
         }
-
-        fn iterateReverse(ctx: *const anyopaque, row: Idx) iter.Iterator(T, .{ .reverse = true }) {
-            const slice = cast(ctx).rows.items[row].items;
-            return .{ .items = slice };
-        }
     };
 }
 
-test "MutableRows: Query" {
+test "MutableRows: view" {
     var t0: [3]u8 = .{ 1, 2, 3 };
     var t1: [2]u8 = .{ 4, 5 };
     var items: [2]std.ArrayListUnmanaged(u8) = .{
@@ -663,26 +648,23 @@ test "MutableRows: Query" {
     var rows = MutableRows(u8, .{}){};
     rows.rows.items = &items;
 
-    try testing.expectEqual(3, rows.query().count(0));
-    try testing.expectEqual(false, rows.query().contains(0, 8));
-    try testing.expectEqual(true, rows.query().contains(1, 5));
-    try testing.expectEqual(false, rows.query().containsSlice(0, &.{ 1, 3 }));
-    try testing.expectEqual(true, rows.query().containsSlice(0, &.{ 2, 3 }));
-    try testing.expectEqual(1, rows.query().orderOf(0, 2));
-    try testing.expectEqual(1, rows.query().orderOfSlice(0, &.{ 2, 3 }));
-    try testing.expectEqualSlices(u8, &[_]u8{ 4, 5 }, rows.query().view(1));
-    try testing.expectEqual(3, rows.query().peekAt(0, 2));
-    try testing.expectEqualSlices(u8, &[_]u8{ 2, 3 }, rows.query().peekSlice(0, 1, 2));
-    try testing.expectEqual(3, rows.query().peekLast(0));
-    try testing.expectEqualSlices(u8, &[_]u8{ 2, 3 }, rows.query().peekLastSlice(0, 2));
-    try testing.expectEqualSlices(u8, &[_]u8{ 4, 5 }, rows.query().iterate(1).items);
-    try testing.expectEqual(5, rows.query().peekAt(1, 1));
-    try testing.expectEqual(5, rows.query().peekAtOrNull(1, 1));
-    try testing.expectEqualDeep(null, rows.query().peekAtOrNull(1, 2));
-
-    var it = rows.query().iterateReverse(1);
-    for (&[_]u8{ 5, 4 }) |expected| try testing.expectEqual(expected, it.next());
-    try testing.expectEqual(null, it.next());
+    const view = rows.view();
+    try testing.expectEqual(3, view.countItems(0));
+    try testing.expectEqual(false, view.hasItem(0, 8));
+    try testing.expectEqual(true, view.hasItem(1, 5));
+    try testing.expectEqual(false, view.hasItems(0, &.{ 1, 3 }));
+    try testing.expectEqual(true, view.hasItems(0, &.{ 2, 3 }));
+    try testing.expectEqual(1, view.findItem(0, 2));
+    try testing.expectEqual(1, view.findItems(0, &.{ 2, 3 }));
+    try testing.expectEqualSlices(u8, &[_]u8{ 4, 5 }, view.allItems(1));
+    try testing.expectEqual(3, view.itemAt(0, 2));
+    try testing.expectEqualSlices(u8, &[_]u8{ 2, 3 }, view.itemsRange(0, 1, 2));
+    try testing.expectEqual(3, view.lastItem(0));
+    try testing.expectEqualSlices(u8, &[_]u8{ 2, 3 }, view.lastItems(0, 2));
+    try testing.expectEqualSlices(u8, &[_]u8{ 4, 5 }, view.iterateItems(1).items);
+    try testing.expectEqual(5, view.itemAt(1, 1));
+    try testing.expectEqual(5, view.itemAtOrNull(1, 1));
+    try testing.expectEqualDeep(null, view.itemAtOrNull(1, 2));
 }
 
 test "MutableRows: mutate" {
@@ -690,94 +672,94 @@ test "MutableRows: mutate" {
     defer rows.deinit(test_alloc);
 
     const r0 = try rows.claimRow(test_alloc);
-    try testing.expectEqual(0, rows.query().count(r0));
+    try testing.expectEqual(0, rows.view().countItems(r0));
 
     try rows.append(test_alloc, r0, 1);
     try rows.appendSlice(test_alloc, r0, &.{ 2, 3 });
-    try testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3 }, rows.query().view(r0));
+    try testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3 }, rows.view().allItems(r0));
 
     try rows.insert(test_alloc, .ordered, r0, 1, 4);
-    try testing.expectEqualSlices(u8, &[_]u8{ 1, 4, 2, 3 }, rows.query().view(r0));
+    try testing.expectEqualSlices(u8, &[_]u8{ 1, 4, 2, 3 }, rows.view().allItems(r0));
 
     try rows.insert(test_alloc, .swap, r0, 1, 5);
-    try testing.expectEqualSlices(u8, &[_]u8{ 1, 5, 2, 3, 4 }, rows.query().view(r0));
+    try testing.expectEqualSlices(u8, &[_]u8{ 1, 5, 2, 3, 4 }, rows.view().allItems(r0));
 
     try rows.insertSlice(test_alloc, .ordered, r0, 1, &.{ 6, 7 });
-    try testing.expectEqualSlices(u8, &[_]u8{ 1, 6, 7, 5, 2, 3, 4 }, rows.query().view(r0));
+    try testing.expectEqualSlices(u8, &[_]u8{ 1, 6, 7, 5, 2, 3, 4 }, rows.view().allItems(r0));
 
     try rows.insertSlice(test_alloc, .swap, r0, 1, &.{ 8, 9 });
-    try testing.expectEqualSlices(u8, &[_]u8{ 1, 8, 9, 5, 2, 3, 4, 6, 7 }, rows.query().view(r0));
+    try testing.expectEqualSlices(u8, &[_]u8{ 1, 8, 9, 5, 2, 3, 4, 6, 7 }, rows.view().allItems(r0));
 
     try testing.expectEqual(7, rows.pop(r0));
     try testing.expectEqualSlices(u8, &[_]u8{ 4, 6 }, rows.popSlice(r0, 2));
-    try testing.expectEqualSlices(u8, &[_]u8{ 1, 8, 9, 5, 2, 3 }, rows.query().view(r0));
+    try testing.expectEqualSlices(u8, &[_]u8{ 1, 8, 9, 5, 2, 3 }, rows.view().allItems(r0));
 
     rows.drop(.ordered, r0, 9);
-    try testing.expectEqualSlices(u8, &[_]u8{ 1, 8, 5, 2, 3 }, rows.query().view(r0));
+    try testing.expectEqualSlices(u8, &[_]u8{ 1, 8, 5, 2, 3 }, rows.view().allItems(r0));
 
     rows.drop(.swap, r0, 8);
-    try testing.expectEqualSlices(u8, &[_]u8{ 1, 3, 5, 2 }, rows.query().view(r0));
+    try testing.expectEqualSlices(u8, &[_]u8{ 1, 3, 5, 2 }, rows.view().allItems(r0));
 
     try testing.expectEqual(3, rows.dropAt(.swap, r0, 1));
-    try testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 5 }, rows.query().view(r0));
+    try testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 5 }, rows.view().allItems(r0));
 
     try testing.expectEqual(2, rows.dropAt(.ordered, r0, 1));
-    try testing.expectEqualSlices(u8, &[_]u8{ 1, 5 }, rows.query().view(r0));
+    try testing.expectEqualSlices(u8, &[_]u8{ 1, 5 }, rows.view().allItems(r0));
 
     try rows.appendSlice(test_alloc, r0, &.{ 6, 7 });
     try rows.insertSlice(test_alloc, .ordered, r0, 1, &.{ 2, 3, 4 });
 
     try testing.expectEqualSlices(u8, &[_]u8{ 2, 3 }, rows.dropSlice(.ordered, r0, 1, 2));
-    try testing.expectEqualSlices(u8, &[_]u8{ 1, 4, 5, 6, 7 }, rows.query().view(r0));
+    try testing.expectEqualSlices(u8, &[_]u8{ 1, 4, 5, 6, 7 }, rows.view().allItems(r0));
 
     try testing.expectEqualSlices(u8, &[_]u8{ 1, 4 }, rows.dropSlice(.swap, r0, 0, 2));
-    try testing.expectEqualSlices(u8, &[_]u8{ 6, 7, 5 }, rows.query().view(r0));
+    try testing.expectEqualSlices(u8, &[_]u8{ 6, 7, 5 }, rows.view().allItems(r0));
 
     rows.refAt(r0, 0).* += 2;
     rows.refSlice(r0, 1, 2)[1] += 1;
-    try testing.expectEqualSlices(u8, &[_]u8{ 8, 7, 6 }, rows.query().view(r0));
+    try testing.expectEqualSlices(u8, &[_]u8{ 8, 7, 6 }, rows.view().allItems(r0));
 
     rows.refLast(r0).* -= 4;
-    try testing.expectEqual(2, rows.query().peekLast(r0));
+    try testing.expectEqual(2, rows.view().lastItem(r0));
 
     rows.refLastSlice(r0, 2)[0] -= 2;
-    try testing.expectEqualSlices(u8, &[_]u8{ 8, 5, 2 }, rows.query().view(r0));
+    try testing.expectEqualSlices(u8, &[_]u8{ 8, 5, 2 }, rows.view().allItems(r0));
 
     const r1 = try rows.claimRowWithSlice(test_alloc, &.{ 1, 2, 3, 4, 5 });
-    try testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3, 4, 5 }, rows.query().view(r1));
+    try testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3, 4, 5 }, rows.view().allItems(r1));
 
     rows.move(.swap, r1, 2, 3);
-    try testing.expectEqualSlices(u8, &[_]u8{ 1, 4, 3, 2, 5 }, rows.query().view(r1));
+    try testing.expectEqualSlices(u8, &[_]u8{ 1, 4, 3, 2, 5 }, rows.view().allItems(r1));
 
     rows.move(.ordered, r1, 4, 4);
-    try testing.expectEqualSlices(u8, &[_]u8{ 1, 3, 2, 5, 4 }, rows.query().view(r1));
+    try testing.expectEqualSlices(u8, &[_]u8{ 1, 3, 2, 5, 4 }, rows.view().allItems(r1));
 
     rows.moveAt(.swap, r1, 0, 4);
-    try testing.expectEqualSlices(u8, &[_]u8{ 4, 3, 2, 5, 1 }, rows.query().view(r1));
+    try testing.expectEqualSlices(u8, &[_]u8{ 4, 3, 2, 5, 1 }, rows.view().allItems(r1));
 
     rows.moveAt(.ordered, r1, 1, 3);
-    try testing.expectEqualSlices(u8, &[_]u8{ 4, 2, 5, 3, 1 }, rows.query().view(r1));
+    try testing.expectEqualSlices(u8, &[_]u8{ 4, 2, 5, 3, 1 }, rows.view().allItems(r1));
 
     rows.moveSlice(.swap, r1, 0, 2, 2);
-    try testing.expectEqualSlices(u8, &[_]u8{ 5, 3, 4, 2, 1 }, rows.query().view(r1));
+    try testing.expectEqualSlices(u8, &[_]u8{ 5, 3, 4, 2, 1 }, rows.view().allItems(r1));
 
     rows.moveSlice(.swap, r1, 2, 2, 0);
-    try testing.expectEqualSlices(u8, &[_]u8{ 4, 2, 5, 3, 1 }, rows.query().view(r1));
+    try testing.expectEqualSlices(u8, &[_]u8{ 4, 2, 5, 3, 1 }, rows.view().allItems(r1));
 
     rows.moveSlice(.ordered, r1, 0, 2, 3);
-    try testing.expectEqualSlices(u8, &[_]u8{ 5, 3, 1, 4, 2 }, rows.query().view(r1));
+    try testing.expectEqualSlices(u8, &[_]u8{ 5, 3, 1, 4, 2 }, rows.view().allItems(r1));
 
     rows.moveSlice(.ordered, r1, 2, 2, 1);
-    try testing.expectEqualSlices(u8, &[_]u8{ 5, 1, 4, 3, 2 }, rows.query().view(r1));
+    try testing.expectEqualSlices(u8, &[_]u8{ 5, 1, 4, 3, 2 }, rows.view().allItems(r1));
 
     rows.releaseRow(test_alloc, r1);
     try testing.expectEqual(r1, try rows.claimRow(test_alloc));
-    try testing.expectEqual(0, rows.query().count(r1));
+    try testing.expectEqual(0, rows.view().countItems(r1));
 
     try rows.appendSlice(test_alloc, r1, &.{ 2, 3 });
     var it = rows.iterateMutable(r1);
     while (it.next()) |item| item.* *= 2;
-    try testing.expectEqualSlices(u8, &[_]u8{ 4, 6 }, rows.query().view(r1));
+    try testing.expectEqualSlices(u8, &[_]u8{ 4, 6 }, rows.view().allItems(r1));
 }
 
 fn RowsUtils(comptime T: type, comptime options: RowsOptions(T)) type {
@@ -817,7 +799,7 @@ fn RowsUtils(comptime T: type, comptime options: RowsOptions(T)) type {
     };
 }
 
-pub fn RowsQuery(comptime Indexer: type, comptime T: type) type {
+pub fn RowsViewer(comptime Indexer: type, comptime T: type) type {
     return struct {
         const Self = @This();
 
@@ -825,71 +807,66 @@ pub fn RowsQuery(comptime Indexer: type, comptime T: type) type {
         vtable: *const VTable,
 
         pub const VTable = struct {
-            count: *const fn (ctx: *const anyopaque, row: Indexer) Indexer,
-            contains: *const fn (ctx: *const anyopaque, row: Indexer, item: T) bool,
-            containsSlice: *const fn (ctx: *const anyopaque, row: Indexer, items: []const T) bool,
-            orderOf: *const fn (ctx: *const anyopaque, row: Indexer, item: T) Indexer,
-            orderOfSlice: *const fn (ctx: *const anyopaque, row: Indexer, items: []const T) Indexer,
-            view: *const fn (ctx: *const anyopaque, row: Indexer) []const T,
-            peekAt: *const fn (ctx: *const anyopaque, row: Indexer, i: Indexer) T,
-            peekAtOrNull: *const fn (ctx: *const anyopaque, row: Indexer, i: Indexer) ?T,
-            peekSlice: *const fn (ctx: *const anyopaque, row: Indexer, i: Indexer, n: Indexer) []const T,
-            peekLast: *const fn (ctx: *const anyopaque, row: Indexer) T,
-            peekLastSlice: *const fn (ctx: *const anyopaque, row: Indexer, n: Indexer) []const T,
-            iterate: *const fn (ctx: *const anyopaque, row: Indexer) iter.Iterator(T, .{}),
-            iterateReverse: *const fn (ctx: *const anyopaque, row: Indexer) iter.Iterator(T, .{ .reverse = true }),
+            allItems: *const fn (ctx: *const anyopaque, row: Indexer) []const T,
+            countItems: *const fn (ctx: *const anyopaque, row: Indexer) Indexer,
+            hasItem: *const fn (ctx: *const anyopaque, row: Indexer, item: T) bool,
+            hasItems: *const fn (ctx: *const anyopaque, row: Indexer, items: []const T) bool,
+            findItem: *const fn (ctx: *const anyopaque, row: Indexer, item: T) Indexer,
+            findItems: *const fn (ctx: *const anyopaque, row: Indexer, items: []const T) Indexer,
+            itemAt: *const fn (ctx: *const anyopaque, row: Indexer, i: Indexer) T,
+            itemAtOrNull: *const fn (ctx: *const anyopaque, row: Indexer, i: Indexer) ?T,
+            itemsRange: *const fn (ctx: *const anyopaque, row: Indexer, i: Indexer, n: Indexer) []const T,
+            lastItem: *const fn (ctx: *const anyopaque, row: Indexer) T,
+            lastItems: *const fn (ctx: *const anyopaque, row: Indexer, n: Indexer) []const T,
+            iterateItems: *const fn (ctx: *const anyopaque, row: Indexer) iter.Iterator(T, .{}),
         };
 
-        pub inline fn count(self: Self, row: Indexer) Indexer {
-            return self.vtable.count(self.ctx, row);
+        pub inline fn allItems(self: Self, row: Indexer) []const T {
+            return self.vtable.allItems(self.ctx, row);
         }
 
-        pub inline fn contains(self: Self, row: Indexer, item: T) bool {
-            return self.vtable.contains(self.ctx, row, item);
+        pub inline fn countItems(self: Self, row: Indexer) Indexer {
+            return self.vtable.countItems(self.ctx, row);
         }
 
-        pub inline fn containsSlice(self: Self, row: Indexer, items: []const T) bool {
-            return self.vtable.containsSlice(self.ctx, row, items);
+        pub inline fn hasItem(self: Self, row: Indexer, item: T) bool {
+            return self.vtable.hasItem(self.ctx, row, item);
         }
 
-        pub inline fn orderOf(self: Self, row: Indexer, item: T) Indexer {
-            return self.vtable.orderOf(self.ctx, row, item);
+        pub inline fn hasItems(self: Self, row: Indexer, items: []const T) bool {
+            return self.vtable.hasItems(self.ctx, row, items);
         }
 
-        pub inline fn orderOfSlice(self: Self, row: Indexer, items: []const T) Indexer {
-            return self.vtable.orderOfSlice(self.ctx, row, items);
+        pub inline fn findItem(self: Self, row: Indexer, item: T) Indexer {
+            return self.vtable.findItem(self.ctx, row, item);
         }
 
-        pub inline fn view(self: Self, row: Indexer) []const T {
-            return self.vtable.view(self.ctx, row);
+        pub inline fn findItems(self: Self, row: Indexer, items: []const T) Indexer {
+            return self.vtable.findItems(self.ctx, row, items);
         }
 
-        pub inline fn peekAt(self: Self, row: Indexer, i: Indexer) T {
-            return self.vtable.peekAt(self.ctx, row, i);
+        pub inline fn itemAt(self: Self, row: Indexer, i: Indexer) T {
+            return self.vtable.itemAt(self.ctx, row, i);
         }
 
-        pub inline fn peekAtOrNull(self: Self, row: Indexer, i: Indexer) ?T {
-            return self.vtable.peekAtOrNull(self.ctx, row, i);
+        pub inline fn itemAtOrNull(self: Self, row: Indexer, i: Indexer) ?T {
+            return self.vtable.itemAtOrNull(self.ctx, row, i);
         }
 
-        pub inline fn peekSlice(self: Self, row: Indexer, i: Indexer, n: Indexer) []const T {
-            return self.vtable.peekSlice(self.ctx, row, i, n);
+        pub inline fn itemsRange(self: Self, row: Indexer, i: Indexer, n: Indexer) []const T {
+            return self.vtable.itemsRange(self.ctx, row, i, n);
         }
 
-        pub inline fn peekLast(self: Self, row: Indexer) T {
-            return self.vtable.peekLast(self.ctx, row);
+        pub inline fn lastItem(self: Self, row: Indexer) T {
+            return self.vtable.lastItem(self.ctx, row);
         }
 
-        pub inline fn peekLastSlice(self: Self, row: Indexer, n: Indexer) []const T {
-            return self.vtable.peekLastSlice(self.ctx, row, n);
+        pub inline fn lastItems(self: Self, row: Indexer, n: Indexer) []const T {
+            return self.vtable.lastItems(self.ctx, row, n);
         }
 
-        pub inline fn iterate(self: Self, row: Indexer) iter.Iterator(T, .{}) {
-            return self.vtable.iterate(self.ctx, row);
-        }
-
-        pub inline fn iterateReverse(self: Self, row: Indexer) iter.Iterator(T, .{ .reverse = true }) {
-            return self.vtable.iterateReverse(self.ctx, row);
+        pub inline fn iterateItems(self: Self, row: Indexer) iter.Iterator(T, .{}) {
+            return self.vtable.iterateItems(self.ctx, row);
         }
     };
 }

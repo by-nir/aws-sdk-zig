@@ -54,49 +54,6 @@ const HtmlTag = enum(u32) {
     }
 };
 
-const TagMeta = struct {
-    kind: Kind,
-    tag: HtmlTag,
-    attrs: ?[]const u8 = null,
-
-    pub const Kind = enum { open, close, self_close };
-
-    pub fn parse(raw: []const u8) TagMeta {
-        assert(raw.len > 2 and raw[0] == '<' and raw[raw.len - 1] == '>');
-        assert(!mem.eql(u8, "</>", raw));
-
-        const kind: Kind = if (raw[raw.len - 2] == '/')
-            .self_close
-        else if (raw[1] == '/')
-            .close
-        else
-            .open;
-
-        const start: usize = if (kind == .close) 2 else 1;
-        const end: usize = if (kind == .self_close) raw.len - 2 else raw.len - 1;
-        const name = if (mem.indexOfAnyPos(u8, raw, start, &std.ascii.whitespace)) |idx| raw[start..idx] else raw[start..end];
-        const attrs = if (start + name.len == end) "" else mem.trim(u8, raw[start + name.len + 1 .. end], &std.ascii.whitespace);
-
-        return .{
-            .kind = kind,
-            .tag = HtmlTag.parse(name),
-            .attrs = if (attrs.len > 0) attrs else null,
-        };
-    }
-};
-
-test "HtmlTagInfo" {
-    try testing.expectEqualDeep(TagMeta{ .kind = .open, .tag = .p }, TagMeta.parse("<p>"));
-    try testing.expectEqualDeep(TagMeta{ .kind = .close, .tag = .p }, TagMeta.parse("</p>"));
-    try testing.expectEqualDeep(TagMeta{ .kind = .self_close, .tag = .p }, TagMeta.parse("<p />"));
-
-    try testing.expectEqualDeep(TagMeta{
-        .kind = .self_close,
-        .tag = .p,
-        .attrs = "style=\"foo\"",
-    }, TagMeta.parse("<p style=\"foo\" />"));
-}
-
 /// Naively parse HTML source, normalize whitespace, and convert entities to unicode.
 const HtmlFragmenter = struct {
     token: []const u8 = "",
@@ -197,6 +154,49 @@ test "HtmlFragmenter" {
     try testing.expectEqual(null, try frags.next());
 }
 
+const TagMeta = struct {
+    kind: Kind,
+    tag: HtmlTag,
+    attrs: ?[]const u8 = null,
+
+    pub const Kind = enum { open, close, self_close };
+
+    pub fn parse(raw: []const u8) TagMeta {
+        assert(raw.len > 2 and raw[0] == '<' and raw[raw.len - 1] == '>');
+        assert(!mem.eql(u8, "</>", raw));
+
+        const kind: Kind = if (raw[raw.len - 2] == '/')
+            .self_close
+        else if (raw[1] == '/')
+            .close
+        else
+            .open;
+
+        const start: usize = if (kind == .close) 2 else 1;
+        const end: usize = if (kind == .self_close) raw.len - 2 else raw.len - 1;
+        const name = if (mem.indexOfAnyPos(u8, raw, start, &std.ascii.whitespace)) |idx| raw[start..idx] else raw[start..end];
+        const attrs = if (start + name.len == end) "" else mem.trim(u8, raw[start + name.len + 1 .. end], &std.ascii.whitespace);
+
+        return .{
+            .kind = kind,
+            .tag = HtmlTag.parse(name),
+            .attrs = if (attrs.len > 0) attrs else null,
+        };
+    }
+};
+
+test "TagMeta" {
+    try testing.expectEqualDeep(TagMeta{ .kind = .open, .tag = .p }, TagMeta.parse("<p>"));
+    try testing.expectEqualDeep(TagMeta{ .kind = .close, .tag = .p }, TagMeta.parse("</p>"));
+    try testing.expectEqualDeep(TagMeta{ .kind = .self_close, .tag = .p }, TagMeta.parse("<p />"));
+
+    try testing.expectEqualDeep(TagMeta{
+        .kind = .self_close,
+        .tag = .p,
+        .attrs = "style=\"foo\"",
+    }, TagMeta.parse("<p style=\"foo\" />"));
+}
+
 const HtmlTree = srct.MutableSourceTree(HtmlTag);
 
 fn parse(mut_alloc: Allocator, html: []const u8) !HtmlTree {
@@ -234,7 +234,7 @@ fn parseNode(frags: *HtmlFragmenter, tree: *HtmlTree, parent: srct.NodeHandle, p
 
 test "parse" {
     var html = try parse(test_alloc, "foo<p /><ul><li /></ul>");
-    const tree = html.query();
+    const tree = html.view();
     defer html.deinit();
 
     var it = tree.iterateChildren(srct.ROOT);
@@ -259,14 +259,14 @@ pub fn convert(allocator: Allocator, bld: md.ContainerAuthor, html: []const u8) 
     var tree = try parse(allocator, html);
     defer tree.deinit();
 
-    const query = tree.query();
-    var it = query.iterateChildren(srct.ROOT);
+    const view = tree.view();
+    var it = view.iterateChildren(srct.ROOT);
     while (it.next()) |node| {
-        try convertNode(bld, query, node);
+        try convertNode(bld, view, node);
     }
 }
 
-fn convertNode(bld: md.ContainerAuthor, html: HtmlTree.Query, node: srct.NodeHandle) !void {
+fn convertNode(bld: md.ContainerAuthor, html: HtmlTree.Viewer, node: srct.NodeHandle) !void {
     switch (html.tag(node)) {
         .text => try bld.paragraph(html.payload(node, []const u8)),
         .p => {
@@ -325,7 +325,7 @@ fn convertNode(bld: md.ContainerAuthor, html: HtmlTree.Query, node: srct.NodeHan
     }
 }
 
-fn convertStyledNode(bld: *md.StyledAuthor, html: HtmlTree.Query, node: srct.NodeHandle, tag: HtmlTag) !void {
+fn convertStyledNode(bld: *md.StyledAuthor, html: HtmlTree.Viewer, node: srct.NodeHandle, tag: HtmlTag) !void {
     switch (tag) {
         .text => try bld.plain(html.payload(node, []const u8)),
         .b, .strong => {
@@ -356,8 +356,8 @@ fn convertStyledNode(bld: *md.StyledAuthor, html: HtmlTree.Query, node: srct.Nod
 }
 
 // TODO: Support arbitrary nested children
-fn TEMP_extractNodeText(html: HtmlTree.Query, node: srct.NodeHandle) []const u8 {
-    assert(html.childCount(node) == 1);
+fn TEMP_extractNodeText(html: HtmlTree.Viewer, node: srct.NodeHandle) []const u8 {
+    assert(html.countChildren(node) == 1);
     return html.payload(html.childAt(node, 0), []const u8);
 }
 
@@ -422,10 +422,10 @@ fn expectConvert(source: []const u8, expected: []const u8) !void {
     defer arena.deinit();
 
     var doc = blk: {
-        var build = try md.MarkdownAuthor.init(arena_alloc);
+        var build = try md.MutableDocument.init(arena_alloc);
         errdefer build.deinit();
         try convert(arena_alloc, build.root(), source);
-        break :blk try build.consume(arena_alloc);
+        break :blk try build.toReadOnly(arena_alloc);
     };
     errdefer doc.deinit(arena_alloc);
 

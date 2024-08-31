@@ -17,26 +17,22 @@ pub const SerialWriter = struct {
         self.buffer.deinit(allocator);
     }
 
-    /// Caller owns the returned memory.
-    pub fn consumeQuery(self: *SerialWriter, allocator: Allocator) !SerialQuery {
+    /// The caller owns the returned memory.
+    pub fn toOwnedViewer(self: *SerialWriter, allocator: Allocator) !SerialViewer {
         return .{ .buffer = try self.buffer.toOwnedSlice(allocator) };
     }
 
-    /// Caller owns the returned memory.
-    pub fn consumeReader(self: *SerialWriter, allocator: Allocator) !SerialReader {
+    /// The caller owns the returned memory.
+    pub fn toOwnedReader(self: *SerialWriter, allocator: Allocator) !SerialReader {
         return .{ .buffer = try self.buffer.toOwnedSlice(allocator) };
-    }
-
-    /// Appending values may invalidate the slice.
-    pub fn view(self: SerialWriter) []const u8 {
-        return self.buffer.items;
     }
 
     pub fn length(self: SerialWriter) u32 {
         return @intCast(self.buffer.items.len);
     }
 
-    pub fn query(self: SerialWriter) SerialQuery {
+    /// Appending values may invalidate the slice.
+    pub fn view(self: SerialWriter) SerialViewer {
         return .{ .buffer = self.buffer.items };
     }
 
@@ -274,7 +270,7 @@ inline fn expectAppend(writer: *SerialWriter, offset: usize, length: usize, comp
 }
 
 test "SerialWriter" {
-    const query = blk: {
+    const view = blk: {
         var writer = SerialWriter{};
         errdefer writer.deinit(test_alloc);
 
@@ -330,23 +326,27 @@ test "SerialWriter" {
         writer.invalidate(try writer.appendRaw(test_alloc, "foo", false));
         writer.drop(1);
 
-        break :blk try writer.consumeQuery(test_alloc);
+        break :blk try writer.toOwnedViewer(test_alloc);
     };
 
-    defer test_alloc.free(query.buffer);
+    defer view.deinit(test_alloc);
     try testing.expectEqualSlices(u8, TEST_BYTES ++ .{
         'f', 'o', 'o', //
         UNDF, UNDF, UNDF, UNDF, UNDF, 'f', 'o', 'o', //
         1, 3, 'b', 'a', 'r', //
         UNDF, UNDF, //
-    }, query.buffer);
+    }, view.buffer);
 }
 
 /// Do not use for decoding permanent storage or transmission as the serial format is platform-dependent.
-pub const SerialQuery = struct {
+pub const SerialViewer = struct {
     buffer: []const u8,
 
-    pub fn get(self: SerialQuery, comptime T: type, handle: SerialHandle) T {
+    pub fn deinit(self: SerialViewer, allocator: Allocator) void {
+        allocator.free(self.buffer);
+    }
+
+    pub fn get(self: SerialViewer, comptime T: type, handle: SerialHandle) T {
         const bytes = self.buffer[handle.offset..][0..handle.length];
         switch (@typeInfo(T)) {
             .Bool, .Int, .Float, .Enum => return mem.bytesToValue(T, bytes),
@@ -390,7 +390,7 @@ pub const SerialQuery = struct {
         }
     }
 
-    fn take(self: SerialQuery, comptime T: type, offset: *usize) T {
+    fn take(self: SerialViewer, comptime T: type, offset: *usize) T {
         switch (@typeInfo(T)) {
             .Bool, .Int, .Float, .Enum => return self.nextValue(T, offset),
             .Union => |meta| {
@@ -437,64 +437,64 @@ pub const SerialQuery = struct {
         }
     }
 
-    fn nextValue(self: SerialQuery, comptime T: type, offset: *usize) T {
+    fn nextValue(self: SerialViewer, comptime T: type, offset: *usize) T {
         offset.* = mem.alignForward(usize, offset.*, @alignOf(T));
         const slice = self.nextRange(offset, @sizeOf(T));
         return mem.bytesToValue(T, slice);
     }
 
-    fn nextRange(self: SerialQuery, offset: *usize, len: usize) []const u8 {
+    fn nextRange(self: SerialViewer, offset: *usize, len: usize) []const u8 {
         std.debug.assert(offset.* + len <= self.buffer.len);
         defer offset.* += len;
         return self.buffer[offset.*..][0..len];
     }
 };
 
-test "SerialQuery" {
-    const query = SerialQuery{ .buffer = TEST_BYTES };
+test "SerialViewer" {
+    const view = SerialViewer{ .buffer = TEST_BYTES };
 
-    try testing.expectEqual(true, query.get(bool, .{ .offset = 0, .length = 1 }));
-    try testing.expectEqual(false, query.get(bool, .{ .offset = 1, .length = 1 }));
+    try testing.expectEqual(true, view.get(bool, .{ .offset = 0, .length = 1 }));
+    try testing.expectEqual(false, view.get(bool, .{ .offset = 1, .length = 1 }));
 
-    try testing.expectEqual(108, query.get(u8, .{ .offset = 2, .length = 1 }));
-    try testing.expectEqual(801, query.get(u16, .{ .offset = 4, .length = 2 }));
-    try testing.expectEqual(-108, query.get(i32, .{ .offset = 8, .length = 4 }));
-    try testing.expectEqual(1.08, query.get(f32, .{ .offset = 12, .length = 4 }));
+    try testing.expectEqual(108, view.get(u8, .{ .offset = 2, .length = 1 }));
+    try testing.expectEqual(801, view.get(u16, .{ .offset = 4, .length = 2 }));
+    try testing.expectEqual(-108, view.get(i32, .{ .offset = 8, .length = 4 }));
+    try testing.expectEqual(1.08, view.get(f32, .{ .offset = 12, .length = 4 }));
 
-    try testing.expectEqual(TestEnum.bar, query.get(TestEnum, .{ .offset = 16, .length = 1 }));
-    try testing.expectEqual(TestUnion.bar, query.get(TestUnion, .{ .offset = 17, .length = 2 }));
+    try testing.expectEqual(TestEnum.bar, view.get(TestEnum, .{ .offset = 16, .length = 1 }));
+    try testing.expectEqual(TestUnion.bar, view.get(TestUnion, .{ .offset = 17, .length = 2 }));
     try testing.expectEqual(
         TestUnion{ .baz = 108 },
-        query.get(TestUnion, .{ .offset = 19, .length = 2 }),
+        view.get(TestUnion, .{ .offset = 19, .length = 2 }),
     );
 
-    try testing.expectEqual(null, query.get(?u8, .{ .offset = 21, .length = 2 }));
-    try testing.expectEqual(108, query.get(?u8, .{ .offset = 23, .length = 2 }));
+    try testing.expectEqual(null, view.get(?u8, .{ .offset = 21, .length = 2 }));
+    try testing.expectEqual(108, view.get(?u8, .{ .offset = 23, .length = 2 }));
 
-    try testing.expectEqualDeep(.{ 101, 102 }, query.get([2]u8, .{ .offset = 25, .length = 2 }));
-    try testing.expectEqual(.{ 103, 104 }, query.get(@Vector(2, u8), .{ .offset = 28, .length = 2 }));
+    try testing.expectEqualDeep(.{ 101, 102 }, view.get([2]u8, .{ .offset = 25, .length = 2 }));
+    try testing.expectEqual(.{ 103, 104 }, view.get(@Vector(2, u8), .{ .offset = 28, .length = 2 }));
 
-    try testing.expectEqualDeep(&@as(u8, 108), query.get(*const u8, .{ .offset = 30, .length = 1 }));
+    try testing.expectEqualDeep(&@as(u8, 108), view.get(*const u8, .{ .offset = 30, .length = 1 }));
     try testing.expectEqualSlices(
         u8,
         &[_:0]u8{ 108, 109 },
-        mem.sliceTo(query.get([*:0]const u8, .{ .offset = 31, .length = 4 }), 0),
+        mem.sliceTo(view.get([*:0]const u8, .{ .offset = 31, .length = 4 }), 0),
     );
-    try testing.expectEqualSlices(u8, &[_:0]u8{ 108, 109 }, query.get([:0]const u8, .{ .offset = 36, .length = 4 }));
-    try testing.expectEqualSlices(u8, &.{ 108, 109 }, query.get([]const u8, .{ .offset = 41, .length = 4 }));
+    try testing.expectEqualSlices(u8, &[_:0]u8{ 108, 109 }, view.get([:0]const u8, .{ .offset = 36, .length = 4 }));
+    try testing.expectEqualSlices(u8, &.{ 108, 109 }, view.get([]const u8, .{ .offset = 41, .length = 4 }));
 
     const align_slice: [2]u8 align(2) = .{ 108, 109 };
-    try testing.expectEqualSlices(u8, &align_slice, query.get([]align(2) const u8, .{ .offset = 45, .length = 5 }));
+    try testing.expectEqualSlices(u8, &align_slice, view.get([]align(2) const u8, .{ .offset = 45, .length = 5 }));
 
-    try testing.expectEqualStrings("foo 108", query.get([]const u8, .{ .offset = 50, .length = 10 }));
+    try testing.expectEqualStrings("foo 108", view.get([]const u8, .{ .offset = 50, .length = 10 }));
 
     try testing.expectEqualDeep(
         TestStructAuto{ .int = 108, .string = "foo" },
-        query.get(TestStructAuto, .{ .offset = 60, .length = 6 }),
+        view.get(TestStructAuto, .{ .offset = 60, .length = 6 }),
     );
     try testing.expectEqualDeep(
         TestStructPack{ .c0 = 101, .c1 = 102, .c2 = 103 },
-        query.get(TestStructPack, .{ .offset = 68, .length = 4 }),
+        view.get(TestStructPack, .{ .offset = 68, .length = 4 }),
     );
 }
 
@@ -504,8 +504,8 @@ pub const SerialReader = struct {
     cursor: usize = 0,
 
     pub fn next(self: *SerialReader, comptime T: type) T {
-        const query = SerialQuery{ .buffer = self.buffer };
-        return query.take(T, &self.cursor);
+        const view = SerialViewer{ .buffer = self.buffer };
+        return view.take(T, &self.cursor);
     }
 };
 

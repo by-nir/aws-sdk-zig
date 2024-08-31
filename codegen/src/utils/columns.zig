@@ -11,7 +11,7 @@ pub const ColumnsOptions = struct {
     Indexer: type = DefaultIndexer,
 };
 
-pub fn ColumnsQuery(comptime Indexer: type, comptime T: type) type {
+pub fn ColumnsViewer(comptime Indexer: type, comptime T: type) type {
     const Column: type = meta.FieldEnum(T);
     const MultiSlice = std.MultiArrayList(T).Slice;
 
@@ -34,11 +34,10 @@ pub fn ColumnsQuery(comptime Indexer: type, comptime T: type) type {
     };
 }
 
-pub fn ReadOnlyColumns(comptime T: type, comptime options: ColumnsOptions) type {
+pub fn Columns(comptime T: type, comptime options: ColumnsOptions) type {
     return struct {
         const Self = @This();
-        const Idx = options.Indexer;
-        pub const Query = ColumnsQuery(Idx, T);
+        pub const Viewer = ColumnsViewer(options.Indexer, T);
 
         columns: std.MultiArrayList(T).Slice,
 
@@ -47,13 +46,13 @@ pub fn ReadOnlyColumns(comptime T: type, comptime options: ColumnsOptions) type 
             cols.deinit(allocator);
         }
 
-        pub fn query(self: Self) Query {
+        pub fn view(self: Self) Viewer {
             return .{ .multi = self.columns };
         }
     };
 }
 
-test "ReadOnlyolumns" {
+test "Columns" {
     const cols = blk: {
         var multilist = std.MultiArrayList(Vec3){};
         errdefer multilist.deinit(test_alloc);
@@ -61,13 +60,13 @@ test "ReadOnlyolumns" {
         try multilist.append(test_alloc, .{ .x = 1, .y = 2, .z = 3 });
         try multilist.append(test_alloc, .{ .x = 7, .y = 8, .z = 9 });
 
-        break :blk ReadOnlyColumns(Vec3, .{}){ .columns = multilist.toOwnedSlice() };
+        break :blk Columns(Vec3, .{}){ .columns = multilist.toOwnedSlice() };
     };
     defer cols.deinit(test_alloc);
 
-    try testing.expectEqual(2, cols.query().peekField(0, .y));
-    try testing.expectEqualSlices(i32, &.{ 2, 8 }, cols.query().peekColumn(.y));
-    try testing.expectEqualDeep(Vec3{ .x = 1, .y = 2, .z = 3 }, cols.query().peekItem(0));
+    try testing.expectEqual(2, cols.view().peekField(0, .y));
+    try testing.expectEqualSlices(i32, &.{ 2, 8 }, cols.view().peekColumn(.y));
+    try testing.expectEqualDeep(Vec3{ .x = 1, .y = 2, .z = 3 }, cols.view().peekItem(0));
 }
 
 /// Columnar storage
@@ -76,19 +75,18 @@ pub fn MutableColumns(comptime T: type, comptime options: ColumnsOptions) type {
         const Self = @This();
         const Idx = options.Indexer;
         const Column: type = meta.FieldEnum(T);
-        pub const Query = ColumnsQuery(Idx, T);
+        pub const Viewer = ColumnsViewer(Idx, T);
 
         columns: std.MultiArrayList(T) = .{},
         gaps: AutoSlots(Idx) = .{},
 
-        /// Do not call if already consumed.
         pub fn deinit(self: *Self, allocator: Allocator) void {
             self.columns.deinit(allocator);
             self.gaps.deinit(allocator);
         }
 
-        /// No need to call deinit after consuming.
-        pub fn consume(self: *Self) ReadOnlyColumns(T, options) {
+        /// The caller owns the returned memory. Clears the columns document.
+        pub fn toReadOnly(self: *Self) Columns(T, options) {
             return .{ .columns = self.columns.toOwnedSlice() };
         }
 
@@ -126,7 +124,7 @@ pub fn MutableColumns(comptime T: type, comptime options: ColumnsOptions) type {
             return &self.columns.items(column)[i];
         }
 
-        pub fn query(self: Self) Query {
+        pub fn view(self: Self) Viewer {
             return .{ .multi = self.columns.slice() };
         }
     };
@@ -137,29 +135,29 @@ test "MutableColumns" {
     defer cols.deinit(test_alloc);
 
     const t0 = try cols.claimItem(test_alloc, Vec3.zero);
-    try testing.expectEqual(0, cols.query().peekField(t0, .y));
-    try testing.expectEqualDeep(Vec3.zero, cols.query().peekItem(t0));
+    try testing.expectEqual(0, cols.view().peekField(t0, .y));
+    try testing.expectEqualDeep(Vec3.zero, cols.view().peekItem(t0));
 
     const t1 = try cols.claimItem(test_alloc, .{ .x = 1, .y = 2, .z = 3 });
-    try testing.expectEqual(2, cols.query().peekField(t1, .y));
-    try testing.expectEqualDeep(Vec3{ .x = 1, .y = 2, .z = 3 }, cols.query().peekItem(t1));
+    try testing.expectEqual(2, cols.view().peekField(t1, .y));
+    try testing.expectEqualDeep(Vec3{ .x = 1, .y = 2, .z = 3 }, cols.view().peekItem(t1));
 
     cols.releaseItem(test_alloc, t1);
     try testing.expectEqual(t1, try cols.claimItem(test_alloc, Vec3.zero));
-    try testing.expectEqual(0, cols.query().peekField(t1, .y));
+    try testing.expectEqual(0, cols.view().peekField(t1, .y));
 
     cols.setField(t1, .y, 8);
-    try testing.expectEqual(8, cols.query().peekField(t1, .y));
+    try testing.expectEqual(8, cols.view().peekField(t1, .y));
 
     const field = cols.refField(t1, .y);
     try testing.expectEqual(8, field.*);
     field.* = 9;
-    try testing.expectEqual(9, cols.query().peekField(t1, .y));
+    try testing.expectEqual(9, cols.view().peekField(t1, .y));
 
     cols.setItem(t1, .{ .x = 2, .y = 4, .z = 6 });
-    try testing.expectEqualDeep(Vec3{ .x = 2, .y = 4, .z = 6 }, cols.query().peekItem(t1));
+    try testing.expectEqualDeep(Vec3{ .x = 2, .y = 4, .z = 6 }, cols.view().peekItem(t1));
 
-    try testing.expectEqualSlices(i32, &.{ 0, 4 }, cols.query().peekColumn(.y));
+    try testing.expectEqualSlices(i32, &.{ 0, 4 }, cols.view().peekColumn(.y));
 }
 
 test "MutableColumns: consume" {
@@ -170,13 +168,13 @@ test "MutableColumns: consume" {
         _ = try mut.claimItem(test_alloc, .{ .x = 1, .y = 2, .z = 3 });
         _ = try mut.claimItem(test_alloc, .{ .x = 7, .y = 8, .z = 9 });
 
-        break :blk mut.consume();
+        break :blk mut.toReadOnly();
     };
     defer cols.deinit(test_alloc);
 
-    try testing.expectEqualSlices(i32, &.{ 1, 7 }, cols.query().peekColumn(.x));
-    try testing.expectEqualSlices(i32, &.{ 2, 8 }, cols.query().peekColumn(.y));
-    try testing.expectEqualSlices(i32, &.{ 3, 9 }, cols.query().peekColumn(.z));
+    try testing.expectEqualSlices(i32, &.{ 1, 7 }, cols.view().peekColumn(.x));
+    try testing.expectEqualSlices(i32, &.{ 2, 8 }, cols.view().peekColumn(.y));
+    try testing.expectEqualSlices(i32, &.{ 3, 9 }, cols.view().peekColumn(.z));
 }
 
 const Vec3 = struct {
