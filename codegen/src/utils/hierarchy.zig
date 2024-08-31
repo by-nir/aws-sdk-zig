@@ -24,25 +24,25 @@ pub fn HierarchyHooks(comptime Indexer: type) type {
     };
 }
 
-fn HierarchyNode(comptime Idx: type, comptime Tag: type, comptime Payload: type, comptime inverse: bool) type {
-    const Handle = common.Handle(Idx);
+fn HierarchyNode(options: HieararchyOptions) type {
+    const Handle = common.Handle(options.Indexer);
     return struct {
-        tag: Tag,
-        payload: Payload,
+        tag: options.Tag,
+        payload: options.Payload,
         children: Handle = .none,
-        parent: if (inverse) Handle else void = if (inverse) .none else {},
+        parent: if (options.inverse) Handle else void = if (options.inverse) .none else {},
     };
 }
 
 pub fn ReadOnlyHierarchy(options: HieararchyOptions) type {
     const Idx = options.Indexer;
-    const Node = HierarchyNode(Idx, options.Tag, options.Payload, options.inverse);
+    const Node = HierarchyNode(options);
 
     return struct {
         const Self = @This();
         pub const Handle = common.Handle(Idx);
         pub const Iterator = iter.Iterator(Handle, .{});
-        pub const Query = HierarchyQuery(Idx, Node, options);
+        pub const Query = HierarchyQuery(options);
 
         nodes: cols.ReadOnlyColumns(Node, .{ .Indexer = Idx }),
         adjacents: rows.ReadOnlyRows(Handle, .{ .Indexer = Idx }),
@@ -154,20 +154,19 @@ test "ReadOnlyHierarchy" {
 }
 
 pub fn MutableHierarchy(options: HieararchyOptions, hooks: HierarchyHooks(options.Indexer)) type {
-    const Idx = options.Indexer;
     const Tag = options.Tag;
     const Payload = options.Payload;
-    const Node = HierarchyNode(Idx, Tag, Payload, options.inverse);
-    const Nodes = cols.MutableColumns(Node, .{ .Indexer = Idx });
-
     const has_hooks = hooks.onDropNode != null;
+    const Nodes = cols.MutableColumns(HierarchyNode(options), .{
+        .Indexer = options.Indexer,
+    });
 
     return struct {
         const Self = @This();
-        pub const Handle = common.Handle(Idx);
+        pub const Handle = common.Handle(options.Indexer);
         pub const Iterator = iter.Iterator(Handle, .{});
-        pub const Query = HierarchyQuery(Idx, Node, options);
-        const Adjacents = rows.MutableRows(Handle, .{ .Indexer = Idx });
+        pub const Query = HierarchyQuery(options);
+        const Adjacents = rows.MutableRows(Handle, .{ .Indexer = options.Indexer });
 
         nodes: Nodes = .{},
         adjacents: Adjacents = .{},
@@ -212,7 +211,7 @@ pub fn MutableHierarchy(options: HieararchyOptions, hooks: HierarchyHooks(option
             self: *Self,
             allocator: Allocator,
             parent: Handle,
-            i: Idx,
+            i: options.Indexer,
             tag: Tag,
             payload: Payload,
         ) !Handle {
@@ -518,36 +517,32 @@ test "MutableHierarchy: hooks" {
     try testing.expectEqual(node2, Test.nodes[1]);
 }
 
-pub fn HierarchyQuery(comptime Indexer: type, comptime Node: type, comptime options: HieararchyOptions) type {
-    const Idx = options.Indexer;
-    const Tag = options.Tag;
-    const Payload = options.Payload;
-    const Handle = common.Handle(Idx);
+pub fn HierarchyQuery(comptime options: HieararchyOptions) type {
+    const Handle = common.Handle(options.Indexer);
     const Iterator = iter.Iterator(Handle, .{});
-    const has_inverse = options.inverse;
 
     return struct {
         const Self = @This();
 
-        nodes: cols.ColumnsQuery(Indexer, Node),
-        adjacents: rows.RowsQuery(Indexer, Handle),
+        nodes: cols.ColumnsQuery(options.Indexer, HierarchyNode(options)),
+        adjacents: rows.RowsQuery(options.Indexer, Handle),
 
-        pub fn getTag(self: Self, node: Handle) Tag {
-            comptime assert(Tag != void);
+        pub fn getTag(self: Self, node: Handle) options.Tag {
+            comptime assert(options.Tag != void);
             assert(node != .none);
             return self.nodes.peekField(@intFromEnum(node), .tag);
         }
 
-        pub fn getPayload(self: Self, node: Handle) Payload {
-            comptime assert(Payload != void);
+        pub fn getPayload(self: Self, node: Handle) options.Payload {
+            comptime assert(options.Payload != void);
             assert(node != .none);
             return self.nodes.peekField(@intFromEnum(node), .payload);
         }
 
-        pub fn orderOf(self: Self, parent: if (has_inverse) void else Handle, child: Handle) Indexer {
+        pub fn orderOf(self: Self, parent: if (options.inverse) void else Handle, child: Handle) options.Indexer {
             assert(child != .none);
 
-            const pid = if (has_inverse) self.nodes.peekField(@intFromEnum(child), .parent) else parent;
+            const pid = if (options.inverse) self.nodes.peekField(@intFromEnum(child), .parent) else parent;
             assert(pid != Handle.none);
 
             const list = self.nodes.peekField(@intFromEnum(pid), .children);
@@ -572,7 +567,7 @@ pub fn HierarchyQuery(comptime Indexer: type, comptime Node: type, comptime opti
             };
         }
 
-        pub fn childCount(self: Self, parent: Handle) Indexer {
+        pub fn childCount(self: Self, parent: Handle) options.Indexer {
             assert(parent != .none);
             return switch (self.nodes.peekField(@intFromEnum(parent), .children)) {
                 .none => 0,

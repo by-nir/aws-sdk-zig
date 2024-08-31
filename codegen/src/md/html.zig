@@ -1,4 +1,4 @@
-//! HTML source with partial spec support.
+//! HTML source with EXTREMELY partial spec support.
 const std = @import("std");
 const mem = std.mem;
 const Allocator = mem.Allocator;
@@ -54,14 +54,14 @@ const HtmlTag = enum(u32) {
     }
 };
 
-const HtmlTagInfo = struct {
+const TagMeta = struct {
     kind: Kind,
     tag: HtmlTag,
     attrs: ?[]const u8 = null,
 
     pub const Kind = enum { open, close, self_close };
 
-    pub fn parse(raw: []const u8) HtmlTagInfo {
+    pub fn parse(raw: []const u8) TagMeta {
         assert(raw.len > 2 and raw[0] == '<' and raw[raw.len - 1] == '>');
         assert(!mem.eql(u8, "</>", raw));
 
@@ -86,15 +86,15 @@ const HtmlTagInfo = struct {
 };
 
 test "HtmlTagInfo" {
-    try testing.expectEqualDeep(HtmlTagInfo{ .kind = .open, .tag = .p }, HtmlTagInfo.parse("<p>"));
-    try testing.expectEqualDeep(HtmlTagInfo{ .kind = .close, .tag = .p }, HtmlTagInfo.parse("</p>"));
-    try testing.expectEqualDeep(HtmlTagInfo{ .kind = .self_close, .tag = .p }, HtmlTagInfo.parse("<p />"));
+    try testing.expectEqualDeep(TagMeta{ .kind = .open, .tag = .p }, TagMeta.parse("<p>"));
+    try testing.expectEqualDeep(TagMeta{ .kind = .close, .tag = .p }, TagMeta.parse("</p>"));
+    try testing.expectEqualDeep(TagMeta{ .kind = .self_close, .tag = .p }, TagMeta.parse("<p />"));
 
-    try testing.expectEqualDeep(HtmlTagInfo{
+    try testing.expectEqualDeep(TagMeta{
         .kind = .self_close,
         .tag = .p,
         .attrs = "style=\"foo\"",
-    }, HtmlTagInfo.parse("<p style=\"foo\" />"));
+    }, TagMeta.parse("<p style=\"foo\" />"));
 }
 
 /// Naively parse HTML source, normalize whitespace, and convert entities to unicode.
@@ -215,7 +215,7 @@ fn parseNode(frags: *HtmlFragmenter, tree: *HtmlTree, parent: srct.NodeHandle, p
         switch (frag) {
             .text => |payload| _ = try tree.appendNodePayload(parent, .text, []const u8, payload),
             .tag => |s| {
-                const meta = HtmlTagInfo.parse(s);
+                const meta = TagMeta.parse(s);
                 switch (meta.kind) {
                     .close => if (meta.tag == parent_tag) return else return error.UnexpectedClosingTag,
                     inline else => |g| {
@@ -233,23 +233,24 @@ fn parseNode(frags: *HtmlFragmenter, tree: *HtmlTree, parent: srct.NodeHandle, p
 }
 
 test "parse" {
-    var tree = try parse(test_alloc, "foo<p /><ul><li /></ul>");
-    defer tree.deinit();
+    var html = try parse(test_alloc, "foo<p /><ul><li /></ul>");
+    const tree = html.query();
+    defer html.deinit();
 
     var it = tree.iterateChildren(srct.ROOT);
 
     var node = it.next().?;
-    try testing.expectEqual(.text, tree.getNodeTag(node));
-    try testing.expectEqualStrings("foo", tree.getNodePayload([]const u8, node));
+    try testing.expectEqual(.text, tree.tag(node));
+    try testing.expectEqualStrings("foo", tree.payload(node, []const u8));
 
-    try testing.expectEqual(.p, tree.getNodeTag(it.next().?));
+    try testing.expectEqual(.p, tree.tag(it.next().?));
 
     node = it.next().?;
-    try testing.expectEqual(.ul, tree.getNodeTag(node));
+    try testing.expectEqual(.ul, tree.tag(node));
     try testing.expectEqual(null, it.next());
 
     it = tree.iterateChildren(node);
-    try testing.expectEqual(.li, tree.getNodeTag(it.next().?));
+    try testing.expectEqual(.li, tree.tag(it.next().?));
     try testing.expectEqual(null, it.next());
 }
 
@@ -258,23 +259,23 @@ pub fn convert(allocator: Allocator, bld: md.ContainerAuthor, html: []const u8) 
     var tree = try parse(allocator, html);
     defer tree.deinit();
 
-    var it = tree.iterateChildren(srct.ROOT);
+    const query = tree.query();
+    var it = query.iterateChildren(srct.ROOT);
     while (it.next()) |node| {
-        try convertNode(bld, &tree, node);
+        try convertNode(bld, query, node);
     }
 }
 
-fn convertNode(bld: md.ContainerAuthor, html: *const HtmlTree, node: srct.NodeHandle) !void {
-    const tag = html.getNodeTag(node);
-    switch (tag) {
-        .text => try bld.paragraph(html.getNodePayload([]const u8, node)),
+fn convertNode(bld: md.ContainerAuthor, html: HtmlTree.Query, node: srct.NodeHandle) !void {
+    switch (html.tag(node)) {
+        .text => try bld.paragraph(html.payload(node, []const u8)),
         .p => {
             var paragraph: md.StyledAuthor = try bld.paragraphStyled();
             errdefer paragraph.deinit();
 
             var it = html.iterateChildren(node);
             while (it.next()) |child| {
-                try convertStyledNode(&paragraph, html, child, html.getNodeTag(child));
+                try convertStyledNode(&paragraph, html, child, html.tag(child));
             }
 
             try paragraph.seal();
@@ -286,7 +287,7 @@ fn convertNode(bld: md.ContainerAuthor, html: *const HtmlTree, node: srct.NodeHa
 
             var it = html.iterateChildren(node);
             while (it.next()) |child| {
-                assert(.li == html.getNodeTag(child));
+                assert(.li == html.tag(child));
 
                 var container = try list.container();
                 errdefer container.deinit();
@@ -296,7 +297,7 @@ fn convertNode(bld: md.ContainerAuthor, html: *const HtmlTree, node: srct.NodeHa
 
                 var item_it = html.iterateChildren(child);
                 while (item_it.next()) |item| {
-                    const item_tag = html.getNodeTag(item);
+                    const item_tag = html.tag(item);
                     if (item_tag.isInline()) {
                         if (styled == null) styled = try container.paragraphStyled();
                         try convertStyledNode(&styled.?, html, item, item_tag);
@@ -313,8 +314,8 @@ fn convertNode(bld: md.ContainerAuthor, html: *const HtmlTree, node: srct.NodeHa
                 if (styled) |*t| try t.seal();
             }
         },
-        else => {
-            log.warn("Unrecognized tag: `<{s}>`", .{@tagName(tag)});
+        else => |g| {
+            log.warn("Unrecognized tag: `<{}>`", .{g});
 
             var it = html.iterateChildren(node);
             while (it.next()) |child| {
@@ -324,9 +325,9 @@ fn convertNode(bld: md.ContainerAuthor, html: *const HtmlTree, node: srct.NodeHa
     }
 }
 
-fn convertStyledNode(bld: *md.StyledAuthor, html: *const HtmlTree, node: srct.NodeHandle, tag: HtmlTag) !void {
+fn convertStyledNode(bld: *md.StyledAuthor, html: HtmlTree.Query, node: srct.NodeHandle, tag: HtmlTag) !void {
     switch (tag) {
-        .text => try bld.plain(html.getNodePayload([]const u8, node)),
+        .text => try bld.plain(html.payload(node, []const u8)),
         .b, .strong => {
             const text = TEMP_extractNodeText(html, node);
             try bld.bold(text);
@@ -340,7 +341,7 @@ fn convertStyledNode(bld: *md.StyledAuthor, html: *const HtmlTree, node: srct.No
             try bld.code(text);
         },
         .a => {
-            const payload = html.getNodePayload([]const u8, node);
+            const payload = html.payload(node, []const u8);
             const start = 6 + (mem.indexOf(u8, payload, "href=\"") orelse return error.MissingHrefAttribute);
             const end = mem.indexOfScalarPos(u8, payload, start, '"') orelse return error.MissingHrefAttribute;
             const href = payload[start..end];
@@ -349,14 +350,15 @@ fn convertStyledNode(bld: *md.StyledAuthor, html: *const HtmlTree, node: srct.No
             try bld.link(href, null, text);
         },
         else => {
-            log.warn("Unrecognized tag: `<{s}>`", .{@tagName(tag)});
+            log.warn("Unrecognized tag: `<{}>`", .{tag});
         },
     }
 }
 
-fn TEMP_extractNodeText(html: *const HtmlTree, node: srct.NodeHandle) []const u8 {
+// TODO: Support arbitrary nested children
+fn TEMP_extractNodeText(html: HtmlTree.Query, node: srct.NodeHandle) []const u8 {
     assert(html.childCount(node) == 1);
-    return html.getNodePayload([]const u8, html.childAt(node, 0));
+    return html.payload(html.childAt(node, 0), []const u8);
 }
 
 test "convert" {

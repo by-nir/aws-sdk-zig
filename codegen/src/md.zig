@@ -4,12 +4,12 @@ const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const dcl = @import("utils/declarative.zig");
+const Cb = dcl.Callback;
+const Closure = dcl.Closure;
 const StackChain = dcl.StackChain;
 const InferCallback = dcl.InferCallback;
-const Cb = dcl.Callback;
-const createCallback = dcl.callback;
-const Closure = dcl.Closure;
 const callClosure = dcl.callClosure;
+const createCallback = dcl.callback;
 const zig = @import("zig.zig");
 const srct = @import("tree.zig");
 const Writer = @import("CodegenWriter.zig");
@@ -19,8 +19,8 @@ pub const html = @import("md/html.zig");
 pub const ListKind = enum(u8) { unordered, ordered };
 pub const ColumnAlign = enum(u8) { left, center, right };
 
-const MutableTree = srct.MutableSourceTree(Mark);
-const ReadOnlyTree = srct.ReadOnlySourceTree(Mark);
+const TreeQuery = srct.SourceQuery(Mark);
+const TreeAuthor = srct.MutableSourceTree(Mark);
 
 pub const DocumentClosure = *const fn (ContainerAuthor) anyerror!void;
 
@@ -78,7 +78,7 @@ const Mark = enum {
 };
 
 pub const MarkdownDocument = struct {
-    tree: ReadOnlyTree,
+    tree: srct.ReadOnlySourceTree(Mark),
 
     pub fn author(allocator: Allocator) !MarkdownAuthor {
         return MarkdownAuthor.init(allocator);
@@ -90,14 +90,15 @@ pub const MarkdownDocument = struct {
 
     pub fn write(self: MarkdownDocument, writer: *Writer) !void {
         var first = true;
-        var it = self.tree.iterateChildren(srct.ROOT);
+        const tree = self.tree.query();
+        var it = tree.iterateChildren(srct.ROOT);
         while (it.next()) |node| : (first = false) {
             if (!first) try writeNodeLineBreak(writer);
-            try writeNode(writer, self.tree, node);
+            try writeNode(writer, tree, node);
         }
     }
 
-    fn writeNode(writer: *Writer, tree: ReadOnlyTree, node: srct.NodeHandle) anyerror!void {
+    fn writeNode(writer: *Writer, tree: TreeQuery, node: srct.NodeHandle) anyerror!void {
         switch (tree.tag(node)) {
             .block_raw, .text_plain => try writer.appendString(tree.payload(node, []const u8)),
             .text_italic => try writer.appendFmt("_{s}_", .{tree.payload(node, []const u8)}),
@@ -227,7 +228,7 @@ pub const MarkdownDocument = struct {
     }
 
     const Concat = enum { blocks, inlined, inlined_or_indent };
-    fn writeNodeChildren(writer: *Writer, tree: ReadOnlyTree, parent: srct.NodeHandle, concat: Concat) !void {
+    fn writeNodeChildren(writer: *Writer, tree: TreeQuery, parent: srct.NodeHandle, concat: Concat) !void {
         var inlined = false;
         var defer_pop_indent = false;
 
@@ -270,7 +271,7 @@ pub const MarkdownDocument = struct {
         try writer.breakString("");
     }
 
-    fn writeNodeInlineSpace(writer: *Writer, tree: ReadOnlyTree, next: ?srct.NodeHandle) !void {
+    fn writeNodeInlineSpace(writer: *Writer, tree: TreeQuery, next: ?srct.NodeHandle) !void {
         const node = next orelse return;
         if (mem.indexOfScalar(u8, ".,;:?!", tree.payload(node, []const u8)[0]) != null) return;
         try writer.appendChar(' ');
@@ -279,7 +280,7 @@ pub const MarkdownDocument = struct {
 
 test "MarkdownDocument: Raw" {
     const doc = blk: {
-        var tree = try MutableTree.init(test_alloc, .document);
+        var tree = try TreeAuthor.init(test_alloc, .document);
         errdefer tree.deinit();
 
         _ = try tree.appendNodePayload(srct.ROOT, .block_raw, []const u8, "foo");
@@ -299,7 +300,7 @@ test "MarkdownDocument: Raw" {
 
 test "MarkdownDocument: Comment" {
     const doc = blk: {
-        var tree = try MutableTree.init(test_alloc, .document);
+        var tree = try TreeAuthor.init(test_alloc, .document);
         errdefer tree.deinit();
 
         _ = try tree.appendNodePayload(srct.ROOT, .block_comment, []const u8, "foo");
@@ -312,7 +313,7 @@ test "MarkdownDocument: Comment" {
 
 test "MarkdownDocument: Paragraph & Text" {
     const doc = blk: {
-        var tree = try MutableTree.init(test_alloc, .document);
+        var tree = try TreeAuthor.init(test_alloc, .document);
         errdefer tree.deinit();
 
         const node = try tree.appendNode(srct.ROOT, .block_paragraph);
@@ -334,7 +335,7 @@ test "MarkdownDocument: Paragraph & Text" {
 
 test "MarkdownDocument: Heading" {
     const doc = blk: {
-        var tree = try MutableTree.init(test_alloc, .document);
+        var tree = try TreeAuthor.init(test_alloc, .document);
         errdefer tree.deinit();
 
         const node = try tree.appendNodePayload(srct.ROOT, .block_heading, u8, 2);
@@ -348,7 +349,7 @@ test "MarkdownDocument: Heading" {
 
 test "MarkdownDocument: Quote" {
     const doc = blk: {
-        var tree = try MutableTree.init(test_alloc, .document);
+        var tree = try TreeAuthor.init(test_alloc, .document);
         errdefer tree.deinit();
 
         var node = try tree.appendNode(srct.ROOT, .block_quote);
@@ -377,7 +378,7 @@ test "MarkdownDocument: Quote" {
 test "MarkdownDocument: Code" {
     const code = zig.Container{ .statements = &.{} };
     const doc = blk: {
-        var tree = try MutableTree.init(test_alloc, .document);
+        var tree = try TreeAuthor.init(test_alloc, .document);
         errdefer tree.deinit();
 
         _ = try tree.appendNodePayload(srct.ROOT, .block_code, usize, @intFromPtr(&code));
@@ -394,7 +395,7 @@ test "MarkdownDocument: Code" {
 
 test "MarkdownDocument: List" {
     const doc = blk: {
-        var tree = try MutableTree.init(test_alloc, .document);
+        var tree = try TreeAuthor.init(test_alloc, .document);
         errdefer tree.deinit();
 
         {
@@ -452,7 +453,7 @@ test "MarkdownDocument: List" {
 
 test "MarkdownDocument: Table" {
     const doc = blk: {
-        var tree = try MutableTree.init(test_alloc, .document);
+        var tree = try TreeAuthor.init(test_alloc, .document);
         errdefer tree.deinit();
 
         const table = try tree.appendNodePayload(srct.ROOT, .block_table, u8, 3);
@@ -524,10 +525,10 @@ test "MarkdownDocument: Table" {
 }
 
 pub const MarkdownAuthor = struct {
-    tree: MutableTree,
+    tree: TreeAuthor,
 
     pub fn init(mut_alloc: Allocator) !MarkdownAuthor {
-        return .{ .tree = try MutableTree.init(mut_alloc, .document) };
+        return .{ .tree = try TreeAuthor.init(mut_alloc, .document) };
     }
 
     pub fn deinit(self: *MarkdownAuthor) void {
@@ -547,7 +548,7 @@ pub const MarkdownAuthor = struct {
 };
 
 pub const ContainerAuthor = struct {
-    tree: *MutableTree,
+    tree: *TreeAuthor,
     parent: srct.NodeHandle,
 
     pub fn deinit(self: ContainerAuthor) void {
@@ -684,7 +685,7 @@ pub const ContainerAuthor = struct {
 };
 
 pub const StyledAuthor = struct {
-    tree: *MutableTree,
+    tree: *TreeAuthor,
     parent: srct.NodeHandle,
     callback: ?Callback = null,
 
@@ -835,7 +836,7 @@ pub const StyledAuthor = struct {
 };
 
 pub const ListAuthor = struct {
-    tree: *MutableTree,
+    tree: *TreeAuthor,
     parent: srct.NodeHandle,
 
     pub fn deinit(self: ListAuthor) void {
@@ -879,7 +880,7 @@ pub const ListAuthor = struct {
 };
 
 pub const TableAuthor = struct {
-    tree: *MutableTree,
+    tree: *TreeAuthor,
     parent: srct.NodeHandle,
     columns_sealed: bool = false,
     columns: std.ArrayListUnmanaged(MarkColumn) = .{},
@@ -890,13 +891,14 @@ pub const TableAuthor = struct {
     }
 
     pub fn seal(self: *TableAuthor) !void {
+        const query = self.tree.query();
         const col_len = self.columns.items.len;
         if (col_len == 0) return error.EmptyTable;
         if (col_len > MAX_TABLE_COLUMNS) return error.TooManyTableColumns;
-        if (col_len == self.tree.childCount(self.parent)) return error.EmptyTable;
+        if (col_len == query.childCount(self.parent)) return error.EmptyTable;
 
         for (self.columns.items, 0..) |col, i| {
-            const child = self.tree.childAt(self.parent, i);
+            const child = query.childAt(self.parent, i);
             try self.tree.setPayload(child, MarkColumn, col);
         }
 
@@ -1000,7 +1002,7 @@ pub const TableAuthor = struct {
     }
 
     pub const Row = struct {
-        tree: *MutableTree,
+        tree: *TreeAuthor,
         parent: srct.NodeHandle,
         columns: *std.ArrayListUnmanaged(MarkColumn),
 
@@ -1009,7 +1011,7 @@ pub const TableAuthor = struct {
         }
 
         pub fn cell(self: Row, value: []const u8) !void {
-            const col_index = self.tree.childCount(self.parent);
+            const col_index = self.tree.query().childCount(self.parent);
             if (col_index >= self.columns.items.len) return error.RowColumnsMismatch;
 
             const col = &self.columns.items[col_index];
@@ -1022,7 +1024,7 @@ pub const TableAuthor = struct {
         }
 
         pub fn cellFmt(self: Row, comptime format: []const u8, args: anytype) !void {
-            const col_index = self.tree.childCount(self.parent);
+            const col_index = self.tree.query().childCount(self.parent);
             if (col_index >= self.columns.items.len) return error.RowColumnsMismatch;
 
             const col = &self.columns.items[col_index];
@@ -1039,7 +1041,7 @@ pub const TableAuthor = struct {
         }
 
         pub fn cellStyled(self: *Row) !StyledAuthor {
-            const col_index = self.tree.childCount(self.parent);
+            const col_index = self.tree.query().childCount(self.parent);
             if (col_index >= self.columns.items.len) return error.RowColumnsMismatch;
 
             return StyledAuthor{

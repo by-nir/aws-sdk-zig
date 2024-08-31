@@ -9,69 +9,48 @@ const common = @import("utils/common.zig");
 const hrcy = @import("utils/hierarchy.zig");
 
 const Indexer = u32;
+pub const ROOT = NodeHandle.of(0);
 pub const PayloadHandle = srl.SerialHandle;
 pub const NodeHandle = common.Handle(Indexer);
 pub const Iterator = iter.Iterator(NodeHandle, .{});
 
-pub const ROOT = NodeHandle.of(0);
-
-pub fn ReadOnlySourceTree(comptime Tag: type) type {
-    return struct {
-        const Self = @This();
-
-        buffer: []const u8,
-        hierarchy: hrcy.ReadOnlyHierarchy(.{
-            .Tag = Tag,
-            .Indexer = Indexer,
-            .Payload = PayloadHandle,
-            .inverse = true,
-        }),
-
-        pub fn deinit(self: Self, allocator: Allocator) void {
-            allocator.free(self.buffer);
-            self.hierarchy.deinit(allocator);
-        }
-
-        pub fn tag(self: Self, node: NodeHandle) Tag {
-            return self.hierarchy.query().getTag(node);
-        }
-
-        pub fn payload(self: Self, node: NodeHandle, comptime T: type) T {
-            const handle = self.hierarchy.query().getPayload(node);
-            const buffer = self.buffer[handle.offset..][0..handle.length];
-            var reader = srl.SerialReader{ .buffer = buffer };
-            return reader.next(T);
-        }
-
-        pub fn childCount(self: Self, parent: NodeHandle) Indexer {
-            return self.hierarchy.query().childCount(parent);
-        }
-
-        pub fn childAt(self: Self, parent: NodeHandle, index: usize) NodeHandle {
-            return self.hierarchy.query().childAt(parent, index);
-        }
-
-        pub fn childAtOrNull(self: Self, parent: NodeHandle, index: usize) ?NodeHandle {
-            return self.hierarchy.query().childAtOrNull(parent, index);
-        }
-
-        pub fn iterateChildren(self: Self, parent: NodeHandle) Iterator {
-            return self.hierarchy.query().iterateChildren(parent);
-        }
-    };
-}
-
-pub fn MutableSourceTree(comptime Tag: type) type {
-    const options: hrcy.HieararchyOptions = .{
+fn optnsFor(comptime Tag: type) hrcy.HieararchyOptions {
+    return .{
         .Tag = Tag,
         .Indexer = Indexer,
         .Payload = PayloadHandle,
         .inverse = true,
     };
-    const Hierarchy = hrcy.MutableHierarchy(options, .{});
+}
+
+pub fn ReadOnlySourceTree(comptime Tag: type) type {
+    return struct {
+        const Self = @This();
+        pub const Query = SourceQuery(Tag);
+
+        serial: srl.SerialQuery,
+        hierarchy: hrcy.ReadOnlyHierarchy(optnsFor(Tag)),
+
+        pub fn deinit(self: Self, allocator: Allocator) void {
+            self.hierarchy.deinit(allocator);
+            allocator.free(self.serial.buffer);
+        }
+
+        pub fn query(self: *const Self) Query {
+            return .{
+                .serial = self.serial,
+                .hierarchy = self.hierarchy.query(),
+            };
+        }
+    };
+}
+
+pub fn MutableSourceTree(comptime Tag: type) type {
+    const Hierarchy = hrcy.MutableHierarchy(optnsFor(Tag), .{});
 
     return struct {
         const Self = @This();
+        pub const Query = SourceQuery(Tag);
 
         allocator: Allocator,
         hierarchy: Hierarchy = .{},
@@ -89,13 +68,20 @@ pub fn MutableSourceTree(comptime Tag: type) type {
             self.hierarchy.deinit(self.allocator);
         }
 
+        pub fn query(self: *const Self) Query {
+            return .{
+                .serial = self.payload.serial.query(),
+                .hierarchy = self.hierarchy.query(),
+            };
+        }
+
         pub fn consumeReadOnly(self: *Self, immut_alloc: Allocator) !ReadOnlySourceTree(Tag) {
             var payload: PayloadAuthor = .{};
-            var hierarchy = hrcy.ReadOnlyHierarchy(options).author(immut_alloc);
+            var hierarchy = hrcy.ReadOnlyHierarchy(optnsFor(Tag)).author(immut_alloc);
             errdefer hierarchy.deinit();
 
-            const query = self.hierarchy.query();
-            const handle = self.consumeNode(immut_alloc, query, &hierarchy, &payload, .none, ROOT) catch |err| {
+            const q = self.hierarchy.query();
+            const handle = self.consumeNode(immut_alloc, q, &hierarchy, &payload, .none, ROOT) catch |err| {
                 payload.deinit(immut_alloc);
                 return err;
             };
@@ -106,13 +92,13 @@ pub fn MutableSourceTree(comptime Tag: type) type {
                 return err;
             };
             const ro_hierarchy = hierarchy.consume() catch |err| {
-                immut_alloc.free(ro_payload);
+                immut_alloc.free(ro_payload.buffer);
                 return err;
             };
 
             self.deinit();
             return .{
-                .buffer = ro_payload,
+                .serial = ro_payload,
                 .hierarchy = ro_hierarchy,
             };
         }
@@ -120,26 +106,26 @@ pub fn MutableSourceTree(comptime Tag: type) type {
         fn consumeNode(
             self: *const Self,
             immut_alloc: Allocator,
-            query: Hierarchy.Query,
-            hierarchy: *hrcy.ReadOnlyHierarchy(options).Author,
+            qry: Hierarchy.Query,
+            hierarchy: *hrcy.ReadOnlyHierarchy(optnsFor(Tag)).Author,
             payload: *PayloadAuthor,
             parent: NodeHandle,
             node: NodeHandle,
         ) !NodeHandle {
             const new_payload = blk: {
-                const handle: PayloadHandle = query.getPayload(node);
+                const handle: PayloadHandle = qry.getPayload(node);
                 if (handle.isEmpty())
                     break :blk PayloadHandle.empty
                 else
                     break :blk try payload.putRaw(immut_alloc, self.payload.getRaw(handle));
             };
-            const new_node = try hierarchy.appendNode(parent, query.getTag(node), new_payload);
-            const children = try hierarchy.reserveChildren(new_node, query.childCount(node));
+            const new_node = try hierarchy.appendNode(parent, qry.getTag(node), new_payload);
+            const children = try hierarchy.reserveChildren(new_node, qry.childCount(node));
 
             var i: usize = 0;
-            var it = query.iterateChildren(node);
+            var it = qry.iterateChildren(node);
             while (it.next()) |child| : (i += 1) {
-                const item = try self.consumeNode(immut_alloc, query, hierarchy, payload, new_node, child);
+                const item = try self.consumeNode(immut_alloc, qry, hierarchy, payload, new_node, child);
                 children.setItem(i, item);
             }
 
@@ -204,54 +190,63 @@ pub fn MutableSourceTree(comptime Tag: type) type {
             handle.* = string;
             return string.length - 3; // 3 bytes are used to encode string’s length
         }
+    };
+}
+
+pub fn SourceQuery(comptime Tag: type) type {
+    return struct {
+        const Self = @This();
+
+        serial: srl.SerialQuery,
+        hierarchy: hrcy.HierarchyQuery(optnsFor(Tag)),
+
+        pub fn tag(self: Self, node: NodeHandle) Tag {
+            return self.hierarchy.getTag(node);
+        }
+
+        pub fn payload(self: Self, node: NodeHandle, comptime T: type) T {
+            const handle = self.hierarchy.getPayload(node);
+            return self.serial.get(T, handle);
+        }
 
         pub fn childCount(self: Self, parent: NodeHandle) Indexer {
-            return self.hierarchy.query().childCount(parent);
+            return self.hierarchy.childCount(parent);
         }
 
         pub fn childAt(self: Self, parent: NodeHandle, index: usize) NodeHandle {
-            return self.hierarchy.query().childAt(parent, index);
+            return self.hierarchy.childAt(parent, index);
         }
 
         pub fn childAtOrNull(self: Self, parent: NodeHandle, index: usize) ?NodeHandle {
-            return self.hierarchy.query().childAtOrNull(parent, index);
+            return self.hierarchy.childAtOrNull(parent, index);
         }
 
         pub fn iterateChildren(self: Self, parent: NodeHandle) Iterator {
-            return self.hierarchy.query().iterateChildren(parent);
-        }
-
-        pub fn getNodeTag(self: Self, node: NodeHandle) Tag {
-            return self.hierarchy.query().getTag(node);
-        }
-
-        pub fn getNodePayload(self: Self, comptime T: type, node: NodeHandle) T {
-            const handle = self.hierarchy.query().getPayload(node);
-            return self.payload.getValue(T, handle);
+            return self.hierarchy.iterateChildren(parent);
         }
     };
 }
 
-test {
+test "SourceTree" {
     const tree = blk: {
         var tree = try MutableSourceTree(u8).init(test_alloc, 0);
         errdefer tree.deinit();
 
-        try testing.expectEqual(0, tree.childCount(ROOT));
+        try testing.expectEqual(0, tree.query().childCount(ROOT));
 
         var node1 = try tree.appendNodePayload(ROOT, 0, []const u8, "baz");
         try testing.expectEqual(1, @intFromEnum(node1));
-        try testing.expectEqual(1, tree.childCount(ROOT));
+        try testing.expectEqual(1, tree.query().childCount(ROOT));
 
         tree.dropNode(node1);
-        try testing.expectEqual(0, tree.childCount(ROOT));
+        try testing.expectEqual(0, tree.query().childCount(ROOT));
 
         const node2 = try tree.appendNode(ROOT, 2);
 
         node1 = try tree.insertNode(ROOT, 0, 1);
-        try testing.expectEqual(node1, tree.childAt(ROOT, 0));
-        try testing.expectEqual(node1, tree.childAtOrNull(ROOT, 0));
-        try testing.expectEqual(null, tree.childAtOrNull(ROOT, 2));
+        try testing.expectEqual(node1, tree.query().childAt(ROOT, 0));
+        try testing.expectEqual(node1, tree.query().childAtOrNull(ROOT, 0));
+        try testing.expectEqual(null, tree.query().childAtOrNull(ROOT, 2));
 
         try tree.setPayload(node1, []const u8, "foo"); // new
         try tree.setPayload(node1, []const u8, "bar"); // override matching
@@ -260,29 +255,31 @@ test {
         try testing.expectEqual(6, try tree.setPayloadFmt(node2, "foo{d}", .{107})); // new
         try testing.expectEqual(6, try tree.setPayloadFmt(node2, "bar{d}", .{108})); // override
 
-        var it = tree.iterateChildren(ROOT);
+        var it = tree.query().iterateChildren(ROOT);
         try testing.expectEqual(node1, it.next());
         try testing.expectEqual(node2, it.next());
         try testing.expectEqual(null, it.next());
 
         break :blk try tree.consumeReadOnly(test_alloc);
     };
+
+    const query = tree.query();
     defer tree.deinit(test_alloc);
 
-    try testing.expectEqual(0, tree.tag(ROOT));
-    try testing.expectEqual(2, tree.childCount(ROOT));
-    try testing.expectEqual(NodeHandle.of(2), tree.childAt(ROOT, 1));
-    try testing.expectEqual(NodeHandle.of(2), tree.childAtOrNull(ROOT, 1));
-    try testing.expectEqual(null, tree.childAtOrNull(ROOT, 2));
+    try testing.expectEqual(0, query.tag(ROOT));
+    try testing.expectEqual(2, query.childCount(ROOT));
+    try testing.expectEqual(NodeHandle.of(2), query.childAt(ROOT, 1));
+    try testing.expectEqual(NodeHandle.of(2), query.childAtOrNull(ROOT, 1));
+    try testing.expectEqual(null, query.childAtOrNull(ROOT, 2));
 
-    try testing.expectEqual(1, tree.tag(NodeHandle.of(1)));
-    try testing.expectEqual(0, tree.childCount(NodeHandle.of(1)));
-    try testing.expectEqualStrings("foo108", tree.payload(NodeHandle.of(1), []const u8));
+    try testing.expectEqual(1, query.tag(NodeHandle.of(1)));
+    try testing.expectEqual(0, query.childCount(NodeHandle.of(1)));
+    try testing.expectEqualStrings("foo108", query.payload(NodeHandle.of(1), []const u8));
 
-    try testing.expectEqual(2, tree.tag(NodeHandle.of(2)));
-    try testing.expectEqualStrings("bar108", tree.payload(NodeHandle.of(2), []const u8));
+    try testing.expectEqual(2, query.tag(NodeHandle.of(2)));
+    try testing.expectEqualStrings("bar108", query.payload(NodeHandle.of(2), []const u8));
 
-    var it = tree.iterateChildren(ROOT);
+    var it = query.iterateChildren(ROOT);
     try testing.expectEqual(NodeHandle.of(1), it.next());
     try testing.expectEqual(NodeHandle.of(2), it.next());
     try testing.expectEqual(null, it.next());
@@ -297,10 +294,10 @@ const PayloadAuthor = struct {
         self.cache.deinit(allocator);
     }
 
-    pub fn consume(self: *PayloadAuthor, allocator: Allocator) ![]const u8 {
-        const buffer = try self.serial.consumeSlice(allocator);
+    pub fn consume(self: *PayloadAuthor, allocator: Allocator) !srl.SerialQuery {
+        const query = try self.serial.consumeQuery(allocator);
         self.cache.deinit(allocator);
-        return buffer;
+        return query;
     }
 
     pub fn getRaw(self: PayloadAuthor, handle: PayloadHandle) []const u8 {
@@ -310,8 +307,7 @@ const PayloadAuthor = struct {
     }
 
     pub fn getValue(self: PayloadAuthor, comptime T: type, handle: PayloadHandle) T {
-        var reader = srl.SerialReader{ .buffer = self.getRaw(handle) };
-        return reader.next(T);
+        return self.serial.query().get(T, handle);
     }
 
     pub fn putRaw(self: *PayloadAuthor, allocator: Allocator, bytes: []const u8) !PayloadHandle {
@@ -357,7 +353,7 @@ const PayloadAuthor = struct {
 };
 
 test "PayloadAuthor" {
-    const buffer = blk: {
+    const query = blk: {
         var author = PayloadAuthor{};
         errdefer author.deinit(test_alloc);
 
@@ -399,9 +395,9 @@ test "PayloadAuthor" {
         break :blk try author.consume(test_alloc);
     };
 
-    defer test_alloc.free(buffer);
+    defer test_alloc.free(query.buffer);
     const expected = &[_]u8{ 1, 3 } ++ "foo" ++
         &[_]u8{2} ++ std.mem.asBytes(&@as(u16, 8)) ++ " bar baz" ++
         &[_]u8{ 1, 3 } ++ "foo" ++ &[_]u8{ 1, 3 } ++ "bar" ++ "foo";
-    try testing.expectEqualSlices(u8, expected, buffer);
+    try testing.expectEqualSlices(u8, expected, query.buffer);
 }

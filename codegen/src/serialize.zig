@@ -5,9 +5,9 @@ const testing = std.testing;
 const test_alloc = testing.allocator;
 const common = @import("utils/common.zig");
 
-const UNDF = 0xAA;
-const ENDIAN = @import("builtin").cpu.arch.endian();
 pub const SerialHandle = common.RangeHandle(u32);
+const ENDIAN = @import("builtin").cpu.arch.endian();
+const UNDF = 0xAA;
 
 /// Do not use for encoding permanent storage or transmission as the serial format is platform-dependent.
 pub const SerialWriter = struct {
@@ -18,15 +18,13 @@ pub const SerialWriter = struct {
     }
 
     /// Caller owns the returned memory.
-    pub fn consumeSlice(self: *SerialWriter, allocator: Allocator) ![]u8 {
-        return self.buffer.toOwnedSlice(allocator);
+    pub fn consumeQuery(self: *SerialWriter, allocator: Allocator) !SerialQuery {
+        return .{ .buffer = try self.buffer.toOwnedSlice(allocator) };
     }
 
     /// Caller owns the returned memory.
     pub fn consumeReader(self: *SerialWriter, allocator: Allocator) !SerialReader {
-        return .{
-            .buffer = try self.buffer.toOwnedSlice(allocator),
-        };
+        return .{ .buffer = try self.buffer.toOwnedSlice(allocator) };
     }
 
     /// Appending values may invalidate the slice.
@@ -36,6 +34,10 @@ pub const SerialWriter = struct {
 
     pub fn length(self: SerialWriter) u32 {
         return @intCast(self.buffer.items.len);
+    }
+
+    pub fn query(self: SerialWriter) SerialQuery {
+        return .{ .buffer = self.buffer.items };
     }
 
     pub fn append(self: *SerialWriter, allocator: Allocator, comptime T: type, value: T) !SerialHandle {
@@ -49,31 +51,19 @@ pub const SerialWriter = struct {
                 return self.handleFrom(offset);
             },
             .Union => |meta| {
-                inline for (meta.fields) |field| {
-                    if (comptime isSerializableChild(field.type)) continue;
-                    compileErrorFmt("Union field `{}.{s}` is not encodeable", .{ T, field.name });
-                }
-
+                validateUnionFields(T, meta.fields);
                 const offset = try self.writePadding(allocator, @alignOf(T));
                 try self.buffer.appendSlice(allocator, mem.asBytes(&value));
                 return self.handleFrom(offset);
             },
             inline .Optional, .Array, .Vector => |meta| {
-                if (!comptime isSerializableChild(meta.child)) {
-                    compileErrorFmt("Type `{}` child is not encodeable", .{T});
-                }
-
+                validateWrapperChild(T, meta.child);
                 const offset = try self.writePadding(allocator, @alignOf(T));
                 try self.buffer.appendSlice(allocator, mem.asBytes(&value));
                 return self.handleFrom(offset);
             },
             .Pointer => |meta| {
-                switch (@typeInfo(meta.child)) {
-                    .Pointer => @compileError("Encoding pointer to pointer is unsupported"),
-                    .Struct => @compileError("Encoding struct pointer is unsupported"),
-                    else => {},
-                }
-
+                validatePointerChild(meta.child, null);
                 switch (meta.size) {
                     .One => {
                         const offset = try self.writePadding(allocator, meta.alignment);
@@ -81,8 +71,8 @@ pub const SerialWriter = struct {
                         return self.handleFrom(offset);
                     },
                     .Many => {
-                        const slice = mem.sliceTo(value, pointerSentinel(meta));
-                        return self.append(allocator, @TypeOf(slice), slice);
+                        const slice = mem.sliceTo(value, sentinelValue(meta));
+                        return self.append(allocator, SentinelSlice(meta), slice);
                     },
                     .Slice => {
                         // Length bytes count
@@ -120,7 +110,7 @@ pub const SerialWriter = struct {
                     const offset = try self.writePadding(allocator, @alignOf(T));
                     try self.buffer.appendSlice(allocator, mem.asBytes(&value));
                     return self.handleFrom(offset);
-                } else if (comptime !serializable(T)) {
+                } else if (comptime !isSerializable(T)) {
                     compileErrorFmt("Struct `{}` contains non-encodeable field", .{T});
                 }
 
@@ -227,12 +217,12 @@ pub const SerialWriter = struct {
                 .C => @compileError("Encoding ‘c’ pointer is unsupported"),
                 .One => self.buffer.replaceRangeAssumeCapacity(handle.offset, handle.length, mem.asBytes(value)),
                 .Many => {
-                    const slice = mem.sliceTo(value, pointerSentinel(meta));
-                    self.override(handle, @TypeOf(slice), slice);
+                    const slice = mem.sliceTo(value, sentinelValue(meta));
+                    self.override(handle, SentinelSlice(meta), slice);
                 },
                 .Slice => {
                     var count_len: u8 = self.buffer.items[handle.offset];
-                    const count = readBufferInt(self.buffer.items[handle.offset + 1 ..][0..count_len]);
+                    const count = intFromBytes(self.buffer.items[handle.offset + 1 ..][0..count_len]);
 
                     if (value.len != count) {
                         const new_count_len = sizeByteLen(value.len);
@@ -268,13 +258,6 @@ pub const SerialWriter = struct {
         return bits / 8;
     }
 
-    fn pointerSentinel(comptime meta: std.builtin.Type.Pointer) meta.child {
-        const opaque_sent = meta.sentinel orelse {
-            @compileError("Encoding many-item pointer expects sentinel-terminated");
-        };
-        return comptime @as(*const meta.child, @ptrCast(@alignCast(opaque_sent))).*;
-    }
-
     fn writePadding(self: *SerialWriter, allocator: Allocator, alignment: u29) !usize {
         const initial = self.length();
         const target = mem.alignForward(usize, initial, alignment);
@@ -291,7 +274,7 @@ inline fn expectAppend(writer: *SerialWriter, offset: usize, length: usize, comp
 }
 
 test "SerialWriter" {
-    const slice = blk: {
+    const query = blk: {
         var writer = SerialWriter{};
         errdefer writer.deinit(test_alloc);
 
@@ -347,16 +330,172 @@ test "SerialWriter" {
         writer.invalidate(try writer.appendRaw(test_alloc, "foo", false));
         writer.drop(1);
 
-        break :blk try writer.consumeSlice(test_alloc);
+        break :blk try writer.consumeQuery(test_alloc);
     };
 
-    defer test_alloc.free(slice);
-    try testing.expectEqualSlices(u8, TEST_SLICE ++ .{
+    defer test_alloc.free(query.buffer);
+    try testing.expectEqualSlices(u8, TEST_BYTES ++ .{
         'f', 'o', 'o', //
         UNDF, UNDF, UNDF, UNDF, UNDF, 'f', 'o', 'o', //
         1, 3, 'b', 'a', 'r', //
         UNDF, UNDF, //
-    }, slice);
+    }, query.buffer);
+}
+
+/// Do not use for decoding permanent storage or transmission as the serial format is platform-dependent.
+pub const SerialQuery = struct {
+    buffer: []const u8,
+
+    pub fn get(self: SerialQuery, comptime T: type, handle: SerialHandle) T {
+        const bytes = self.buffer[handle.offset..][0..handle.length];
+        switch (@typeInfo(T)) {
+            .Bool, .Int, .Float, .Enum => return mem.bytesToValue(T, bytes),
+            .Union => |meta| {
+                validateUnionFields(T, meta.fields);
+                return mem.bytesToValue(T, bytes);
+            },
+            inline .Optional, .Array, .Vector => |meta| {
+                validateWrapperChild(T, meta.child);
+                return mem.bytesToValue(T, bytes);
+            },
+            .Pointer => |meta| {
+                validatePointerChild(meta.child, meta.is_const);
+                switch (meta.size) {
+                    .One => return mem.bytesAsValue(meta.child, bytes),
+                    .Many => return @ptrCast(self.get(SentinelSlice(meta), handle)),
+                    .Slice => {
+                        const len_size = bytes[0];
+                        const len = intFromBytes(bytes[1..][0..len_size]);
+                        const offset = mem.alignForward(usize, handle.offset + len_size + 1, meta.alignment);
+                        const slice = self.buffer[offset..][0 .. len * @sizeOf(meta.child)];
+                        return @ptrCast(@alignCast(slice));
+                    },
+                    .C => @compileError("Decoding ‘c’ pointer is unsupported"),
+                }
+            },
+            .Struct => |meta| {
+                if (meta.layout == .@"packed") {
+                    return mem.bytesToValue(T, bytes);
+                } else {
+                    validateStructFields(T, meta.fields);
+                    var value: T = undefined;
+                    var cursor: usize = handle.offset;
+                    inline for (meta.fields) |field| {
+                        @field(value, field.name) = self.take(field.type, &cursor);
+                    }
+                    return value;
+                }
+            },
+            else => compileErrorFmt("Unsupported decoding type `{}`", .{T}),
+        }
+    }
+
+    fn take(self: SerialQuery, comptime T: type, offset: *usize) T {
+        switch (@typeInfo(T)) {
+            .Bool, .Int, .Float, .Enum => return self.nextValue(T, offset),
+            .Union => |meta| {
+                validateUnionFields(T, meta.fields);
+                return self.nextValue(T, offset);
+            },
+            inline .Optional, .Array, .Vector => |meta| {
+                validateWrapperChild(T, meta.child);
+                return self.nextValue(T, offset);
+            },
+            .Pointer => |meta| {
+                validatePointerChild(meta.child, meta.is_const);
+                switch (meta.size) {
+                    .One => {
+                        offset.* = mem.alignForward(usize, offset.*, meta.alignment);
+                        const slice = self.nextRange(offset, @sizeOf(meta.child));
+                        return @ptrCast(@alignCast(mem.bytesAsValue(meta.child, slice)));
+                    },
+                    .Many => return @ptrCast(self.take(SentinelSlice(meta), offset)),
+                    .Slice => {
+                        const len_size = self.nextValue(u8, offset);
+                        const len = intFromBytes(self.nextRange(offset, len_size));
+                        offset.* = mem.alignForward(usize, offset.*, meta.alignment);
+                        const slice = self.nextRange(offset, len * @sizeOf(meta.child));
+                        if (meta.sentinel != null) offset.* += @sizeOf(meta.child);
+                        return @ptrCast(@alignCast(slice));
+                    },
+                    .C => @compileError("Decoding ‘c’ pointer is unsupported"),
+                }
+            },
+            .Struct => |meta| {
+                if (meta.layout == .@"packed") {
+                    return self.nextValue(T, offset);
+                } else {
+                    validateStructFields(T, meta.fields);
+                    var value: T = undefined;
+                    inline for (meta.fields) |field| {
+                        @field(value, field.name) = self.take(field.type, offset);
+                    }
+                    return value;
+                }
+            },
+            else => compileErrorFmt("Unsupported decoding type `{}`", .{T}),
+        }
+    }
+
+    fn nextValue(self: SerialQuery, comptime T: type, offset: *usize) T {
+        offset.* = mem.alignForward(usize, offset.*, @alignOf(T));
+        const slice = self.nextRange(offset, @sizeOf(T));
+        return mem.bytesToValue(T, slice);
+    }
+
+    fn nextRange(self: SerialQuery, offset: *usize, len: usize) []const u8 {
+        std.debug.assert(offset.* + len <= self.buffer.len);
+        defer offset.* += len;
+        return self.buffer[offset.*..][0..len];
+    }
+};
+
+test "SerialQuery" {
+    const query = SerialQuery{ .buffer = TEST_BYTES };
+
+    try testing.expectEqual(true, query.get(bool, .{ .offset = 0, .length = 1 }));
+    try testing.expectEqual(false, query.get(bool, .{ .offset = 1, .length = 1 }));
+
+    try testing.expectEqual(108, query.get(u8, .{ .offset = 2, .length = 1 }));
+    try testing.expectEqual(801, query.get(u16, .{ .offset = 4, .length = 2 }));
+    try testing.expectEqual(-108, query.get(i32, .{ .offset = 8, .length = 4 }));
+    try testing.expectEqual(1.08, query.get(f32, .{ .offset = 12, .length = 4 }));
+
+    try testing.expectEqual(TestEnum.bar, query.get(TestEnum, .{ .offset = 16, .length = 1 }));
+    try testing.expectEqual(TestUnion.bar, query.get(TestUnion, .{ .offset = 17, .length = 2 }));
+    try testing.expectEqual(
+        TestUnion{ .baz = 108 },
+        query.get(TestUnion, .{ .offset = 19, .length = 2 }),
+    );
+
+    try testing.expectEqual(null, query.get(?u8, .{ .offset = 21, .length = 2 }));
+    try testing.expectEqual(108, query.get(?u8, .{ .offset = 23, .length = 2 }));
+
+    try testing.expectEqualDeep(.{ 101, 102 }, query.get([2]u8, .{ .offset = 25, .length = 2 }));
+    try testing.expectEqual(.{ 103, 104 }, query.get(@Vector(2, u8), .{ .offset = 28, .length = 2 }));
+
+    try testing.expectEqualDeep(&@as(u8, 108), query.get(*const u8, .{ .offset = 30, .length = 1 }));
+    try testing.expectEqualSlices(
+        u8,
+        &[_:0]u8{ 108, 109 },
+        mem.sliceTo(query.get([*:0]const u8, .{ .offset = 31, .length = 4 }), 0),
+    );
+    try testing.expectEqualSlices(u8, &[_:0]u8{ 108, 109 }, query.get([:0]const u8, .{ .offset = 36, .length = 4 }));
+    try testing.expectEqualSlices(u8, &.{ 108, 109 }, query.get([]const u8, .{ .offset = 41, .length = 4 }));
+
+    const align_slice: [2]u8 align(2) = .{ 108, 109 };
+    try testing.expectEqualSlices(u8, &align_slice, query.get([]align(2) const u8, .{ .offset = 45, .length = 5 }));
+
+    try testing.expectEqualStrings("foo 108", query.get([]const u8, .{ .offset = 50, .length = 10 }));
+
+    try testing.expectEqualDeep(
+        TestStructAuto{ .int = 108, .string = "foo" },
+        query.get(TestStructAuto, .{ .offset = 60, .length = 6 }),
+    );
+    try testing.expectEqualDeep(
+        TestStructPack{ .c0 = 101, .c1 = 102, .c2 = 103 },
+        query.get(TestStructPack, .{ .offset = 68, .length = 4 }),
+    );
 }
 
 /// Do not use for decoding permanent storage or transmission as the serial format is platform-dependent.
@@ -365,127 +504,13 @@ pub const SerialReader = struct {
     cursor: usize = 0,
 
     pub fn next(self: *SerialReader, comptime T: type) T {
-        switch (@typeInfo(T)) {
-            .Bool, .Int, .Float, .Enum => return self.nextValue(T),
-            .Union => |meta| {
-                inline for (meta.fields) |field| {
-                    if (comptime isSerializableChild(field.type)) continue;
-                    compileErrorFmt("Union field `{}.{s}` is not decodeable", .{ T, field.name });
-                }
-
-                return self.nextValue(T);
-            },
-            inline .Optional, .Array, .Vector => |meta| {
-                if (comptime isSerializableChild(meta.child)) {
-                    return self.nextValue(T);
-                } else {
-                    compileErrorFmt("Type `{}` child is not decodeable", .{T});
-                }
-            },
-            .Pointer => |meta| {
-                if (!meta.is_const) @compileError("Decoding expects constant pointer");
-                switch (@typeInfo(meta.child)) {
-                    .Pointer => @compileError("Decoding pointer to pointer is unsupported"),
-                    .Struct => @compileError("Decoding struct pointer is unsupported"),
-                    else => {},
-                }
-
-                switch (meta.size) {
-                    .One => {
-                        self.skipPadding(meta.alignment);
-                        const slice = self.takeSliceType(meta.child, meta.alignment);
-                        return mem.bytesAsValue(meta.child, slice);
-                    },
-                    .Many => {
-                        const opaque_sent = meta.sentinel orelse {
-                            @compileError("Decoding many-item pointer expects sentinel-terminated");
-                        };
-                        const sentinel = comptime @as(*const meta.child, @ptrCast(@alignCast(opaque_sent))).*;
-                        return @ptrCast(self.next([:sentinel]align(meta.alignment) const meta.child));
-                    },
-                    .Slice => {
-                        const len = blk: {
-                            const size = self.nextValue(u8);
-                            const source = self.takeNextRange(self.cursor, size);
-                            break :blk readBufferInt(source);
-                        };
-
-                        self.skipPadding(meta.alignment);
-                        const slice = self.takeNextRange(self.cursor, len * @sizeOf(meta.child));
-                        if (meta.sentinel != null) self.cursor += @sizeOf(meta.child);
-                        return @ptrCast(@alignCast(slice));
-                    },
-                    .C => @compileError("Decoding ‘c’ pointer is unsupported"),
-                }
-            },
-            .Struct => |meta| {
-                if (meta.layout == .@"packed") {
-                    return self.nextValue(T);
-                }
-
-                inline for (meta.fields) |field| {
-                    if (comptime serializable(field.type)) continue;
-                    compileErrorFmt("Struct field `{}.{s}` is not decodeable", .{ T, field.name });
-                }
-
-                var value: T = undefined;
-                inline for (meta.fields) |field| {
-                    @field(value, field.name) = self.next(field.type);
-                }
-                return value;
-            },
-            else => compileErrorFmt("Unsupported decoding type `{}`", .{T}),
-        }
-    }
-
-    fn nextValue(self: *SerialReader, comptime T: type) T {
-        self.skipPadding(@alignOf(T));
-        const slice = self.takeSliceType(T, null);
-        return mem.bytesToValue(T, slice);
-    }
-
-    fn skipPadding(self: *SerialReader, comptime alignment: comptime_int) void {
-        self.cursor = mem.alignForward(usize, self.cursor, alignment);
-    }
-
-    fn TypeSlice(comptime T: type, comptime alignment: ?u29) type {
-        if (alignment) |a| if (a != @alignOf(T)) {
-            return []align(a) const u8;
-        };
-
-        return []const u8;
-    }
-
-    fn takeSliceType(self: *SerialReader, comptime T: type, comptime alignment: ?u29) TypeSlice(T, alignment) {
-        const slice = self.takeNextRange(self.cursor, @sizeOf(T));
-        return @alignCast(slice);
-    }
-
-    fn takeNextRange(self: *SerialReader, start: usize, n: usize) []const u8 {
-        self.assertRemaining(n);
-        self.cursor = start + n;
-        return self.buffer[start..][0..n];
-    }
-
-    inline fn assertRemaining(self: SerialReader, n: usize) void {
-        std.debug.assert(self.cursor + n <= self.buffer.len);
+        const query = SerialQuery{ .buffer = self.buffer };
+        return query.take(T, &self.cursor);
     }
 };
 
-fn readBufferInt(source: []const u8) usize {
-    const len = source.len;
-    var value: usize = 0;
-    if (ENDIAN == .little) {
-        @memcpy(mem.asBytes(&value)[0..len], source);
-    } else {
-        const dest = mem.asBytes(&value);
-        @memcpy(dest[dest.len - len ..][0..len], source);
-    }
-    return value;
-}
-
 test "SerialReader" {
-    var reader = SerialReader{ .buffer = TEST_SLICE };
+    var reader = SerialReader{ .buffer = TEST_BYTES };
 
     try testing.expectEqual(true, reader.next(bool));
     try testing.expectEqual(false, reader.next(bool));
@@ -525,7 +550,30 @@ test "SerialReader" {
     );
 }
 
-fn serializable(comptime T: type) bool {
+fn intFromBytes(source: []const u8) usize {
+    const len = source.len;
+    var value: usize = 0;
+    if (ENDIAN == .little) {
+        @memcpy(mem.asBytes(&value)[0..len], source);
+    } else {
+        const dest = mem.asBytes(&value);
+        @memcpy(dest[dest.len - len ..][0..len], source);
+    }
+    return value;
+}
+
+fn sentinelValue(comptime meta: std.builtin.Type.Pointer) meta.child {
+    const opaque_sent = meta.sentinel orelse {
+        @compileError("Encoding many-item pointer expects sentinel-terminated");
+    };
+    return comptime @as(*const meta.child, @ptrCast(@alignCast(opaque_sent))).*;
+}
+
+fn SentinelSlice(comptime meta: std.builtin.Type.Pointer) type {
+    return [:sentinelValue(meta)]align(meta.alignment) const meta.child;
+}
+
+fn isSerializable(comptime T: type) bool {
     switch (@typeInfo(T)) {
         .Bool, .Int, .Float, .Enum => return true,
         .Union => |meta| {
@@ -539,7 +587,7 @@ fn serializable(comptime T: type) bool {
             if (!meta.is_const) return false;
             if (!isSerializableChild(meta.child)) return false;
             return switch (meta.size) {
-                .One, .Slice => comptime serializable(meta.child),
+                .One, .Slice => comptime isSerializable(meta.child),
                 .Many => meta.sentinel != null,
                 .C => false,
             };
@@ -547,7 +595,7 @@ fn serializable(comptime T: type) bool {
         .Struct => |meta| {
             if (meta.layout == .@"packed") return true;
             inline for (meta.fields) |field| {
-                if (!comptime serializable(field.type)) return false;
+                if (!comptime isSerializable(field.type)) return false;
             }
             return true;
         },
@@ -563,11 +611,40 @@ fn isSerializableChild(comptime T: type) bool {
     };
 }
 
+inline fn validatePointerChild(comptime T: type, comptime is_const: ?bool) void {
+    if (is_const) |b| if (!b) @compileError("Decoding expects constant pointer");
+    switch (@typeInfo(T)) {
+        .Pointer => @compileError("Serializing pointer to pointer is unsupported"),
+        .Struct => @compileError("Serializing struct pointer is unsupported"),
+        else => {},
+    }
+}
+
+inline fn validateStructFields(comptime T: type, comptime fields: []const std.builtin.Type.StructField) void {
+    inline for (fields) |field| {
+        if (comptime isSerializable(field.type)) continue;
+        compileErrorFmt("Struct field `{}.{s}` is not serializable", .{ T, field.name });
+    }
+}
+
+inline fn validateUnionFields(comptime T: type, comptime fields: []const std.builtin.Type.UnionField) void {
+    inline for (fields) |field| {
+        if (comptime isSerializableChild(field.type)) continue;
+        compileErrorFmt("Union field `{}.{s}` is not serializable", .{ T, field.name });
+    }
+}
+
+inline fn validateWrapperChild(comptime Parent: type, comptime Child: type) void {
+    if (comptime !isSerializableChild(Child)) {
+        compileErrorFmt("Type `{}` child is not serializable", .{Parent});
+    }
+}
+
 inline fn compileErrorFmt(comptime format: []const u8, args: anytype) void {
     @compileError(std.fmt.comptimePrint(format, args));
 }
 
-const TEST_SLICE = TEST_BOOLS ++ TEST_NUMS ++ TEST_TAGS ++ TEST_OPTION ++
+const TEST_BYTES = TEST_BOOLS ++ TEST_NUMS ++ TEST_TAGS ++ TEST_OPTION ++
     TEST_LISTS ++ TEST_POINTERS ++ TEST_FMT ++ TEST_STRUCTS;
 
 const TEST_BOOLS: []const u8 = &.{ 1, 0 }; // true, false
