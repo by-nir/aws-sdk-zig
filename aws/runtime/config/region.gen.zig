@@ -88,6 +88,8 @@ pub const Region = enum {
     aws_iso_b_global,
     /// US ISOB East (Ohio)
     us_isob_east_1,
+    /// EU ISOE West
+    eu_isoe_west_1,
 
     const map = std.StaticStringMap(Region).initComptime(.{
         .{ "af-south-1", .af_south_1 },
@@ -131,6 +133,7 @@ pub const Region = enum {
         .{ "us-iso-west-1", .us_iso_west_1 },
         .{ "aws-iso-b-global", .aws_iso_b_global },
         .{ "us-isob-east-1", .us_isob_east_1 },
+        .{ "eu-isoe-west-1", .eu_isoe_west_1 },
     });
 
     pub fn parseCode(code: []const u8) ?Region {
@@ -180,6 +183,7 @@ pub const Region = enum {
             .us_iso_west_1 => "us-iso-west-1",
             .aws_iso_b_global => "aws-iso-b-global",
             .us_isob_east_1 => "us-isob-east-1",
+            .eu_isoe_west_1 => "eu-isoe-west-1",
         };
     }
 };

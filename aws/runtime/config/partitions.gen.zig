@@ -253,6 +253,7 @@ const partitions = std.StaticStringMap(*const Partition).initComptime(.{
     .{ "us-iso-west-1", &prtn_aws_iso },
     .{ "aws-iso-b-global", &prtn_aws_iso_b },
     .{ "us-isob-east-1", &prtn_aws_iso_b },
+    .{ "eu-isoe-west-1", &prtn_aws_iso_e },
 });
 
 pub fn resolve(region: []const u8) ?*const Partition {
