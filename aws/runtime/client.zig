@@ -1,6 +1,7 @@
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const assert = std.debug.assert;
 const HttpClient = std.http.Client;
+const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const sign = @import("sign.zig");
@@ -31,7 +32,7 @@ pub const Client = struct {
     }
 
     pub fn release() void {
-        std.debug.assert(shared_count > 0);
+        assert(shared_count > 0);
         if (shared_count > 1) {
             shared_count -= 1;
         } else {
@@ -272,7 +273,7 @@ pub const Request = struct {
             const kv = kvs[i];
             try stream.writer().print("{s}={s}", .{ kv.key, kv.value });
         }
-        std.debug.assert(str_len == stream.pos);
+        assert(str_len == stream.pos);
         return stream.buffer;
     }
 
@@ -301,7 +302,7 @@ pub const Request = struct {
             const kv = kvs[i];
             try stream.writer().print("{s}:{s}\n", .{ kv.key, kv.value });
         }
-        std.debug.assert(str_len == stream.pos);
+        assert(str_len == stream.pos);
         return stream.buffer;
     }
 
@@ -328,7 +329,7 @@ pub const Request = struct {
             if (i > 0) try stream.writer().writeByte(';');
             try stream.writer().writeAll(name);
         }
-        std.debug.assert(str_len == stream.pos);
+        assert(str_len == stream.pos);
         return stream.buffer;
     }
 

@@ -88,10 +88,11 @@ pub const pipeline_invoker = blk: {
         .injects = &.{SymbolsProvider},
     });
     _ = builder.Override(smithy.ScriptHeadHook, "AWS Script Head", writeScriptHeadHook, .{});
-    _ = builder.Override(smithy.ExtendClientScriptHook, "AWS Client Script Head", extendClientScriptHook, .{});
     _ = builder.Override(smithy.ExtendEndpointScriptHook, "AWS Endpoint Script Head", extendEndpointScriptHook, .{
         .injects = &.{SymbolsProvider},
     });
+
+    _ = builder.Override(smithy.ExtendClientScriptHook, "AWS Client Script Head", extendClientScriptHook, .{});
     _ = builder.Override(smithy.ServiceHeadHook, "AWS Service Shape Head", writeServiceHeadHook, .{});
     _ = builder.Override(smithy.OperationShapeHook, "AWS Operation Shape", writeOperationShapeHook, .{
         .injects = &.{SymbolsProvider},
@@ -110,12 +111,7 @@ fn filterSourceModelHook(self: *const Delegate, filename: []const u8) bool {
     }
 }
 
-fn writeReadmeHook(
-    _: *const Delegate,
-    symbols: *SymbolsProvider,
-    bld: md.ContainerAuthor,
-    src: smithy.ReadmeMetadata,
-) anyerror!void {
+fn writeReadmeHook(_: *const Delegate, symbols: *SymbolsProvider, bld: md.ContainerAuthor, src: smithy.ReadmeMetadata) anyerror!void {
     var meta = src;
     if (itg_core.Service.get(symbols, symbols.service_id)) |service| {
         const title = service.sdk_id;
@@ -134,17 +130,13 @@ fn writeScriptHeadHook(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!vo
 }
 
 fn extendClientScriptHook(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
-    try bld.constant("Runtime").assign(bld.x.raw("aws_runtime.Client"));
-    try bld.constant("Signer").assign(bld.x.raw("aws_runtime.Signer"));
+    try bld.constant("Runtime").assign(bld.x.raw("aws_internal.Client"));
+    try bld.constant("Signer").assign(bld.x.raw("aws_internal.Signer"));
 }
 
 const ENDPOINT_SRC_ARG = "source";
 
-fn extendEndpointScriptHook(
-    self: *const Delegate,
-    symbols: *SymbolsProvider,
-    bld: *zig.ContainerBuild,
-) anyerror!void {
+fn extendEndpointScriptHook(self: *const Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild) anyerror!void {
     const trait = symbols.getTrait(smithy.RuleSet, symbols.service_id, trt_rule_set_id) orelse unreachable;
 
     const context = .{ .arena = self.alloc(), .params = trait.parameters };
@@ -202,12 +194,13 @@ fn mapEndpointConfigBuiltin(x: zig.ExprBuild, id: BuiltInId) !zig.Expr {
 }
 
 fn writeServiceHeadHook(_: *const Delegate, bld: *zig.ContainerBuild, _: *const SmithyService) anyerror!void {
-    try bld.field("sdk_config").typing(bld.x.raw("aws_runtime.SdkConfig")).end();
-    try bld.field("endpoint_config").typing(bld.x.raw("service_endpoint.EndpointConfig")).end();
+    try bld.field("config_sdk").typing(bld.x.raw("aws_runtime.SdkConfig")).end();
+    try bld.field("config_endpoint").typing(bld.x.raw("srvc_endpoint.EndpointConfig")).end();
+    try bld.field("runtime").typing(bld.x.raw("*Runtime")).end();
 
     try bld.public().function("init")
         .arg("config", bld.x.raw("aws_runtime.SdkConfig"))
-        .returns(bld.x.raw("!Client"))
+        .returns(bld.x.raw("!@This()"))
         .body(writeServiceInit);
 
     try bld.public().function("deinit")
@@ -217,11 +210,11 @@ fn writeServiceHeadHook(_: *const Delegate, bld: *zig.ContainerBuild, _: *const 
 
 fn writeServiceInit(bld: *zig.BlockBuild) anyerror!void {
     try bld.trys().id("config").dot().call("validate", &.{}).end();
-    try bld.constant("endpoint_conf").assign(bld.x.call("service_endpoint.extractConfig", &.{bld.x.id("config")}));
 
     try bld.returns().structLiteral(null, &.{
         bld.x.structAssign("config_sdk", bld.x.id("config")),
-        bld.x.structAssign("config_endpoint", bld.x.id("endpoint_conf")),
+        bld.x.structAssign("config_endpoint", bld.x.call("srvc_endpoint.extractConfig", &.{bld.x.id("config")})),
+        bld.x.structAssign("runtime", bld.x.raw("Runtime.retain()")),
     }).end();
 }
 
@@ -229,12 +222,7 @@ fn writeServiceDeinit(bld: *zig.BlockBuild) anyerror!void {
     try bld.raw("self.runtime.release()");
 }
 
-fn writeOperationShapeHook(
-    _: *const Delegate,
-    symbols: *SymbolsProvider,
-    bld: *zig.BlockBuild,
-    shape: smithy.OperationShape,
-) anyerror!void {
+fn writeOperationShapeHook(_: *const Delegate, symbols: *SymbolsProvider, bld: *zig.BlockBuild, shape: smithy.OperationShape) anyerror!void {
     const action = try symbols.getShapeName(shape.id, .type);
     _ = action; // autofix
 

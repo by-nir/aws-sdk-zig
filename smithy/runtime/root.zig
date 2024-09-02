@@ -1,4 +1,5 @@
 const result = @import("result.zig");
+pub const Error = result.Error;
 pub const Result = result.Result;
 pub const ErrorSource = result.ErrorSource;
 

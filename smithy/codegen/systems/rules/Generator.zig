@@ -157,9 +157,9 @@ test "generateResolver" {
         \\
         \\    var local_heap = std.heap.FixedBufferAllocator.init(&local_buffer);
         \\
-        \\    const stack_alloc = local_heap.allocator();
+        \\    const scratch_alloc = local_heap.allocator();
         \\
-        \\    _ = stack_alloc;
+        \\    _ = scratch_alloc;
         \\
         \\    const param_baz: bool = config.baz orelse true;
         \\

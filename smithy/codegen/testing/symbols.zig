@@ -309,6 +309,6 @@ fn setupServiceAndDeps(model: *Model) !void {
         .structure = &.{},
     });
     try model.traits.put(test_alloc, SmithyId.of("test.error#NotFound"), &.{
-        .{ .id = trt_refine.Error.id, .value = "client" },
+        .{ .id = trt_refine.Error.id, .value = "server" },
     });
 }

@@ -101,7 +101,7 @@ fn fnParseArn(gen: *Generator, x: ExprBuild, args: []const ArgValue) !Expr {
 test "fnParseArn" {
     try Function.expect(fnParseArn, &.{
         .{ .string = "arn:aws:iam::012345678910:user/johndoe" },
-    }, "aws_internal.Arn.init(stack_alloc, \"arn:aws:iam::012345678910:user/johndoe\")");
+    }, "aws_internal.Arn.init(scratch_alloc, \"arn:aws:iam::012345678910:user/johndoe\")");
 }
 
 fn fnIsVirtualHostableS3Bucket(gen: *Generator, x: ExprBuild, args: []const ArgValue) !Expr {

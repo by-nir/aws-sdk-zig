@@ -84,11 +84,11 @@ fn serviceClientTask(
 ) anyerror!void {
     var testables = std.ArrayList([]const u8).init(self.alloc());
 
-    try bld.constant("service_errors").assign(bld.x.import("errors.zig"));
+    try bld.constant("srvc_errors").assign(bld.x.import("errors.zig"));
 
     if (symbols.hasTrait(symbols.service_id, trt_rules.EndpointRuleSet.id)) {
-        try testables.append("service_endpoint");
-        try bld.constant("service_endpoint").assign(bld.x.import("endpoint.zig"));
+        try testables.append("srvc_endpoint");
+        try bld.constant("srvc_endpoint").assign(bld.x.import("endpoint.zig"));
     }
 
     const service = (try symbols.getShape(symbols.service_id)).service;
@@ -110,7 +110,7 @@ fn serviceClientTask(
 
     try bld.testBlockWith(null, testables.items, struct {
         fn f(ctx: []const []const u8, b: *zig.BlockBuild) !void {
-            try b.discard().id("service_errors").end();
+            try b.discard().id("srvc_errors").end();
             for (ctx) |testable| try b.discard().id(testable).end();
         }
     }.f);
@@ -134,15 +134,15 @@ test "ServiceClient" {
 
     symbols.service_id = SmithyId.of("test.serve#Service");
     try expectServiceScript(
-        \\const service_errors = @import("errors.zig");
+        \\const srvc_errors = @import("errors.zig");
         \\
-        \\const service_endpoint = @import("endpoint.zig");
+        \\const srvc_endpoint = @import("endpoint.zig");
         \\
         \\const resource_resource = @import("resource_resource.zig");
         \\
         \\/// Some _service_...
         \\pub const Client = struct {
-        \\    pub fn operation(self: @This(), input: OperationInput) smithy.Result(OperationOutput, service_errors.OperationErrors) {
+        \\    pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !smithy.Result(OperationOutput, srvc_errors.OperationError) {
         \\        return undefined;
         \\    }
         \\};
@@ -152,9 +152,9 @@ test "ServiceClient" {
         \\pub const OperationOutput = struct {};
         \\
         \\test {
-        \\    _ = service_errors;
+        \\    _ = srvc_errors;
         \\
-        \\    _ = service_endpoint;
+        \\    _ = srvc_endpoint;
         \\
         \\    _ = resource_resource;
         \\}
@@ -170,7 +170,7 @@ fn serviceResourceTask(
     bld: *zig.ContainerBuild,
     resource_id: SmithyId,
 ) anyerror!void {
-    try bld.constant("service_errors").assign(bld.x.import("errors.zig"));
+    try bld.constant("srvc_errors").assign(bld.x.import("errors.zig"));
 
     try symbols.enqueue(resource_id);
     while (symbols.next()) |id| {
@@ -196,12 +196,12 @@ test "ServiceResource" {
     _ = try tester.provideService(&symbols, null);
 
     try expectServiceScript(
-        \\const service_errors = @import("errors.zig");
+        \\const srvc_errors = @import("errors.zig");
         \\
         \\pub const Resource = struct {
         \\    forecast_id: []const u8,
         \\
-        \\    pub fn operation(self: @This(), input: OperationInput) smithy.Result(OperationOutput, service_errors.OperationErrors) {
+        \\    pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !smithy.Result(OperationOutput, srvc_errors.OperationError) {
         \\        return undefined;
         \\    }
         \\};
@@ -215,27 +215,15 @@ test "ServiceResource" {
 const ServiceErrors = ServiceScriptGen.Task("Smithy Service Errors Codegen", serviceErrorsTask, .{
     .injects = &.{SymbolsProvider},
 });
-fn serviceErrorsTask(
-    self: *const Delegate,
-    symbols: *SymbolsProvider,
-    bld: *zig.ContainerBuild,
-) anyerror!void {
-    var errors = std.AutoArrayHashMap(SmithyId, void).init(self.alloc());
-
+fn serviceErrorsTask(self: *const Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild) anyerror!void {
     const service = (try symbols.getShape(symbols.service_id)).service;
-    for (service.errors) |id| try errors.put(id, {});
 
     for (service.operations) |op_id| {
-        try processOperationErrors(self, symbols, bld, &errors, op_id, service.errors);
+        try processOperationErrors(self, symbols, bld, op_id, service.errors);
     }
 
     for (service.resources) |rsc_id| {
-        try processResourceErrors(self, symbols, bld, &errors, rsc_id, service.errors);
-    }
-
-    var it = errors.iterator();
-    while (it.next()) |id| {
-        try self.evaluate(shape_tasks.WriteErrorShape, .{ bld, id.key_ptr.* });
+        try processResourceErrors(self, symbols, bld, rsc_id, service.errors);
     }
 }
 
@@ -243,22 +231,21 @@ fn processResourceErrors(
     self: *const Delegate,
     symbols: *SymbolsProvider,
     bld: *zig.ContainerBuild,
-    queue: *std.AutoArrayHashMap(SmithyId, void),
     rsc_id: SmithyId,
     common_errors: []const SmithyId,
 ) !void {
     const resource = (try symbols.getShape(rsc_id)).resource;
 
     for (resource.operations) |op_id| {
-        try processOperationErrors(self, symbols, bld, queue, op_id, common_errors);
+        try processOperationErrors(self, symbols, bld, op_id, common_errors);
     }
 
     for (resource.collection_ops) |op_id| {
-        try processOperationErrors(self, symbols, bld, queue, op_id, common_errors);
+        try processOperationErrors(self, symbols, bld, op_id, common_errors);
     }
 
     for (resource.resources) |sub_id| {
-        try processResourceErrors(self, symbols, bld, queue, sub_id, common_errors);
+        try processResourceErrors(self, symbols, bld, sub_id, common_errors);
     }
 }
 
@@ -266,15 +253,11 @@ fn processOperationErrors(
     self: *const Delegate,
     symbols: *SymbolsProvider,
     bld: *zig.ContainerBuild,
-    queue: *std.AutoArrayHashMap(SmithyId, void),
     op_id: SmithyId,
     common_errors: []const SmithyId,
 ) !void {
     const operation = (try symbols.getShape(op_id)).operation;
-    for (operation.errors) |err_id| try queue.put(err_id, {});
-    if (operation.errors.len + common_errors.len > 0) {
-        try self.evaluate(shape_tasks.WriteErrorSet, .{ bld, op_id, operation.errors, common_errors });
-    }
+    try self.evaluate(shape_tasks.WriteErrorSet, .{ bld, op_id, operation.errors, common_errors });
 }
 
 test "ServiceErrors" {
@@ -290,33 +273,9 @@ test "ServiceErrors" {
     _ = try tester.provideService(&symbols, null);
 
     symbols.service_id = SmithyId.of("test.serve#Service");
-    try expectServiceScript(
-        \\pub const OperationErrors = union(enum) {
-        \\    service: ServiceError,
-        \\    not_found: NotFound,
-        \\};
-        \\
-        \\pub const OperationErrors = union(enum) {
-        \\    service: ServiceError,
-        \\    not_found: NotFound,
-        \\};
-        \\
-        \\pub const ServiceError = struct {
-        \\    pub const source: smithy.ErrorSource = .client;
-        \\
-        \\    pub const code: u10 = 429;
-        \\
-        \\    pub const retryable = true;
-        \\};
-        \\
-        \\pub const NotFound = struct {
-        \\    pub const source: smithy.ErrorSource = .server;
-        \\
-        \\    pub const code: u10 = 500;
-        \\
-        \\    pub const retryable = false;
-        \\};
-    , ServiceErrors, tester.pipeline, .{});
+
+    const expected = shape_tasks.TEST_OPERATION_ERR ++ "\n\n" ++ shape_tasks.TEST_OPERATION_ERR;
+    try expectServiceScript(expected, ServiceErrors, tester.pipeline, .{});
 }
 
 const ServiceEndpoint = ServiceScriptGen.Task("Smithy Service Endpoint Codegen", serviceEndpointTask, .{
@@ -383,9 +342,9 @@ test "ServiceEndpoint" {
         \\
         \\    var local_heap = std.heap.FixedBufferAllocator.init(&local_buffer);
         \\
-        \\    const stack_alloc = local_heap.allocator();
+        \\    const scratch_alloc = local_heap.allocator();
         \\
-        \\    _ = stack_alloc;
+        \\    _ = scratch_alloc;
         \\
         \\    var did_pass = false;
         \\
@@ -407,19 +366,11 @@ test "ServiceEndpoint" {
 const ServiceReadme = files_tasks.WriteFile.Task("Service Readme Codegen", serviceReadmeTask, .{
     .injects = &.{SymbolsProvider},
 });
-fn serviceReadmeTask(
-    self: *const Delegate,
-    symbols: *SymbolsProvider,
-    writer: std.io.AnyWriter,
-) anyerror!void {
-    const service_id = symbols.service_id;
+fn serviceReadmeTask(self: *const Delegate, symbols: *SymbolsProvider, writer: std.io.AnyWriter) anyerror!void {
+    const sid = symbols.service_id;
     const slug = self.readValue([]const u8, ScopeTag.slug) orelse return error.MissingSlug;
-
-    const title =
-        trt_docs.Title.get(symbols, service_id) orelse
-        try name_util.titleCase(self.alloc(), slug);
-
-    const intro: ?[]const u8 = if (trt_docs.Documentation.get(symbols, service_id)) |src|
+    const title = trt_docs.Title.get(symbols, sid) orelse try name_util.titleCase(self.alloc(), slug);
+    const intro: ?[]const u8 = if (trt_docs.Documentation.get(symbols, sid)) |src|
         try processIntro(self.alloc(), src)
     else
         null;

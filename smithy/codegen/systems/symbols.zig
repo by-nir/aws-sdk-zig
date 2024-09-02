@@ -433,8 +433,7 @@ pub const SymbolsProvider = struct {
                 |t| return std.enums.nameCast(SmithyType, t),
             // zig fmt: on
             else => {
-                const shape = self.model_shapes.get(id) orelse return error.ShapeNotFound;
-                return switch (shape) {
+                return switch (try self.getShape(id)) {
                     .target => |t| self.getShape(t),
                     else => |t| t,
                 };

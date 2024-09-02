@@ -30,15 +30,7 @@ const test_symbols = @import("../testing/symbols.zig");
 
 pub const ServiceHeadHook = Task.Hook("Smithy Service Head", anyerror!void, &.{ *ContainerBuild, *const syb.SmithyService });
 pub const ResourceHeadHook = Task.Hook("Smithy Resource Head", anyerror!void, &.{ *ContainerBuild, SmithyId, *const syb.SmithyResource });
-pub const ExtendErrorShapeHook = Task.Hook("Smithy Extend Error Shape", anyerror!void, &.{ *ContainerBuild, ErrorShape });
 pub const OperationShapeHook = Task.Hook("Smithy Operation Shape", anyerror!void, &.{ *BlockBuild, OperationShape });
-
-pub const ErrorShape = struct {
-    id: SmithyId,
-    source: trt_refine.Error.Source,
-    code: u10,
-    retryable: bool,
-};
 
 pub const OperationShape = struct {
     id: SmithyId,
@@ -608,7 +600,7 @@ fn writeOperationFunc(
 
     const service_errors = try symbols.getServiceErrors();
     const errors_type = if (operation.errors.len + service_errors.len > 0)
-        try errorSetName(self.alloc(), op_name, "service_errors.")
+        try errorSetName(self.alloc(), op_name, "srvc_errors.")
     else
         null;
 
@@ -626,11 +618,14 @@ fn writeOperationFunc(
     } else null;
 
     const return_type = if (errors_type) |errors|
-        try std.fmt.allocPrint(self.alloc(), "smithy.Result({s}, {s})", .{
+        try std.fmt.allocPrint(self.alloc(), "!smithy.Result({s}, {s})", .{
             payload_type orelse "void",
             errors,
         })
-    else if (payload_type) |s| s else "void";
+    else if (payload_type) |s|
+        try std.fmt.allocPrint(self.alloc(), "!{s}", .{s})
+    else
+        "!void";
 
     const shape = OperationShape{
         .id = id,
@@ -641,7 +636,9 @@ fn writeOperationFunc(
     };
 
     const context = .{ .self = self, .symbols = symbols, .shape = shape };
-    const func1 = bld.public().function(op_name).arg("self", bld.x.This());
+    const func1 = bld.public().function(op_name)
+        .arg("self", bld.x.id(cnfg.service_client_name))
+        .arg(cnfg.allocator_name, bld.x.raw("Allocator"));
     const func2 = if (shape_input) |input| func1.arg(input.identifier, bld.x.raw(input.type)) else func1;
     try func2.returns(bld.x.raw(return_type)).bodyWith(context, struct {
         fn f(ctx: @TypeOf(context), b: *BlockBuild) !void {
@@ -664,7 +661,7 @@ test "writeOperationFunc" {
             try tester.runTask(OpFuncTest, .{bld});
         }
     }.eval,
-        \\pub fn operation(self: @This(), input: OperationInput) smithy.Result(OperationOutput, service_errors.OperationErrors) {
+        \\pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !smithy.Result(OperationOutput, srvc_errors.OperationError) {
         \\    return undefined;
         \\}
     );
@@ -722,7 +719,7 @@ test "writeResourceShape" {
         \\pub const Resource = struct {
         \\    forecast_id: []const u8,
         \\
-        \\    pub fn operation(self: @This(), input: OperationInput) smithy.Result(OperationOutput, service_errors.OperationErrors) {
+        \\    pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !smithy.Result(OperationOutput, srvc_errors.OperationError) {
         \\        return undefined;
         \\    }
         \\};
@@ -742,7 +739,7 @@ fn writeServiceShape(
 ) !void {
     try writeDocComment(self.alloc(), symbols, bld, id, false);
     const context = .{ .self = self, .symbols = symbols, .service = service };
-    try bld.public().constant("Client").assign(
+    try bld.public().constant(cnfg.service_client_name).assign(
         bld.x.@"struct"().bodyWith(context, struct {
             fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
                 if (ctx.self.hasOverride(ServiceHeadHook)) {
@@ -769,7 +766,7 @@ test "writeServiceShape" {
     }.eval,
         \\/// Some _service_...
         \\pub const Client = struct {
-        \\    pub fn operation(self: @This(), input: OperationInput) smithy.Result(OperationOutput, service_errors.OperationErrors) {
+        \\    pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !smithy.Result(OperationOutput, srvc_errors.OperationError) {
         \\        return undefined;
         \\    }
         \\};
@@ -777,78 +774,6 @@ test "writeServiceShape" {
         \\pub const OperationInput = struct {};
         \\
         \\pub const OperationOutput = struct {};
-    );
-}
-
-pub const WriteErrorShape = Task.Define("Smithy Write Error Shape", writeErrorShapeTask, .{
-    .injects = &.{ SymbolsProvider, IssuesBag },
-});
-fn writeErrorShapeTask(
-    self: *const Delegate,
-    symbols: *SymbolsProvider,
-    issues: *IssuesBag,
-    bld: *ContainerBuild,
-    id: SmithyId,
-) !void {
-    const struct_shape = symbols.getShape(id) catch {
-        const policy: CodegenPolicy = self.readValue(CodegenPolicy, ScopeTag.codegen_policy) orelse .{};
-        switch (policy.unknown_shape) {
-            .skip => return issues.add(.{ .codegen_unknown_shape = @intFromEnum(id) }),
-            .abort => {
-                std.log.err("Unknown shape: `{}`.", .{id});
-                return IssuesBag.PolicyAbortError;
-            },
-        }
-    };
-    const members = struct_shape.structure;
-
-    const shape_name = try symbols.getShapeName(id, .type);
-    try writeDocComment(self.alloc(), symbols, bld, id, false);
-    const source = trt_refine.Error.get(symbols, id) orelse return error.MissingErrorTrait;
-
-    const shape: ErrorShape = .{
-        .id = id,
-        .source = source,
-        .retryable = symbols.hasTrait(id, trt_behave.retryable_id),
-        .code = trt_http.HttpError.get(symbols, id) orelse if (source == .client) 400 else 500,
-    };
-
-    const context = .{ .self = self, .symbols = symbols, .id = id, .shape = shape, .members = members };
-    try bld.public().constant(shape_name).assign(bld.x.@"struct"().bodyWith(context, struct {
-        fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
-            try b.public().constant("source").typing(b.x.raw("smithy.ErrorSource"))
-                .assign(b.x.valueOf(ctx.shape.source));
-
-            try b.public().constant("code").typing(b.x.typeOf(u10))
-                .assign(b.x.valueOf(ctx.shape.code));
-
-            try b.public().constant("retryable").assign(b.x.valueOf(ctx.shape.retryable));
-
-            try writeStructShapeMixin(ctx.self.alloc(), ctx.symbols, b, false, ctx.id);
-            for (ctx.members) |m| {
-                try writeStructShapeMember(ctx.self.alloc(), ctx.symbols, b, false, m);
-            }
-
-            if (ctx.self.hasOverride(ExtendErrorShapeHook)) {
-                try ctx.self.evaluate(ExtendErrorShapeHook, .{ b, ctx.shape });
-            }
-        }
-    }.f));
-}
-
-test "WriteErrorShape" {
-    try smithyTester(&.{.err}, struct {
-        fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.runTask(WriteErrorShape, .{ bld, SmithyId.of("test#ServiceError") });
-        }
-    }.eval,
-        \\pub const ServiceError = struct {
-        \\    pub const source: smithy.ErrorSource = .client;
-        \\
-        \\    pub const code: u10 = 429;
-        \\
-        \\    pub const retryable = true;
-        \\};
     );
 }
 
@@ -863,27 +788,59 @@ fn writeErrorSetTask(
     shape_errors: []const SmithyId,
     common_errors: []const SmithyId,
 ) anyerror!void {
+    if (shape_errors.len + common_errors.len == 0) return;
+
     const shape_name = try symbols.getShapeName(shape_id, .type);
     const type_name = try errorSetName(self.alloc(), shape_name, "");
 
     const context = .{ .arena = self.alloc(), .symbols = symbols, .common_errors = common_errors, .shape_errors = shape_errors };
-    try bld.public().constant(type_name).assign(bld.x.@"union"().bodyWith(context, struct {
+    try bld.public().constant(type_name).assign(bld.x.@"enum"().bodyWith(context, struct {
         fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
-            for (ctx.common_errors) |m| try writeErrorSetMember(ctx.arena, ctx.symbols, b, m);
-            for (ctx.shape_errors) |m| try writeErrorSetMember(ctx.arena, ctx.symbols, b, m);
+            var members = std.ArrayList(ErrorSetMember).init(ctx.arena);
+            defer members.deinit();
+
+            for (ctx.common_errors) |m| try writeErrorSetMember(ctx.arena, ctx.symbols, b, &members, m);
+            for (ctx.shape_errors) |m| try writeErrorSetMember(ctx.arena, ctx.symbols, b, &members, m);
+
+            try b.public().function("source")
+                .arg("self", b.x.This())
+                .returns(b.x.raw("smithy.ErrorSource"))
+                .bodyWith(members.items, writeErrorSetSourceFn);
+
+            try b.public().function("httpStatus")
+                .arg("self", b.x.This())
+                .returns(b.x.raw("std.http.Status"))
+                .bodyWith(members.items, writeErrorSetStatusFn);
+
+            try b.public().function("retryable")
+                .arg("self", b.x.This())
+                .returns(b.x.typeOf(bool))
+                .bodyWith(members.items, writeErrorSetRetryFn);
         }
     }.f));
 }
 
+const ErrorSetMember = struct {
+    name: []const u8,
+    code: u10,
+    retryable: bool,
+    source: trt_refine.Error.Source,
+};
+
 fn errorSetName(allocator: Allocator, shape_name: []const u8, comptime prefix: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(allocator, prefix ++ "{c}{s}Errors", .{
+    return std.fmt.allocPrint(allocator, prefix ++ "{c}{s}Error", .{
         std.ascii.toUpper(shape_name[0]),
         shape_name[1..shape_name.len],
     });
 }
 
-fn writeErrorSetMember(arena: Allocator, symbols: *SymbolsProvider, bld: *ContainerBuild, member: SmithyId) !void {
-    const type_name = try symbols.getTypeName(member);
+fn writeErrorSetMember(
+    arena: Allocator,
+    symbols: *SymbolsProvider,
+    bld: *ContainerBuild,
+    list: *std.ArrayList(ErrorSetMember),
+    member: SmithyId,
+) !void {
     var shape_name = try symbols.getShapeName(member, .field);
     inline for (.{ "_error", "_exception" }) |suffix| {
         if (std.ascii.endsWithIgnoreCase(shape_name, suffix)) {
@@ -893,11 +850,44 @@ fn writeErrorSetMember(arena: Allocator, symbols: *SymbolsProvider, bld: *Contai
     }
 
     try writeDocComment(arena, symbols, bld, member, true);
-    if (type_name.len > 0) {
-        try bld.field(shape_name).typing(bld.x.raw(type_name)).end();
-    } else {
-        try bld.field(shape_name).end();
-    }
+    try bld.field(shape_name).end();
+
+    const source = trt_refine.Error.get(symbols, member) orelse return error.MissingErrorTrait;
+    try list.append(.{
+        .name = shape_name,
+        .source = source,
+        .retryable = symbols.hasTrait(member, trt_behave.retryable_id),
+        .code = trt_http.HttpError.get(symbols, member) orelse if (source == .client) 400 else 500,
+    });
+}
+
+fn writeErrorSetSourceFn(members: []ErrorSetMember, bld: *BlockBuild) !void {
+    try bld.returns().switchWith(bld.x.id("self"), members, struct {
+        fn f(ms: []ErrorSetMember, b: *zig.SwitchBuild) !void {
+            for (ms) |m| try b.branch().case(b.x.dot().id(m.name)).body(b.x.raw(switch (m.source) {
+                .client => ".client",
+                .server => ".server",
+            }));
+        }
+    }.f).end();
+}
+
+fn writeErrorSetStatusFn(members: []ErrorSetMember, bld: *BlockBuild) !void {
+    try bld.constant("code").assign(bld.x.switchWith(bld.x.id("self"), members, struct {
+        fn f(ms: []ErrorSetMember, b: *zig.SwitchBuild) !void {
+            for (ms) |m| try b.branch().case(b.x.dot().id(m.name)).body(b.x.valueOf(m.code));
+        }
+    }.f));
+
+    try bld.returns().call("@enumFromInt", &.{bld.x.id("code")}).end();
+}
+
+fn writeErrorSetRetryFn(members: []ErrorSetMember, bld: *BlockBuild) !void {
+    try bld.returns().switchWith(bld.x.id("self"), members, struct {
+        fn f(ms: []ErrorSetMember, b: *zig.SwitchBuild) !void {
+            for (ms) |m| try b.branch().case(b.x.dot().id(m.name)).body(b.x.valueOf(m.retryable));
+        }
+    }.f).end();
 }
 
 test "WriteErrorSet" {
@@ -910,13 +900,37 @@ test "WriteErrorSet" {
                 &.{SmithyId.of("test#ServiceError")},
             });
         }
-    }.eval,
-        \\pub const OperationErrors = union(enum) {
-        \\    service: ServiceError,
-        \\    not_found: NotFound,
-        \\};
-    );
+    }.eval, TEST_OPERATION_ERR);
 }
+pub const TEST_OPERATION_ERR =
+    \\pub const OperationError = enum {
+    \\    service,
+    \\    not_found,
+    \\
+    \\    pub fn source(self: @This()) smithy.ErrorSource {
+    \\        return switch (self) {
+    \\            .service => .client,
+    \\            .not_found => .server,
+    \\        };
+    \\    }
+    \\
+    \\    pub fn httpStatus(self: @This()) std.http.Status {
+    \\        const code = switch (self) {
+    \\            .service => 429,
+    \\            .not_found => 500,
+    \\        };
+    \\
+    \\        return @enumFromInt(code);
+    \\    }
+    \\
+    \\    pub fn retryable(self: @This()) bool {
+    \\        return switch (self) {
+    \\            .service => true,
+    \\            .not_found => false,
+    \\        };
+    \\    }
+    \\};
+;
 
 fn writeDocComment(
     arena: Allocator,
