@@ -17,8 +17,12 @@ pub const Client = struct {
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = undefined;
     var shared: Client = undefined;
     var shared_count: usize = 0;
+    var shared_mutex: std.Thread.Mutex = .{};
 
     pub fn retain() *Client {
+        shared_mutex.lock();
+        defer shared_mutex.unlock();
+
         if (shared_count == 0) {
             const alloc = if (@import("builtin").is_test) test_alloc else blk: {
                 gpa = .{};
@@ -32,7 +36,10 @@ pub const Client = struct {
     }
 
     pub fn release() void {
+        shared_mutex.lock();
+        defer shared_mutex.unlock();
         assert(shared_count > 0);
+
         if (shared_count > 1) {
             shared_count -= 1;
         } else {
@@ -66,37 +73,39 @@ pub const Client = struct {
         self: *Client,
         allocator: Allocator,
         signer: sign.Signer,
-        endpoint: std.Uri,
-        action: Action,
+        service: Service,
+        event: Event,
         request: *Request,
     ) !Response {
         try request.addHeaders(&.{
-            .{ .key = "host", .value = try endpoint.host.?.toRawMaybeAlloc(allocator) },
-            .{ .key = "x-amz-date", .value = &action.timestamp },
+            .{ .key = "host", .value = try service.endpoint.host.?.toRawMaybeAlloc(allocator) },
+            .{ .key = "x-amz-date", .value = &event.timestamp },
         });
-        if (action.trace_id) |tid| try request.addHeader("x-amzn-trace-id", tid);
+        if (event.trace_id) |tid| try request.addHeader("x-amzn-trace-id", tid);
         if (request.payload) |pld| try request.addHeader("content-type", pld.mime());
 
-        var auth_buffer: [512]u8 = undefined;
-        const auth = try signRequest(allocator, &auth_buffer, signer, request, action);
-        return self.sendRequest(allocator, endpoint, request, auth);
+        const query_str = try request.queryString(allocator);
+        defer allocator.free(query_str);
+
+        var sign_buffer: [512]u8 = undefined;
+        const signature = try signRequest(allocator, &sign_buffer, signer, service, event, request, query_str);
+        return self.sendRequest(allocator, service.endpoint, request, query_str, signature);
     }
 
     fn signRequest(
         allocator: Allocator,
         buffer: []u8,
         signer: sign.Signer,
+        service: Service,
+        event: Event,
         request: *Request,
-        action: Action,
+        query_str: []const u8,
     ) ![]const u8 {
         const headers_str = try request.headersString(allocator);
         defer allocator.free(headers_str);
 
         const headers_names_str = try request.headersNamesString(allocator);
         defer allocator.free(headers_names_str);
-
-        const query_str = try request.queryString(allocator);
-        defer allocator.free(query_str);
 
         const payload_hash = request.payloadHash();
         const sign_content = sign.Content{
@@ -109,10 +118,10 @@ pub const Client = struct {
         };
 
         return signer.sign(buffer, .{
-            .service = action.service,
-            .region = action.region.toCode(),
-            .date = &action.date,
-            .timestamp = &action.timestamp,
+            .service = service.name,
+            .region = service.region.toCode(),
+            .date = &event.date,
+            .timestamp = &event.timestamp,
         }, sign_content);
     }
 
@@ -120,8 +129,9 @@ pub const Client = struct {
         self: *Client,
         allocator: Allocator,
         endpoint: std.Uri,
-        request: *Request,
-        auth: []const u8,
+        request: *const Request,
+        query_str: []const u8,
+        signature: []const u8,
     ) !Response {
         var body_buffer = std.ArrayList(u8).init(allocator);
         errdefer body_buffer.deinit();
@@ -142,14 +152,14 @@ pub const Client = struct {
 
         var location = endpoint;
         location.path = .{ .raw = request.path };
-        location.query = .{ .percent_encoded = try request.queryString(allocator) };
+        location.query = .{ .percent_encoded = query_str };
 
         var headers_buffer: HeadersBuffer = undefined;
         const result = try self.http.fetch(.{
             .location = .{ .uri = location },
-            .method = .GET,
+            .method = request.method,
             .headers = .{
-                .authorization = .{ .override = auth },
+                .authorization = .{ .override = signature },
                 .host = .{ .override = try endpoint.host.?.toRawMaybeAlloc(allocator) },
                 .content_type = if (request.payload) |p| .{ .override = p.mime() } else .default,
             },
@@ -173,29 +183,26 @@ pub const Client = struct {
     }
 };
 
-pub const Action = struct {
+pub const Service = struct {
+    name: []const u8,
+    version: []const u8,
+    endpoint: std.Uri,
     region: Region,
-    service: []const u8,
-    app_id: ?[]const u8 = null,
-    trace_id: ?[]const u8 = null,
-    date: [8]u8 = std.mem.zeroes([8]u8),
-    timestamp: [16]u8 = std.mem.zeroes([16]u8),
+    app_id: ?[]const u8,
+};
 
-    pub fn base(service: []const u8, region: Region, app_id: ?[]const u8) Action {
-        return .{
-            .service = service,
-            .region = region,
-            .app_id = app_id,
-        };
-    }
+pub const Event = struct {
+    date: [8]u8,
+    timestamp: [16]u8,
+    trace_id: ?[]const u8,
 
-    pub fn copyNow(self: Action, trace_id: ?[]const u8) Action {
+    pub fn new(trace_id: ?[]const u8) Event {
         const time = utils.TimeStr.initNow();
-        var dupe = self;
-        dupe.trace_id = trace_id;
-        dupe.date = time.date;
-        dupe.timestamp = time.timestamp;
-        return dupe;
+        return .{
+            .date = time.date,
+            .timestamp = time.timestamp,
+            .trace_id = trace_id,
+        };
     }
 };
 
@@ -203,9 +210,9 @@ pub const Action = struct {
 pub const Request = struct {
     allocator: Allocator,
     method: std.http.Method,
-    query: KVMap,
     path: []const u8,
     headers: KVMap,
+    query: KVMap,
     payload: ?Payload = null,
 
     pub const Schema = enum(u64) { http, https };
@@ -214,16 +221,14 @@ pub const Request = struct {
         allocator: Allocator,
         method: std.http.Method,
         path: []const u8,
-        query: KVMap.List,
-        headers: KVMap.List,
         payload: ?Payload,
     ) !Request {
         return .{
             .allocator = allocator,
             .method = method,
             .path = path,
-            .query = try KVMap.init(allocator, query),
-            .headers = try KVMap.init(allocator, headers),
+            .headers = try KVMap.init(allocator, &.{}),
+            .query = try KVMap.init(allocator, &.{}),
             .payload = payload,
         };
     }
@@ -239,6 +244,10 @@ pub const Request = struct {
 
     pub fn addHeaders(self: *Request, headers: KVMap.List) !void {
         try self.headers.addAll(self.allocator, headers);
+    }
+
+    pub fn addQueryParam(self: *Request, key: []const u8, value: []const u8) !void {
+        try self.query.add(self.allocator, key, value);
     }
 
     pub fn payloadHash(self: Request) utils.HashStr {
@@ -397,16 +406,20 @@ test "Request.headersNamesString" {
 }
 
 fn testRequest(allocator: Allocator) !Request {
-    return Request.init(allocator, .GET, "/", &.{
-        .{ .key = "foo", .value = "%bar" },
-        .{ .key = "baz", .value = "$qux" },
-    }, &.{
-        .{ .key = "X-amz-date", .value = "20130708T220855Z" },
-        .{ .key = "Host", .value = "s3.amazonaws.com" },
-    }, .{
-        .type = .json,
+    var request = try Request.init(allocator, .GET, "/", .{
+        .type = .json_10,
         .content = "foo-bar-baz",
     });
+
+    try request.addHeaders(&.{
+        .{ .key = "X-amz-date", .value = "20130708T220855Z" },
+        .{ .key = "Host", .value = "s3.amazonaws.com" },
+    });
+
+    try request.addQueryParam("foo", "%bar");
+    try request.addQueryParam("baz", "$qux");
+
+    return request;
 }
 
 /// HTTP response content.
@@ -428,18 +441,21 @@ pub const Payload = struct {
     content: []const u8,
 
     pub const ContentType = union(enum) {
-        text,
-        xml,
-        json,
-        other: []const u8,
+        json_10,
+        json_11,
+        rest_json1,
+        rest_xml,
+        query,
+        ec2_query,
     };
 
     pub fn mime(self: Payload) []const u8 {
         return switch (self.type) {
-            .text => "text/plain",
-            .xml => "application/xml",
-            .json => "application/json",
-            .other => |m| m,
+            .json_10 => "application/x-amz-json-1.0",
+            .json_11 => "application/x-amz-json-1.1",
+            .rest_json1 => "application/json",
+            .rest_xml => "application/xml",
+            .query, .ec2_query => "application/x-www-form-urlencoded",
         };
     }
 };

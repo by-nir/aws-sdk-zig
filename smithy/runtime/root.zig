@@ -1,10 +1,10 @@
-const result = @import("result.zig");
-pub const Error = result.Error;
-pub const Result = result.Result;
-pub const ErrorSource = result.ErrorSource;
+const response = @import("response.zig");
+pub const Response = response.Response;
+pub const ResponseError = response.ResponseError;
+pub const ErrorSource = response.ErrorSource;
 
 const containers = @import("containers.zig");
-pub const Set = containers.SetUnmanaged;
+pub const Set = containers.Set;
 
 const url = @import("url.zig");
 const http = @import("http.zig");
@@ -24,7 +24,7 @@ pub const internal = struct {
 test {
     _ = url;
     _ = http;
-    _ = result;
+    _ = response;
     _ = values;
     _ = endpoint;
     _ = containers;

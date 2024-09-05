@@ -3,11 +3,9 @@ const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 
-pub fn SetUnmanaged(comptime T: type) type {
-    const Map = if (T == []const u8)
-        std.StringHashMapUnmanaged(void)
-    else
-        std.AutoHashMapUnmanaged(T, void);
+pub fn Set(comptime T: type) type {
+    const Map = if (T == []const u8) std.StringHashMapUnmanaged(void) else std.AutoHashMapUnmanaged(T, void);
+
     return struct {
         const Self = @This();
         pub const Size = Map.Size;
@@ -70,11 +68,22 @@ pub fn SetUnmanaged(comptime T: type) type {
         pub fn remove(self: *Self, item: T) bool {
             return self.map.remove(item);
         }
+
+        pub fn jsonStringify(self: Self, jw: anytype) !void {
+            try jw.beginArray();
+
+            var it = self.map.keyIterator();
+            while (it.next()) |item| {
+                try jw.write(item);
+            }
+
+            try jw.endArray();
+        }
     };
 }
 
 test "SetUnmanaged" {
-    var set = SetUnmanaged(u32){};
+    var set = Set(u32){};
     errdefer set.deinit(test_alloc);
 
     try testing.expectEqual(0, set.count());

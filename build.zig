@@ -24,7 +24,7 @@ pub fn build(b: *std.Build) void {
     // SDK
     //
 
-    b.modules.put("aws-sdk", aws_runtime) catch {};
+    b.modules.put("aws", aws_runtime) catch {};
 
     const sdk_path = "sdk";
     var sdk_dir = std.fs.openDirAbsolute(b.path(sdk_path).getPath(b), .{ .iterate = true }) catch {
@@ -54,7 +54,7 @@ fn addSdkClient(
     // Client
     const path = b.path(b.fmt("{s}/{s}/client.zig", .{ dir, name }));
     _ = b.addModule(
-        b.fmt("aws-sdk/{s}", .{name}),
+        b.fmt("sdk/{s}", .{name}),
         .{
             .target = options.target,
             .optimize = options.optimize,

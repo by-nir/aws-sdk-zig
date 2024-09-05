@@ -142,14 +142,26 @@ test "ServiceClient" {
         \\
         \\/// Some _service_...
         \\pub const Client = struct {
-        \\    pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !smithy.Result(OperationOutput, srvc_errors.OperationError) {
+        \\    pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !smithy.Response(OperationOutput, srvc_errors.OperationError) {
         \\        return undefined;
         \\    }
         \\};
         \\
-        \\pub const OperationInput = struct {};
+        \\pub const OperationInput = struct {
+        \\    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        \\        try jw.beginObject();
         \\
-        \\pub const OperationOutput = struct {};
+        \\        try jw.endObject();
+        \\    }
+        \\};
+        \\
+        \\pub const OperationOutput = struct {
+        \\    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        \\        try jw.beginObject();
+        \\
+        \\        try jw.endObject();
+        \\    }
+        \\};
         \\
         \\test {
         \\    _ = srvc_errors;
@@ -201,14 +213,26 @@ test "ServiceResource" {
         \\pub const Resource = struct {
         \\    forecast_id: []const u8,
         \\
-        \\    pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !smithy.Result(OperationOutput, srvc_errors.OperationError) {
+        \\    pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !smithy.Response(OperationOutput, srvc_errors.OperationError) {
         \\        return undefined;
         \\    }
         \\};
         \\
-        \\pub const OperationInput = struct {};
+        \\pub const OperationInput = struct {
+        \\    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        \\        try jw.beginObject();
         \\
-        \\pub const OperationOutput = struct {};
+        \\        try jw.endObject();
+        \\    }
+        \\};
+        \\
+        \\pub const OperationOutput = struct {
+        \\    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        \\        try jw.beginObject();
+        \\
+        \\        try jw.endObject();
+        \\    }
+        \\};
     , ServiceResource, tester.pipeline, .{SmithyId.of("test.serve#Resource")});
 }
 

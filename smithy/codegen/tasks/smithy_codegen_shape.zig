@@ -19,6 +19,7 @@ const SymbolsProvider = syb.SymbolsProvider;
 const name_util = @import("../utils/names.zig");
 const IssuesBag = @import("../utils/IssuesBag.zig");
 const JsonValue = @import("../utils/JsonReader.zig").Value;
+const cnfg = @import("../config.zig");
 const ScopeTag = @import("smithy.zig").ScopeTag;
 const CodegenPolicy = @import("smithy_codegen.zig").CodegenPolicy;
 const trt_docs = @import("../traits/docs.zig");
@@ -34,15 +35,10 @@ pub const OperationShapeHook = Task.Hook("Smithy Operation Shape", anyerror!void
 
 pub const OperationShape = struct {
     id: SmithyId,
-    input: ?Input,
-    return_type: []const u8,
-    payload_type: ?[]const u8,
+    input_type: ?[]const u8,
+    output_type: ?[]const u8,
     errors_type: ?[]const u8,
-
-    pub const Input = struct {
-        identifier: []const u8,
-        type: []const u8,
-    };
+    return_type: []const u8,
 };
 
 pub const WriteShape = Task.Define("Smithy Write Shape", writeShapeTask, .{
@@ -145,7 +141,7 @@ fn writeListShape(
     try writeDocComment(self.alloc(), symbols, bld, id, false);
 
     const target_exp = if (symbols.hasTrait(id, trt_constr.unique_items_id)) blk: {
-        break :blk bld.x.call("*const smithy.SetUnmanaged", &.{bld.x.raw(type_name)});
+        break :blk bld.x.call("*const smithy.Set", &.{bld.x.raw(type_name)});
     } else if (symbols.hasTrait(id, trt_refine.sparse_id)) blk: {
         break :blk bld.x.typeSlice(false, bld.x.typeOptional(bld.x.raw(type_name)));
     } else blk: {
@@ -164,7 +160,7 @@ test "writeListShape" {
     }.eval,
         \\pub const List = []const ?i32;
         \\
-        \\pub const Set = *const smithy.SetUnmanaged(i32);
+        \\pub const Set = *const smithy.Set(i32);
     );
 }
 
@@ -288,11 +284,16 @@ fn writeEnumShape(
                 }),
             );
 
-            try b.public().function("parse").arg("value", b.x.typeOf([]const u8))
-                .returns(b.x.This()).body(parse);
+            try b.public().function("parse")
+                .arg("value", b.x.typeOf([]const u8))
+                .returns(b.x.This())
+                .body(parse);
 
-            try b.public().function("serialize").arg("self", b.x.This())
-                .returns(b.x.typeOf([]const u8)).bodyWith(ctx, serialize);
+            try b.public().function("jsonStringify")
+                .arg("self", b.x.This())
+                .arg("jw", null)
+                .returns(b.x.raw("!void"))
+                .bodyWith(ctx, serialize);
         }
 
         fn parse(b: *BlockBuild) !void {
@@ -300,7 +301,7 @@ fn writeEnumShape(
         }
 
         fn serialize(ctx: @TypeOf(context), b: *BlockBuild) !void {
-            try b.returns().switchWith(b.x.raw("self"), ctx, serializeSwitch).end();
+            try b.trys().call("jw.write", &.{b.x.switchWith(b.x.raw("self"), ctx, serializeSwitch)}).end();
         }
 
         fn serializeSwitch(ctx: @TypeOf(context), b: *zig.SwitchBuild) !void {
@@ -333,12 +334,12 @@ test "writeEnumShape" {
         \\        return parse_map.get(value) orelse .{ .UNKNOWN = value };
         \\    }
         \\
-        \\    pub fn serialize(self: @This()) []const u8 {
-        \\        return switch (self) {
+        \\    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        \\        try jw.write(switch (self) {
         \\            .UNKNOWN => |s| s,
         \\            .foo_bar => "FOO_BAR",
         \\            .baz_qux => "baz$qux",
-        \\        };
+        \\        });
         \\    }
         \\};
     ;
@@ -370,11 +371,16 @@ fn writeIntEnumShape(
             try b.comment(.doc, "Used for backwards compatibility when adding new values.");
             try b.field("_").end();
 
-            try b.public().function("parse").arg("value", b.x.typeOf(i32))
-                .returns(b.x.This()).body(parse);
+            try b.public().function("parse")
+                .arg("value", b.x.typeOf(i32))
+                .returns(b.x.This())
+                .body(parse);
 
-            try b.public().function("serialize").arg("self", b.x.This())
-                .returns(b.x.typeOf(i32)).body(serialize);
+            try b.public().function("jsonStringify")
+                .arg("self", b.x.This())
+                .arg("jw", null)
+                .returns(b.x.raw("!void"))
+                .body(serialize);
         }
 
         fn parse(b: *BlockBuild) !void {
@@ -382,7 +388,8 @@ fn writeIntEnumShape(
         }
 
         fn serialize(b: *BlockBuild) !void {
-            try b.returns().raw("@intFromEnum(self)").end();
+            try b.constant("value").typing(b.x.typeOf(i32)).assign(b.x.raw("@intFromEnum(self)"));
+            try b.trys().call("jw.write", &.{b.x.id("value")}).end();
         }
     };
 
@@ -410,8 +417,10 @@ test "writeIntEnumShape" {
         \\        return @enumFromInt(value);
         \\    }
         \\
-        \\    pub fn serialize(self: @This()) i32 {
-        \\        return @intFromEnum(self);
+        \\    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        \\        const value: i32 = @intFromEnum(self);
+        \\
+        \\        try jw.write(value);
         \\    }
         \\};
     );
@@ -469,28 +478,95 @@ fn writeStructShape(
     const shape_name = try symbols.getShapeName(id, .type);
     try writeDocComment(self.alloc(), symbols, bld, id, false);
 
-    const context = .{ .self = self, .symbols = symbols, .id = id, .members = members };
-    try bld.public().constant(shape_name).assign(
-        bld.x.@"struct"().bodyWith(context, struct {
-            fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
-                const is_input = ctx.symbols.hasTrait(ctx.id, trt_refine.input_id);
+    const ShapeBodyCtx = struct {
+        self: *const Delegate,
+        symbols: *SymbolsProvider,
+        id: SmithyId,
+        members: []const SmithyId,
+    };
 
-                try writeStructShapeMixin(ctx.self.alloc(), ctx.symbols, b, is_input, ctx.id);
-                for (ctx.members) |m| {
-                    try writeStructShapeMember(ctx.self.alloc(), ctx.symbols, b, is_input, m);
-                }
+    const JsonStringifyFuncCtx = struct {
+        symbols: *SymbolsProvider,
+        members: []const SmithyId,
+        is_input_struct: bool,
+    };
+
+    const JsonStringifyMemberCtx = struct {
+        name: ExprBuild,
+        type: SmithyType,
+        value: ExprBuild,
+    };
+
+    const Closures = struct {
+        fn shapeBody(ctx: ShapeBodyCtx, b: *ContainerBuild) !void {
+            const is_input = ctx.symbols.hasTrait(ctx.id, trt_refine.input_id);
+
+            try writeStructShapeMixin(ctx.self.alloc(), ctx.symbols, b, is_input, ctx.id);
+            for (ctx.members) |m| {
+                try writeStructShapeMember(ctx.self.alloc(), ctx.symbols, b, is_input, m);
             }
-        }.f),
+
+            const json_ctx: JsonStringifyFuncCtx = .{
+                .symbols = ctx.symbols,
+                .members = ctx.members,
+                .is_input_struct = is_input,
+            };
+
+            try b.public().function("jsonStringify")
+                .arg("self", b.x.This())
+                .arg("jw", null)
+                .returns(b.x.raw("!void"))
+                .bodyWith(json_ctx, jsonStringifyFunc);
+        }
+
+        fn jsonStringifyFunc(ctx: JsonStringifyFuncCtx, b: *BlockBuild) !void {
+            try b.raw("try jw.beginObject()");
+
+            for (ctx.members) |mid| {
+                const member_name = try ctx.symbols.getShapeNameRaw(mid);
+                const field_name = try ctx.symbols.getShapeName(mid, .field);
+                const field_expr = b.x.id("self").dot().id(field_name);
+                const member_type = try ctx.symbols.getShapeUnwrap(mid);
+
+                const is_optional = isStructShapeMemberOptional(ctx.symbols, mid, ctx.is_input_struct);
+                const context: JsonStringifyMemberCtx = .{
+                    .name = b.x.valueOf(member_name),
+                    .type = member_type,
+                    .value = if (is_optional) b.x.id("v") else field_expr,
+                };
+                if (is_optional)
+                    try b.@"if"(field_expr).capture("v")
+                        .body(b.x.blockWith(context, jsonStringifyMember)).end()
+                else
+                    try jsonStringifyMember(context, b);
+            }
+
+            try b.raw("try jw.endObject()");
+        }
+
+        fn jsonStringifyMember(ctx: JsonStringifyMemberCtx, b: *BlockBuild) anyerror!void {
+            try b.trys().call("jw.objectField", &.{ctx.name}).end();
+
+            switch (ctx.type) {
+                .boolean, .structure, .string, .byte, .short, .integer, .long, .float, .double, .str_enum, .int_enum, .list, .timestamp => {
+                    try b.trys().call("jw.write", &.{ctx.value}).end();
+                },
+                else => |t| std.debug.panic("Unsupported JSON stringify for type `{}`.", .{t}),
+            }
+        }
+    };
+
+    try bld.public().constant(shape_name).assign(
+        bld.x.@"struct"().bodyWith(ShapeBodyCtx{
+            .self = self,
+            .symbols = symbols,
+            .id = id,
+            .members = members,
+        }, Closures.shapeBody),
     );
 }
 
-fn writeStructShapeMixin(
-    arena: Allocator,
-    symbols: *SymbolsProvider,
-    bld: *ContainerBuild,
-    is_input: bool,
-    id: SmithyId,
-) !void {
+fn writeStructShapeMixin(arena: Allocator, symbols: *SymbolsProvider, bld: *ContainerBuild, is_input: bool, id: SmithyId) !void {
     const mixins = symbols.getMixins(id) orelse return;
     for (mixins) |mix_id| {
         try writeStructShapeMixin(arena, symbols, bld, is_input, mix_id);
@@ -508,20 +584,16 @@ fn writeStructShapeMember(
     is_input: bool,
     id: SmithyId,
 ) !void {
-    // https://smithy.io/2.0/spec/aggregate-types.html#structure-member-optionality
-    const optional: bool = if (is_input) true else if (symbols.getTraits(id)) |bag| blk: {
-        break :blk bag.has(trt_refine.client_optional_id) or
-            !(bag.has(trt_refine.required_id) or bag.has(trt_refine.Default.id));
-    } else true;
-
     const shape_name = try symbols.getShapeName(id, .field);
+    const is_optional = isStructShapeMemberOptional(symbols, id, is_input);
+
     var type_expr = bld.x.raw(try symbols.getTypeName(id));
-    if (optional) type_expr = bld.x.typeOptional(type_expr);
+    if (is_optional) type_expr = bld.x.typeOptional(type_expr);
 
     try writeDocComment(arena, symbols, bld, id, true);
     const field = bld.field(shape_name).typing(type_expr);
     const assign: ?ExprBuild = blk: {
-        if (optional) break :blk bld.x.valueOf(null);
+        if (is_optional) break :blk bld.x.valueOf(null);
         if (trt_refine.Default.get(symbols, id)) |json| {
             break :blk switch (try symbols.getShapeUnwrap(id)) {
                 .str_enum => bld.x.dot().raw(json.string),
@@ -532,6 +604,18 @@ fn writeStructShapeMember(
         break :blk null;
     };
     if (assign) |a| try field.assign(a) else try field.end();
+}
+
+/// https://smithy.io/2.0/spec/aggregate-types.html#structure-member-optionality
+fn isStructShapeMemberOptional(symbols: *SymbolsProvider, id: SmithyId, is_input: bool) bool {
+    if (is_input) return true;
+
+    if (symbols.getTraits(id)) |bag| {
+        return bag.has(trt_refine.client_optional_id) or
+            !(bag.has(trt_refine.required_id) or bag.has(trt_refine.Default.id));
+    }
+
+    return true;
 }
 
 test "writeStructShape" {
@@ -546,6 +630,20 @@ test "writeStructShape" {
         \\    foo_bar: i32,
         \\    /// An **integer-based** enumeration.
         \\    baz_qux: IntEnum = @enumFromInt(8),
+        \\
+        \\    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        \\        try jw.beginObject();
+        \\
+        \\        try jw.objectField("fooBar");
+        \\
+        \\        try jw.write(self.foo_bar);
+        \\
+        \\        try jw.objectField("bazQux");
+        \\
+        \\        try jw.write(self.baz_qux);
+        \\
+        \\        try jw.endObject();
+        \\    }
         \\};
     );
 }
@@ -583,9 +681,21 @@ test "writeOperationShapes" {
             try tester.runTask(OpTest, .{bld});
         }
     }.eval,
-        \\pub const OperationInput = struct {};
+        \\pub const OperationInput = struct {
+        \\    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        \\        try jw.beginObject();
         \\
-        \\pub const OperationOutput = struct {};
+        \\        try jw.endObject();
+        \\    }
+        \\};
+        \\
+        \\pub const OperationOutput = struct {
+        \\    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        \\        try jw.beginObject();
+        \\
+        \\        try jw.endObject();
+        \\    }
+        \\};
     );
 }
 
@@ -599,47 +709,43 @@ fn writeOperationFunc(
     const op_name = try symbols.getShapeName(id, .function);
 
     const service_errors = try symbols.getServiceErrors();
-    const errors_type = if (operation.errors.len + service_errors.len > 0)
+    const error_type = if (operation.errors.len + service_errors.len > 0)
         try errorSetName(self.alloc(), op_name, "srvc_errors.")
     else
         null;
 
-    const shape_input: ?OperationShape.Input = if (operation.input) |d| blk: {
+    const input_type: ?[]const u8 = if (operation.input) |d| blk: {
         try symbols.markVisited(d);
-        break :blk .{
-            .identifier = "input",
-            .type = try symbols.getTypeName(d),
-        };
+        break :blk try symbols.getTypeName(d);
     } else null;
-
-    const payload_type: ?[]const u8 = if (operation.output) |d| blk: {
+    const output_type: ?[]const u8 = if (operation.output) |d| blk: {
         try symbols.markVisited(d);
         break :blk try symbols.getTypeName(d);
     } else null;
 
-    const return_type = if (errors_type) |errors|
-        try std.fmt.allocPrint(self.alloc(), "!smithy.Result({s}, {s})", .{
-            payload_type orelse "void",
+    const return_type = if (error_type) |errors|
+        try std.fmt.allocPrint(self.alloc(), "!smithy.Response({s}, {s})", .{
+            output_type orelse "void",
             errors,
         })
-    else if (payload_type) |s|
+    else if (output_type) |s|
         try std.fmt.allocPrint(self.alloc(), "!{s}", .{s})
     else
         "!void";
 
     const shape = OperationShape{
         .id = id,
-        .input = shape_input,
+        .input_type = input_type,
+        .output_type = output_type,
+        .errors_type = error_type,
         .return_type = return_type,
-        .payload_type = payload_type,
-        .errors_type = errors_type,
     };
 
     const context = .{ .self = self, .symbols = symbols, .shape = shape };
     const func1 = bld.public().function(op_name)
         .arg("self", bld.x.id(cnfg.service_client_name))
         .arg(cnfg.allocator_name, bld.x.raw("Allocator"));
-    const func2 = if (shape_input) |input| func1.arg(input.identifier, bld.x.raw(input.type)) else func1;
+    const func2 = if (input_type) |input| func1.arg("input", bld.x.raw(input)) else func1;
     try func2.returns(bld.x.raw(return_type)).bodyWith(context, struct {
         fn f(ctx: @TypeOf(context), b: *BlockBuild) !void {
             try ctx.self.evaluate(OperationShapeHook, .{ b, ctx.shape });
@@ -661,7 +767,7 @@ test "writeOperationFunc" {
             try tester.runTask(OpFuncTest, .{bld});
         }
     }.eval,
-        \\pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !smithy.Result(OperationOutput, srvc_errors.OperationError) {
+        \\pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !smithy.Response(OperationOutput, srvc_errors.OperationError) {
         \\    return undefined;
         \\}
     );
@@ -719,14 +825,26 @@ test "writeResourceShape" {
         \\pub const Resource = struct {
         \\    forecast_id: []const u8,
         \\
-        \\    pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !smithy.Result(OperationOutput, srvc_errors.OperationError) {
+        \\    pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !smithy.Response(OperationOutput, srvc_errors.OperationError) {
         \\        return undefined;
         \\    }
         \\};
         \\
-        \\pub const OperationInput = struct {};
+        \\pub const OperationInput = struct {
+        \\    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        \\        try jw.beginObject();
         \\
-        \\pub const OperationOutput = struct {};
+        \\        try jw.endObject();
+        \\    }
+        \\};
+        \\
+        \\pub const OperationOutput = struct {
+        \\    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        \\        try jw.beginObject();
+        \\
+        \\        try jw.endObject();
+        \\    }
+        \\};
     );
 }
 
@@ -759,21 +877,46 @@ fn writeServiceShape(
 }
 
 test "writeServiceShape" {
-    try smithyTester(&.{.service}, struct {
+    try smithyTester(&.{.service_with_input_members}, struct {
         fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test.serve#Service") });
         }
     }.eval,
         \\/// Some _service_...
         \\pub const Client = struct {
-        \\    pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !smithy.Result(OperationOutput, srvc_errors.OperationError) {
+        \\    pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !smithy.Response(OperationOutput, srvc_errors.OperationError) {
         \\        return undefined;
         \\    }
         \\};
         \\
-        \\pub const OperationInput = struct {};
+        \\pub const OperationInput = struct {
+        \\    foo: bool,
+        \\    bar: ?bool = null,
         \\
-        \\pub const OperationOutput = struct {};
+        \\    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        \\        try jw.beginObject();
+        \\
+        \\        try jw.objectField("Foo");
+        \\
+        \\        try jw.write(self.foo);
+        \\
+        \\        if (self.bar) |v| {
+        \\            try jw.objectField("Bar");
+        \\
+        \\            try jw.write(v);
+        \\        }
+        \\
+        \\        try jw.endObject();
+        \\    }
+        \\};
+        \\
+        \\pub const OperationOutput = struct {
+        \\    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        \\        try jw.beginObject();
+        \\
+        \\        try jw.endObject();
+        \\    }
+        \\};
     );
 }
 

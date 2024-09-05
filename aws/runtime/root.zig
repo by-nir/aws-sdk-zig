@@ -1,6 +1,7 @@
 const smithy = @import("smithy");
 pub const Set = smithy.Set;
-pub const Result = smithy.Result;
+pub const Response = smithy.Response;
+pub const ResponseError = smithy.ResponseError;
 pub const ErrorSource = smithy.ErrorSource;
 
 const conf_region = @import("config/region.gen.zig");
@@ -11,15 +12,17 @@ pub const SdkConfig = conf_settings.Config;
 pub const SdkCredentials = conf_settings.Credentials;
 
 const sign = @import("sign.zig");
-const client = @import("client.zig");
+const http = @import("http.zig");
 const conf_endpoint = @import("config/endpoint.zig");
 const conf_partition = @import("config/partitions.gen.zig");
 pub const internal = struct {
     pub const Signer = sign.Signer;
-    pub const Client = client.Client;
-    pub const ClientAction = client.Action;
-    pub const ClientRequest = client.Request;
-    pub const ClientResponse = client.Response;
+    pub const HttpClient = http.Client;
+    pub const HttpEvent = http.Event;
+    pub const HttpService = http.Service;
+    pub const HttpPayload = http.Payload;
+    pub const HttpRequest = http.Request;
+    pub const HttpResponse = http.Response;
     pub const Arn = conf_endpoint.Arn;
     pub const Partition = conf_endpoint.Partition;
     pub const isVirtualHostableS3Bucket = conf_endpoint.isVirtualHostableS3Bucket;
@@ -29,7 +32,7 @@ pub const internal = struct {
 test {
     _ = @import("utils.zig");
     _ = sign;
-    _ = client;
+    _ = http;
     _ = conf_region;
     _ = conf_settings;
     _ = conf_endpoint;

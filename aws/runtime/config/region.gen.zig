@@ -6,6 +6,8 @@
 const std = @import("std");
 
 pub const Region = enum {
+    pub const fallback = Region.us_east_1;
+
     /// Africa (Cape Town)
     af_south_1,
     /// Asia Pacific (Hong Kong)

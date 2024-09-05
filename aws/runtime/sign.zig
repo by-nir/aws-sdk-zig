@@ -32,12 +32,12 @@ pub const Signer = struct {
     access_id: stngs.AccessId,
     access_secret: AccessSecretV4,
 
-    pub fn init(credentials: stngs.Credentials) Signer {
+    pub fn from(creds: stngs.Credentials) Signer {
         var self: Signer = .{
-            .access_id = credentials.access_id,
+            .access_id = creds.access_id,
             .access_secret = (V4_PREFIX ++ std.mem.zeroes(stngs.AccessSecret)).*,
         };
-        @memcpy(self.access_secret[V4_PREFIX.len..], credentials.access_secret[0..stngs.SECRET_LEN]);
+        @memcpy(self.access_secret[V4_PREFIX.len..], creds.access_secret[0..stngs.SECRET_LEN]);
         return self;
     }
 
@@ -132,13 +132,13 @@ pub const Signer = struct {
 };
 
 test "Signer.init" {
-    const signer = Signer.init(TEST_CREDS);
+    const signer = Signer.from(TEST_CREDS);
     try testing.expectEqualStrings(&TEST_ID, &signer.access_id);
     try testing.expectEqualStrings(V4_PREFIX ++ TEST_SECRET, &signer.access_secret);
 }
 
 test "Signer.handle" {
-    const signer = Signer.init(TEST_CREDS);
+    const signer = Signer.from(TEST_CREDS);
     var buffer: [256]u8 = undefined;
     try testing.expectEqualStrings(
         "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130708/us-east-1/s3/aws4_request," ++

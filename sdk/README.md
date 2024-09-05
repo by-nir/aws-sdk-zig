@@ -20,5 +20,4 @@ fully functioning SDKs, while **minimizing dependencies** and increased **platfo
 Support for the remaining services and features will be added as the project matures and stabilize.
 
 > [!WARNING]
-> The SDKs source code is [auto-generated](/README.md#contributing),
-> **do not modify it directly!**
+> The following SDKs source code is [auto-generated](/README.md#contributing), **do not modify it directly!**

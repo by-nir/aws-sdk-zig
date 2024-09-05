@@ -41,7 +41,8 @@ pub const Config = struct {
     use_dual_stack: ?bool = null,
 
     pub const Options = struct {
-        cached_env: bool = true,
+        /// Read environment variables once and cache them for future loads with cache enabled.
+        cache_env: bool = true,
         profile_name: ?[]const u8 = null,
         profiles_path: ?[]const u8 = null,
         credentials_path: ?[]const u8 = null,
@@ -49,13 +50,15 @@ pub const Config = struct {
 
     pub fn load(options: Options) !Config {
         var config: Config = .{};
-        try fillEnvironment(&config, options.cached_env);
+        try fillEnvironment(&config, options.cache_env);
+        try fillProfile(&config, options.profile_name, options.profiles_path, options.credentials_path);
         return config;
     }
 
-    pub fn loadEnv(cached: bool) !Config {
+    /// `cache` will read the environment variables once and cache them for future loads with cache enabled.
+    pub fn loadEnv(cache: bool) !Config {
         var config: Config = .{};
-        try fillEnvironment(&config, cached);
+        try fillEnvironment(&config, cache);
         return config;
     }
 
@@ -68,25 +71,25 @@ pub const Config = struct {
     }
 
     pub fn validate(self: Config) !void {
-        if (self.app_name) |name| try validateAppName(name);
+        if (self.app_id) |id| try validateAppId(id);
     }
 
-    fn validateAppName(name: []const u8) !void {
-        if (name.len > 50) return error.ConfigAppNameTooLong;
-        for (name) |c| {
+    fn validateAppId(id: []const u8) !void {
+        if (id.len > 50) return error.ConfigAppIdTooLong;
+        for (id) |c| {
             switch (c) {
                 '0'...'9', 'A'...'Z', 'a'...'z' => {},
                 '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~' => {},
-                else => return error.ConfigAppNameInvalid,
+                else => return error.ConfigAppIdInvalid,
             }
         }
     }
 };
 
-test "Config.validAppName" {
-    try Config.validateAppName("foo");
-    try testing.expectError(error.ConfigAppNameInvalid, Config.validateAppName("fo@"));
-    try testing.expectError(error.ConfigAppNameTooLong, Config.validateAppName("f" ** 51));
+test "Config.validAppId" {
+    try Config.validateAppId("foo");
+    try testing.expectError(error.ConfigAppIdInvalid, Config.validateAppId("fo@"));
+    try testing.expectError(error.ConfigAppIdTooLong, Config.validateAppId("f" ** 51));
 }
 
 /// [AWS Spec](https://docs.aws.amazon.com/sdkref/latest/guide/settings-reference.html#EVarSettings)

@@ -31,7 +31,8 @@ pub fn setup(arena: std.mem.Allocator, cases: []const Case) !SymbolsProvider {
         .union_str => try setupUnion(&model),
         .structure => try setupStruct(&model),
         .err => try setupError(&model),
-        .service => try setupServiceAndDeps(&model),
+        .service => try setupServiceAndDeps(&model, false),
+        .service_with_input_members => try setupServiceAndDeps(&model, true),
     };
 
     return model.consume(arena);
@@ -48,6 +49,7 @@ pub const Case = enum {
     structure,
     err,
     service,
+    service_with_input_members,
 };
 
 fn setupUnit(model: *Model) !void {
@@ -192,9 +194,11 @@ fn setupStruct(model: *Model) !void {
         .structure = Static.structure,
     });
     try model.mixins.put(test_alloc, SmithyId.of("test#Struct"), Static.mixins);
+
     try model.names.put(test_alloc, SmithyId.of("test#Struct$fooBar"), "fooBar");
     try model.shapes.put(test_alloc, SmithyId.of("test#Struct$fooBar"), .integer);
     try model.traits.put(test_alloc, SmithyId.of("test#Struct$fooBar"), &Static.member_traits);
+
     try model.names.put(test_alloc, SmithyId.of("test#Struct$bazQux"), "bazQux");
     try model.shapes.put(test_alloc, SmithyId.of("test#Struct$bazQux"), .{
         .target = SmithyId.of("test#IntEnum"),
@@ -229,7 +233,7 @@ fn setupError(model: *Model) !void {
     });
 }
 
-fn setupServiceAndDeps(model: *Model) !void {
+fn setupServiceAndDeps(model: *Model, with_input_members: bool) !void {
     const Static = struct {
         const service = SmithyService{
             .version = "2017-02-11",
@@ -257,6 +261,10 @@ fn setupServiceAndDeps(model: *Model) !void {
             .input = SmithyId.of("test.serve#OperationInput"),
             .output = SmithyId.of("test.serve#OperationOutput"),
             .errors = &.{SmithyId.of("test.error#NotFound")},
+        };
+        const operation_input: []const SmithyId = &.{
+            SmithyId.of("test.serve#OperationInput$Foo"),
+            SmithyId.of("test.serve#OperationInput$Bar"),
         };
         const rule_set: rls.RuleSet = .{
             .parameters = &[_]rls.StringKV(rls.Parameter){.{
@@ -296,8 +304,19 @@ fn setupServiceAndDeps(model: *Model) !void {
 
     try model.names.put(test_alloc, SmithyId.of("test.serve#OperationInput"), "OperationInput");
     try model.shapes.put(test_alloc, SmithyId.of("test.serve#OperationInput"), .{
-        .structure = &.{},
+        .structure = if (with_input_members) Static.operation_input else &.{},
     });
+
+    if (with_input_members) {
+        try model.names.put(test_alloc, SmithyId.of("test.serve#OperationInput$Foo"), "Foo");
+        try model.shapes.put(test_alloc, SmithyId.of("test.serve#OperationInput$Foo"), .boolean);
+        try model.traits.put(test_alloc, SmithyId.of("test.serve#OperationInput$Foo"), &.{
+            .{ .id = trt_refine.required_id, .value = null },
+        });
+
+        try model.names.put(test_alloc, SmithyId.of("test.serve#OperationInput$Bar"), "Bar");
+        try model.shapes.put(test_alloc, SmithyId.of("test.serve#OperationInput$Bar"), .boolean);
+    }
 
     try model.names.put(test_alloc, SmithyId.of("test.serve#OperationOutput"), "OperationOutput");
     try model.shapes.put(test_alloc, SmithyId.of("test.serve#OperationOutput"), .{

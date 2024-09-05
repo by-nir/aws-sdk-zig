@@ -53,9 +53,9 @@ increased **platform portability**.
 
 ## Contributing
 
-At this point, the project serves as environment for developing other experimental sub-projects.
-These initiatives are in an exploratory phase and are not yet ready for contributions.
-**Please refrain from contributing to [📁&nbsp;smithy/src](smithy/src/) and [📁&nbsp;aws/codegen](aws/codegen/) unless there is a critical _runtime behavior_ issue.**
+> [!IMPORTANT]
+> At this point, the project serves as environment for developing other experimental sub-projects.
+> This initiative is in an exploratory phase and is **not yet ready for contributions**.
 
 As the experimental projects mature, they will be extracted from this repository,
 and this project will then focus entirely on the development of the _AWS SDKs for Zig_.

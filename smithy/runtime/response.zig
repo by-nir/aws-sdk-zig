@@ -1,15 +1,15 @@
 const std = @import("std");
 
-pub fn Result(comptime T: type, comptime E: type) type {
+pub fn Response(comptime T: type, comptime E: type) type {
     return union(enum) {
         ok: T,
-        fail: Error(E),
+        fail: ResponseError(E),
     };
 }
 
 pub const ErrorSource = enum { client, server };
 
-pub fn Error(comptime Kind: type) type {
+pub fn ResponseError(comptime Kind: type) type {
     return struct {
         const Self = @This();
 
