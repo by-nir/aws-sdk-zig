@@ -4,64 +4,73 @@ const HttpClient = std.http.Client;
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const sign = @import("sign.zig");
-const utils = @import("utils.zig");
-const Region = @import("config/region.gen.zig").Region;
+const sign = @import("auth/sign.zig");
+const Region = @import("infra/region.gen.zig").Region;
+const hashing = @import("utils/hashing.zig");
+const TimeStr = @import("utils/time.zig").TimeStr;
+const escapeUri = @import("utils/url.zig").escapeUri;
+const SharedResource = @import("utils/SharedResource.zig");
+
+const log = std.log.scoped(.aws_sdk);
+
+// Provides a shared HTTP client for multiple SDK clients.
+pub const ClientProvider = struct {
+    allocator: Allocator,
+    client: Client = undefined,
+    resource: SharedResource = .{},
+
+    pub fn init(allocator: Allocator) ClientProvider {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *ClientProvider) void {
+        const count = self.resource.countSafe();
+        if (count == 0) return;
+
+        log.warn("Shared Http Client deinitialized while still used by {d} SDK clients.", .{count});
+        self.client.forceDeinit();
+        self.* = undefined;
+    }
+
+    pub fn retain(self: *ClientProvider) *Client {
+        self.resource.retainCallback(createClient, self);
+        return &self.client;
+    }
+
+    pub fn release(self: *ClientProvider, client: *Client) void {
+        std.debug.assert(@intFromPtr(&self.client) == @intFromPtr(client));
+        self.resource.releaseCallback(destroyClient, self);
+    }
+
+    fn createClient(self: *ClientProvider) void {
+        self.client = Client.init(self.allocator);
+        self.client.provider = self;
+    }
+
+    fn destroyClient(self: *ClientProvider) void {
+        self.client.forceDeinit();
+    }
+};
 
 const MAX_HEADERS = 1024;
 const QueryBuffer = [1024]u8;
+const HeadersBuffer = [2 * 1024]u8;
 const HeadersRawBuffer = [4 * 1024]u8;
 const HeadersKVBuffer = [MAX_HEADERS]KVMap.Pair;
 
 pub const Client = struct {
-    var gpa: std.heap.GeneralPurposeAllocator(.{}) = undefined;
-    var shared: Client = undefined;
-    var shared_count: usize = 0;
-    var shared_mutex: std.Thread.Mutex = .{};
-
-    pub fn retain() *Client {
-        shared_mutex.lock();
-        defer shared_mutex.unlock();
-
-        if (shared_count == 0) {
-            const alloc = if (@import("builtin").is_test) test_alloc else blk: {
-                gpa = .{};
-                break :blk gpa.allocator();
-            };
-            shared = Client.init(alloc);
-        }
-
-        shared_count += 1;
-        return &shared;
-    }
-
-    pub fn release() void {
-        shared_mutex.lock();
-        defer shared_mutex.unlock();
-        assert(shared_count > 0);
-
-        if (shared_count > 1) {
-            shared_count -= 1;
-        } else {
-            shared_count = 0;
-            shared.deinit();
-            shared = undefined;
-            _ = gpa.deinit();
-            gpa = undefined;
-        }
-    }
-
-    const HeadersBuffer = [2 * 1024]u8;
-
     http: HttpClient,
+    provider: ?*ClientProvider = null,
 
-    fn init(allocator: Allocator) Client {
-        return .{
-            .http = .{ .allocator = allocator },
-        };
+    pub fn init(allocator: Allocator) Client {
+        return .{ .http = .{ .allocator = allocator } };
     }
 
-    fn deinit(self: *Client) void {
+    pub fn deinit(self: *Client) void {
+        if (self.provider) |p| p.release(self) else self.forceDeinit();
+    }
+
+    fn forceDeinit(self: *Client) void {
         self.http.deinit();
         self.* = undefined;
     }
@@ -197,7 +206,7 @@ pub const Event = struct {
     trace_id: ?[]const u8,
 
     pub fn new(trace_id: ?[]const u8) Event {
-        const time = utils.TimeStr.initNow();
+        const time = TimeStr.initNow();
         return .{
             .date = time.date,
             .timestamp = time.timestamp,
@@ -250,9 +259,9 @@ pub const Request = struct {
         try self.query.add(self.allocator, key, value);
     }
 
-    pub fn payloadHash(self: Request) utils.HashStr {
-        var hash: utils.HashStr = undefined;
-        utils.hashString(&hash, if (self.payload) |p| p.content else null);
+    pub fn payloadHash(self: Request) hashing.HashStr {
+        var hash: hashing.HashStr = undefined;
+        hashing.hashString(&hash, if (self.payload) |p| p.content else null);
         return hash;
     }
 
@@ -267,8 +276,8 @@ pub const Request = struct {
         var kvs: HeadersKVBuffer = undefined;
         var it = self.query.iterator();
         while (it.next()) |kv| : (count += 1) {
-            const key_fmt = try utils.escapeUri(temp_alloc, kv.key_ptr.*);
-            const value_fmt = try utils.escapeUri(temp_alloc, kv.value_ptr.*);
+            const key_fmt = try escapeUri(temp_alloc, kv.key_ptr.*);
+            const value_fmt = try escapeUri(temp_alloc, kv.value_ptr.*);
             str_len += key_fmt.len + value_fmt.len;
             kvs[count] = .{ .key = key_fmt, .value = value_fmt };
         }

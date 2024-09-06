@@ -26,8 +26,6 @@ fn regionsCodegenTask(self: *const Delegate, bld: *zig.ContainerBuild, defs: []c
 }
 
 fn writeEnum(ctx: Context, bld: *zig.ContainerBuild) !void {
-    try bld.public().constant("fallback").assign(bld.x.raw("Region.us_east_1"));
-
     var map = try std.ArrayList(zig.ExprBuild).initCapacity(ctx.arena, ctx.defs.len);
     for (ctx.defs) |def| {
         const field = try name_util.snakeCase(ctx.arena, def.code);
@@ -92,8 +90,6 @@ const TEST_OUT: []const u8 =
     \\const std = @import("std");
     \\
     \\pub const Region = enum {
-    \\    pub const fallback = Region.us_east_1;
-    \\
     \\    /// Israel (Tel Aviv)
     \\    il_central_1,
     \\    /// US East (N. Virginia)

@@ -23,7 +23,7 @@ pub fn build(b: *std.Build) void {
     b.installDirectory(.{
         .source_dir = aws_out_dir,
         .install_dir = .prefix,
-        .install_subdir = "../aws/runtime/config",
+        .install_subdir = "../aws/runtime/infra",
     });
     b.installDirectory(.{
         .source_dir = sdk_out_dir,

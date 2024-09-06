@@ -81,9 +81,7 @@ pub const pipeline_invoker = blk: {
     var builder = pipez.InvokerBuilder{};
 
     _ = builder.Override(smithy.ServiceFilterHook, "AWS Service Filter", filterSourceModelHook, .{});
-    _ = builder.Override(smithy.ServiceReadmeHook, "AWS Service Readme", writeReadmeHook, .{
-        .injects = &.{SymbolsProvider},
-    });
+    _ = builder.Override(smithy.ServiceReadmeHook, "AWS Service Readme", writeReadmeHook, .{});
     _ = builder.Override(smithy.ScriptHeadHook, "AWS Script Head", writeScriptHeadHook, .{});
     _ = builder.Override(smithy.ExtendEndpointScriptHook, "AWS Endpoint Script Head", extendEndpointScriptHook, .{
         .injects = &.{SymbolsProvider},
@@ -109,15 +107,14 @@ fn filterSourceModelHook(self: *const Delegate, filename: []const u8) bool {
     }
 }
 
-fn writeReadmeHook(_: *const Delegate, symbols: *SymbolsProvider, bld: md.ContainerAuthor, src: smithy.ReadmeMetadata) anyerror!void {
-    var meta = src;
-    if (itg_core.Service.get(symbols, symbols.service_id)) |service| {
-        const title = service.sdk_id;
-        meta.title = if (std.mem.startsWith(u8, title, "AWS ")) title[4..title.len] else title;
+fn writeReadmeHook(_: *const Delegate, bld: md.ContainerAuthor, m: smithy.ReadmeMetadata) anyerror!void {
+    var meta = m;
+    if (std.mem.startsWith(u8, meta.title, "AWS ")) {
+        meta.title = meta.title[4..meta.title.len];
     }
 
     try bld.rawFmt(@embedFile("../template/README.head.md.template"), .{ .title = meta.title, .slug = meta.slug });
-    if (src.intro) |intro| try bld.raw(intro);
+    if (meta.intro) |intro| try bld.raw(intro);
     try bld.raw(@embedFile("../template/README.install.md.template"));
     try bld.rawFmt(@embedFile("../template/README.footer.md.template"), .{ .title = meta.title });
 }
@@ -154,34 +151,27 @@ fn extendEndpointScriptHook(self: *const Delegate, symbols: *SymbolsProvider, bl
 
 /// Provides a mapping from an endpoint built-in to a config value.
 fn mapEndpointConfigBuiltin(x: zig.ExprBuild, id: BuiltInId) !zig.Expr {
-    if (id == BuiltInId.of("AWS::Region")) {
-        return x.@"if"(x.id("source").dot().id("region"))
-            .capture("r").body(x.raw("r.toCode()"))
-            .@"else"().body(x.valueOf(null))
-            .end().consume();
-    } else {
-        const field: []const u8 = switch (id) {
-            // Smithy
-            BuiltInId.endpoint => "endpoint_url",
-            // AWS
-            BuiltInId.of("AWS::Region") => unreachable,
-            BuiltInId.of("AWS::UseFIPS") => "use_fips",
-            BuiltInId.of("AWS::UseDualStack") => "use_dual_stack",
-            // TODO: Remaining built-ins
-            //  BuiltInId.of("AWS::Auth::AccountId")
-            //  BuiltInId.of("AWS::Auth::AccountIdEndpointMode")
-            //  BuiltInId.of("AWS::Auth::CredentialScope")
-            //  BuiltInId.of("AWS::S3::Accelerate")
-            //  BuiltInId.of("AWS::S3::DisableMultiRegionAccessPoints")
-            //  BuiltInId.of("AWS::S3::ForcePathStyle")
-            //  BuiltInId.of("AWS::S3::UseArnRegion")
-            //  BuiltInId.of("AWS::S3::UseGlobalEndpoint")
-            //  BuiltInId.of("AWS::S3Control::UseArnRegion")
-            //  BuiltInId.of("AWS::STS::UseGlobalEndpoint")
-            else => return error.UnresolvedEndpointBuiltIn,
-        };
-        return x.id("source").dot().raw(field).consume();
-    }
+    const field: []const u8 = switch (id) {
+        // Smithy
+        BuiltInId.endpoint => "endpoint_url",
+        // AWS
+        BuiltInId.of("AWS::Region") => "region.toCode()",
+        BuiltInId.of("AWS::UseFIPS") => "use_fips",
+        BuiltInId.of("AWS::UseDualStack") => "use_dual_stack",
+        // TODO: Remaining built-ins
+        //  BuiltInId.of("AWS::Auth::AccountId")
+        //  BuiltInId.of("AWS::Auth::AccountIdEndpointMode")
+        //  BuiltInId.of("AWS::Auth::CredentialScope")
+        //  BuiltInId.of("AWS::S3::Accelerate")
+        //  BuiltInId.of("AWS::S3::DisableMultiRegionAccessPoints")
+        //  BuiltInId.of("AWS::S3::ForcePathStyle")
+        //  BuiltInId.of("AWS::S3::UseArnRegion")
+        //  BuiltInId.of("AWS::S3::UseGlobalEndpoint")
+        //  BuiltInId.of("AWS::S3Control::UseArnRegion")
+        //  BuiltInId.of("AWS::STS::UseGlobalEndpoint")
+        else => return error.UnresolvedEndpointBuiltIn,
+    };
+    return x.id("source").dot().raw(field).consume();
 }
 
 fn writeServiceHeadHook(_: *const Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild, shape: *const SmithyService) anyerror!void {
@@ -191,41 +181,36 @@ fn writeServiceHeadHook(_: *const Delegate, symbols: *SymbolsProvider, bld: *zig
     try bld.constant("service_arn").typing(bld.x.typeOf(?[]const u8)).assign(bld.x.valueOf(service.arn_namespace orelse null));
     try bld.constant("service_cloudtrail").typing(bld.x.typeOf(?[]const u8)).assign(bld.x.valueOf(service.cloud_trail_source orelse null));
 
-    try bld.field("config_sdk").typing(bld.x.raw("aws_runtime.SdkConfig")).end();
+    try bld.field("config_sdk").typing(bld.x.raw("aws_internal.ClientConfig")).end();
     try bld.field("config_endpoint").typing(bld.x.raw("srvc_endpoint.EndpointConfig")).end();
     try bld.field("signer").typing(bld.x.raw("aws_internal.Signer")).end();
-    try bld.field("http").typing(bld.x.raw("*aws_internal.HttpClient")).end();
+    try bld.field("http").typing(bld.x.raw("*aws_runtime.HttpClient")).end();
 
     const client_self = smithy_conf.service_client_name;
 
     try bld.public().function("init")
-        .arg("config", bld.x.raw("aws_runtime.SdkConfig"))
+        .arg("config", bld.x.raw("aws_runtime.Config"))
         .returns(bld.x.raw("!" ++ client_self))
         .body(writeServiceInit);
 
     try bld.public().function("deinit")
-        .arg("_", bld.x.id(client_self))
+        .arg("self", bld.x.id(client_self))
         .body(writeServiceDeinit);
 }
 
 fn writeServiceInit(bld: *zig.BlockBuild) anyerror!void {
-    try bld.trys().id("config").dot().call("validate", &.{}).end();
-
-    try bld.constant("signer").assign(bld.x.call("aws_internal.Signer.from", &.{bld.x.structLiteral(null, &.{
-        bld.x.structAssign("access_id", bld.x.valueOf("undefined").deref()),
-        bld.x.structAssign("access_secret", bld.x.valueOf("undefined").deref()),
-    })}));
+    try bld.constant("client_cfg").assign(bld.x.raw("try aws_internal.ClientConfig.resolve(config)"));
 
     try bld.returns().structLiteral(null, &.{
-        bld.x.structAssign("config_sdk", bld.x.id("config")),
-        bld.x.structAssign("config_endpoint", bld.x.call("srvc_endpoint.extractConfig", &.{bld.x.id("config")})),
-        bld.x.structAssign("http", bld.x.raw("aws_internal.HttpClient.retain()")),
-        bld.x.structAssign("signer", bld.x.id("signer")),
+        bld.x.structAssign("config_sdk", bld.x.id("client_cfg")),
+        bld.x.structAssign("config_endpoint", bld.x.call("srvc_endpoint.extractConfig", &.{bld.x.id("client_cfg")})),
+        bld.x.structAssign("http", bld.x.raw("client_cfg.http_client")),
+        bld.x.structAssign("signer", bld.x.call("aws_internal.Signer.from", &.{bld.x.raw("client_cfg.credentials")})),
     }).end();
 }
 
 fn writeServiceDeinit(bld: *zig.BlockBuild) anyerror!void {
-    try bld.raw("aws_internal.HttpClient.release()");
+    try bld.raw("self.http.deinit()");
 }
 
 fn writeOperationShapeHook(self: *const Delegate, symbols: *SymbolsProvider, bld: *zig.BlockBuild, shape: smithy.OperationShape) anyerror!void {
@@ -241,7 +226,7 @@ fn writeOperationShapeHook(self: *const Delegate, symbols: *SymbolsProvider, bld
         bld.x.structAssign("name", bld.x.id("service_code")),
         bld.x.structAssign("version", bld.x.id("service_version")),
         bld.x.structAssign("endpoint", bld.x.raw("std.Uri.parse(endpoint.url) catch unreachable")),
-        bld.x.structAssign("region", bld.x.raw("self.config_sdk.region.?")),
+        bld.x.structAssign("region", bld.x.raw("self.config_sdk.region")),
         bld.x.structAssign("app_id", bld.x.raw("self.config_sdk.app_id")),
     }));
 

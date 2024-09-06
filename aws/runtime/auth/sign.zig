@@ -1,8 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
-const Hmac = std.crypto.auth.hmac.sha2.HmacSha256;
-const utils = @import("utils.zig");
-const stngs = @import("config/settings.zig");
+const crds = @import("creds.zig");
+const hashing = @import("../utils/hashing.zig");
 
 const V4_PREFIX = "AWS4";
 const V4_SUFFIX = "aws4_request";
@@ -10,7 +9,7 @@ const V4_ALGO = "AWS4-HMAC-SHA256";
 
 const SignatureBuffer = [512]u8;
 const CanonicalBuffer = [2 * 1024]u8;
-const AccessSecretV4 = [V4_PREFIX.len + stngs.SECRET_LEN]u8;
+const AccessSecretV4 = [V4_PREFIX.len + crds.SECRET_LEN]u8;
 
 pub const Event = struct {
     service: []const u8,
@@ -29,47 +28,49 @@ pub const Content = struct {
 };
 
 pub const Signer = struct {
-    access_id: stngs.AccessId,
+    access_id: []const u8,
     access_secret: AccessSecretV4,
 
-    pub fn from(creds: stngs.Credentials) Signer {
-        var self: Signer = .{
+    pub fn from(creds: crds.Credentials) Signer {
+        std.debug.assert(creds.validSlicesLength());
+        var secret: AccessSecretV4 = undefined;
+        @memcpy(secret[0..V4_PREFIX.len], V4_PREFIX);
+        @memcpy(secret[V4_PREFIX.len..], creds.access_secret[0..crds.SECRET_LEN]);
+        return .{
             .access_id = creds.access_id,
-            .access_secret = (V4_PREFIX ++ std.mem.zeroes(stngs.AccessSecret)).*,
+            .access_secret = secret,
         };
-        @memcpy(self.access_secret[V4_PREFIX.len..], creds.access_secret[0..stngs.SECRET_LEN]);
-        return self;
     }
 
     // https://docs.aws.amazon.com/IAM/latest/UserGuide/create-signed-request.html
     pub fn sign(self: Signer, buffer: []u8, event: Event, content: Content) ![]const u8 {
-        var signature: utils.HashStr = undefined;
+        var signature: hashing.HashStr = undefined;
         var scope_buffer: [64]u8 = undefined;
         const scope = try requestScope(&scope_buffer, event);
         try computeSignature(&self.access_secret, &signature, event, content, scope);
-        return authorize(buffer, &self.access_id, scope, content.headers_names, &signature);
+        return authorize(buffer, self.access_id, scope, content.headers_names, &signature);
     }
 
     /// Compute the request signature.
     fn computeSignature(
         secret: *const AccessSecretV4,
-        out: *utils.HashStr,
+        out: *hashing.HashStr,
         event: Event,
         content: Content,
         scope: []const u8,
     ) !void {
         var canonical_buffer: CanonicalBuffer = undefined;
         const canonical = try requestCanonical(&canonical_buffer, content);
-        utils.hashString(out, canonical);
+        hashing.hashString(out, canonical);
 
-        var key: utils.Hash = undefined;
+        var key: hashing.HashBytes = undefined;
         var sig_buffer: SignatureBuffer = undefined;
         const signable = try signatureContent(&sig_buffer, event.timestamp, scope, out);
         signatureKey(&key, secret, event);
-        Hmac.create(&key, signable, &key);
+        hashing.Hmac256.create(&key, signable, &key);
 
         std.debug.assert(out.len >= 2 * key.len);
-        _ = utils.hexString(out, .lower, &key) catch unreachable;
+        _ = hashing.hexString(out, .lower, &key) catch unreachable;
     }
 
     /// Create an authorization header for the request.
@@ -78,7 +79,7 @@ pub const Signer = struct {
         id: []const u8,
         scope: []const u8,
         headers: []const u8,
-        signature: *const utils.HashStr,
+        signature: *const hashing.HashStr,
     ) ![]const u8 {
         var stream = std.io.fixedBufferStream(buffer);
         try stream.writer().print(
@@ -115,7 +116,7 @@ pub const Signer = struct {
         buffer: *SignatureBuffer,
         timestamp: []const u8,
         scope: []const u8,
-        hash: *const utils.HashStr,
+        hash: *const hashing.HashStr,
     ) ![]const u8 {
         var stream = std.io.fixedBufferStream(buffer);
         try stream.writer().print(V4_ALGO ++ "\n{s}\n{s}/" ++ V4_SUFFIX ++ "\n{s}", .{ timestamp, scope, hash });
@@ -123,22 +124,22 @@ pub const Signer = struct {
     }
 
     // https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_aws-signing.html
-    fn signatureKey(out: *utils.Hash, secret: *const AccessSecretV4, event: Event) void {
-        Hmac.create(out, event.date, secret);
-        Hmac.create(out, event.region, out);
-        Hmac.create(out, event.service, out);
-        Hmac.create(out, V4_SUFFIX, out);
+    fn signatureKey(out: *hashing.HashBytes, secret: *const AccessSecretV4, event: Event) void {
+        hashing.Hmac256.create(out, event.date, secret);
+        hashing.Hmac256.create(out, event.region, out);
+        hashing.Hmac256.create(out, event.service, out);
+        hashing.Hmac256.create(out, V4_SUFFIX, out);
     }
 };
 
 test "Signer.init" {
-    const signer = Signer.from(TEST_CREDS);
-    try testing.expectEqualStrings(&TEST_ID, &signer.access_id);
-    try testing.expectEqualStrings(V4_PREFIX ++ TEST_SECRET, &signer.access_secret);
+    const signer = Signer.from(crds.TEST_CREDS);
+    try testing.expectEqualStrings(crds.TEST_ID, signer.access_id);
+    try testing.expectEqualStrings(V4_PREFIX ++ crds.TEST_SECRET, &signer.access_secret);
 }
 
 test "Signer.handle" {
-    const signer = Signer.from(TEST_CREDS);
+    const signer = Signer.from(crds.TEST_CREDS);
     var buffer: [256]u8 = undefined;
     try testing.expectEqualStrings(
         "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130708/us-east-1/s3/aws4_request," ++
@@ -148,8 +149,8 @@ test "Signer.handle" {
 }
 
 test "Signer.sign" {
-    var hash: utils.HashStr = undefined;
-    try Signer.computeSignature(V4_PREFIX ++ TEST_SECRET, &hash, TEST_EVENT, TEST_CONTENT, TEST_SCOPE);
+    var hash: hashing.HashStr = undefined;
+    try Signer.computeSignature(V4_PREFIX ++ crds.TEST_SECRET, &hash, TEST_EVENT, TEST_CONTENT, TEST_SCOPE);
     try testing.expectEqualStrings("3c059efad8b5c07bbe759cb31436857114cb986b161695c03ef115e4878ea945", &hash);
 }
 
@@ -157,7 +158,7 @@ test "Signer.authorize" {
     var buffer: SignatureBuffer = undefined;
     const expected = "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130708/us-east-1/s3/aws4_request," ++
         "SignedHeaders=host;x-amz-date,Signature=2fc8cfe69048f0656cd02e9655fb2cb93c8917ac1230890b5a2752ef6ba76c90";
-    const actual = try Signer.authorize(&buffer, &TEST_ID, TEST_SCOPE, TEST_CONTENT.headers_names, "2fc8cfe69048f0656cd02e9655fb2cb93c8917ac1230890b5a2752ef6ba76c90");
+    const actual = try Signer.authorize(&buffer, crds.TEST_ID, TEST_SCOPE, TEST_CONTENT.headers_names, "2fc8cfe69048f0656cd02e9655fb2cb93c8917ac1230890b5a2752ef6ba76c90");
     try testing.expectEqualStrings(expected, actual);
 }
 
@@ -185,20 +186,13 @@ test "Signer.signatureContent" {
 }
 
 test "Signer.signatureKey" {
-    var key: utils.Hash = undefined;
-    Signer.signatureKey(&key, V4_PREFIX ++ TEST_SECRET, TEST_EVENT);
+    var key: hashing.HashBytes = undefined;
+    Signer.signatureKey(&key, V4_PREFIX ++ crds.TEST_SECRET, TEST_EVENT);
     try testing.expectEqualSlices(u8, &.{
         0x22, 0x68, 0xF9, 0x05, 0x25, 0xE3, 0x36, 0x80, 0x16, 0xC7, 0xBD, 0x2E, 0x46, 0x9C, 0x30, 0x5A,
         0x2A, 0xBF, 0xB3, 0x7C, 0xF1, 0x51, 0x5C, 0x52, 0x4F, 0xC1, 0x24, 0x7E, 0xBA, 0xB2, 0x76, 0x55,
     }, &key);
 }
-
-const TEST_ID: stngs.AccessId = "AKIAIOSFODNN7EXAMPLE".*;
-const TEST_SECRET: stngs.AccessSecret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".*;
-const TEST_CREDS = stngs.Credentials{
-    .access_id = TEST_ID,
-    .access_secret = TEST_SECRET,
-};
 
 const TEST_EVENT = Event{
     .service = "s3",

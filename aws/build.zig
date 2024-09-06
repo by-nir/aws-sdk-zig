@@ -35,7 +35,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .root_source_file = b.path("runtime/root.zig"),
         .imports = &.{
-            .{ .name = "smithy", .module = smithy_runtime },
+            .{ .name = "smithy/runtime", .module = smithy_runtime },
         },
     });
 
@@ -69,7 +69,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .root_source_file = b.path("runtime/root.zig"),
     });
-    test_runtime_mdl.root_module.addImport("smithy", smithy_runtime);
+    test_runtime_mdl.root_module.addImport("smithy/runtime", smithy_runtime);
     test_runtime_step.dependOn(&b.addRunArtifact(test_runtime_mdl).step);
     test_all_step.dependOn(&b.addInstallArtifact(test_runtime_mdl, .{
         .dest_dir = .{ .override = .{ .custom = "test" } },

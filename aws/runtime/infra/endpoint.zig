@@ -10,7 +10,7 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const smithy = @import("smithy");
+const smithy = @import("smithy/runtime");
 
 /// [Smithy Spec](https://smithy.io/2.0/aws/rules-engine/library-functions.html#partition-structure)
 /// [AWS Spec](https://docs.aws.amazon.com/whitepapers/latest/aws-fault-isolation-boundaries/partitions.html)
