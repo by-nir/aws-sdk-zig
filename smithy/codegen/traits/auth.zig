@@ -1,15 +1,177 @@
 //! Authentication traits
 //!
 //! [Smithy Spec](https://smithy.io/2.0/spec/authentication-traits.html)
+const std = @import("std");
+const mem = std.mem;
+const Allocator = mem.Allocator;
+const testing = std.testing;
+const test_alloc = testing.allocator;
+const syb = @import("../systems/symbols.zig");
+const SmithyId = syb.SmithyId;
+const SymbolsProvider = syb.SymbolsProvider;
 const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
+const JsonReader = @import("../utils/JsonReader.zig");
 
-// TODO: Remainig traits
 pub const registry: TraitsRegistry = &.{
-    // smithy.api#auth
+    .{ Auth.id, Auth.parse },
     // smithy.api#authDefinition
-    // smithy.api#httpBasicAuth
-    // smithy.api#httpBearerAuth
-    // smithy.api#httpApiKeyAuth
-    // smithy.api#httpDigestAuth
-    // smithy.api#optionalAuth
+    .{ http_basic_id, null },
+    .{ http_bearer_id, null },
+    .{ HttpApiKey.id, HttpApiKey.parse },
+    .{ http_digest_id, null },
+    .{ optional_auth_id, null },
 };
+
+/// Indicates that a service supports HTTP Basic Authentication as defined in
+/// [RFC 2617](https://datatracker.ietf.org/doc/html/rfc2617.html).
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/authentication-traits.html#httpbasicauth-trait)
+pub const http_basic_id = SmithyId.of("smithy.api#httpBasicAuth");
+
+/// Indicates that a service supports HTTP Bearer Authentication as defined in
+/// [RFC 6750](https://datatracker.ietf.org/doc/html/rfc6750.html).
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/authentication-traits.html#httpbearerauth-trait)
+pub const http_bearer_id = SmithyId.of("smithy.api#httpBearerAuth");
+
+/// Indicates that a service supports HTTP Digest Authentication as defined in
+/// [RFC 2617](https://datatracker.ietf.org/doc/html/rfc2617.html).
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/authentication-traits.html#httpdigestauth-trait)
+pub const http_digest_id = SmithyId.of("smithy.api#httpDigestAuth");
+
+/// Indicates that an operation MAY be invoked without authentication,
+/// regardless of any authentication traits applied to the operation.
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/authentication-traits.html#optionalauth-trait)
+pub const optional_auth_id = SmithyId.of("smithy.api#optionalAuth");
+
+/// Indicates that a service supports HTTP-specific authentication using an API
+/// key sent in a header or query string parameter.
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/authentication-traits.html#httpapikeyauth-trait)
+pub const HttpApiKey = struct {
+    pub const id = SmithyId.of("smithy.api#httpApiKeyAuth");
+
+    pub const Value = struct {
+        /// Defines the name of the HTTP header or query string parameter that contains the API key.
+        name: []const u8,
+        /// Defines the location of where the key is serialized.
+        target: Target,
+        /// Defines the scheme to use on the `Authorization` header value.
+        scheme: ?[]const u8 = null,
+    };
+
+    pub const Target = enum { header, query };
+
+    pub fn parse(arena: Allocator, reader: *JsonReader) !*const anyopaque {
+        const value = try arena.create(Value);
+        errdefer arena.destroy(value);
+
+        try reader.nextObjectBegin();
+        while (try reader.peek() != .object_end) {
+            const prop = try reader.nextString();
+            if (mem.eql(u8, prop, "name")) {
+                value.name = try reader.nextStringAlloc(arena);
+            } else if (mem.eql(u8, prop, "in")) {
+                const target = try reader.nextString();
+                if (mem.eql(u8, target, "header")) {
+                    value.target = .header;
+                } else if (mem.eql(u8, target, "query")) {
+                    value.target = .query;
+                } else {
+                    return error.AuthHttpApiKeyInvalidTarget;
+                }
+            } else if (mem.eql(u8, prop, "scheme")) {
+                value.scheme = try reader.nextStringAlloc(arena);
+            } else {
+                std.log.warn("Unknown httpApiKeyAuth trait property `{s}`", .{prop});
+                try reader.skipValueOrScope();
+            }
+        }
+        try reader.nextObjectEnd();
+
+        return value;
+    }
+
+    pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?Value {
+        return symbols.getTrait(Value, shape_id, id);
+    }
+};
+
+test "HttpApiKey" {
+    var arena = std.heap.ArenaAllocator.init(test_alloc);
+    const arena_alloc = arena.allocator();
+    defer arena.deinit();
+
+    var reader = try JsonReader.initFixed(arena_alloc,
+        \\{
+        \\    "name": "Authorization",
+        \\    "in": "header",
+        \\    "scheme": "ApiKey"
+        \\}
+    );
+    errdefer reader.deinit();
+
+    const auth: *const HttpApiKey.Value = @ptrCast(@alignCast(try HttpApiKey.parse(arena_alloc, &reader)));
+    reader.deinit();
+    try testing.expectEqualDeep(&HttpApiKey.Value{
+        .name = "Authorization",
+        .target = .header,
+        .scheme = "ApiKey",
+    }, auth);
+}
+
+/// Defines the priority ordered authentication schemes supported by a service or operation.
+///
+/// When applied to a service, it defines the default authentication schemes of
+/// every operation in the service.
+/// When applied to an operation, it defines the list of all authentication schemes
+/// supported by the operation, overriding any auth trait specified on a service.
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/authentication-traits.html#auth-trait)
+pub const Auth = struct {
+    pub const id = SmithyId.of("smithy.api#auth");
+
+    pub fn parse(arena: Allocator, reader: *JsonReader) !*const anyopaque {
+        var list = std.ArrayList([]const u8).init(arena);
+        errdefer list.deinit();
+
+        try reader.nextArrayBegin();
+        while (try reader.peek() != .array_end) {
+            const string = try reader.nextStringAlloc(arena);
+            try list.append(string);
+        }
+
+        const slice = try list.toOwnedSliceSentinel("");
+        return @ptrCast(slice.ptr);
+    }
+
+    pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?[]const []const u8 {
+        const trait = symbols.getTraitOpaque(shape_id, id);
+        return if (trait) |ptr| cast(ptr) else null;
+    }
+
+    fn cast(ptr: *const anyopaque) []const []const u8 {
+        var i: usize = 0;
+        const strings: [*]const []const u8 = @ptrCast(@alignCast(ptr));
+        while (true) : (i += 1) {
+            const string = strings[i];
+            if (string.len == 0) return strings[0..i];
+        }
+        unreachable;
+    }
+};
+
+test "Auth" {
+    var arena = std.heap.ArenaAllocator.init(test_alloc);
+    const arena_alloc = arena.allocator();
+    defer arena.deinit();
+
+    var reader = try JsonReader.initFixed(arena_alloc, "[ \"foo\", \"bar\" ]");
+    errdefer reader.deinit();
+
+    const strings = Auth.cast(try Auth.parse(arena_alloc, &reader));
+    reader.deinit();
+    try testing.expectEqualDeep(&[_][]const u8{ "foo", "bar" }, strings);
+}

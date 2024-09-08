@@ -22,6 +22,7 @@ const JsonValue = @import("../utils/JsonReader.zig").Value;
 const cnfg = @import("../config.zig");
 const ScopeTag = @import("smithy.zig").ScopeTag;
 const CodegenPolicy = @import("smithy_codegen.zig").CodegenPolicy;
+const trt_auth = @import("../traits/auth.zig");
 const trt_docs = @import("../traits/docs.zig");
 const trt_http = @import("../traits/http.zig");
 const trt_refine = @import("../traits/refine.zig");
@@ -39,6 +40,8 @@ pub const OperationShape = struct {
     output_type: ?[]const u8,
     errors_type: ?[]const u8,
     return_type: []const u8,
+    auth_optional: bool,
+    auth_priority: ?[]const []const u8,
 };
 
 pub const WriteShape = Task.Define("Smithy Write Shape", writeShapeTask, .{
@@ -577,13 +580,7 @@ fn writeStructShapeMixin(arena: Allocator, symbols: *SymbolsProvider, bld: *Cont
     }
 }
 
-fn writeStructShapeMember(
-    arena: Allocator,
-    symbols: *SymbolsProvider,
-    bld: *ContainerBuild,
-    is_input: bool,
-    id: SmithyId,
-) !void {
+fn writeStructShapeMember(arena: Allocator, symbols: *SymbolsProvider, bld: *ContainerBuild, is_input: bool, id: SmithyId) !void {
     const shape_name = try symbols.getShapeName(id, .field);
     const is_optional = isStructShapeMemberOptional(symbols, id, is_input);
 
@@ -648,12 +645,7 @@ test "writeStructShape" {
     );
 }
 
-fn writeOperationShapes(
-    self: *const Delegate,
-    symbols: *SymbolsProvider,
-    bld: *ContainerBuild,
-    id: SmithyId,
-) !void {
+fn writeOperationShapes(self: *const Delegate, symbols: *SymbolsProvider, bld: *ContainerBuild, id: SmithyId) !void {
     const operation = (try symbols.getShape(id)).operation;
 
     if (operation.input) |in_id| {
@@ -699,12 +691,7 @@ test "writeOperationShapes" {
     );
 }
 
-fn writeOperationFunc(
-    self: *const Delegate,
-    symbols: *SymbolsProvider,
-    bld: *ContainerBuild,
-    id: SmithyId,
-) !void {
+fn writeOperationFunc(self: *const Delegate, symbols: *SymbolsProvider, bld: *ContainerBuild, id: SmithyId) !void {
     const operation = (try symbols.getShape(id)).operation;
     const op_name = try symbols.getShapeName(id, .function);
 
@@ -733,12 +720,17 @@ fn writeOperationFunc(
     else
         "!void";
 
+    const auth_optional = symbols.hasTrait(id, trt_auth.optional_auth_id);
+    const auth_priority = trt_auth.Auth.get(symbols, id);
+
     const shape = OperationShape{
         .id = id,
         .input_type = input_type,
         .output_type = output_type,
         .errors_type = error_type,
         .return_type = return_type,
+        .auth_optional = auth_optional,
+        .auth_priority = auth_priority,
     };
 
     const context = .{ .self = self, .symbols = symbols, .shape = shape };

@@ -5,6 +5,7 @@ const http = @import("http.zig");
 const creds = @import("auth/creds.zig");
 const Region = @import("infra/region.gen.zig").Region;
 
+/// Provide configuration and operational resources that can be shared across multiple clients.
 pub const ConfigResources = struct {
     allocator: Allocator,
     http_provider: ?http.ClientProvider = null,

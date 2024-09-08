@@ -57,11 +57,6 @@ increased **platform portability**.
 > At this point, the project serves as environment for developing other experimental sub-projects.
 > This initiative is in an exploratory phase and is **not yet ready for contributions**.
 
-As the experimental projects mature, they will be extracted from this repository,
-and this project will then focus entirely on the development of the _AWS SDKs for Zig_.
-
-However, we welcome contributions related to the **runtime and AWS-related behavior**.
-
 | 📁                                | Description                                                     |
 |:----------------------------------|:----------------------------------------------------------------|
 | [sdk](sdk/)                       | AWS SDKs for Zig<br />_Auto-generated, do not modify manually!_ |
