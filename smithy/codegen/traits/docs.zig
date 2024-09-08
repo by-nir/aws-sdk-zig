@@ -6,10 +6,9 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const syb = @import("../systems/symbols.zig");
-const SmithyId = syb.SmithyId;
-const SymbolsProvider = syb.SymbolsProvider;
-const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
+const trt = @import("../systems/traits.zig");
+const StringTrait = trt.StringTrait;
+const TraitsRegistry = trt.TraitsRegistry;
 const JsonReader = @import("../utils/JsonReader.zig");
 
 // TODO: Remainig traits
@@ -30,49 +29,9 @@ pub const registry: TraitsRegistry = &.{
 /// Adds documentation to a shape or member using the [CommonMark](https://spec.commonmark.org) format.
 ///
 /// [Smithy Spec](https://smithy.io/2.0/spec/documentation-traits.html#documentation-trait)
-pub const Documentation = struct {
-    pub const id = SmithyId.of("smithy.api#documentation");
-
-    pub fn parse(arena: Allocator, reader: *JsonReader) !*const anyopaque {
-        return parseString(arena, reader);
-    }
-
-    pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?[]const u8 {
-        return symbols.getTrait([]const u8, shape_id, id);
-    }
-};
+pub const Documentation = StringTrait("smithy.api#documentation");
 
 /// Defines a proper name for a service or resource shape.
 ///
 /// [Smithy Spec](https://smithy.io/2.0/spec/documentation-traits.html#title-trait)
-pub const Title = struct {
-    pub const id = SmithyId.of("smithy.api#title");
-
-    pub fn parse(arena: Allocator, reader: *JsonReader) !*const anyopaque {
-        return parseString(arena, reader);
-    }
-
-    pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?[]const u8 {
-        return symbols.getTrait([]const u8, shape_id, id);
-    }
-};
-
-fn parseString(arena: Allocator, reader: *JsonReader) !*const anyopaque {
-    const value = try arena.create([]const u8);
-    value.* = try reader.nextStringAlloc(arena);
-    return @ptrCast(value);
-}
-
-test "parseString" {
-    var arena = std.heap.ArenaAllocator.init(test_alloc);
-    const arena_alloc = arena.allocator();
-    defer arena.deinit();
-
-    var reader = try JsonReader.initFixed(arena_alloc, "\"Foo Bar\"");
-    const val: *const []const u8 = @alignCast(@ptrCast(parseString(arena_alloc, &reader) catch |e| {
-        reader.deinit();
-        return e;
-    }));
-    reader.deinit();
-    try testing.expectEqualStrings("Foo Bar", val.*);
-}
+pub const Title = StringTrait("smithy.api#title");

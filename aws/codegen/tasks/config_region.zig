@@ -3,7 +3,7 @@ const Allocator = std.mem.Allocator;
 const zig = @import("codegen").zig;
 const pipez = @import("pipez");
 const Delegate = pipez.Delegate;
-const smithy = @import("smithy");
+const smithy = @import("smithy/codegen");
 const codegen_tasks = smithy.codegen_tasks;
 const name_util = smithy.name_util;
 

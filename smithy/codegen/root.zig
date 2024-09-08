@@ -33,6 +33,7 @@ const syb = @import("systems/symbols.zig");
 pub usingnamespace syb;
 
 const trt = @import("systems/traits.zig");
+pub const StringTrait = trt.StringTrait;
 pub const TraitsRegistry = trt.TraitsRegistry;
 
 const rls = @import("systems/rules.zig");

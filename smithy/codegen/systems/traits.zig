@@ -2,9 +2,9 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = std.testing.allocator;
-const symbols = @import("symbols.zig");
-const SmithyId = symbols.SmithyId;
-const TaggedValue = symbols.SmithyTaggedValue;
+const syb = @import("symbols.zig");
+const SmithyId = syb.SmithyId;
+const TaggedValue = syb.SmithyTaggedValue;
 const JsonReader = @import("../utils/JsonReader.zig");
 
 /// Parse the trait’s value from the source JSON AST, which will be used
@@ -138,4 +138,36 @@ test "TraitsProvider" {
         @intFromPtr(traits.getOpaque(SmithyId.of("bar")).?),
     );
     try testing.expectEqual(108, traits.get(u8, SmithyId.of("bar")));
+}
+
+pub fn StringTrait(trait_id: []const u8) type {
+    return struct {
+        pub const id = SmithyId.of(trait_id);
+
+        pub fn parse(arena: Allocator, reader: *JsonReader) !*const anyopaque {
+            const value = try arena.create([]const u8);
+            value.* = try reader.nextStringAlloc(arena);
+            return @ptrCast(value);
+        }
+
+        pub fn get(symbols: *syb.SymbolsProvider, shape_id: SmithyId) ?[]const u8 {
+            return symbols.getTrait([]const u8, shape_id, id);
+        }
+    };
+}
+
+test "StringTrait" {
+    var arena = std.heap.ArenaAllocator.init(test_alloc);
+    const arena_alloc = arena.allocator();
+    defer arena.deinit();
+
+    const TestTrait = StringTrait("smithy.api#test");
+
+    var reader = try JsonReader.initFixed(arena_alloc, "\"Foo Bar\"");
+    const val: *const []const u8 = @alignCast(@ptrCast(TestTrait.parse(arena_alloc, &reader) catch |e| {
+        reader.deinit();
+        return e;
+    }));
+    reader.deinit();
+    try testing.expectEqualStrings("Foo Bar", val.*);
 }

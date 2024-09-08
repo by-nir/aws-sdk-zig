@@ -1,12 +1,11 @@
 //! AWS Protocols
 //!
 //! [Smithy Spec](https://smithy.io/2.0/aws/protocols/index.html#aws-protocols)
-
-const smithy = @import("smithy");
-const TraitsList = smithy.TraitsRegistry;
+const smithy = @import("smithy/codegen");
+const TraitsRegistry = smithy.TraitsRegistry;
 
 // TODO: Remainig traits
-pub const traits: TraitsList = &.{
+pub const traits: TraitsRegistry = &.{
     // aws.protocols#awsJson1_0
     // aws.protocols#awsJson1_1
     // aws.protocols#awsQuery

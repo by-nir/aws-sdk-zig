@@ -2,20 +2,19 @@
 //! AWS products like AWS CloudFormation and tools like the AWS SDKs.
 //!
 //! [Smithy Spec](https://smithy.io/2.0/aws/aws-core.html#aws-core-specification)
-
 const std = @import("std");
 const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const smithy = @import("smithy");
+const smithy = @import("smithy/codegen");
 const SmithyId = smithy.SmithyId;
 const SymbolsProvider = smithy.SymbolsProvider;
-const TraitsList = smithy.TraitsRegistry;
+const TraitsRegistry = smithy.TraitsRegistry;
 const JsonReader = smithy.JsonReader;
 
 // TODO: Remainig traits
-pub const traits: TraitsList = &.{
+pub const traits: TraitsRegistry = &.{
     // aws.api#arn
     // aws.api#arnReference
     // aws.api#clientDiscoveredEndpoint

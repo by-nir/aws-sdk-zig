@@ -3,12 +3,11 @@
 //! actions, and condition keys that IAM users can use to construct IAM policies.
 //!
 //! [Smithy Spec](https://smithy.io/2.0/aws/aws-iam.html#aws-iam-traits)
-
-const smithy = @import("smithy");
-const TraitsList = smithy.TraitsRegistry;
+const smithy = @import("smithy/codegen");
+const TraitsRegistry = smithy.TraitsRegistry;
 
 // TODO: Remainig traits
-pub const traits: TraitsList = &.{
+pub const traits: TraitsRegistry = &.{
     // aws.iam#actionName
     // aws.iam#actionPermissionDescription
     // aws.iam#conditionKeyValue

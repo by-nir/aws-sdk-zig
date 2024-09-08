@@ -52,7 +52,7 @@ pub fn build(b: *std.Build) void {
     });
     codegen_exe.root_module.addImport("pipez", pipez);
     codegen_exe.root_module.addImport("codegen", codegen);
-    codegen_exe.root_module.addImport("smithy", smithy_codegen);
+    codegen_exe.root_module.addImport("smithy/codegen", smithy_codegen);
     b.installArtifact(codegen_exe);
 
     //
@@ -86,7 +86,7 @@ pub fn build(b: *std.Build) void {
     });
     test_codegen_exe.root_module.addImport("pipez", pipez);
     test_codegen_exe.root_module.addImport("codegen", codegen);
-    test_codegen_exe.root_module.addImport("smithy", smithy_codegen);
+    test_codegen_exe.root_module.addImport("smithy/codegen", smithy_codegen);
     test_codegen_step.dependOn(&b.addRunArtifact(test_codegen_exe).step);
     test_all_step.dependOn(&b.addInstallArtifact(test_codegen_exe, .{
         .dest_dir = .{ .override = .{ .custom = "test" } },
