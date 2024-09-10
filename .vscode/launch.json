@@ -2,6 +2,15 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "Jarz",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/_jarz/zig-out/bin/test",
+      "args": [],
+      "cwd": "${workspaceFolder}/_jarz",
+      "preLaunchTask": "jarz:build-tests"
+    },
+    {
       "name": "Jobz",
       "type": "lldb",
       "request": "launch",

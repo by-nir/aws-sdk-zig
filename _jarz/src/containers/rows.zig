@@ -4,10 +4,10 @@ const Allocator = mem.Allocator;
 const assert = std.debug.assert;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const iter = @import("iterate.zig");
-const Reorder = @import("common.zig").Reorder;
-const DefaultIndexer = @import("common.zig").DefaultIndexer;
 const AutoSlots = @import("slots.zig").AutoSlots;
+const iter = @import("../interface/iterate.zig");
+const Reorder = @import("../interface/common.zig").Reorder;
+const DefaultIndexer = @import("../interface/common.zig").DefaultIndexer;
 
 pub fn RowsOptions(comptime T: type) type {
     return struct {

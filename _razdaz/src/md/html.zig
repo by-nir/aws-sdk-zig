@@ -6,8 +6,8 @@ const assert = std.debug.assert;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const md = @import("../md.zig");
-const srct = @import("../tree.zig");
 const Writer = @import("../CodegenWriter.zig");
+const srct = @import("../utils/tree.zig");
 
 const log = std.log.scoped(.html_to_md);
 

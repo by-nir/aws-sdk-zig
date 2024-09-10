@@ -3,9 +3,9 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const common = @import("utils/common.zig");
+const RangeHandle = @import("jarz").RangeHandle;
 
-pub const SerialHandle = common.RangeHandle(u32);
+pub const SerialHandle = RangeHandle(u32);
 const ENDIAN = @import("builtin").cpu.arch.endian();
 const UNDF = 0xAA;
 

@@ -5,7 +5,7 @@ const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const AutoSlots = @import("slots.zig").AutoSlots;
-const DefaultIndexer = @import("common.zig").DefaultIndexer;
+const DefaultIndexer = @import("../interface/common.zig").DefaultIndexer;
 
 pub const ColumnsOptions = struct {
     Indexer: type = DefaultIndexer,

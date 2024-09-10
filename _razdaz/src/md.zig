@@ -11,8 +11,8 @@ const InferCallback = dcl.InferCallback;
 const callClosure = dcl.callClosure;
 const createCallback = dcl.callback;
 const zig = @import("zig.zig");
-const srct = @import("tree.zig");
 const Writer = @import("CodegenWriter.zig");
+const srct = @import("utils/tree.zig");
 
 pub const html = @import("md/html.zig");
 

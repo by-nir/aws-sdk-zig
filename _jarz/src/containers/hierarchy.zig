@@ -5,8 +5,8 @@ const testing = std.testing;
 const test_alloc = testing.allocator;
 const rows = @import("rows.zig");
 const cols = @import("columns.zig");
-const iter = @import("iterate.zig");
-const common = @import("common.zig");
+const iter = @import("../interface/iterate.zig");
+const common = @import("../interface/common.zig");
 
 pub const HieararchyOptions = struct {
     Indexer: type = common.DefaultIndexer,
