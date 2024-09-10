@@ -18,18 +18,23 @@ const http = @import("http.zig");
 pub const HttpClient = http.Client;
 pub const SharedHttpClient = http.ClientProvider;
 
-const sign = @import("auth/sign.zig");
-const creds = @import("auth/creds.zig");
-pub const Credentials = creds.Credentials;
+const auth_sign = @import("auth/sigv4.zig");
+const auth_schemes = @import("auth/schemes.zig");
+const auth_creds = @import("auth/creds.zig");
+pub const Credentials = auth_creds.Credentials;
 
-pub const internal = struct {
+const proto_aws_json = @import("protocols/aws_json.zig");
+
+pub const _private_ = struct {
     pub const ClientConfig = conf.ClientConfig;
-    pub const Signer = sign.Signer;
-    pub const HttpEvent = http.Event;
-    pub const HttpService = http.Service;
-    pub const HttpPayload = http.Payload;
-    pub const HttpRequest = http.Request;
-    pub const HttpResponse = http.Response;
+    pub const ClientOperation = http.Operation;
+    pub const ClientRequest = http.Request;
+    pub const ClientResponse = http.Response;
+    pub const auth = auth_schemes;
+    pub const SignBuffer = auth_sign.SignBuffer;
+    pub const protocol = struct {
+        pub const aws_json = proto_aws_json;
+    };
     pub const Arn = endpoint.Arn;
     pub const Partition = endpoint.Partition;
     pub const isVirtualHostableS3Bucket = endpoint.isVirtualHostableS3Bucket;
@@ -38,16 +43,19 @@ pub const internal = struct {
 
 test {
     _ = @import("utils/url.zig");
-    _ = @import("utils/time.zig");
     _ = @import("utils/hashing.zig");
+    _ = @import("utils/TimeStr.zig");
     _ = @import("utils/SharedResource.zig");
     _ = @import("config/entries.zig");
     _ = @import("config/env.zig");
-    _ = partition;
     _ = region;
-    _ = creds;
-    _ = sign;
     _ = endpoint;
+    _ = partition;
+    _ = _private_.ClientOperation;
+    _ = auth_creds;
+    _ = auth_schemes;
+    _ = @import("auth/sigv4.zig");
+    _ = proto_aws_json;
     _ = http;
     _ = conf;
 }

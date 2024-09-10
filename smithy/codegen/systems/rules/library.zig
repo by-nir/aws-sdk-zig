@@ -8,12 +8,12 @@ const test_alloc = std.testing.allocator;
 const cdgn = @import("codegen");
 const Expr = cdgn.zig.Expr;
 const ExprBuild = cdgn.zig.ExprBuild;
-const config = @import("../../config.zig");
 const rls = @import("model.zig");
 const Generator = @import("Generator.zig");
 const symbols = @import("../symbols.zig");
 const idHash = symbols.idHash;
 const name_util = @import("../../utils/names.zig");
+const cfg = @import("../../config.zig");
 
 pub fn Registry(comptime T: type) type {
     return []const struct { T.Id, T };
@@ -274,7 +274,7 @@ test "fnStringEquals" {
 fn fnIsValidHostLabel(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
     const subdomains = try gen.evalArg(x, args[1]);
-    return x.call("smithy.internal.isValidHostLabel", &.{
+    return x.call(cfg.scope_private ++ ".isValidHostLabel", &.{
         x.fromExpr(value),
         x.fromExpr(subdomains),
     }).consume();
@@ -284,36 +284,36 @@ test "fnIsValidHostLabel" {
     try Function.expect(fnIsValidHostLabel, &.{
         .{ .string = "foo" },
         .{ .boolean = false },
-    }, "smithy.internal.isValidHostLabel(\"foo\", false)");
+    }, cfg.scope_private ++ ".isValidHostLabel(\"foo\", false)");
 }
 
 fn fnParseUrl(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
-    return x.call("smithy.internal.RulesUrl.init", &.{ x.id(config.stack_alloc_name), x.fromExpr(value) })
+    return x.call(cfg.scope_private ++ ".RulesUrl.init", &.{ x.id(cfg.stack_alloc), x.fromExpr(value) })
         .@"catch"().body(x.valueOf(null)).consume();
 }
 
 test "fnParseUrl" {
     try Function.expect(fnParseUrl, &.{
         .{ .string = "http://example.com" },
-    }, "smithy.internal.RulesUrl.init(" ++ config.stack_alloc_name ++ ", \"http://example.com\") catch null");
+    }, cfg.scope_private ++ ".RulesUrl.init(" ++ cfg.stack_alloc ++ ", \"http://example.com\") catch null");
 }
 
 fn fnUriEncode(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
     return x.trys()
-        .call("smithy.internal.uriEncode", &.{ x.id(config.stack_alloc_name), x.fromExpr(value) })
+        .call(cfg.scope_private ++ ".uriEncode", &.{ x.id(cfg.stack_alloc), x.fromExpr(value) })
         .consume();
 }
 
 test "fnUriEncode" {
     try Function.expect(fnUriEncode, &.{
         .{ .string = "foo" },
-    }, "try smithy.internal.uriEncode(" ++ config.stack_alloc_name ++ ", \"foo\")");
+    }, "try " ++ cfg.scope_private ++ ".uriEncode(" ++ cfg.stack_alloc ++ ", \"foo\")");
 }
 
 fn fnSubstring(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
-    return x.call("smithy.internal.substring", &.{
+    return x.call(cfg.scope_private ++ ".substring", &.{
         x.fromExpr(try gen.evalArg(x, args[0])),
         x.fromExpr(try gen.evalArg(x, args[1])),
         x.fromExpr(try gen.evalArg(x, args[2])),
@@ -327,5 +327,5 @@ test "fnSubstring" {
         .{ .integer = 0 },
         .{ .integer = 2 },
         .{ .boolean = false },
-    }, "smithy.internal.substring(\"foo\", 0, 2, false) catch null");
+    }, cfg.scope_private ++ ".substring(\"foo\", 0, 2, false) catch null");
 }

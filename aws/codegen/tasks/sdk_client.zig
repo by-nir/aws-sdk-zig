@@ -2,28 +2,19 @@ const std = @import("std");
 const pipez = @import("pipez");
 const Task = pipez.Task;
 const Delegate = pipez.Delegate;
-const cdgn = @import("codegen");
-const md = cdgn.md;
-const zig = cdgn.zig;
+const md = @import("codegen").md;
+const zig = @import("codegen").zig;
 const smithy = @import("smithy/codegen");
-const smithy_conf = smithy.config;
 const SmithyTask = smithy.SmithyTask;
 const SmithyOptions = smithy.SmithyOptions;
 const SmithyService = smithy.SmithyService;
 const SymbolsProvider = smithy.SymbolsProvider;
-const name_util = smithy.name_util;
-const files_tasks = smithy.files_tasks;
-const codegen_tasks = smithy.codegen_tasks;
-const BuiltInId = smithy.RulesBuiltIn.Id;
-const trt_rules = smithy.traits.rules.EndpointRuleSet;
-const itg_iam = @import("../integrate/iam.zig");
+const aws_cfg = @import("../config.zig");
 const itg_auth = @import("../integrate/auth.zig");
-const itg_core = @import("../integrate/core.zig");
 const itg_rules = @import("../integrate/rules.zig");
-const itg_gateway = @import("../integrate/gateway.zig");
-const itg_endpoint = @import("../integrate/endpoints.zig");
-const itg_protocol = @import("../integrate/protocols.zig");
-const itg_cloudformation = @import("../integrate/cloudformation.zig");
+const itg_proto = @import("../integrate/protocols.zig");
+const aws_traits = @import("../traits.zig").aws_traits;
+const ServiceTrait = @import("../traits/core.zig").Service;
 
 const CONFIG_TYPENAME = "Config";
 const ScopeTag = enum { whitelist };
@@ -68,13 +59,7 @@ const smithy_config = SmithyOptions{
     },
     .rules_builtins = itg_rules.std_builtins,
     .rules_funcs = itg_rules.std_functions,
-    .traits = itg_auth.traits ++
-        itg_cloudformation.traits ++
-        itg_core.traits ++
-        itg_endpoint.traits ++
-        itg_gateway.traits ++
-        itg_iam.traits ++
-        itg_protocol.traits,
+    .traits = aws_traits,
 };
 
 pub const pipeline_invoker = blk: {
@@ -87,6 +72,7 @@ pub const pipeline_invoker = blk: {
         .injects = &.{SymbolsProvider},
     });
 
+    _ = builder.Override(smithy.ExtendClientScriptHook, "AWS Client Script Head", extendClientScriptHook, .{});
     _ = builder.Override(smithy.ServiceHeadHook, "AWS Service Shape Head", writeServiceHeadHook, .{
         .injects = &.{SymbolsProvider},
     });
@@ -120,27 +106,28 @@ fn writeReadmeHook(_: *const Delegate, bld: md.ContainerAuthor, m: smithy.Readme
 }
 
 fn writeScriptHeadHook(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
-    try bld.constant("aws_runtime").assign(bld.x.import("aws-runtime"));
-    try bld.constant("aws_internal").assign(bld.x.raw("aws_runtime.internal"));
+    try bld.constant(aws_cfg.scope_runtime).assign(bld.x.import("aws-runtime"));
+    try bld.constant(aws_cfg.scope_private).assign(bld.x.id(aws_cfg.scope_runtime).dot().id("_private_"));
 }
 
 fn extendEndpointScriptHook(self: *const Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild) anyerror!void {
-    const trait = symbols.getTrait(smithy.RuleSet, symbols.service_id, trt_rules.id) orelse unreachable;
+    const rules_tid = smithy.traits.rules.EndpointRuleSet.id;
+    const trait = symbols.getTrait(smithy.RuleSet, symbols.service_id, rules_tid) orelse unreachable;
 
     const context = .{ .arena = self.alloc(), .params = trait.parameters };
     try bld.public().function("extractConfig")
         .arg("source", null)
-        .returns(bld.x.id(smithy_conf.endpoint_config_type)).bodyWith(context, struct {
+        .returns(bld.x.id(aws_cfg.endpoint_config_type)).bodyWith(context, struct {
         fn f(ctx: @TypeOf(context), b: *zig.BlockBuild) !void {
             try b.@"if"(b.x.raw("@typeInfo(@TypeOf(source)) != .Struct"))
                 .body(b.x.raw("@compileError(\"Endpoint’s `extractConfig` expect a source of type struct.\")")).end();
 
-            try b.variable("value").typing(b.x.id(smithy_conf.endpoint_config_type)).assign(b.x.raw(".{}"));
+            try b.variable("value").typing(b.x.id(aws_cfg.endpoint_config_type)).assign(b.x.raw(".{}"));
 
             for (ctx.params) |param| {
                 const id = param.value.built_in orelse continue;
-                const expr = try mapEndpointConfigBuiltin(b.x, id);
-                const val_field = try name_util.snakeCase(ctx.arena, param.key);
+                const expr = try itg_rules.mapConfigBuiltins(b.x, id);
+                const val_field = try smithy.name_util.snakeCase(ctx.arena, param.key);
                 try b.id("value").dot().id(val_field).assign().fromExpr(expr).end();
             }
 
@@ -149,63 +136,41 @@ fn extendEndpointScriptHook(self: *const Delegate, symbols: *SymbolsProvider, bl
     }.f);
 }
 
-/// Provides a mapping from an endpoint built-in to a config value.
-fn mapEndpointConfigBuiltin(x: zig.ExprBuild, id: BuiltInId) !zig.Expr {
-    const field: []const u8 = switch (id) {
-        // Smithy
-        BuiltInId.endpoint => "endpoint_url",
-        // AWS
-        BuiltInId.of("AWS::Region") => "region.toCode()",
-        BuiltInId.of("AWS::UseFIPS") => "use_fips",
-        BuiltInId.of("AWS::UseDualStack") => "use_dual_stack",
-        // TODO: Remaining built-ins
-        //  BuiltInId.of("AWS::Auth::AccountId")
-        //  BuiltInId.of("AWS::Auth::AccountIdEndpointMode")
-        //  BuiltInId.of("AWS::Auth::CredentialScope")
-        //  BuiltInId.of("AWS::S3::Accelerate")
-        //  BuiltInId.of("AWS::S3::DisableMultiRegionAccessPoints")
-        //  BuiltInId.of("AWS::S3::ForcePathStyle")
-        //  BuiltInId.of("AWS::S3::UseArnRegion")
-        //  BuiltInId.of("AWS::S3::UseGlobalEndpoint")
-        //  BuiltInId.of("AWS::S3Control::UseArnRegion")
-        //  BuiltInId.of("AWS::STS::UseGlobalEndpoint")
-        else => return error.UnresolvedEndpointBuiltIn,
-    };
-    return x.id("source").dot().raw(field).consume();
+fn extendClientScriptHook(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
+    try bld.constant(aws_cfg.scope_auth).assign(bld.x.id(aws_cfg.scope_private).dot().id("auth"));
+    try bld.constant(aws_cfg.scope_protocol).assign(bld.x.id(aws_cfg.scope_private).dot().id("protocol"));
 }
 
 fn writeServiceHeadHook(_: *const Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild, shape: *const SmithyService) anyerror!void {
-    const service = itg_core.Service.get(symbols, symbols.service_id) orelse return error.MissingServiceTrait;
+    const service = ServiceTrait.get(symbols, symbols.service_id) orelse return error.MissingServiceTrait;
     try bld.constant("service_code").assign(bld.x.valueOf(service.endpoint_prefix orelse return error.MissingServiceCode));
     try bld.constant("service_version").assign(bld.x.valueOf(shape.version orelse return error.MissingServiceApiVersion));
     try bld.constant("service_arn").typing(bld.x.typeOf(?[]const u8)).assign(bld.x.valueOf(service.arn_namespace orelse null));
     try bld.constant("service_cloudtrail").typing(bld.x.typeOf(?[]const u8)).assign(bld.x.valueOf(service.cloud_trail_source orelse null));
 
-    try bld.field("config_sdk").typing(bld.x.raw("aws_internal.ClientConfig")).end();
+    try bld.field("config_sdk").typing(bld.x.id(aws_cfg.scope_private).dot().id("ClientConfig")).end();
     try bld.field("config_endpoint").typing(bld.x.raw("srvc_endpoint.EndpointConfig")).end();
-    try bld.field("signer").typing(bld.x.raw("aws_internal.Signer")).end();
-    try bld.field("http").typing(bld.x.raw("*aws_runtime.HttpClient")).end();
-
-    const client_self = smithy_conf.service_client_name;
+    try bld.field("http").typing(bld.x.typePointer(true, bld.x.id(aws_cfg.scope_runtime).dot().id("HttpClient"))).end();
+    try bld.field("TEMP_creds").typing(bld.x.id(aws_cfg.scope_runtime).dot().id("Credentials")).end();
 
     try bld.public().function("init")
-        .arg("config", bld.x.raw("aws_runtime.Config"))
-        .returns(bld.x.raw("!" ++ client_self))
+        .arg("config", bld.x.id(aws_cfg.scope_runtime).dot().id("Config"))
+        .returns(bld.x.raw("!" ++ aws_cfg.service_client_type))
         .body(writeServiceInit);
 
     try bld.public().function("deinit")
-        .arg("self", bld.x.id(client_self))
+        .arg("self", bld.x.id(aws_cfg.service_client_type))
         .body(writeServiceDeinit);
 }
 
 fn writeServiceInit(bld: *zig.BlockBuild) anyerror!void {
-    try bld.constant("client_cfg").assign(bld.x.raw("try aws_internal.ClientConfig.resolve(config)"));
+    try bld.constant("client_cfg").assign(bld.x.trys().id(aws_cfg.scope_private).dot().raw("ClientConfig.resolve(config)"));
 
     try bld.returns().structLiteral(null, &.{
         bld.x.structAssign("config_sdk", bld.x.id("client_cfg")),
         bld.x.structAssign("config_endpoint", bld.x.call("srvc_endpoint.extractConfig", &.{bld.x.id("client_cfg")})),
         bld.x.structAssign("http", bld.x.raw("client_cfg.http_client")),
-        bld.x.structAssign("signer", bld.x.call("aws_internal.Signer.from", &.{bld.x.raw("client_cfg.credentials")})),
+        bld.x.structAssign("TEMP_creds", bld.x.raw("client_cfg.credentials")),
     }).end();
 }
 
@@ -214,64 +179,32 @@ fn writeServiceDeinit(bld: *zig.BlockBuild) anyerror!void {
 }
 
 fn writeOperationShapeHook(self: *const Delegate, symbols: *SymbolsProvider, bld: *zig.BlockBuild, shape: smithy.OperationShape) anyerror!void {
-    try bld.constant("endpoint").assign(bld.x.trys().id("srvc_endpoint").dot().call("resolve", &.{
-        bld.x.id(smithy_conf.allocator_name),
+    const alloc_expr = bld.x.id(aws_cfg.alloc_param);
+
+    try bld.constant("endpoint").assign(bld.x.trys().call("srvc_endpoint.resolve", &.{
+        alloc_expr,
         bld.x.raw("self.config_endpoint"),
     }));
-    try bld.defers(bld.x.id("endpoint").dot().call("deinit", &.{
-        bld.x.id(smithy_conf.allocator_name),
-    }));
+    try bld.defers(bld.x.id("endpoint").dot().call("deinit", &.{alloc_expr}));
 
-    try bld.constant("service").assign(bld.x.structLiteral(bld.x.raw("aws_internal.HttpService"), &.{
-        bld.x.structAssign("name", bld.x.id("service_code")),
-        bld.x.structAssign("version", bld.x.id("service_version")),
-        bld.x.structAssign("endpoint", bld.x.raw("std.Uri.parse(endpoint.url) catch unreachable")),
-        bld.x.structAssign("region", bld.x.raw("self.config_sdk.region")),
-        bld.x.structAssign("app_id", bld.x.raw("self.config_sdk.app_id")),
-    }));
+    // TODO: Resolve
+    const auth: itg_auth.Scheme = .sigv4;
+    const protocol: itg_proto.Protocol = .json_10;
 
-    try bld.constant("event").assign(bld.x.call("aws_internal.HttpEvent.new", &.{
-        bld.x.valueOf(null), // TODO: trace_id
-    }));
+    try bld.variable(aws_cfg.send_op_param).assign(bld.x.trys().id(aws_cfg.scope_private).dot().call(
+        "ClientOperation.init",
+        &.{
+            alloc_expr,
+            bld.x.valueOf(itg_proto.defaultHttpMethod(protocol)),
+            bld.x.raw("std.Uri.parse(endpoint.url) catch unreachable"),
+            bld.x.raw("self.config_sdk.app_id"),
+            bld.x.valueOf(null), // TODO: trace_id
+        },
+    ));
+    try bld.defers(bld.x.id(aws_cfg.send_op_param).dot().call("deinit", &.{}));
 
-    const payload = if (shape.input_type) |_| blk: {
-        try bld.constant("payload").assign(bld.x.trys().call("std.json.stringifyAlloc", &.{
-            bld.x.id(smithy_conf.allocator_name),
-            bld.x.id("input"),
-            bld.x.raw(".{}"),
-        }));
-        try bld.defers(bld.x.raw("allocator.free(payload)"));
-
-        break :blk bld.x.structLiteral(null, &.{
-            bld.x.structAssign("type", bld.x.dot().id("json_10")),
-            bld.x.structAssign("content", bld.x.id("payload")),
-        });
-    } else bld.x.valueOf(null);
-
-    try bld.variable("request").assign(bld.x.trys().call("aws_internal.HttpRequest.init", &.{
-        bld.x.id(smithy_conf.allocator_name),
-        if (shape.input_type != null) bld.x.raw(".POST") else bld.x.raw(".GET"),
-        bld.x.valueOf("/"),
-        payload,
-    }));
-    try bld.defers(bld.x.raw("request.deinit()"));
-
-    try bld.trys().call("request.addHeader", &.{
-        bld.x.valueOf("X-Amz-Target"),
-        bld.x.valueOf(try std.fmt.allocPrint(self.alloc(), "{s}.{s}", .{
-            try symbols.getShapeNameRaw(symbols.service_id),
-            try symbols.getShapeNameRaw(shape.id),
-        })),
-    }).end();
-
-    try bld.constant("response").assign(bld.x.trys().call("self.http.send", &.{
-        bld.x.id(smithy_conf.allocator_name),
-        bld.x.raw("self.signer"),
-        bld.x.id("service"),
-        bld.x.id("event"),
-        bld.x.addressOf().id("request"),
-    }));
-    try bld.errorDefers().body(bld.x.raw("response.deinit()"));
-
-    try bld.returns().raw("undefined").end();
+    try itg_proto.writeOperationRequest(self.alloc(), symbols, bld, shape, protocol);
+    try itg_auth.writeOperationAuth(self.alloc(), symbols, bld, shape, auth);
+    try bld.trys().call("self.http.sendSync", &.{bld.x.id(aws_cfg.send_op_param)}).end();
+    try itg_proto.writeOperationResponse(self.alloc(), symbols, bld, shape, protocol);
 }

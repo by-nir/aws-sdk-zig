@@ -1,14 +1,41 @@
-const cdgn = @import("codegen");
-const Expr = cdgn.zig.Expr;
-const ExprBuild = cdgn.zig.ExprBuild;
+const zig = @import("codegen").zig;
+const Expr = zig.Expr;
+const ExprBuild = zig.ExprBuild;
 const smithy = @import("smithy/codegen");
-const config = smithy.config;
 const Function = smithy.RulesFunc;
 const BuiltIn = smithy.RulesBuiltIn;
 const FunctionsRegistry = smithy.RulesFuncsRegistry;
 const BuiltInsRegistry = smithy.RulesBuiltInsRegistry;
-const Generator = smithy.RulesGenerator;
 const ArgValue = smithy.RulesArgValue;
+const Generator = smithy.RulesGenerator;
+const aws_cfg = @import("../config.zig");
+
+const RulesId = smithy.RulesBuiltIn.Id;
+
+/// Provides a mapping from an endpoint built-in to a config value.
+pub fn mapConfigBuiltins(x: ExprBuild, id: RulesId) !Expr {
+    const field: []const u8 = switch (id) {
+        // Smithy
+        RulesId.endpoint => "endpoint_url",
+        // AWS
+        RulesId.of("AWS::Region") => "region.toCode()",
+        RulesId.of("AWS::UseFIPS") => "use_fips",
+        RulesId.of("AWS::UseDualStack") => "use_dual_stack",
+        // TODO: Remaining built-ins
+        //  BuiltInId.of("AWS::Auth::AccountId")
+        //  BuiltInId.of("AWS::Auth::AccountIdEndpointMode")
+        //  BuiltInId.of("AWS::Auth::CredentialScope")
+        //  BuiltInId.of("AWS::S3::Accelerate")
+        //  BuiltInId.of("AWS::S3::DisableMultiRegionAccessPoints")
+        //  BuiltInId.of("AWS::S3::ForcePathStyle")
+        //  BuiltInId.of("AWS::S3::UseArnRegion")
+        //  BuiltInId.of("AWS::S3::UseGlobalEndpoint")
+        //  BuiltInId.of("AWS::S3Control::UseArnRegion")
+        //  BuiltInId.of("AWS::STS::UseGlobalEndpoint")
+        else => return error.UnresolvedEndpointBuiltIn,
+    };
+    return x.id("source").dot().raw(field).consume();
+}
 
 pub const std_builtins: BuiltInsRegistry = &.{
     .{ BuiltIn.Id.of("AWS::Region"), BuiltIn{
@@ -67,12 +94,12 @@ pub const std_builtins: BuiltInsRegistry = &.{
 
 pub const std_functions: FunctionsRegistry = &.{
     .{ Function.Id.of("aws.partition"), Function{
-        .returns = Expr{ .raw = "?*const aws_internal.Partition" },
+        .returns = Expr{ .raw = "?*const " ++ aws_cfg.scope_private ++ ".Partition" },
         .returns_optional = true,
         .genFn = fnPartition,
     } },
     .{ Function.Id.of("aws.parseArn"), Function{
-        .returns = Expr{ .raw = "?aws_internal.Arn" },
+        .returns = Expr{ .raw = "?" ++ aws_cfg.scope_private ++ ".Arn" },
         .returns_optional = true,
         .genFn = fnParseArn,
     } },
@@ -84,28 +111,31 @@ pub const std_functions: FunctionsRegistry = &.{
 
 fn fnPartition(gen: *Generator, x: ExprBuild, args: []const ArgValue) !Expr {
     const region = try gen.evalArg(x, args[0]);
-    return x.call("aws_internal.resolvePartition", &.{x.fromExpr(region)}).consume();
+    return x.call(aws_cfg.scope_private ++ ".resolvePartition", &.{x.fromExpr(region)}).consume();
 }
 
 test "fnPartition" {
     try Function.expect(fnPartition, &.{
         .{ .string = "us-east-1" },
-    }, "aws_internal.resolvePartition(\"us-east-1\")");
+    }, aws_cfg.scope_private ++ ".resolvePartition(\"us-east-1\")");
 }
 
 fn fnParseArn(gen: *Generator, x: ExprBuild, args: []const ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
-    return x.call("aws_internal.Arn.init", &.{ x.id(config.stack_alloc_name), x.fromExpr(value) }).consume();
+    return x.call(aws_cfg.scope_private ++ ".Arn.init", &.{
+        x.id(aws_cfg.stack_alloc),
+        x.fromExpr(value),
+    }).consume();
 }
 
 test "fnParseArn" {
     try Function.expect(fnParseArn, &.{
         .{ .string = "arn:aws:iam::012345678910:user/johndoe" },
-    }, "aws_internal.Arn.init(scratch_alloc, \"arn:aws:iam::012345678910:user/johndoe\")");
+    }, aws_cfg.scope_private ++ ".Arn.init(scratch_alloc, \"arn:aws:iam::012345678910:user/johndoe\")");
 }
 
 fn fnIsVirtualHostableS3Bucket(gen: *Generator, x: ExprBuild, args: []const ArgValue) !Expr {
-    return x.call("aws_internal.isVirtualHostableS3Bucket", &.{
+    return x.call(aws_cfg.scope_private ++ ".isVirtualHostableS3Bucket", &.{
         x.fromExpr(try gen.evalArg(x, args[0])),
         x.fromExpr(try gen.evalArg(x, args[1])),
     }).consume();
@@ -115,5 +145,5 @@ test "fnIsVirtualHostableS3Bucket" {
     try Function.expect(fnIsVirtualHostableS3Bucket, &.{
         .{ .string = "foo" },
         .{ .boolean = false },
-    }, "aws_internal.isVirtualHostableS3Bucket(\"foo\", false)");
+    }, aws_cfg.scope_private ++ ".isVirtualHostableS3Bucket(\"foo\", false)");
 }

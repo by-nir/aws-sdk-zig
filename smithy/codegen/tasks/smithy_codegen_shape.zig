@@ -735,8 +735,8 @@ fn writeOperationFunc(self: *const Delegate, symbols: *SymbolsProvider, bld: *Co
 
     const context = .{ .self = self, .symbols = symbols, .shape = shape };
     const func1 = bld.public().function(op_name)
-        .arg("self", bld.x.id(cnfg.service_client_name))
-        .arg(cnfg.allocator_name, bld.x.raw("Allocator"));
+        .arg("self", bld.x.id(cnfg.service_client_type))
+        .arg(cnfg.alloc_param, bld.x.raw("Allocator"));
     const func2 = if (input_type) |input| func1.arg("input", bld.x.raw(input)) else func1;
     try func2.returns(bld.x.raw(return_type)).bodyWith(context, struct {
         fn f(ctx: @TypeOf(context), b: *BlockBuild) !void {
@@ -849,7 +849,7 @@ fn writeServiceShape(
 ) !void {
     try writeDocComment(self.alloc(), symbols, bld, id, false);
     const context = .{ .self = self, .symbols = symbols, .service = service };
-    try bld.public().constant(cnfg.service_client_name).assign(
+    try bld.public().constant(cnfg.service_client_type).assign(
         bld.x.@"struct"().bodyWith(context, struct {
             fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
                 if (ctx.self.hasOverride(ServiceHeadHook)) {
