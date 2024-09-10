@@ -9,15 +9,15 @@ pub fn build(b: *std.Build) void {
     // Dependencies
     //
 
-    const pipez = b.dependency("pipez", .{
+    const jobz = b.dependency("jobz", .{
         .target = target,
         .optimize = optimize,
-    }).module("pipez");
+    }).module("jobz");
 
-    const codegen = b.dependency("codegen", .{
+    const razdaz = b.dependency("razdaz", .{
         .target = target,
         .optimize = optimize,
-    }).module("codegen");
+    }).module("razdaz");
 
     //
     // Modules
@@ -34,8 +34,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .root_source_file = b.path("codegen/root.zig"),
         .imports = &.{
-            .{ .name = "pipez", .module = pipez },
-            .{ .name = "codegen", .module = codegen },
+            .{ .name = "jobz", .module = jobz },
+            .{ .name = "razdaz", .module = razdaz },
         },
     });
 
@@ -64,8 +64,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .root_source_file = b.path("codegen/root.zig"),
     });
-    test_codegen_exe.root_module.addImport("pipez", pipez);
-    test_codegen_exe.root_module.addImport("codegen", codegen);
+    test_codegen_exe.root_module.addImport("jobz", jobz);
+    test_codegen_exe.root_module.addImport("razdaz", razdaz);
     test_codegen_step.dependOn(&b.addRunArtifact(test_codegen_exe).step);
     test_all_step.dependOn(test_codegen_step);
     test_all_step.dependOn(&b.addInstallArtifact(test_codegen_exe, .{

@@ -2,16 +2,15 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const pipez = @import("pipez");
-const Task = pipez.Task;
-const Delegate = pipez.Delegate;
-const cdgn = @import("codegen");
-const Writer = cdgn.CodegenWriter;
-const md = cdgn.md;
-const zig = cdgn.zig;
+const jobz = @import("jobz");
+const Task = jobz.Task;
+const Delegate = jobz.Delegate;
+const md = @import("razdaz").md;
+const zig = @import("razdaz").zig;
 const ExprBuild = zig.ExprBuild;
 const BlockBuild = zig.BlockBuild;
 const ContainerBuild = zig.ContainerBuild;
+const Writer = @import("razdaz").CodegenWriter;
 const syb = @import("../systems/symbols.zig");
 const SmithyId = syb.SmithyId;
 const SmithyType = syb.SmithyType;
@@ -122,7 +121,7 @@ fn writeShapeTask(
 
 test "WriteShape" {
     try smithyTester(&.{.unit}, struct {
-        fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
+        fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Unit") });
 
             try testing.expectEqualDeep(&.{
@@ -156,7 +155,7 @@ fn writeListShape(
 
 test "writeListShape" {
     try smithyTester(&.{.list}, struct {
-        fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
+        fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#List") });
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Set") });
         }
@@ -198,7 +197,7 @@ fn writeMapShape(
 
 test "writeMapShape" {
     try smithyTester(&.{.map}, struct {
-        fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
+        fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Map") });
         }
     }.eval, "pub const Map = *const std.AutoArrayHashMapUnmanaged(i32, ?i32);");
@@ -348,7 +347,7 @@ test "writeEnumShape" {
     ;
 
     try smithyTester(&.{.enums_str}, struct {
-        fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
+        fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Enum") });
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#EnumTrt") });
         }
@@ -405,7 +404,7 @@ fn writeIntEnumShape(
 
 test "writeIntEnumShape" {
     try smithyTester(&.{.enum_int}, struct {
-        fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
+        fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#IntEnum") });
         }
     }.eval,
@@ -459,7 +458,7 @@ fn writeUnionShape(
 
 test "writeUnionShape" {
     try smithyTester(&.{.union_str}, struct {
-        fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
+        fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Union") });
         }
     }.eval,
@@ -617,7 +616,7 @@ fn isStructShapeMemberOptional(symbols: *SymbolsProvider, id: SmithyId, is_input
 
 test "writeStructShape" {
     try smithyTester(&.{ .structure, .err }, struct {
-        fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
+        fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Struct") });
         }
     }.eval,
@@ -669,7 +668,7 @@ test "writeOperationShapes" {
     });
 
     try smithyTester(&.{.service}, struct {
-        fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
+        fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(OpTest, .{bld});
         }
     }.eval,
@@ -755,7 +754,7 @@ test "writeOperationFunc" {
     });
 
     try smithyTester(&.{.service}, struct {
-        fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
+        fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(OpFuncTest, .{bld});
         }
     }.eval,
@@ -810,7 +809,7 @@ fn writeResourceShape(
 
 test "writeResourceShape" {
     try smithyTester(&.{.service}, struct {
-        fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
+        fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test.serve#Resource") });
         }
     }.eval,
@@ -870,7 +869,7 @@ fn writeServiceShape(
 
 test "writeServiceShape" {
     try smithyTester(&.{.service_with_input_members}, struct {
-        fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
+        fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test.serve#Service") });
         }
     }.eval,
@@ -1027,7 +1026,7 @@ fn writeErrorSetRetryFn(members: []ErrorSetMember, bld: *BlockBuild) !void {
 
 test "WriteErrorSet" {
     try smithyTester(&.{ .service, .err }, struct {
-        fn eval(tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void {
+        fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(WriteErrorSet, .{
                 bld,
                 SmithyId.of("test.serve#Operation"),
@@ -1155,10 +1154,10 @@ test "writeDocument" {
 
 fn smithyTester(
     setup_symbols: []const test_symbols.Case,
-    eval: *const fn (tester: *pipez.PipelineTester, bld: *ContainerBuild) anyerror!void,
+    eval: *const fn (tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void,
     expected: []const u8,
 ) !void {
-    var tester = try pipez.PipelineTester.init(.{ .invoker = TEST_INVOKER });
+    var tester = try jobz.PipelineTester.init(.{ .invoker = TEST_INVOKER });
     defer tester.deinit();
 
     _ = try tester.provideService(IssuesBag.init(test_alloc), struct {
@@ -1201,7 +1200,7 @@ fn smithyTester(
 }
 
 pub const TEST_INVOKER = blk: {
-    var builder = pipez.InvokerBuilder{};
+    var builder = jobz.InvokerBuilder{};
 
     _ = builder.Override(OperationShapeHook, "Test Operation Shape", struct {
         fn f(_: *const Delegate, bld: *BlockBuild, _: OperationShape) anyerror!void {

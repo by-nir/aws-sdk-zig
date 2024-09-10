@@ -1,5 +1,5 @@
 .{
-    .name = "codegen",
+    .name = "razdaz",
     .version = "0.0.0",
     .minimum_zig_version = "0.14.0",
 

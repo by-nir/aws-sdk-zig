@@ -3,9 +3,9 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const pipez = @import("pipez");
-const Task = pipez.Task;
-const Delegate = pipez.Delegate;
+const jobz = @import("jobz");
+const Task = jobz.Task;
+const Delegate = jobz.Delegate;
 const syb = @import("../systems/symbols.zig");
 const SmithyId = syb.SmithyId;
 const SmithyType = syb.SmithyType;
@@ -503,7 +503,7 @@ test "parseJson" {
         }
     };
 
-    var tester = try pipez.PipelineTester.init(.{});
+    var tester = try jobz.PipelineTester.init(.{});
     defer tester.deinit();
 
     var issues = IssuesBag.init(test_alloc);

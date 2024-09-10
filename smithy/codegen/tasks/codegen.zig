@@ -1,15 +1,14 @@
 const std = @import("std");
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const pipez = @import("pipez");
-const Task = pipez.Task;
-const Delegate = pipez.Delegate;
-const AbstractTask = pipez.AbstractTask;
-const AbstractEval = pipez.AbstractEval;
-const cdgn = @import("codegen");
-const md = cdgn.md;
-const zig = cdgn.zig;
-const Writer = cdgn.CodegenWriter;
+const jobz = @import("jobz");
+const Task = jobz.Task;
+const Delegate = jobz.Delegate;
+const AbstractTask = jobz.AbstractTask;
+const AbstractEval = jobz.AbstractEval;
+const md = @import("razdaz").md;
+const zig = @import("razdaz").zig;
+const Writer = @import("razdaz").CodegenWriter;
 
 const MD_HEAD = @embedFile("../template/head.md.template");
 const ZIG_HEAD = @embedFile("../template/head.zig.template");
@@ -38,7 +37,7 @@ fn markdownDocTask(
 
 pub fn evaluateMarkdownDoc(
     allocator: std.mem.Allocator,
-    pipeline: *pipez.Pipeline,
+    pipeline: *jobz.Pipeline,
     comptime task: Task,
     input: AbstractTask.ExtractChildInput(task),
 ) ![]const u8 {
@@ -56,7 +55,7 @@ test "markdown document" {
         }
     }.f, .{});
 
-    var tester = try pipez.PipelineTester.init(.{});
+    var tester = try jobz.PipelineTester.init(.{});
     defer tester.deinit();
 
     const output = try evaluateMarkdownDoc(test_alloc, tester.pipeline, TestDocument, .{});
@@ -88,7 +87,7 @@ fn zigScriptTask(
 
 pub fn evaluateZigScript(
     allocator: std.mem.Allocator,
-    pipeline: *pipez.Pipeline,
+    pipeline: *jobz.Pipeline,
     comptime task: Task,
     input: AbstractTask.ExtractChildInput(task),
 ) ![]const u8 {
@@ -106,7 +105,7 @@ test "zig script" {
         }
     }.f, .{});
 
-    var tester = try pipez.PipelineTester.init(.{});
+    var tester = try jobz.PipelineTester.init(.{});
     defer tester.deinit();
 
     const output = try evaluateZigScript(test_alloc, tester.pipeline, TestScript, .{});
@@ -114,12 +113,7 @@ test "zig script" {
     try expectEqualZigScript("const foo = undefined;", output);
 }
 
-fn evaluateCodegen(
-    allocator: std.mem.Allocator,
-    pipeline: *pipez.Pipeline,
-    comptime task: Task,
-    input: anytype,
-) ![]const u8 {
+fn evaluateCodegen(allocator: std.mem.Allocator, pipeline: *jobz.Pipeline, comptime task: Task, input: anytype) ![]const u8 {
     var buffer = std.ArrayList(u8).init(allocator);
     errdefer buffer.deinit();
 

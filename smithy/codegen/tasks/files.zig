@@ -2,14 +2,13 @@ const std = @import("std");
 const fs = std.fs;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const pipez = @import("pipez");
-const Task = pipez.Task;
-const Delegate = pipez.Delegate;
-const AbstractTask = pipez.AbstractTask;
-const AbstractEval = pipez.AbstractEval;
-const codegen = @import("codegen");
-const md = codegen.md;
-const Writer = codegen.CodegenWriter;
+const jobz = @import("jobz");
+const Task = jobz.Task;
+const Delegate = jobz.Delegate;
+const AbstractTask = jobz.AbstractTask;
+const AbstractEval = jobz.AbstractEval;
+const md = @import("razdaz").md;
+const Writer = @import("razdaz").CodegenWriter;
 
 const FilesScope = enum {
     work_dir,
@@ -84,7 +83,7 @@ fn writeFileTask(
 
 pub fn evaluateWriteFile(
     allocator: std.mem.Allocator,
-    pipeline: *pipez.Pipeline,
+    pipeline: *jobz.Pipeline,
     comptime task: Task,
     input: AbstractTask.ExtractChildInput(task),
 ) ![]const u8 {
@@ -102,7 +101,7 @@ test "evaluateWriteFile" {
         }
     }.f, .{});
 
-    var tester = try pipez.PipelineTester.init(.{});
+    var tester = try jobz.PipelineTester.init(.{});
     defer tester.deinit();
 
     const output = try evaluateWriteFile(test_alloc, tester.pipeline, TestWrite, .{"bar"});

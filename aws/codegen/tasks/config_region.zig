@@ -1,8 +1,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const zig = @import("codegen").zig;
-const pipez = @import("pipez");
-const Delegate = pipez.Delegate;
+const jobz = @import("jobz");
+const Delegate = jobz.Delegate;
+const zig = @import("razdaz").zig;
 const smithy = @import("smithy/codegen");
 const codegen_tasks = smithy.codegen_tasks;
 const name_util = smithy.name_util;
@@ -71,7 +71,7 @@ test "RegionsCodegen" {
     const arena_alloc = arena.allocator();
     defer arena.deinit();
 
-    var tester = try pipez.PipelineTester.init(.{});
+    var tester = try jobz.PipelineTester.init(.{});
     defer tester.deinit();
 
     const output = try codegen_tasks.evaluateZigScript(arena_alloc, tester.pipeline, RegionsCodegen, .{TEST_DEFS});

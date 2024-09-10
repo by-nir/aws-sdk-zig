@@ -2,16 +2,16 @@
   "version": "2.0.0",
   "tasks": [
     //
-    // Pipez
+    // Jobz
     //
 
     {
       "type": "shell",
-      "label": "pipez:test",
+      "label": "jobz:test",
       "command": "zig",
       "args": ["build", "test"],
       "options": {
-        "cwd": "${workspaceRoot}/pipez"
+        "cwd": "${workspaceRoot}/_jobz"
       },
       "presentation": {
         "echo": true,
@@ -31,11 +31,11 @@
     // Install unit tests for debugging
     {
       "type": "shell",
-      "label": "pipez:build-tests",
+      "label": "jobz:build-tests",
       "command": "zig",
       "args": ["build", "install", "test"],
       "options": {
-        "cwd": "${workspaceRoot}/pipez"
+        "cwd": "${workspaceRoot}/_jobz"
       },
       "presentation": {
         "echo": true,
@@ -52,16 +52,16 @@
     },
 
     //
-    // Codegen
+    // RazDaz
     //
 
     {
       "type": "shell",
-      "label": "codegen:test",
+      "label": "razdaz:test",
       "command": "zig",
       "args": ["build", "test"],
       "options": {
-        "cwd": "${workspaceRoot}/codegen"
+        "cwd": "${workspaceRoot}/_razdaz"
       },
       "presentation": {
         "echo": true,
@@ -81,11 +81,11 @@
     // Install unit tests for debugging
     {
       "type": "shell",
-      "label": "codegen:build-tests",
+      "label": "razdaz:build-tests",
       "command": "zig",
       "args": ["build", "install", "test"],
       "options": {
-        "cwd": "${workspaceRoot}/codegen"
+        "cwd": "${workspaceRoot}/_razdaz"
       },
       "presentation": {
         "echo": true,

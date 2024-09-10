@@ -9,15 +9,15 @@ pub fn build(b: *std.Build) void {
     // Dependencies
     //
 
-    const pipez = b.dependency("pipez", .{
+    const jobz = b.dependency("jobz", .{
         .target = target,
         .optimize = optimize,
-    }).module("pipez");
+    }).module("jobz");
 
-    const codegen = b.dependency("codegen", .{
+    const razdaz = b.dependency("razdaz", .{
         .target = target,
         .optimize = optimize,
-    }).module("codegen");
+    }).module("razdaz");
 
     const smithy = b.dependency("smithy", .{
         .target = target,
@@ -50,8 +50,8 @@ pub fn build(b: *std.Build) void {
         .error_tracing = true,
         .root_source_file = b.path("codegen/main.zig"),
     });
-    codegen_exe.root_module.addImport("pipez", pipez);
-    codegen_exe.root_module.addImport("codegen", codegen);
+    codegen_exe.root_module.addImport("jobz", jobz);
+    codegen_exe.root_module.addImport("razdaz", razdaz);
     codegen_exe.root_module.addImport("smithy/codegen", smithy_codegen);
     b.installArtifact(codegen_exe);
 
@@ -84,8 +84,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .root_source_file = b.path("codegen/main.zig"),
     });
-    test_codegen_exe.root_module.addImport("pipez", pipez);
-    test_codegen_exe.root_module.addImport("codegen", codegen);
+    test_codegen_exe.root_module.addImport("jobz", jobz);
+    test_codegen_exe.root_module.addImport("razdaz", razdaz);
     test_codegen_exe.root_module.addImport("smithy/codegen", smithy_codegen);
     test_codegen_step.dependOn(&b.addRunArtifact(test_codegen_exe).step);
     test_all_step.dependOn(&b.addInstallArtifact(test_codegen_exe, .{

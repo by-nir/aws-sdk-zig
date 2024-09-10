@@ -1,9 +1,9 @@
 const std = @import("std");
-const pipez = @import("pipez");
-const Task = pipez.Task;
-const Delegate = pipez.Delegate;
-const md = @import("codegen").md;
-const zig = @import("codegen").zig;
+const jobz = @import("jobz");
+const Task = jobz.Task;
+const Delegate = jobz.Delegate;
+const md = @import("razdaz").md;
+const zig = @import("razdaz").zig;
 const smithy = @import("smithy/codegen");
 const SmithyTask = smithy.SmithyTask;
 const SmithyOptions = smithy.SmithyOptions;
@@ -63,7 +63,7 @@ const smithy_config = SmithyOptions{
 };
 
 pub const pipeline_invoker = blk: {
-    var builder = pipez.InvokerBuilder{};
+    var builder = jobz.InvokerBuilder{};
 
     _ = builder.Override(smithy.ServiceFilterHook, "AWS Service Filter", filterSourceModelHook, .{});
     _ = builder.Override(smithy.ServiceReadmeHook, "AWS Service Readme", writeReadmeHook, .{});

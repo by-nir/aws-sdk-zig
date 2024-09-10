@@ -9,7 +9,7 @@ pub fn build(b: *std.Build) void {
     // Modules
     //
 
-    _ = b.addModule("codegen", .{
+    _ = b.addModule("razdaz", .{
         .target = target,
         .optimize = optimize,
         .root_source_file = b.path("src/root.zig"),

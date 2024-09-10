@@ -2,15 +2,14 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const pipez = @import("pipez");
-const Task = pipez.Task;
-const Delegate = pipez.Delegate;
-const AbstractTask = pipez.AbstractTask;
-const AbstractEval = pipez.AbstractEval;
-const cdgn = @import("codegen");
-const md = cdgn.md;
-const zig = cdgn.zig;
-const Writer = cdgn.CodegenWriter;
+const jobz = @import("jobz");
+const Task = jobz.Task;
+const Delegate = jobz.Delegate;
+const AbstractTask = jobz.AbstractTask;
+const AbstractEval = jobz.AbstractEval;
+const md = @import("razdaz").md;
+const zig = @import("razdaz").zig;
+const Writer = @import("razdaz").CodegenWriter;
 const syb = @import("../systems/symbols.zig");
 const SmithyId = syb.SmithyId;
 const SymbolsProvider = syb.SymbolsProvider;
@@ -117,7 +116,7 @@ fn serviceClientTask(
 }
 
 test "ServiceClient" {
-    var tester = try pipez.PipelineTester.init(.{ .invoker = shape_tasks.TEST_INVOKER });
+    var tester = try jobz.PipelineTester.init(.{ .invoker = shape_tasks.TEST_INVOKER });
     defer tester.deinit();
 
     var issues = IssuesBag.init(test_alloc);
@@ -196,7 +195,7 @@ fn resourceFilename(allocator: Allocator, symbols: *SymbolsProvider, id: SmithyI
 }
 
 test "ServiceResource" {
-    var tester = try pipez.PipelineTester.init(.{ .invoker = shape_tasks.TEST_INVOKER });
+    var tester = try jobz.PipelineTester.init(.{ .invoker = shape_tasks.TEST_INVOKER });
     defer tester.deinit();
 
     var issues = IssuesBag.init(test_alloc);
@@ -285,7 +284,7 @@ fn processOperationErrors(
 }
 
 test "ServiceErrors" {
-    var tester = try pipez.PipelineTester.init(.{ .invoker = shape_tasks.TEST_INVOKER });
+    var tester = try jobz.PipelineTester.init(.{ .invoker = shape_tasks.TEST_INVOKER });
     defer tester.deinit();
 
     var issues = IssuesBag.init(test_alloc);
@@ -338,7 +337,7 @@ fn serviceEndpointTask(
 }
 
 test "ServiceEndpoint" {
-    var tester = try pipez.PipelineTester.init(.{});
+    var tester = try jobz.PipelineTester.init(.{});
     defer tester.deinit();
 
     var issues = IssuesBag.init(test_alloc);
@@ -424,7 +423,7 @@ fn processIntro(allocator: Allocator, source: []const u8) ![]const u8 {
 
 test "ServiceReadme" {
     const invoker = comptime blk: {
-        var builder = pipez.InvokerBuilder{};
+        var builder = jobz.InvokerBuilder{};
 
         _ = builder.Override(ServiceReadmeHook, "Test Readme", struct {
             fn f(_: *const Delegate, bld: md.ContainerAuthor, metadata: ReadmeMetadata) anyerror!void {
@@ -435,7 +434,7 @@ test "ServiceReadme" {
         break :blk builder.consume();
     };
 
-    var tester = try pipez.PipelineTester.init(.{ .invoker = invoker });
+    var tester = try jobz.PipelineTester.init(.{ .invoker = invoker });
     defer tester.deinit();
 
     _ = try tester.provideService(SymbolsProvider{ .arena = test_alloc }, struct {
@@ -475,7 +474,7 @@ fn serviceScriptGenTask(
 pub fn expectServiceScript(
     comptime expected: []const u8,
     comptime task: Task,
-    pipeline: *pipez.Pipeline,
+    pipeline: *jobz.Pipeline,
     input: AbstractTask.ExtractChildInput(task),
 ) !void {
     const output = try codegen_tasks.evaluateZigScript(test_alloc, pipeline, task, input);
@@ -493,7 +492,7 @@ pub fn expectServiceScript(
 
 test "ServiceScriptGen" {
     const invoker = comptime blk: {
-        var builder = pipez.InvokerBuilder{};
+        var builder = jobz.InvokerBuilder{};
 
         _ = builder.Override(ScriptHeadHook, "Test Script Head", struct {
             fn f(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
@@ -504,7 +503,7 @@ test "ServiceScriptGen" {
         break :blk builder.consume();
     };
 
-    var tester = try pipez.PipelineTester.init(.{ .invoker = invoker });
+    var tester = try jobz.PipelineTester.init(.{ .invoker = invoker });
     defer tester.deinit();
 
     const TestScript = ServiceScriptGen.Task("Test Script", struct {

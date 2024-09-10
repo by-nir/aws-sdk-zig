@@ -4,8 +4,8 @@
     .minimum_zig_version = "0.14.0",
 
     .dependencies = .{
-        .pipez = .{ .path = "../pipez" },
-        .codegen = .{ .path = "../codegen" },
+        .jobz = .{ .path = "../_jobz" },
+        .razdaz = .{ .path = "../_razdaz" },
     },
 
     .paths = .{

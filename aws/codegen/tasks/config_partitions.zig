@@ -5,9 +5,9 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const zig = @import("codegen").zig;
-const pipez = @import("pipez");
-const Delegate = pipez.Delegate;
+const jobz = @import("jobz");
+const Delegate = jobz.Delegate;
+const zig = @import("razdaz").zig;
 const smithy = @import("smithy/codegen");
 const files_tasks = smithy.files_tasks;
 const codegen_tasks = smithy.codegen_tasks;
@@ -163,7 +163,7 @@ test "PartitionsCodegen" {
     const arena_alloc = arena.allocator();
     defer arena.deinit();
 
-    var tester = try pipez.PipelineTester.init(.{});
+    var tester = try jobz.PipelineTester.init(.{});
     defer tester.deinit();
 
     var reader = try JsonReader.initFixed(arena_alloc, TEST_SRC);

@@ -3,10 +3,10 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const cdgn = @import("codegen");
-const Writer = cdgn.CodegenWriter;
-const md = cdgn.md;
-const zig = cdgn.zig;
+const razdaz = @import("razdaz");
+const Writer = razdaz.CodegenWriter;
+const md = razdaz.md;
+const zig = razdaz.zig;
 const Expr = zig.Expr;
 const ExprBuild = zig.ExprBuild;
 const BlockBuild = zig.BlockBuild;
@@ -447,7 +447,7 @@ fn generateEndpointRule(self: *Self, bld: *BlockBuild, endpoint: mdl.Endpoint) !
     const headers = if (endpoint.headers) |headers| blk: {
         try bld.constant("headers").assign(
             bld.x.trys().id(cfg.alloc_param).dot().call("alloc", &.{
-                bld.x.id(cfg.scope_private).dot().id("HttpHeader"),
+                bld.x.raw(cfg.scope_private).dot().id("HttpHeader"),
                 bld.x.valueOf(headers.len),
             }),
         );
@@ -478,7 +478,7 @@ fn generateEndpointRule(self: *Self, bld: *BlockBuild, endpoint: mdl.Endpoint) !
 
         try bld.constant("properties").assign(
             bld.x.trys().id(cfg.alloc_param).dot().call("alloc", &.{
-                bld.x.id(cfg.scope_private).dot().raw("Document.KV"),
+                bld.x.raw(cfg.scope_private).dot().raw("Document.KV"),
                 bld.x.valueOf(if (auth_schemes == null) props.len else props.len - 1),
             }),
         );
@@ -499,7 +499,7 @@ fn generateEndpointRule(self: *Self, bld: *BlockBuild, endpoint: mdl.Endpoint) !
     const auth = if (auth_schemes) |schemes| blk: {
         try bld.constant("schemes").assign(
             bld.x.trys().id(cfg.alloc_param).dot().call("alloc", &.{
-                bld.x.id(cfg.scope_private).dot().id("AuthScheme"),
+                bld.x.raw(cfg.scope_private).dot().id("AuthScheme"),
                 bld.x.valueOf(schemes.len),
             }),
         );
@@ -515,7 +515,7 @@ fn generateEndpointRule(self: *Self, bld: *BlockBuild, endpoint: mdl.Endpoint) !
             const id = try std.fmt.allocPrint(self.arena, "scheme_{d}", .{i});
             try bld.constant(id).assign(
                 bld.x.trys().id(cfg.alloc_param).dot().call("alloc", &.{
-                    bld.x.id(cfg.scope_private).dot().raw("Document.KV"),
+                    bld.x.raw(cfg.scope_private).dot().raw("Document.KV"),
                     bld.x.valueOf(props.len),
                 }),
             );

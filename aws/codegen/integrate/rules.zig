@@ -1,4 +1,4 @@
-const zig = @import("codegen").zig;
+const zig = @import("razdaz").zig;
 const Expr = zig.Expr;
 const ExprBuild = zig.ExprBuild;
 const smithy = @import("smithy/codegen");

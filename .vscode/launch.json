@@ -2,22 +2,22 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Pipez",
+      "name": "Jobz",
       "type": "lldb",
       "request": "launch",
-      "program": "${workspaceFolder}/pipez/zig-out/bin/test",
+      "program": "${workspaceFolder}/_jobz/zig-out/bin/test",
       "args": [],
-      "cwd": "${workspaceFolder}/pipez",
-      "preLaunchTask": "pipez:build-tests"
+      "cwd": "${workspaceFolder}/_jobz",
+      "preLaunchTask": "jobz:build-tests"
     },
     {
-      "name": "Codegen",
+      "name": "RazDaz",
       "type": "lldb",
       "request": "launch",
-      "program": "${workspaceFolder}/codegen/zig-out/bin/test",
+      "program": "${workspaceFolder}/_razdaz/zig-out/bin/test",
       "args": [],
-      "cwd": "${workspaceFolder}/codegen",
-      "preLaunchTask": "codegen:build-tests"
+      "cwd": "${workspaceFolder}/_razdaz",
+      "preLaunchTask": "razdaz:build-tests"
     },
     {
       "name": "Smithy: Codegen",
