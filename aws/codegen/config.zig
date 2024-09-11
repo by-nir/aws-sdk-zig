@@ -12,6 +12,9 @@ pub const endpoint_config_type = smithy.endpoint_config_type;
 /// Service client type name.
 pub const service_client_type = smithy.service_client_type;
 
+/// Smithy runtime scope.
+pub const scope_smithy = smithy.scope_private;
+
 /// Public SDK runtime scope.
 pub const scope_runtime = "aws_runtime";
 
@@ -29,3 +32,6 @@ pub const send_op_param = "operation";
 
 /// Input parameter identifier.
 pub const send_input_param = "input";
+
+/// Endpoint parameter identifier.
+pub const send_endpoint_param = "endpoint";

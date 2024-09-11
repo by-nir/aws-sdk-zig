@@ -73,6 +73,9 @@ pub const pipeline_invoker = blk: {
     });
 
     _ = builder.Override(smithy.ExtendClientScriptHook, "AWS Client Script Head", extendClientScriptHook, .{});
+    _ = builder.Override(smithy.ServiceAuthSchemesHook, "AWS Service Auth Schemes", itg_auth.extendServiceAuthSchemes, .{
+        .injects = &.{SymbolsProvider},
+    });
     _ = builder.Override(smithy.ServiceHeadHook, "AWS Service Shape Head", writeServiceHeadHook, .{
         .injects = &.{SymbolsProvider},
     });
@@ -187,8 +190,6 @@ fn writeOperationShapeHook(self: *const Delegate, symbols: *SymbolsProvider, bld
     }));
     try bld.defers(bld.x.id("endpoint").dot().call("deinit", &.{alloc_expr}));
 
-    // TODO: Resolve
-    const auth: itg_auth.Scheme = .sigv4;
     const protocol: itg_proto.Protocol = .json_10;
 
     try bld.variable(aws_cfg.send_op_param).assign(bld.x.trys().id(aws_cfg.scope_private).dot().call(
@@ -204,7 +205,7 @@ fn writeOperationShapeHook(self: *const Delegate, symbols: *SymbolsProvider, bld
     try bld.defers(bld.x.id(aws_cfg.send_op_param).dot().call("deinit", &.{}));
 
     try itg_proto.writeOperationRequest(self.alloc(), symbols, bld, shape, protocol);
-    try itg_auth.writeOperationAuth(self.alloc(), symbols, bld, shape, auth);
+    if (shape.auth_schemes.len > 0) try itg_auth.writeOperationAuth(self.alloc(), symbols, bld, shape);
     try bld.trys().call("self.http.sendSync", &.{bld.x.id(aws_cfg.send_op_param)}).end();
     try itg_proto.writeOperationResponse(self.alloc(), symbols, bld, shape, protocol);
 }

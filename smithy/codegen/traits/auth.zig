@@ -17,10 +17,37 @@ pub const registry: TraitsRegistry = &.{
     // smithy.api#authDefinition
     .{ http_basic_id, null },
     .{ http_bearer_id, null },
-    .{ HttpApiKey.id, HttpApiKey.parse },
     .{ http_digest_id, null },
+    .{ HttpApiKey.id, HttpApiKey.parse },
     .{ optional_auth_id, null },
 };
+
+pub const AuthId = enum(u64) {
+    none = 0,
+    http_basic = parse("smithy.api#httpBasicAuth"),
+    http_bearer = parse("smithy.api#httpBearerAuth"),
+    http_api_key = parse("smithy.api#httpApiKeyAuth"),
+    http_digest = parse("smithy.api#httpDigestAuth"),
+    _,
+
+    pub fn of(trait_id: []const u8) AuthId {
+        return @enumFromInt(parse(trait_id));
+    }
+
+    fn parse(s: []const u8) u64 {
+        var x: u64 = 0;
+        const trim = if (std.mem.indexOfScalar(u8, s, '#')) |i| s[i + 1 .. s.len] else s;
+        const len = @min(trim.len, @sizeOf(@TypeOf(x)));
+        @memcpy(std.mem.asBytes(&x)[0..len], trim[0..len]);
+        return x;
+    }
+};
+
+test "AuthId" {
+    try testing.expectEqual(AuthId.http_basic, AuthId.of("httpBasicAuth"));
+    try testing.expectEqual(AuthId.http_basic, AuthId.of("smithy.api#httpBasicAuth"));
+    try testing.expectEqual(@as(AuthId, @enumFromInt(7303014)), AuthId.of("foo"));
+}
 
 /// Indicates that a service supports HTTP Basic Authentication as defined in
 /// [RFC 2617](https://datatracker.ietf.org/doc/html/rfc2617.html).
@@ -134,29 +161,29 @@ pub const Auth = struct {
     pub const id = SmithyId.of("smithy.api#auth");
 
     pub fn parse(arena: Allocator, reader: *JsonReader) !*const anyopaque {
-        var list = std.ArrayList(SmithyId).init(arena);
+        var list = std.ArrayList(AuthId).init(arena);
         errdefer list.deinit();
 
         try reader.nextArrayBegin();
         while (try reader.peek() != .array_end) {
             const name = try reader.nextString();
-            try list.append(SmithyId.of(name));
+            try list.append(AuthId.of(name));
         }
 
-        const slice = try list.toOwnedSliceSentinel(SmithyId.NULL);
+        const slice = try list.toOwnedSliceSentinel(AuthId.none);
         return @ptrCast(slice.ptr);
     }
 
-    pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?[]const SmithyId {
+    pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?[]const AuthId {
         const trait = symbols.getTraitOpaque(shape_id, id);
         return if (trait) |ptr| cast(ptr) else null;
     }
 
-    fn cast(ptr: *const anyopaque) []const SmithyId {
+    fn cast(ptr: *const anyopaque) []const AuthId {
         var i: usize = 0;
-        const schemes: [*]const SmithyId = @ptrCast(@alignCast(ptr));
+        const schemes: [*]const AuthId = @ptrCast(@alignCast(ptr));
         while (true) : (i += 1) {
-            if (schemes[i] == SmithyId.NULL) return schemes[0..i];
+            if (schemes[i] == AuthId.none) return schemes[0..i];
         }
         unreachable;
     }
@@ -172,5 +199,5 @@ test "Auth" {
 
     const schemes = Auth.cast(try Auth.parse(arena_alloc, &reader));
     reader.deinit();
-    try testing.expectEqualDeep(&[_]SmithyId{ SmithyId.of("foo"), SmithyId.of("bar") }, schemes);
+    try testing.expectEqualDeep(&[_]AuthId{ AuthId.of("foo"), AuthId.of("bar") }, schemes);
 }

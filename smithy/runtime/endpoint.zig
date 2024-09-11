@@ -31,6 +31,7 @@ pub const AuthScheme = struct {
 };
 
 pub const AuthId = enum(u64) {
+    none = 0,
     _,
 
     pub fn of(name: []const u8) AuthId {

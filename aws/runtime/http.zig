@@ -193,7 +193,7 @@ pub const Request = struct {
             const value_fmt = try escapeUri(scratch_alloc, kv.value_ptr.*);
             kvs[count] = .{ .name = name_fmt, .value = value_fmt };
         }
-        std.sort.pdq(std.http.Header, kvs[0..count], {}, sortHeaderName);
+        std.mem.sort(std.http.Header, kvs[0..count], {}, sortHeaderName);
 
         var out_stream = std.io.fixedBufferStream(out_buffer);
         const out_writer = out_stream.writer();
@@ -218,7 +218,7 @@ pub const Request = struct {
             const value_fmt = mem.trim(u8, kv.value_ptr.*, &std.ascii.whitespace);
             kvs[count] = .{ .name = name_fmt, .value = value_fmt };
         }
-        std.sort.pdq(std.http.Header, kvs[0..count], {}, sortHeaderName);
+        std.mem.sort(std.http.Header, kvs[0..count], {}, sortHeaderName);
 
         var out_stream = std.io.fixedBufferStream(out_buffer);
         const out_writer = out_stream.writer();
@@ -238,7 +238,7 @@ pub const Request = struct {
         for (self.headers.keys(), 0..) |name, i| {
             names[i] = try std.ascii.allocLowerString(scratch_alloc, name);
         }
-        std.sort.pdq([]const u8, names[0..count], {}, sortString);
+        std.mem.sort([]const u8, names[0..count], {}, sortString);
 
         var out_stream = std.io.fixedBufferStream(out_buffer);
         const out_writer = out_stream.writer();

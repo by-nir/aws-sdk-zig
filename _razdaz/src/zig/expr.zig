@@ -132,9 +132,9 @@ const ExprType = union(enum) {
         switch (self) {
             .This => try writer.appendString("@This()"),
             .val_index => |d| try writer.appendFmt("[{}]", .{d}),
-            .val_from => |d| try writer.appendFmt("[{}..]", .{d}),
+            .val_from => |d| try writer.appendFmt("{}..", .{d}),
             .val_range => |r| {
-                try writer.appendFmt("[{}..{}]", .{ r[0], r[1] });
+                try writer.appendFmt("{}..{}", .{ r[0], r[1] });
             },
             .optional => |t| try writer.appendFmt("?{}", .{t}),
             .array => |t| {

@@ -21,15 +21,16 @@ const JsonValue = @import("../utils/JsonReader.zig").Value;
 const cnfg = @import("../config.zig");
 const ScopeTag = @import("smithy.zig").ScopeTag;
 const CodegenPolicy = @import("smithy_codegen.zig").CodegenPolicy;
-const trt_auth = @import("../traits/auth.zig");
 const trt_docs = @import("../traits/docs.zig");
 const trt_http = @import("../traits/http.zig");
 const trt_refine = @import("../traits/refine.zig");
 const trt_behave = @import("../traits/behavior.zig");
 const trt_constr = @import("../traits/constraint.zig");
 const test_symbols = @import("../testing/symbols.zig");
+const trt_auth = @import("../traits/auth.zig");
+const AuthId = trt_auth.AuthId;
 
-pub const ServiceAuthSchemesHook = Task.Hook("Smithy Service Auth Schemes", anyerror!void, &.{*std.ArrayList(SmithyId)});
+pub const ServiceAuthSchemesHook = Task.Hook("Smithy Service Auth Schemes", anyerror!void, &.{*std.ArrayList(AuthId)});
 pub const ServiceHeadHook = Task.Hook("Smithy Service Head", anyerror!void, &.{ *ContainerBuild, *const syb.SmithyService });
 pub const ResourceHeadHook = Task.Hook("Smithy Resource Head", anyerror!void, &.{ *ContainerBuild, SmithyId, *const syb.SmithyResource });
 pub const OperationShapeHook = Task.Hook("Smithy Operation Shape", anyerror!void, &.{ *BlockBuild, OperationShape });
@@ -41,7 +42,7 @@ pub const OperationShape = struct {
     errors_type: ?[]const u8,
     return_type: []const u8,
     auth_optional: bool,
-    auth_priority: []const SmithyId,
+    auth_schemes: []const AuthId,
 };
 
 pub const WriteShape = Task.Define("Smithy Write Shape", writeShapeTask, .{
@@ -721,7 +722,9 @@ fn writeOperationFunc(self: *const Delegate, symbols: *SymbolsProvider, bld: *Co
         "!void";
 
     const auth_optional = symbols.hasTrait(id, trt_auth.optional_auth_id);
-    const auth_priority = trt_auth.Auth.get(symbols, id) orelse symbols.getServiceAuthPriority();
+    const auth_schemes = trt_auth.Auth.get(symbols, id) orelse
+        trt_auth.Auth.get(symbols, symbols.service_id) orelse
+        symbols.service_auth_schemes;
 
     const shape = OperationShape{
         .id = id,
@@ -730,7 +733,7 @@ fn writeOperationFunc(self: *const Delegate, symbols: *SymbolsProvider, bld: *Co
         .errors_type = error_type,
         .return_type = return_type,
         .auth_optional = auth_optional,
-        .auth_priority = auth_priority,
+        .auth_schemes = auth_schemes,
     };
 
     const context = .{ .self = self, .symbols = symbols, .shape = shape };
@@ -852,21 +855,22 @@ fn writeServiceShape(
     //
 
     std.debug.assert(symbols.service_auth_schemes.len == 0);
-    var auth_schemes = std.ArrayList(SmithyId).init(self.alloc());
+    var auth_schemes = std.ArrayList(AuthId).init(self.alloc());
 
-    const auth_traits_ids: []const SmithyId = &.{
-        trt_auth.http_basic_id,
-        trt_auth.http_bearer_id,
-        trt_auth.http_digest_id,
-        trt_auth.HttpApiKey.id,
-    };
-    for (auth_traits_ids) |tid| {
-        if (symbols.hasTrait(symbols.service_id, tid)) try auth_schemes.append(tid);
-    }
-
+    const sid = symbols.service_id;
+    if (symbols.hasTrait(sid, trt_auth.http_basic_id)) try auth_schemes.append(.http_basic);
+    if (symbols.hasTrait(sid, trt_auth.http_bearer_id)) try auth_schemes.append(.http_bearer);
+    if (symbols.hasTrait(sid, trt_auth.http_digest_id)) try auth_schemes.append(.http_digest);
+    if (symbols.hasTrait(sid, trt_auth.HttpApiKey.id)) try auth_schemes.append(.http_api_key);
     if (self.hasOverride(ServiceAuthSchemesHook)) {
         try self.evaluate(ServiceAuthSchemesHook, .{&auth_schemes});
     }
+
+    std.mem.sort(AuthId, auth_schemes.items, {}, struct {
+        fn f(_: void, l: AuthId, r: AuthId) bool {
+            return std.ascii.lessThanIgnoreCase(std.mem.asBytes(&l), std.mem.asBytes(&r));
+        }
+    }.f);
 
     symbols.service_auth_schemes = try auth_schemes.toOwnedSlice();
     errdefer symbols.service_auth_schemes = &.{};

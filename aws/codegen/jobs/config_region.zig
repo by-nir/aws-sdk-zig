@@ -41,7 +41,7 @@ fn writeEnum(ctx: Context, bld: *zig.ContainerBuild) !void {
     );
     try bld.constant("map").assign(map_init);
 
-    try bld.public().function("parseCode")
+    try bld.public().function("parse")
         .arg("code", bld.x.typeOf([]const u8))
         .returns(bld.x.raw("?Region")).body(struct {
         fn f(b: *zig.BlockBuild) !void {
@@ -49,16 +49,16 @@ fn writeEnum(ctx: Context, bld: *zig.ContainerBuild) !void {
         }
     }.f);
 
-    try bld.public().function("toCode")
+    try bld.public().function("toString")
         .arg("self", bld.x.raw("Region"))
         .returns(bld.x.typeOf([]const u8)).bodyWith(ctx, struct {
         fn f(c: Context, b: *zig.BlockBuild) !void {
-            try b.returns().switchWith(b.x.id("self"), c, writeToCode).end();
+            try b.returns().switchWith(b.x.id("self"), c, writeToString).end();
         }
     }.f);
 }
 
-fn writeToCode(ctx: Context, bld: *zig.SwitchBuild) !void {
+fn writeToString(ctx: Context, bld: *zig.SwitchBuild) !void {
     for (ctx.defs) |def| {
         const field = try name_util.snakeCase(ctx.arena, def.code);
         try bld.branch().case(bld.x.dot().id(field)).body(bld.x.valueOf(def.code));
@@ -108,11 +108,11 @@ const TEST_OUT: []const u8 =
     \\        .{ "us-gov-west-1", .us_gov_west_1 },
     \\    });
     \\
-    \\    pub fn parseCode(code: []const u8) ?Region {
+    \\    pub fn parse(code: []const u8) ?Region {
     \\        return map.get(code);
     \\    }
     \\
-    \\    pub fn toCode(self: Region) []const u8 {
+    \\    pub fn toString(self: Region) []const u8 {
     \\        return switch (self) {
     \\            .il_central_1 => "il-central-1",
     \\            .us_east_1 => "us-east-1",

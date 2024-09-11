@@ -30,15 +30,15 @@ pub const _private_ = struct {
     pub const ClientOperation = http.Operation;
     pub const ClientRequest = http.Request;
     pub const ClientResponse = http.Response;
-    pub const auth = auth_schemes;
-    pub const SignBuffer = auth_sign.SignBuffer;
-    pub const protocol = struct {
-        pub const aws_json = proto_aws_json;
-    };
     pub const Arn = endpoint.Arn;
     pub const Partition = endpoint.Partition;
     pub const isVirtualHostableS3Bucket = endpoint.isVirtualHostableS3Bucket;
     pub const resolvePartition = partition.resolve;
+    pub const SignBuffer = auth_sign.SignBuffer;
+    pub const auth = auth_schemes;
+    pub const protocol = struct {
+        pub const aws_json = proto_aws_json;
+    };
 };
 
 test {

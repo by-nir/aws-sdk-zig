@@ -136,11 +136,11 @@ pub const Region = enum {
         .{ "eu-isoe-west-1", .eu_isoe_west_1 },
     });
 
-    pub fn parseCode(code: []const u8) ?Region {
+    pub fn parse(code: []const u8) ?Region {
         return map.get(code);
     }
 
-    pub fn toCode(self: Region) []const u8 {
+    pub fn toString(self: Region) []const u8 {
         return switch (self) {
             .af_south_1 => "af-south-1",
             .ap_east_1 => "ap-east-1",

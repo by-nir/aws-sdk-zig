@@ -17,6 +17,7 @@ pub const _private_ = struct {
     pub const HttpHeader = http.HttpHeader;
     pub const Document = values.Document;
     pub const substring = values.substring;
+    pub const AuthId = endpoint.AuthId;
     pub const Endpoint = endpoint.Endpoint;
     pub const AuthScheme = endpoint.AuthScheme;
 };

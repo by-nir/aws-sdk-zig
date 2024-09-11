@@ -761,7 +761,7 @@ pub const Switch = struct {
             };
             return .{
                 .parent = self,
-                .cases = StackChain(?CaseBuild).start(.{ .single = _raw("else") }),
+                .cases = StackChain(?CaseBuild).start(.{ .single = self.x.raw("else") }),
                 .allow_case = false,
             };
         }
@@ -774,7 +774,7 @@ pub const Switch = struct {
             };
             return .{
                 .parent = self,
-                .cases = StackChain(?CaseBuild).start(.{ .single = _raw("_") }),
+                .cases = StackChain(?CaseBuild).start(.{ .single = self.x.raw("_") }),
                 .allow_case = false,
             };
         }

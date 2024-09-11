@@ -18,7 +18,7 @@ pub fn mapConfigBuiltins(x: ExprBuild, id: RulesId) !Expr {
         // Smithy
         RulesId.endpoint => "endpoint_url",
         // AWS
-        RulesId.of("AWS::Region") => "region.toCode()",
+        RulesId.of("AWS::Region") => "region.toString()",
         RulesId.of("AWS::UseFIPS") => "use_fips",
         RulesId.of("AWS::UseDualStack") => "use_dual_stack",
         // TODO: Remaining built-ins

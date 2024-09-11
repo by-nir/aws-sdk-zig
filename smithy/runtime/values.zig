@@ -40,6 +40,17 @@ pub const Document = union(enum) {
     object: []const KV,
     object_alloc: []const KV,
 
+    pub const KV = struct {
+        key: []const u8,
+        key_alloc: bool,
+        document: Document,
+
+        pub fn deinit(self: KV, allocator: Allocator) void {
+            if (self.key_alloc) allocator.free(self.key);
+            self.document.deinit(allocator);
+        }
+    };
+
     pub fn deinit(self: Document, allocator: Allocator) void {
         switch (self) {
             .string_alloc => |s| allocator.free(s),
@@ -54,16 +65,26 @@ pub const Document = union(enum) {
         }
     }
 
-    pub const KV = struct {
-        key: []const u8,
-        key_alloc: bool,
-        document: Document,
+    pub fn getString(self: Document) []const u8 {
+        return switch (self) {
+            .string, .string_alloc => |s| s,
+            else => unreachable,
+        };
+    }
 
-        pub fn deinit(self: KV, allocator: Allocator) void {
-            if (self.key_alloc) allocator.free(self.key);
-            self.document.deinit(allocator);
-        }
-    };
+    pub fn getArray(self: Document) []const Document {
+        return switch (self) {
+            .array, .array_alloc => |s| s,
+            else => unreachable,
+        };
+    }
+
+    pub fn getObject(self: Document) []const KV {
+        return switch (self) {
+            .object, .object_alloc => |s| s,
+            else => unreachable,
+        };
+    }
 };
 
 test "Document.deinit" {
