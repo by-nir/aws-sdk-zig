@@ -3,9 +3,8 @@ const Allocator = std.mem.Allocator;
 const jobz = @import("jobz");
 const Delegate = jobz.Delegate;
 const zig = @import("razdaz").zig;
-const smithy = @import("smithy/codegen");
-const codegen_tasks = smithy.codegen_tasks;
-const name_util = smithy.name_util;
+const codegen_jobs = @import("razdaz/jobs").codegen;
+const name_util = @import("smithy/codegen").name_util;
 
 pub const RegionDef = struct {
     code: []const u8,
@@ -17,7 +16,7 @@ const Context = struct {
     defs: []const RegionDef,
 };
 
-pub const RegionsCodegen = codegen_tasks.ZigScript.Task("AWS Config Regions", regionsCodegenTask, .{});
+pub const RegionsCodegen = codegen_jobs.ZigScript.Task("AWS Config Regions", regionsCodegenTask, .{});
 fn regionsCodegenTask(self: *const Delegate, bld: *zig.ContainerBuild, defs: []const RegionDef) anyerror!void {
     try bld.constant("std").assign(bld.x.import("std"));
 
@@ -74,8 +73,8 @@ test "RegionsCodegen" {
     var tester = try jobz.PipelineTester.init(.{});
     defer tester.deinit();
 
-    const output = try codegen_tasks.evaluateZigScript(arena_alloc, tester.pipeline, RegionsCodegen, .{TEST_DEFS});
-    try codegen_tasks.expectEqualZigScript(TEST_OUT, output);
+    const output = try codegen_jobs.evaluateZigScript(arena_alloc, tester.pipeline, RegionsCodegen, .{TEST_DEFS});
+    try codegen_jobs.expectEqualZigScript(TEST_OUT, output);
 }
 
 const TEST_DEFS = &[_]RegionDef{

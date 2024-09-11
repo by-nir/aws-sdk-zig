@@ -8,9 +8,9 @@ const test_alloc = testing.allocator;
 const jobz = @import("jobz");
 const Delegate = jobz.Delegate;
 const zig = @import("razdaz").zig;
+const files_jobs = @import("razdaz/jobs").files;
+const codegen_jobs = @import("razdaz/jobs").codegen;
 const smithy = @import("smithy/codegen");
-const files_tasks = smithy.files_tasks;
-const codegen_tasks = smithy.codegen_tasks;
 const JsonReader = smithy.JsonReader;
 const PascalCase = smithy.name_util.PascalCase;
 const RegionDef = @import("config_region.zig").RegionDef;
@@ -20,7 +20,7 @@ const Matcher = struct {
     partition: zig.Expr,
 };
 
-pub const Partitions = files_tasks.WriteFile.Task("AWS Config Partitions", partitionsTask, .{});
+pub const Partitions = files_jobs.WriteFile.Task("AWS Config Partitions", partitionsTask, .{});
 fn partitionsTask(
     self: *const Delegate,
     writer: std.io.AnyWriter,
@@ -36,7 +36,7 @@ fn partitionsTask(
     return self.evaluate(PartitionsCodegen, .{ writer, &reader, region_defs });
 }
 
-const PartitionsCodegen = codegen_tasks.ZigScript.Task("Partitions Codegen", partitionsCodegenTask, .{});
+const PartitionsCodegen = codegen_jobs.ZigScript.Task("Partitions Codegen", partitionsCodegenTask, .{});
 fn partitionsCodegenTask(
     self: *const Delegate,
     bld: *zig.ContainerBuild,
@@ -172,13 +172,13 @@ test "PartitionsCodegen" {
     var region_defs = std.ArrayList(RegionDef).init(arena_alloc);
     defer region_defs.deinit();
 
-    const output = try codegen_tasks.evaluateZigScript(
+    const output = try codegen_jobs.evaluateZigScript(
         arena_alloc,
         tester.pipeline,
         PartitionsCodegen,
         .{ &reader, &region_defs },
     );
-    try codegen_tasks.expectEqualZigScript(TEST_OUT, output);
+    try codegen_jobs.expectEqualZigScript(TEST_OUT, output);
 
     try testing.expectEqualDeep(&[_]RegionDef{
         .{ .code = "il-central-1", .description = "Israel (Tel Aviv)" },

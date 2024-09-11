@@ -7,26 +7,27 @@ const Task = jobz.Task;
 const Delegate = jobz.Delegate;
 const AbstractTask = jobz.AbstractTask;
 const AbstractEval = jobz.AbstractEval;
-const md = @import("razdaz").md;
-const zig = @import("razdaz").zig;
-const Writer = @import("razdaz").CodegenWriter;
+const razdaz = @import("razdaz");
+const md = razdaz.md;
+const zig = razdaz.zig;
+const Writer = razdaz.CodegenWriter;
+const files_jobs = @import("razdaz/jobs").files;
+const codegen_jobs = @import("razdaz/jobs").codegen;
 const syb = @import("../systems/symbols.zig");
 const SmithyId = syb.SmithyId;
 const SymbolsProvider = syb.SymbolsProvider;
-const RulesEngine = @import("../systems/rules.zig").RulesEngine;
+const cfg = @import("../config.zig");
 const name_util = @import("../utils/names.zig");
 const IssuesBag = @import("../utils/IssuesBag.zig");
-const files_tasks = @import("files.zig");
-const codegen_tasks = @import("codegen.zig");
-const config = @import("../config.zig");
 const ScopeTag = @import("smithy.zig").ScopeTag;
 const shape_tasks = @import("smithy_codegen_shape.zig");
+const RulesEngine = @import("../systems/rules.zig").RulesEngine;
 const trt_docs = @import("../traits/docs.zig");
 const trt_rules = @import("../traits/rules.zig");
 const test_symbols = @import("../testing/symbols.zig");
 
 pub const ScriptHeadHook = Task.Hook("Smithy Script Head", anyerror!void, &.{*zig.ContainerBuild});
-pub const ServiceReadmeHook = codegen_tasks.MarkdownDoc.Hook("Smithy Readme Codegen", &.{ReadmeMetadata});
+pub const ServiceReadmeHook = codegen_jobs.MarkdownDoc.Hook("Smithy Readme Codegen", &.{ReadmeMetadata});
 pub const ExtendClientScriptHook = Task.Hook("Smithy Extend Client Script", anyerror!void, &.{*zig.ContainerBuild});
 pub const ExtendEndpointScriptHook = Task.Hook("Smithy Extend Endpoint Script", anyerror!void, &.{*zig.ContainerBuild});
 
@@ -45,16 +46,16 @@ pub const CodegenPolicy = struct {
     shape_codegen_fail: IssuesBag.PolicyResolution = .abort,
 };
 
-pub const ServiceCodegen = files_tasks.OpenDir.Task("Smithy Service Codegen", serviceCodegenTask, .{
+pub const ServiceCodegen = files_jobs.OpenDir.Task("Smithy Service Codegen", serviceCodegenTask, .{
     .injects = &.{SymbolsProvider},
 });
 fn serviceCodegenTask(self: *const Delegate, symbols: *SymbolsProvider) anyerror!void {
-    try self.evaluate(files_tasks.WriteFile.Chain(ServiceClient, .sync), .{ "client.zig", .{} });
+    try self.evaluate(files_jobs.WriteFile.Chain(ServiceClient, .sync), .{ "client.zig", .{} });
 
-    try self.evaluate(files_tasks.WriteFile.Chain(ServiceErrors, .sync), .{ "errors.zig", .{} });
+    try self.evaluate(files_jobs.WriteFile.Chain(ServiceErrors, .sync), .{ "errors.zig", .{} });
 
     if (symbols.hasTrait(symbols.service_id, trt_rules.EndpointRuleSet.id)) {
-        try self.evaluate(files_tasks.WriteFile.Chain(ServiceEndpoint, .sync), .{ "endpoint.zig", .{} });
+        try self.evaluate(files_jobs.WriteFile.Chain(ServiceEndpoint, .sync), .{ "endpoint.zig", .{} });
     }
 
     const resources_ids = blk: {
@@ -63,7 +64,7 @@ fn serviceCodegenTask(self: *const Delegate, symbols: *SymbolsProvider) anyerror
     };
     for (resources_ids) |id| {
         const filename = try resourceFilename(self.alloc(), symbols, id);
-        try self.evaluate(files_tasks.WriteFile.Chain(ServiceResource, .sync), .{ filename, .{}, id });
+        try self.evaluate(files_jobs.WriteFile.Chain(ServiceResource, .sync), .{ filename, .{}, id });
     }
 
     if (self.hasOverride(ServiceReadmeHook)) {
@@ -323,7 +324,7 @@ fn serviceEndpointTask(
     var rulesgen = try rules_engine.getGenerator(self.alloc(), rule_set.parameters);
 
     const context = .{ .alloc = self.alloc(), .rulesgen = &rulesgen };
-    try bld.public().constant(config.endpoint_config_type).assign(bld.x.@"struct"().bodyWith(context, struct {
+    try bld.public().constant(cfg.endpoint_config_type).assign(bld.x.@"struct"().bodyWith(context, struct {
         fn f(ctx: @TypeOf(context), b: *zig.ContainerBuild) !void {
             try ctx.rulesgen.generateParametersFields(b);
         }
@@ -386,7 +387,7 @@ test "ServiceEndpoint" {
     , ServiceEndpoint, tester.pipeline, .{});
 }
 
-const ServiceReadme = files_tasks.WriteFile.Task("Service Readme Codegen", serviceReadmeTask, .{
+const ServiceReadme = files_jobs.WriteFile.Task("Service Readme Codegen", serviceReadmeTask, .{
     .injects = &.{SymbolsProvider},
 });
 fn serviceReadmeTask(self: *const Delegate, symbols: *SymbolsProvider, writer: std.io.AnyWriter) anyerror!void {
@@ -445,12 +446,12 @@ test "ServiceReadme" {
 
     try tester.defineValue([]const u8, ScopeTag.slug, "foo_service");
 
-    const output = try files_tasks.evaluateWriteFile(test_alloc, tester.pipeline, ServiceReadme, .{});
+    const output = try files_jobs.evaluateWriteFile(test_alloc, tester.pipeline, ServiceReadme, .{});
     defer test_alloc.free(output);
-    try codegen_tasks.expectEqualMarkdownDoc("## Foo Service", output);
+    try codegen_jobs.expectEqualMarkdownDoc("## Foo Service", output);
 }
 
-const ServiceScriptGen = codegen_tasks.ZigScript.Abstract(
+const ServiceScriptGen = codegen_jobs.ZigScript.Abstract(
     "Service Script Codegen",
     serviceScriptGenTask,
     .{ .varyings = &.{*zig.ContainerBuild} },
@@ -477,9 +478,9 @@ pub fn expectServiceScript(
     pipeline: *jobz.Pipeline,
     input: AbstractTask.ExtractChildInput(task),
 ) !void {
-    const output = try codegen_tasks.evaluateZigScript(test_alloc, pipeline, task, input);
+    const output = try codegen_jobs.evaluateZigScript(test_alloc, pipeline, task, input);
     defer test_alloc.free(output);
-    try codegen_tasks.expectEqualZigScript(
+    try codegen_jobs.expectEqualZigScript(
         \\const std = @import("std");
         \\
         \\const Allocator = std.mem.Allocator;

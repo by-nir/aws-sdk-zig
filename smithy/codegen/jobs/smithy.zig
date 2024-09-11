@@ -8,6 +8,7 @@ const Task = jobz.Task;
 const Delegate = jobz.Delegate;
 const AbstractTask = jobz.AbstractTask;
 const AbstractEval = jobz.AbstractEval;
+const DirOptions = @import("razdaz/jobs").files.DirOptions;
 const rls = @import("../systems/rules.zig");
 const trt = @import("../systems/traits.zig");
 const SymbolsProvider = @import("../systems/symbols.zig").SymbolsProvider;
@@ -16,7 +17,6 @@ const IssuesBag = @import("../utils/IssuesBag.zig");
 const JsonReader = @import("../utils/JsonReader.zig");
 const prelude = @import("../prelude.zig");
 const trt_docs = @import("../traits/docs.zig");
-const files_tasks = @import("files.zig");
 const smithy_parse = @import("smithy_parse.zig");
 const smithy_codegen = @import("smithy_codegen.zig");
 
@@ -101,7 +101,7 @@ fn smithyServiceTask(
     };
     _ = try self.provide(&symbols, null);
 
-    self.evaluate(smithy_codegen.ServiceCodegen, .{ slug, files_tasks.DirOptions{
+    self.evaluate(smithy_codegen.ServiceCodegen, .{ slug, DirOptions{
         .create_on_not_found = true,
         .delete_on_error = true,
     } }) catch |err| {

@@ -4,11 +4,10 @@ const jobz = @import("jobz");
 const Task = jobz.Task;
 const Delegate = jobz.Delegate;
 const Pipeline = jobz.Pipeline;
-const smithy = @import("smithy/codegen");
-const files_tasks = smithy.files_tasks;
-const sdk_client = @import("tasks/sdk_client.zig");
-const conf_region = @import("tasks/config_region.zig");
-const conf_partition = @import("tasks/config_partitions.zig");
+const files_jobs = @import("razdaz/jobs").files;
+const sdk_client = @import("jobs/sdk_client.zig");
+const conf_region = @import("jobs/config_region.zig");
+const conf_partition = @import("jobs/config_partitions.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -45,20 +44,20 @@ fn awsTask(
     out_sdk_dir: fs.Dir,
     whitelist: []const []const u8,
 ) !void {
-    try files_tasks.defineWorkDir(self, out_aws_dir);
+    try files_jobs.defineWorkDir(self, out_aws_dir);
 
     var region_defs = std.ArrayList(conf_region.RegionDef).init(self.alloc());
 
-    try self.evaluate(conf_partition.Partitions, .{ "partitions.gen.zig", files_tasks.FileOptions{
+    try self.evaluate(conf_partition.Partitions, .{ "partitions.gen.zig", files_jobs.FileOptions{
         .delete_on_error = true,
     }, src_dir, &region_defs });
 
-    const RegionsCodegen = files_tasks.WriteFile.Chain(conf_region.RegionsCodegen, .sync);
-    try self.evaluate(RegionsCodegen, .{ "region.gen.zig", files_tasks.FileOptions{
+    const RegionsCodegen = files_jobs.WriteFile.Chain(conf_region.RegionsCodegen, .sync);
+    try self.evaluate(RegionsCodegen, .{ "region.gen.zig", files_jobs.FileOptions{
         .delete_on_error = true,
     }, try region_defs.toOwnedSlice() });
 
-    try files_tasks.overrideWorkDir(self, out_sdk_dir);
+    try files_jobs.overrideWorkDir(self, out_sdk_dir);
     try self.evaluate(sdk_client.Sdk, .{ src_dir, whitelist });
 }
 

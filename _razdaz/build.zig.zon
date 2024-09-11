@@ -5,6 +5,7 @@
 
     .dependencies = .{
         .jarz = .{ .path = "../_jarz" },
+        .jobz = .{ .path = "../_jobz" },
     },
 
     .paths = .{

@@ -6,12 +6,13 @@ const Task = jobz.Task;
 const Delegate = jobz.Delegate;
 const AbstractTask = jobz.AbstractTask;
 const AbstractEval = jobz.AbstractEval;
-const md = @import("razdaz").md;
-const zig = @import("razdaz").zig;
-const Writer = @import("razdaz").CodegenWriter;
+const razdaz = @import("razdaz");
+const md = razdaz.md;
+const zig = razdaz.zig;
+const Writer = razdaz.CodegenWriter;
 
-const MD_HEAD = @embedFile("../template/head.md.template");
-const ZIG_HEAD = @embedFile("../template/head.zig.template");
+const MD_HEAD = @embedFile("template/head.md.template");
+const ZIG_HEAD = @embedFile("template/head.zig.template");
 
 pub const MarkdownDoc = AbstractTask.Define("Markdown Codegen", markdownDocTask, .{
     .varyings = &.{md.ContainerAuthor},

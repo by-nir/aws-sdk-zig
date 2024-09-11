@@ -7,8 +7,6 @@ const Task = jobz.Task;
 const Delegate = jobz.Delegate;
 const AbstractTask = jobz.AbstractTask;
 const AbstractEval = jobz.AbstractEval;
-const md = @import("razdaz").md;
-const Writer = @import("razdaz").CodegenWriter;
 
 const FilesScope = enum {
     work_dir,
