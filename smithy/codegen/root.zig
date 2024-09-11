@@ -22,6 +22,7 @@ pub const ExtendEndpointScriptHook = smithy_codegen.ExtendEndpointScriptHook;
 
 const smithy_codegen_shape = @import("jobs/smithy_codegen_shape.zig");
 pub const OperationShape = smithy_codegen_shape.OperationShape;
+pub const ServiceAuthSchemesHook = smithy_codegen_shape.ServiceAuthSchemesHook;
 pub const ServiceHeadHook = smithy_codegen_shape.ServiceHeadHook;
 pub const ResourceHeadHook = smithy_codegen_shape.ResourceHeadHook;
 pub const OperationShapeHook = smithy_codegen_shape.OperationShapeHook;

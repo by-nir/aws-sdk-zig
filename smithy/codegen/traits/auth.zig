@@ -134,30 +134,29 @@ pub const Auth = struct {
     pub const id = SmithyId.of("smithy.api#auth");
 
     pub fn parse(arena: Allocator, reader: *JsonReader) !*const anyopaque {
-        var list = std.ArrayList([]const u8).init(arena);
+        var list = std.ArrayList(SmithyId).init(arena);
         errdefer list.deinit();
 
         try reader.nextArrayBegin();
         while (try reader.peek() != .array_end) {
-            const string = try reader.nextStringAlloc(arena);
-            try list.append(string);
+            const name = try reader.nextString();
+            try list.append(SmithyId.of(name));
         }
 
-        const slice = try list.toOwnedSliceSentinel("");
+        const slice = try list.toOwnedSliceSentinel(SmithyId.NULL);
         return @ptrCast(slice.ptr);
     }
 
-    pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?[]const []const u8 {
+    pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?[]const SmithyId {
         const trait = symbols.getTraitOpaque(shape_id, id);
         return if (trait) |ptr| cast(ptr) else null;
     }
 
-    fn cast(ptr: *const anyopaque) []const []const u8 {
+    fn cast(ptr: *const anyopaque) []const SmithyId {
         var i: usize = 0;
-        const strings: [*]const []const u8 = @ptrCast(@alignCast(ptr));
+        const schemes: [*]const SmithyId = @ptrCast(@alignCast(ptr));
         while (true) : (i += 1) {
-            const string = strings[i];
-            if (string.len == 0) return strings[0..i];
+            if (schemes[i] == SmithyId.NULL) return schemes[0..i];
         }
         unreachable;
     }
@@ -171,7 +170,7 @@ test "Auth" {
     var reader = try JsonReader.initFixed(arena_alloc, "[ \"foo\", \"bar\" ]");
     errdefer reader.deinit();
 
-    const strings = Auth.cast(try Auth.parse(arena_alloc, &reader));
+    const schemes = Auth.cast(try Auth.parse(arena_alloc, &reader));
     reader.deinit();
-    try testing.expectEqualDeep(&[_][]const u8{ "foo", "bar" }, strings);
+    try testing.expectEqualDeep(&[_]SmithyId{ SmithyId.of("foo"), SmithyId.of("bar") }, schemes);
 }

@@ -5,6 +5,7 @@ const test_alloc = testing.allocator;
 const prelude = @import("../prelude.zig");
 const name_util = @import("../utils/names.zig");
 const TraitsProvider = @import("traits.zig").TraitsProvider;
+const trt_auth = @import("../traits/auth.zig");
 
 pub const IdHashInt = u32;
 pub const idHash = std.hash.CityHash32.hash;
@@ -360,6 +361,7 @@ pub const SymbolsProvider = struct {
     shapes_queue: std.DoublyLinkedList(SmithyId) = .{},
     shapes_visited: std.AutoHashMapUnmanaged(SmithyId, void) = .{},
     service_errors: ?[]const SmithyId = null,
+    service_auth_schemes: []const SmithyId = &.{},
 
     pub fn deinit(self: *SymbolsProvider) void {
         self.model_meta.deinit(self.arena);
@@ -400,9 +402,13 @@ pub const SymbolsProvider = struct {
         return self.shapes_visited.contains(id);
     }
 
+    pub fn getServiceAuthPriority(self: *SymbolsProvider) []const SmithyId {
+        return trt_auth.Auth.get(self, self.service_id) orelse self.service_auth_schemes;
+    }
+
     pub fn getServiceErrors(self: *SymbolsProvider) ![]const SmithyId {
-        if (self.service_errors) |e| {
-            return e;
+        if (self.service_errors) |errs| {
+            return errs;
         } else {
             const shape = self.model_shapes.get(self.service_id) orelse {
                 return error.ServiceNotFound;

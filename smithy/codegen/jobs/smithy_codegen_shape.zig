@@ -29,6 +29,7 @@ const trt_behave = @import("../traits/behavior.zig");
 const trt_constr = @import("../traits/constraint.zig");
 const test_symbols = @import("../testing/symbols.zig");
 
+pub const ServiceAuthSchemesHook = Task.Hook("Smithy Service Auth Schemes", anyerror!void, &.{*std.ArrayList(SmithyId)});
 pub const ServiceHeadHook = Task.Hook("Smithy Service Head", anyerror!void, &.{ *ContainerBuild, *const syb.SmithyService });
 pub const ResourceHeadHook = Task.Hook("Smithy Resource Head", anyerror!void, &.{ *ContainerBuild, SmithyId, *const syb.SmithyResource });
 pub const OperationShapeHook = Task.Hook("Smithy Operation Shape", anyerror!void, &.{ *BlockBuild, OperationShape });
@@ -40,7 +41,7 @@ pub const OperationShape = struct {
     errors_type: ?[]const u8,
     return_type: []const u8,
     auth_optional: bool,
-    auth_priority: ?[]const []const u8,
+    auth_priority: []const SmithyId,
 };
 
 pub const WriteShape = Task.Define("Smithy Write Shape", writeShapeTask, .{
@@ -720,7 +721,7 @@ fn writeOperationFunc(self: *const Delegate, symbols: *SymbolsProvider, bld: *Co
         "!void";
 
     const auth_optional = symbols.hasTrait(id, trt_auth.optional_auth_id);
-    const auth_priority = trt_auth.Auth.get(symbols, id);
+    const auth_priority = trt_auth.Auth.get(symbols, id) orelse symbols.getServiceAuthPriority();
 
     const shape = OperationShape{
         .id = id,
@@ -846,6 +847,34 @@ fn writeServiceShape(
     id: SmithyId,
     service: *const syb.SmithyService,
 ) !void {
+    //
+    // Auth schemes
+    //
+
+    std.debug.assert(symbols.service_auth_schemes.len == 0);
+    var auth_schemes = std.ArrayList(SmithyId).init(self.alloc());
+
+    const auth_traits_ids: []const SmithyId = &.{
+        trt_auth.http_basic_id,
+        trt_auth.http_bearer_id,
+        trt_auth.http_digest_id,
+        trt_auth.HttpApiKey.id,
+    };
+    for (auth_traits_ids) |tid| {
+        if (symbols.hasTrait(symbols.service_id, tid)) try auth_schemes.append(tid);
+    }
+
+    if (self.hasOverride(ServiceAuthSchemesHook)) {
+        try self.evaluate(ServiceAuthSchemesHook, .{&auth_schemes});
+    }
+
+    symbols.service_auth_schemes = try auth_schemes.toOwnedSlice();
+    errdefer symbols.service_auth_schemes = &.{};
+
+    //
+    // Client struct
+    //
+
     try writeDocComment(self.alloc(), symbols, bld, id, false);
     const context = .{ .self = self, .symbols = symbols, .service = service };
     try bld.public().constant(cnfg.service_client_type).assign(
