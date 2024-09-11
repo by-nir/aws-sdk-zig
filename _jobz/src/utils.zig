@@ -260,7 +260,7 @@ pub const ComptimeTag = enum(usize) {
     }
 
     pub fn ref(input: anytype) ComptimeTag {
-        if (@typeInfo(@TypeOf(input)) != .Pointer) @compileError("Use ComptimeTag.of instead");
+        if (@typeInfo(@TypeOf(input)) != .pointer) @compileError("Use ComptimeTag.of instead");
         return @enumFromInt(@intFromPtr(input));
     }
 };
@@ -268,7 +268,7 @@ pub const ComptimeTag = enum(usize) {
 /// Returns a `*T` or the unmodified type if it’s already a pointer.
 pub fn Reference(comptime T: type) type {
     return switch (@typeInfo(T)) {
-        .Pointer => T,
+        .pointer => T,
         else => *T,
     };
 }
@@ -283,7 +283,7 @@ test "Reference" {
 /// Returns a `?T` or the unmodified type if it’s already optional.
 pub fn Optional(comptime T: type) type {
     return switch (@typeInfo(T)) {
-        .Optional => T,
+        .optional => T,
         else => ?T,
     };
 }
@@ -296,7 +296,7 @@ test "Optional" {
 /// Returns a `anyerror!T` or the unmodified type if it’s already an error union.
 pub fn Failable(comptime T: type) type {
     return switch (@typeInfo(T)) {
-        .ErrorUnion => T,
+        .error_union => T,
         else => anyerror!T,
     };
 }
@@ -309,7 +309,7 @@ test "Failable" {
 /// Extracts the payload from an error union or return the unmodified type otherwise.
 pub fn StripError(comptime T: type) type {
     return switch (@typeInfo(T)) {
-        .ErrorUnion => |t| t.payload,
+        .error_union => |t| t.payload,
         else => T,
     };
 }
@@ -322,8 +322,8 @@ test "StripError" {
 /// Extracts the payload from an optional, pointer, or error union; otherwise returns the unmodified type.
 pub fn Payload(comptime T: type) type {
     return switch (@typeInfo(T)) {
-        inline .Pointer, .Optional => |t| t.child,
-        .ErrorUnion => |t| t.payload,
+        inline .pointer, .optional => |t| t.child,
+        .error_union => |t| t.payload,
         else => T,
     };
 }
@@ -336,7 +336,7 @@ test "Payload" {
 }
 
 pub fn TupleFiller(comptime Tuple: type) type {
-    const len = @typeInfo(Tuple).Struct.fields.len;
+    const len = @typeInfo(Tuple).@"struct".fields.len;
     return struct {
         const Self = @This();
 

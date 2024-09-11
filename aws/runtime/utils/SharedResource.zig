@@ -74,10 +74,10 @@ const Cb = struct {
 
     fn of(comptime cb: anytype) Cb {
         const meta = switch (@typeInfo(@TypeOf(cb))) {
-            .Fn => |m| m,
-            .Pointer => |m| blk: {
+            .@"fn" => |m| m,
+            .pointer => |m| blk: {
                 const child = @typeInfo(m.child);
-                if (m.size != .One or child != .Fn) @compileError("Callback must be a function.");
+                if (m.size != .One or child != .@"fn") @compileError("Callback must be a function.");
                 break :blk child.Fn;
             },
             else => @compileError("Callback must be a function."),
@@ -87,8 +87,8 @@ const Cb = struct {
 
         const Return = meta.return_type.?;
         const valid = switch (@typeInfo(Return)) {
-            .Void => true,
-            .ErrorUnion => |m| m.payload == void,
+            .void => true,
+            .error_union => |m| m.payload == void,
             else => false,
         };
         if (!valid) @compileError("Callback function must return `void` or an error union with `void` payload.");

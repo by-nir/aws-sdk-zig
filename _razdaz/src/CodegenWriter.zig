@@ -25,9 +25,9 @@ pub const Processor = struct {
         const T = @TypeOf(func);
         return .{
             .type = switch (@typeInfo(T)) {
-                .Fn => *const T,
-                .Pointer => |p| blk: {
-                    if (p.size != .One or @typeInfo(@TypeOf(func)) != .Fn) {
+                .@"fn" => *const T,
+                .pointer => |p| blk: {
+                    if (p.size != .One or @typeInfo(@TypeOf(func)) != .@"fn") {
                         @compileError("Expected function type.");
                     } else {
                         break :blk T;
@@ -462,7 +462,7 @@ test "breakFmt" {
 const MAX_DEPTH = std.options.fmt_max_depth;
 fn writeValue(self: *Self, t: anytype, comptime format: []const u8) !void {
     const T = switch (@typeInfo(@TypeOf(t))) {
-        .Pointer => |p| switch (p.size) {
+        .pointer => |p| switch (p.size) {
             .One => p.child,
             else => @TypeOf(t),
         },
@@ -470,7 +470,7 @@ fn writeValue(self: *Self, t: anytype, comptime format: []const u8) !void {
     };
 
     if (comptime std.meta.hasMethod(T, "write")) {
-        const meta = @typeInfo(@TypeOf(T.write)).Fn;
+        const meta = @typeInfo(@TypeOf(T.write)).@"fn";
         if (meta.params.len != 3) {
             try t.write(self);
         } else if (format.len < 3 or
@@ -492,11 +492,11 @@ fn writeValue(self: *Self, t: anytype, comptime format: []const u8) !void {
 fn writeFormat(self: *Self, comptime format: []const u8, args: anytype) !void {
     const Args = @TypeOf(args);
     const args_meta = @typeInfo(Args);
-    if (args_meta != .Struct) {
+    if (args_meta != .@"struct") {
         @compileError("expected tuple or struct argument, found " ++ @typeName(Args));
     }
 
-    const fields = args_meta.Struct.fields;
+    const fields = args_meta.@"struct".fields;
     if (fields.len > 32) {
         @compileError("32 arguments max are supported per format call");
     }

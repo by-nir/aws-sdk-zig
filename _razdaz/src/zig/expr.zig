@@ -244,34 +244,34 @@ const ExprValue = union(enum) {
     pub fn of(v: anytype) ExprValue {
         const T = @TypeOf(v);
         return switch (@typeInfo(T)) {
-            .Void => .void,
-            .Null => .null,
-            .Bool => if (v) .true else .false,
-            .Int => |t| switch (t.signedness) {
+            .void => .void,
+            .null => .null,
+            .bool => if (v) .true else .false,
+            .int => |t| switch (t.signedness) {
                 .signed => .{ .int = v },
                 .unsigned => .{ .uint = v },
             },
-            .ComptimeInt => if (v < 0) .{ .int = v } else .{ .uint = v },
-            .Float, .ComptimeFloat => .{ .float = v },
-            .Enum, .EnumLiteral => .{ .@"enum" = @tagName(v) },
-            .Optional => if (v) |s| return of(s) else .null,
-            .ErrorSet => .{ .@"error" = @errorName(v) },
-            .ErrorUnion => |t| if (v) |s| switch (@typeInfo(t.payload)) {
-                .Void => .void,
+            .comptime_int => if (v < 0) .{ .int = v } else .{ .uint = v },
+            .float, .comptime_float => .{ .float = v },
+            .@"enum", .enum_literal => .{ .@"enum" = @tagName(v) },
+            .optional => if (v) |s| return of(s) else .null,
+            .error_set => .{ .@"error" = @errorName(v) },
+            .error_union => |t| if (v) |s| switch (@typeInfo(t.payload)) {
+                .void => .void,
                 else => return of(s),
             } else |e| .{ .@"error" = @errorName(e) },
-            .Pointer => |t| blk: {
+            .pointer => |t| blk: {
                 if (t.size == .Slice and t.child == u8) {
                     break :blk .{ .string = v };
                 } else if (t.size == .One) {
                     const meta = @typeInfo(t.child);
-                    if (meta == .Array and meta.Array.child == u8) {
+                    if (meta == .array and meta.array.child == u8) {
                         break :blk .{ .string = v };
                     }
                 }
                 @compileError("Only string pointers can auto-covert into a value expression.");
             },
-            // Union, Fn, Pointer, Array, Struct
+            // union, fn, pointer, array, struct
             else => @compileError("Type `" ++ @typeName(T) ++ "` can’t auto-convert into a value expression."),
         };
     }
@@ -1152,7 +1152,7 @@ pub const _blk = ExprBuild{
     }),
 };
 
-const TokenInt = @typeInfo(ZigToken).Enum.tag_type;
+const TokenInt = @typeInfo(ZigToken).@"enum".tag_type;
 pub const Operator = enum(TokenInt) {
     eql = @intFromEnum(ZigToken.equal_equal),
     not_eql = @intFromEnum(ZigToken.bang_equal),

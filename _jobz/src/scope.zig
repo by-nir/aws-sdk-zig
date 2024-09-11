@@ -58,19 +58,19 @@ pub const Scope = struct {
         comptime cleanup: ?*const fn (ctx: Reference(@TypeOf(value)), allocator: Allocator) void,
     ) !Reference(@TypeOf(value)) {
         const T = @TypeOf(value);
-        const meta = @typeInfo(T);
         const id = ComptimeTag.of(Reference(T));
         if (self.services.contains(id)) return error.ServiceAlreadyProvidedByScope;
 
+        const meta = @typeInfo(T);
         const arena_alloc = self.arena.allocator();
         const service: Reference(T) = switch (meta) {
-            .Struct => blk: {
+            .@"struct" => blk: {
                 const dupe = try arena_alloc.create(T);
                 dupe.* = value;
                 break :blk dupe;
             },
-            .Pointer => |t| blk: {
-                if (@typeInfo(t.child) != .Struct or t.size != .One)
+            .pointer => |t| blk: {
+                if (@typeInfo(t.child) != .@"struct" or t.size != .One)
                     @compileError("Only a struct may be provided as a service; trying to provide " ++ @typeName(T))
                 else if (t.is_const)
                     @compileError("A service must be mutable; trying to provide " ++ @typeName(T))
@@ -79,7 +79,7 @@ pub const Scope = struct {
             },
             else => @compileError("Only a struct may be provided as a service; trying to provide a " ++ @typeName(T)),
         };
-        errdefer if (meta == .Struct) arena_alloc.destroy(service);
+        errdefer if (meta == .@"struct") arena_alloc.destroy(service);
 
         try self.services.put(arena_alloc, id, .{
             .value = service,
@@ -107,7 +107,7 @@ pub const Scope = struct {
         const meta = @typeInfo(T);
         if (self.blackboard.contains(id)) {
             return error.ValueAlreadyDefinedInScope;
-        } else if (meta != .Pointer or meta.Pointer.size == .Slice) {
+        } else if (meta != .pointer or meta.pointer.size == .Slice) {
             const arena_alloc = self.arena.allocator();
             const ref = try arena_alloc.create(T);
             ref.* = value;
@@ -122,9 +122,9 @@ pub const Scope = struct {
         const id = valueId(tag);
         if (self.blackboard.getPtr(id)) |t| {
             const meta = @typeInfo(T);
-            const is_val = meta != .Pointer;
+            const is_val = meta != .pointer;
             const Ref = if (is_val) Reference(T) else *Reference(T);
-            const ref: Ref = if (is_val or meta.Pointer.size == .Slice)
+            const ref: Ref = if (is_val or meta.pointer.size == .Slice)
                 @alignCast(@ptrCast(t.*))
             else
                 @alignCast(@ptrCast(t));
@@ -140,8 +140,8 @@ pub const Scope = struct {
         const id = valueId(tag);
         if (self.blackboard.get(id)) |t| {
             const meta = @typeInfo(T);
-            const is_ptr = meta == .Pointer;
-            const is_slice = is_ptr and meta.Pointer.size == .Slice;
+            const is_ptr = meta == .pointer;
+            const is_slice = is_ptr and meta.pointer.size == .Slice;
             const Ref = if (!is_ptr or !is_slice) Reference(T) else *Reference(T);
             const ref: Ref = @alignCast(@ptrCast(t));
             return if (!is_ptr or is_slice) ref.* else ref;
@@ -160,7 +160,7 @@ pub const Scope = struct {
 
     fn valueId(comptime tag: anytype) ComptimeTag {
         switch (@typeInfo(@TypeOf(tag))) {
-            .Enum, .EnumLiteral => {},
+            .@"enum", .enum_literal => {},
             else => @compileError("A scope value tag must by an enum or an enum literal."),
         }
         return ComptimeTag.of(tag);

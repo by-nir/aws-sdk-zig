@@ -52,7 +52,7 @@ pub const Task = struct {
     }
 
     pub fn isFailable(comptime self: Task) bool {
-        return @typeInfo(self.Out) == .ErrorUnion;
+        return @typeInfo(self.Out) == .error_union;
     }
 
     pub fn Callback(comptime task: Task) type {
@@ -142,7 +142,7 @@ fn standardOverride(comptime task: Task, name: []const u8, comptime taskFn: anyt
     ));
 
     const shift = 1 + options.injects.len;
-    const fields = @typeInfo(task.In).Struct.fields;
+    const fields = @typeInfo(task.In).@"struct".fields;
     if (fn_meta.inputs.len + fields.len > 0) {
         if (fields.len != fn_meta.inputs.len) @compileError(std.fmt.comptimePrint(
             "Overriding '{s}' expects {d} parameters",
@@ -163,7 +163,7 @@ fn standardOverride(comptime task: Task, name: []const u8, comptime taskFn: anyt
 
 pub fn getInjectable(delegate: *const Delegate, comptime T: type, task_name: []const u8) T {
     const Ref = switch (@typeInfo(T)) {
-        .Optional => |t| t.child,
+        .optional => |t| t.child,
         else => T,
     };
     const is_optional = T != Ref;
@@ -183,10 +183,10 @@ pub const DestructFunc = struct {
     pub fn from(factory_name: []const u8, comptime func: anytype, comptime inject_types: []const type) DestructFunc {
         const meta: ZigType.Fn = blk: {
             switch (@typeInfo(@TypeOf(func))) {
-                .Fn => |t| break :blk t,
-                .Pointer => |t| {
+                .@"fn" => |t| break :blk t,
+                .pointer => |t| {
                     const target = @typeInfo(t.child);
-                    if (t.size == .One and target == .Fn) break :blk target.Fn;
+                    if (t.size == .One and target == .@"fn") break :blk target.@"fn";
                 },
                 else => {},
             }
@@ -205,12 +205,12 @@ pub const DestructFunc = struct {
             for (0..inject_len) |i| {
                 const T = inject_types[i];
                 switch (@typeInfo(T)) {
-                    .Struct => {},
-                    .Pointer, .Optional => @compileError(std.fmt.comptimePrint(
+                    .@"struct" => {},
+                    .pointer, .optional => @compileError(std.fmt.comptimePrint(
                         "{s} inject options #{d} expects a plain struct type, without modifiers",
                         .{ factory_name, i },
                     )),
-                    else => if (@typeInfo(T) != .Struct) @compileError(std.fmt.comptimePrint(
+                    else => if (@typeInfo(T) != .@"struct") @compileError(std.fmt.comptimePrint(
                         "{s} inject options #{d} expects a struct type",
                         .{ factory_name, i },
                     )),
@@ -223,9 +223,9 @@ pub const DestructFunc = struct {
 
                 var is_optional = false;
                 var Param = meta.params[i + 1].type.?;
-                if (@typeInfo(Param) == .Optional) {
+                if (@typeInfo(Param) == .optional) {
                     is_optional = true;
-                    Param = @typeInfo(Param).Optional.child;
+                    Param = @typeInfo(Param).optional.child;
                 }
 
                 if (Param != *T) @compileError(std.fmt.comptimePrint(
@@ -250,8 +250,8 @@ pub const DestructFunc = struct {
         } else &.{};
 
         return .{
-            .Fn = *const @Type(.{ .Fn = meta }),
-            .Args = std.meta.ArgsTuple(@Type(.{ .Fn = meta })),
+            .Fn = *const @Type(.{ .@"fn" = meta }),
+            .Args = std.meta.ArgsTuple(@Type(.{ .@"fn" = meta })),
             .Out = meta.return_type.?,
             .injects = inject,
             .inputs = input,

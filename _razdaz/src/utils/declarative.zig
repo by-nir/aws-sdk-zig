@@ -6,8 +6,8 @@ const test_alloc = testing.allocator;
 
 fn fnMeta(comptime T: type) TypeMeta.Fn {
     return switch (@typeInfo(T)) {
-        .Fn => |f| f,
-        .Pointer => |p| @typeInfo(p.child).Fn,
+        .@"fn" => |f| f,
+        .pointer => |p| @typeInfo(p.child).@"fn",
         else => unreachable,
     };
 }
@@ -20,7 +20,7 @@ fn FnReturn(comptime T: type) type {
 pub fn Closure(comptime Context: type, comptime Fn: type) type {
     var meta = fnMeta(Fn);
     if (Context == void) {
-        return *const @Type(.{ .Fn = meta });
+        return *const @Type(.{ .@"fn" = meta });
     } else {
         var params: [meta.params.len + 1]TypeMeta.Fn.Param = undefined;
         params[0] = .{
@@ -31,7 +31,7 @@ pub fn Closure(comptime Context: type, comptime Fn: type) type {
         @memcpy(params[1..], meta.params);
 
         meta.params = &params;
-        return *const @Type(.{ .Fn = meta });
+        return *const @Type(.{ .@"fn" = meta });
     }
 }
 
@@ -49,7 +49,7 @@ test "Closure" {
 pub fn callClosure(ctx: anytype, closure: anytype, args: anytype) FnReturn(@TypeOf(closure)) {
     const Context = @TypeOf(ctx);
     const Arga = @TypeOf(args);
-    const args_meta = @typeInfo(Arga).Struct;
+    const args_meta = @typeInfo(Arga).@"struct";
     if (!args_meta.is_tuple) {
         @compileError("Function callClosure expects `args` type of tuple.");
     } else {
@@ -77,7 +77,7 @@ fn ClosureMergeArgs(
 }
 
 fn ClosureCtxArgs(comptime Context: type, comptime Args: type) type {
-    const origin = @typeInfo(Args).Struct.fields;
+    const origin = @typeInfo(Args).@"struct".fields;
     var target: [origin.len + 1]TypeMeta.StructField = undefined;
     target[0] = .{
         .name = "0",
@@ -90,7 +90,7 @@ fn ClosureCtxArgs(comptime Context: type, comptime Args: type) type {
         target[i] = field;
         target[i].name = std.fmt.comptimePrint("{d}", .{i});
     }
-    return @Type(.{ .Struct = .{
+    return @Type(.{ .@"struct" = .{
         .layout = .auto,
         .fields = &target,
         .decls = &.{},
@@ -116,7 +116,7 @@ test "callClosure" {
 pub fn Callback(comptime Ctx: type, comptime Val: type, comptime Rtrn: type) type {
     comptime var can_return_error = false;
     const ExpandReturn = switch (@typeInfo(Rtrn)) {
-        .ErrorUnion => |t| blk: {
+        .error_union => |t| blk: {
             can_return_error = true;
             break :blk anyerror!t.payload;
         },
@@ -139,7 +139,7 @@ pub fn Callback(comptime Ctx: type, comptime Val: type, comptime Rtrn: type) typ
         pub fn fail(self: @This(), err: anyerror) Return {
             if (can_return_error) {
                 return err;
-            } else if (@typeInfo(Value) == .ErrorUnion) {
+            } else if (@typeInfo(Value) == .error_union) {
                 return self.invoke(err);
             } else {
                 @panic("Unhandled callback error.");
@@ -194,8 +194,8 @@ const CallbackTest = struct {
 /// A simple linked list for active stack scoped without heap allocations.
 /// As long as all the relevant scopes are not dismissed the whole chain is accessible.
 pub fn StackChain(comptime T: type) type {
-    const is_optional = @typeInfo(T) == .Optional;
-    const Value = if (is_optional) @typeInfo(T).Optional.child else T;
+    const is_optional = @typeInfo(T) == .optional;
+    const Value = if (is_optional) @typeInfo(T).optional.child else T;
 
     return struct {
         const Self = @This();

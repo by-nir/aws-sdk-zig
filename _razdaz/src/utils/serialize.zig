@@ -41,24 +41,24 @@ pub const SerialWriter = struct {
         errdefer self.buffer.shrinkRetainingCapacity(initial_cursor);
 
         switch (@typeInfo(T)) {
-            .Bool, .Int, .Float, .Enum => {
+            .bool, .int, .float, .@"enum" => {
                 const offset = try self.writePadding(allocator, @alignOf(T));
                 try self.buffer.appendSlice(allocator, mem.asBytes(&value));
                 return self.handleFrom(offset);
             },
-            .Union => |meta| {
+            .@"union" => |meta| {
                 validateUnionFields(T, meta.fields);
                 const offset = try self.writePadding(allocator, @alignOf(T));
                 try self.buffer.appendSlice(allocator, mem.asBytes(&value));
                 return self.handleFrom(offset);
             },
-            inline .Optional, .Array, .Vector => |meta| {
+            inline .optional, .array, .vector => |meta| {
                 validateWrapperChild(T, meta.child);
                 const offset = try self.writePadding(allocator, @alignOf(T));
                 try self.buffer.appendSlice(allocator, mem.asBytes(&value));
                 return self.handleFrom(offset);
             },
-            .Pointer => |meta| {
+            .pointer => |meta| {
                 validatePointerChild(meta.child, null);
                 switch (meta.size) {
                     .One => {
@@ -101,7 +101,7 @@ pub const SerialWriter = struct {
                     .C => @compileError("Encoding ‘c’ pointer is unsupported"),
                 }
             },
-            .Struct => |meta| {
+            .@"struct" => |meta| {
                 if (meta.layout == .@"packed") {
                     const offset = try self.writePadding(allocator, @alignOf(T));
                     try self.buffer.appendSlice(allocator, mem.asBytes(&value));
@@ -181,10 +181,10 @@ pub const SerialWriter = struct {
     /// Assumes a valid handle.
     pub fn canOverride(handle: SerialHandle, comptime T: type, value: T) bool {
         switch (@typeInfo(@TypeOf(value))) {
-            .Struct => return false, // TODO
-            .Pointer => |meta| {
+            .@"struct" => return false,
+            .pointer => |meta| {
                 switch (@typeInfo(meta.child)) {
-                    .Struct, .Pointer => return false,
+                    .@"struct", .pointer => return false,
                     else => {},
                 }
 
@@ -208,8 +208,8 @@ pub const SerialWriter = struct {
         std.debug.assert(handle.offset + handle.length <= self.length());
 
         switch (@typeInfo(@TypeOf(value))) {
-            .Struct => unreachable, // TODO
-            .Pointer => |meta| switch (meta.size) {
+            .@"struct" => unreachable,
+            .pointer => |meta| switch (meta.size) {
                 .C => @compileError("Encoding ‘c’ pointer is unsupported"),
                 .One => self.buffer.replaceRangeAssumeCapacity(handle.offset, handle.length, mem.asBytes(value)),
                 .Many => {
@@ -349,16 +349,16 @@ pub const SerialViewer = struct {
     pub fn get(self: SerialViewer, comptime T: type, handle: SerialHandle) T {
         const bytes = self.buffer[handle.offset..][0..handle.length];
         switch (@typeInfo(T)) {
-            .Bool, .Int, .Float, .Enum => return mem.bytesToValue(T, bytes),
-            .Union => |meta| {
+            .bool, .int, .float, .@"enum" => return mem.bytesToValue(T, bytes),
+            .@"union" => |meta| {
                 validateUnionFields(T, meta.fields);
                 return mem.bytesToValue(T, bytes);
             },
-            inline .Optional, .Array, .Vector => |meta| {
+            inline .optional, .array, .vector => |meta| {
                 validateWrapperChild(T, meta.child);
                 return mem.bytesToValue(T, bytes);
             },
-            .Pointer => |meta| {
+            .pointer => |meta| {
                 validatePointerChild(meta.child, meta.is_const);
                 switch (meta.size) {
                     .One => return mem.bytesAsValue(meta.child, bytes),
@@ -373,7 +373,7 @@ pub const SerialViewer = struct {
                     .C => @compileError("Decoding ‘c’ pointer is unsupported"),
                 }
             },
-            .Struct => |meta| {
+            .@"struct" => |meta| {
                 if (meta.layout == .@"packed") {
                     return mem.bytesToValue(T, bytes);
                 } else {
@@ -392,16 +392,16 @@ pub const SerialViewer = struct {
 
     fn take(self: SerialViewer, comptime T: type, offset: *usize) T {
         switch (@typeInfo(T)) {
-            .Bool, .Int, .Float, .Enum => return self.nextValue(T, offset),
-            .Union => |meta| {
+            .bool, .int, .float, .@"enum" => return self.nextValue(T, offset),
+            .@"union" => |meta| {
                 validateUnionFields(T, meta.fields);
                 return self.nextValue(T, offset);
             },
-            inline .Optional, .Array, .Vector => |meta| {
+            inline .optional, .array, .vector => |meta| {
                 validateWrapperChild(T, meta.child);
                 return self.nextValue(T, offset);
             },
-            .Pointer => |meta| {
+            .pointer => |meta| {
                 validatePointerChild(meta.child, meta.is_const);
                 switch (meta.size) {
                     .One => {
@@ -421,7 +421,7 @@ pub const SerialViewer = struct {
                     .C => @compileError("Decoding ‘c’ pointer is unsupported"),
                 }
             },
-            .Struct => |meta| {
+            .@"struct" => |meta| {
                 if (meta.layout == .@"packed") {
                     return self.nextValue(T, offset);
                 } else {
@@ -575,15 +575,15 @@ fn SentinelSlice(comptime meta: std.builtin.Type.Pointer) type {
 
 fn isSerializable(comptime T: type) bool {
     switch (@typeInfo(T)) {
-        .Bool, .Int, .Float, .Enum => return true,
-        .Union => |meta| {
+        .bool, .int, .float, .@"enum" => return true,
+        .@"union" => |meta| {
             inline for (meta.fields) |field| {
                 if (!comptime isSerializableChild(field.type)) return false;
             }
             return true;
         },
-        .Optional, .Array, .Vector => |meta| return isSerializableChild(meta.child),
-        .Pointer => |meta| {
+        .optional, .array, .vector => |meta| return isSerializableChild(meta.child),
+        .pointer => |meta| {
             if (!meta.is_const) return false;
             if (!isSerializableChild(meta.child)) return false;
             return switch (meta.size) {
@@ -592,7 +592,7 @@ fn isSerializable(comptime T: type) bool {
                 .C => false,
             };
         },
-        .Struct => |meta| {
+        .@"struct" => |meta| {
             if (meta.layout == .@"packed") return true;
             inline for (meta.fields) |field| {
                 if (!comptime isSerializable(field.type)) return false;
@@ -605,8 +605,8 @@ fn isSerializable(comptime T: type) bool {
 
 fn isSerializableChild(comptime T: type) bool {
     return switch (@typeInfo(T)) {
-        .Pointer => false,
-        .Struct => |meta| meta.layout == .@"packed",
+        .pointer => false,
+        .@"struct" => |meta| meta.layout == .@"packed",
         else => true,
     };
 }
@@ -614,8 +614,8 @@ fn isSerializableChild(comptime T: type) bool {
 inline fn validatePointerChild(comptime T: type, comptime is_const: ?bool) void {
     if (is_const) |b| if (!b) @compileError("Decoding expects constant pointer");
     switch (@typeInfo(T)) {
-        .Pointer => @compileError("Serializing pointer to pointer is unsupported"),
-        .Struct => @compileError("Serializing struct pointer is unsupported"),
+        .pointer => @compileError("Serializing pointer to pointer is unsupported"),
+        .@"struct" => @compileError("Serializing struct pointer is unsupported"),
         else => {},
     }
 }

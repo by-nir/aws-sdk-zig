@@ -12,7 +12,7 @@ const util = @import("utils.zig");
 
 pub const Pipeline = struct {
     scope: *Scope,
-    schedule: Schedule,
+    scdl: Schedule,
     resources: ScheduleResources,
 
     pub const Options = struct {
@@ -33,8 +33,8 @@ pub const Pipeline = struct {
         if (options.invoker) |invoker| scope.invoker = invoker;
         self.scope = scope;
 
-        self.schedule = Schedule.init(allocator, &self.resources, scope, .{});
-        if (options.tracer) |t| self.schedule.tracer = t;
+        self.scdl = Schedule.init(allocator, &self.resources, scope, .{});
+        if (options.tracer) |t| self.scdl.tracer = t;
 
         return self;
     }
@@ -42,7 +42,7 @@ pub const Pipeline = struct {
     pub fn deinit(self: *Pipeline) void {
         const alloc = self.resources.allocator;
 
-        self.schedule.deinit();
+        self.scdl.deinit();
 
         self.resources.releaseScope(self.scope);
         self.resources.deinit();
@@ -51,15 +51,15 @@ pub const Pipeline = struct {
     }
 
     pub fn run(self: *Pipeline) !void {
-        try self.schedule.run();
+        try self.scdl.run();
     }
 
     pub fn runTask(self: *Pipeline, comptime task: Task, input: task.In) !task.Payload() {
-        return self.schedule.evaluate(null, task, input);
+        return self.scdl.evaluate(null, task, input);
     }
 
     pub fn schedule(self: *Pipeline, comptime task: Task, input: task.In) !void {
-        try self.schedule.appendAsync(null, task, input);
+        try self.scdl.appendAsync(null, task, input);
     }
 
     pub fn scheduleCallback(
@@ -69,7 +69,7 @@ pub const Pipeline = struct {
         callbackCtx: *const anyopaque,
         callbackFn: Task.Callback(task),
     ) !void {
-        try self.schedule.appendCallback(null, task, input, callbackCtx, callbackFn);
+        try self.scdl.appendCallback(null, task, input, callbackCtx, callbackFn);
     }
 };
 

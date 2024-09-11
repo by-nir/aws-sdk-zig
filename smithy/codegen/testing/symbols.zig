@@ -101,7 +101,8 @@ fn setupMap(model: *Model) !void {
 }
 
 const ENUM_TRT: trt_constr.Enum.Sentinel = &.{ .{ .value = "FOO_BAR" }, .{ .value = "baz$qux", .name = "BAZ_QUX" } };
-const ENUM_STR = &.{ SmithyId.of("test#Enum$FOO_BAR"), SmithyId.of("test#Enum$BAZ_QUX") };
+const en1 = SmithyId.of("test#Enum$BAZ_QUX");
+const ENUM_STR = &.{ SmithyId.of("test#Enum$FOO_BAR"), en1 };
 fn setupEnums(model: *Model) !void {
     try model.names.put(test_alloc, SmithyId.of("test#Enum"), "Enum");
     try model.shapes.put(test_alloc, SmithyId.of("test#Enum"), .{
@@ -126,7 +127,8 @@ fn setupEnums(model: *Model) !void {
 
 fn setupIntEnum(model: *Model) !void {
     const Static = struct {
-        const shape = &.{ SmithyId.of("test#IntEnum$FOO_BAR"), SmithyId.of("test#IntEnum$BAZ_QUX") };
+        const ie1 = SmithyId.of("test#IntEnum$BAZ_QUX");
+        const shape = &.{ SmithyId.of("test#IntEnum$FOO_BAR"), ie1 };
         const doc: []const u8 = "<p>An <b>integer-based</b> enumeration.</p>";
         const traits = &.{.{
             .id = SmithyId.of("smithy.api#documentation"),
@@ -154,11 +156,10 @@ fn setupIntEnum(model: *Model) !void {
     }});
 }
 
-const UNION = &.{
-    SmithyId.of("test#Union$FOO"),
-    SmithyId.of("test#Union$BAR"),
-    SmithyId.of("test#Union$BAZ"),
-};
+const un0 = SmithyId.of("test#Union$FOO");
+const un1 = SmithyId.of("test#Union$BAR");
+const un2 = SmithyId.of("test#Union$BAZ");
+const UNION = &.{ un0, un1, un2 };
 fn setupUnion(model: *Model) !void {
     try model.names.put(test_alloc, SmithyId.of("test#Union"), "Union");
     try model.shapes.put(test_alloc, SmithyId.of("test#Union"), .{
@@ -174,7 +175,8 @@ fn setupUnion(model: *Model) !void {
 
 fn setupStruct(model: *Model) !void {
     const Static = struct {
-        const structure = &.{ SmithyId.of("test#Struct$fooBar"), SmithyId.of("test#Struct$bazQux") };
+        const ff = SmithyId.of("test#Struct$bazQux");
+        const structure = &.{ SmithyId.of("test#Struct$fooBar"), ff };
         const mixins = &.{SmithyId.of("test#Mixin")};
         const mixed = &.{SmithyId.of("test#Mixin$mixed")};
         const member_doc: []const u8 = "<p>A <b>struct</b> member.</p>";
@@ -235,11 +237,14 @@ fn setupError(model: *Model) !void {
 
 fn setupServiceAndDeps(model: *Model, with_input_members: bool) !void {
     const Static = struct {
+        const sd0 = SmithyId.of("test.serve#Operation");
+        const sd1 = SmithyId.of("test.serve#Resource");
+        const sd2 = SmithyId.of("test#ServiceError");
         const service = SmithyService{
             .version = "2017-02-11",
-            .operations = &.{SmithyId.of("test.serve#Operation")},
-            .resources = &.{SmithyId.of("test.serve#Resource")},
-            .errors = &.{SmithyId.of("test#ServiceError")},
+            .operations = &.{sd0},
+            .resources = &.{sd1},
+            .errors = &.{sd2},
         };
         const service_doc: []const u8 = "<p>Some <i>service</i>...</p>";
         const service_traits = &.{
@@ -250,22 +255,23 @@ fn setupServiceAndDeps(model: *Model, with_input_members: bool) !void {
             .{ .id = trt_rules.EndpointRuleSet.id, .value = &rule_set },
             .{ .id = trt_rules.EndpointTests.id, .value = rule_test_cases.ptr },
         };
+        const rd0 = SmithyId.of("test.serve#Operation");
         const resource = SmithyResource{
             .identifiers = &.{
                 .{ .name = "forecastId", .shape = SmithyId.of("smithy.api#String") },
             },
-            .operations = &.{SmithyId.of("test.serve#Operation")},
+            .operations = &.{rd0},
             .resources = &.{},
         };
+        const od0 = SmithyId.of("test.serve#OperationOutput");
+        const od1 = SmithyId.of("test.error#NotFound");
         const operation = SmithyOperation{
             .input = SmithyId.of("test.serve#OperationInput"),
-            .output = SmithyId.of("test.serve#OperationOutput"),
-            .errors = &.{SmithyId.of("test.error#NotFound")},
+            .output = od0,
+            .errors = &.{od1},
         };
-        const operation_input: []const SmithyId = &.{
-            SmithyId.of("test.serve#OperationInput$Foo"),
-            SmithyId.of("test.serve#OperationInput$Bar"),
-        };
+        const n1 = SmithyId.of("test.serve#OperationInput$Bar");
+        const operation_input: []const SmithyId = &.{ SmithyId.of("test.serve#OperationInput$Foo"), n1 };
         const rule_set: rls.RuleSet = .{
             .parameters = &[_]rls.StringKV(rls.Parameter){.{
                 .key = "foo",

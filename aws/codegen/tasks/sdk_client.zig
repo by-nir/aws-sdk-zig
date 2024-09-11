@@ -119,7 +119,7 @@ fn extendEndpointScriptHook(self: *const Delegate, symbols: *SymbolsProvider, bl
         .arg("source", null)
         .returns(bld.x.id(aws_cfg.endpoint_config_type)).bodyWith(context, struct {
         fn f(ctx: @TypeOf(context), b: *zig.BlockBuild) !void {
-            try b.@"if"(b.x.raw("@typeInfo(@TypeOf(source)) != .Struct"))
+            try b.@"if"(b.x.raw("@typeInfo(@TypeOf(source)) != .@\"struct\""))
                 .body(b.x.raw("@compileError(\"Endpoint’s `extractConfig` expect a source of type struct.\")")).end();
 
             try b.variable("value").typing(b.x.id(aws_cfg.endpoint_config_type)).assign(b.x.raw(".{}"));

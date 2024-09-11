@@ -766,7 +766,7 @@ fn RowsUtils(comptime T: type, comptime options: RowsOptions(T)) type {
     const Idx = options.Indexer;
     const eqlFn = comptime options.equalFn orelse std.meta.eql;
     const equatable = switch (@typeInfo(T)) {
-        .Struct, .ErrorUnion, .Union, .Array, .Vector, .Pointer, .Optional => false,
+        .@"struct", .error_union, .@"union", .array, .vector, .pointer, .optional => false,
         else => true,
     };
 

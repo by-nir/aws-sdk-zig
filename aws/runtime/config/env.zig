@@ -71,7 +71,7 @@ const Env = struct {
             fields_len += 1;
         }
 
-        break :blk @Type(.{ .Struct = .{
+        break :blk @Type(.{ .@"struct" = .{
             .layout = .auto,
             .fields = fields[0..fields_len],
             .decls = &.{},

@@ -101,7 +101,7 @@ pub const TraitsProvider = struct {
 
     pub fn TraitReturn(comptime T: type) type {
         return switch (@typeInfo(T)) {
-            .Bool, .Int, .Float, .Enum, .Union, .Pointer => T,
+            .bool, .int, .float, .@"enum", .@"union", .pointer => T,
             else => *const T,
         };
     }
@@ -110,7 +110,7 @@ pub const TraitsProvider = struct {
         const trait = self.getOpaque(id) orelse return null;
         const ptr: *const T = @alignCast(@ptrCast(trait));
         return switch (@typeInfo(T)) {
-            .Bool, .Int, .Float, .Enum, .Union, .Pointer => ptr.*,
+            .bool, .int, .float, .@"enum", .@"union", .pointer => ptr.*,
             else => ptr,
         };
     }

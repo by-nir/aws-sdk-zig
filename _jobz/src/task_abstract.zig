@@ -485,7 +485,7 @@ fn ProxyCall(
             const self: *const @This() = @ptrCast(@alignCast(ctx));
             const childFn: child.Fn = @ptrCast(@alignCast(child.func));
 
-            if (@typeInfo(child.Args).Struct.fields.len == 1) {
+            if (@typeInfo(child.Args).@"struct".fields.len == 1) {
                 return @call(.auto, childFn, .{self.delegate});
             } else {
                 comptime var shift: usize = 0;
@@ -746,7 +746,7 @@ const AbstractMeta = union(enum) {
         const input_len = fn_meta.inputs.len;
         if (input_len > 0) {
             const T = fn_meta.inputs[input_len - 1];
-            if (@typeInfo(T) == .Struct and
+            if (@typeInfo(T) == .@"struct" and
                 @hasDecl(T, "ProxyOut") and
                 @hasDecl(T, "proxy_varyings"))
             {
@@ -833,7 +833,7 @@ const AbstractMeta = union(enum) {
     }
 
     fn tupleTypes(T: type) []const type {
-        const fields = @typeInfo(T).Struct.fields;
+        const fields = @typeInfo(T).@"struct".fields;
         if (fields.len == 0) return &.{} else {
             var types: [fields.len]type = undefined;
             inline for (fields, 0..) |f, i| types[i] = f.type;
@@ -905,7 +905,7 @@ test "AbstractTask.Chain" {
 
 test "AbstractTask.ExtractChildInput" {
     const Varying = tests.AbstractCall.Task("Test Varying", tests.multiplyFn, .{});
-    const fields = @typeInfo(AbstractTask.ExtractChildInput(Varying)).Struct.fields;
+    const fields = @typeInfo(AbstractTask.ExtractChildInput(Varying)).@"struct".fields;
     try testing.expectEqual(1, fields.len);
     try testing.expectEqual(usize, fields[0].type);
 }
