@@ -16,7 +16,7 @@ const lib = @import("library.zig");
 const Engine = @import("RulesEngine.zig");
 const name_util = @import("../../utils/names.zig");
 const JsonValue = @import("../../utils/JsonReader.zig").Value;
-const evalDocument = @import("../../jobs/smithy_codegen_shape.zig").writeDocument;
+const evalDocument = @import("../../gen/shape.zig").writeDocument;
 const cfg = @import("../../config.zig");
 
 const ARG_CONFIG = "config";

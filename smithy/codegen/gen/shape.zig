@@ -11,123 +11,109 @@ const ExprBuild = zig.ExprBuild;
 const BlockBuild = zig.BlockBuild;
 const ContainerBuild = zig.ContainerBuild;
 const Writer = @import("razdaz").CodegenWriter;
+const ScopeTag = @import("../pipeline.zig").ScopeTag;
+const oper = @import("operation.zig");
+const CodegenBehavior = @import("issues.zig").CodegenBehavior;
 const syb = @import("../systems/symbols.zig");
 const SmithyId = syb.SmithyId;
 const SmithyType = syb.SmithyType;
 const SymbolsProvider = syb.SymbolsProvider;
+const isu = @import("../systems/issues.zig");
+const IssuesBag = isu.IssuesBag;
 const name_util = @import("../utils/names.zig");
-const IssuesBag = @import("../utils/IssuesBag.zig");
 const JsonValue = @import("../utils/JsonReader.zig").Value;
-const cnfg = @import("../config.zig");
-const ScopeTag = @import("smithy.zig").ScopeTag;
-const CodegenPolicy = @import("smithy_codegen.zig").CodegenPolicy;
 const trt_docs = @import("../traits/docs.zig");
-const trt_http = @import("../traits/http.zig");
 const trt_refine = @import("../traits/refine.zig");
-const trt_behave = @import("../traits/behavior.zig");
 const trt_constr = @import("../traits/constraint.zig");
 const test_symbols = @import("../testing/symbols.zig");
-const trt_auth = @import("../traits/auth.zig");
-const AuthId = trt_auth.AuthId;
 
-pub const ServiceAuthSchemesHook = Task.Hook("Smithy Service Auth Schemes", anyerror!void, &.{*std.ArrayList(AuthId)});
-pub const ServiceHeadHook = Task.Hook("Smithy Service Head", anyerror!void, &.{ *ContainerBuild, *const syb.SmithyService });
-pub const ResourceHeadHook = Task.Hook("Smithy Resource Head", anyerror!void, &.{ *ContainerBuild, SmithyId, *const syb.SmithyResource });
-pub const OperationShapeHook = Task.Hook("Smithy Operation Shape", anyerror!void, &.{ *BlockBuild, OperationShape });
+pub fn getShapeSafe(self: *const Delegate, symbols: *SymbolsProvider, issues: *IssuesBag, id: SmithyId) !?SmithyType {
+    return symbols.getShape(id) catch {
+        const behavior: CodegenBehavior = self.readValue(CodegenBehavior, ScopeTag.codegen_behavior) orelse .{};
+        switch (behavior.unknown_shape) {
+            .skip => {
+                try issues.add(.{ .codegen_unknown_shape = @intFromEnum(id) });
+                return null;
+            },
+            .abort => {
+                std.log.err("Unknown shape: `{}`.", .{id});
+                return isu.AbortError;
+            },
+        }
+    };
+}
 
-pub const OperationShape = struct {
-    id: SmithyId,
-    input_type: ?[]const u8,
-    output_type: ?[]const u8,
-    errors_type: ?[]const u8,
-    return_type: []const u8,
-    auth_optional: bool,
-    auth_schemes: []const AuthId,
-};
+pub fn handleShapeWriteError(self: *const Delegate, symbols: *SymbolsProvider, issues: *IssuesBag, id: SmithyId, e: anyerror) !void {
+    const shape_name = symbols.getShapeNameRaw(id);
+    const name_id: isu.Issue.NameOrId = if (shape_name) |n|
+        .{ .name = n }
+    else |_|
+        .{ .id = @intFromEnum(id) };
+
+    const behavior: CodegenBehavior = self.readValue(CodegenBehavior, ScopeTag.codegen_behavior) orelse .{};
+    switch (e) {
+        error.InvalidRootShape => switch (behavior.invalid_root) {
+            .skip => {
+                try issues.add(.{ .codegen_invalid_root = name_id });
+                return;
+            },
+            .abort => {
+                if (shape_name) |n|
+                    std.log.err("Invalid root shape: `{s}`.", .{n})
+                else |_|
+                    std.log.err("Invalid root shape: `{}`.", .{id});
+                return isu.AbortError;
+            },
+        },
+        else => switch (behavior.shape_codegen_fail) {
+            .skip => {
+                return issues.add(.{ .codegen_shape_fail = .{
+                    .err = e,
+                    .item = name_id,
+                } });
+            },
+            .abort => {
+                if (shape_name) |n|
+                    std.log.err("Shape `{s}` codegen failed: `{s}`.", .{ n, @errorName(e) })
+                else |_|
+                    std.log.err("Shape `{}` codegen failed: `{s}`.", .{ id, @errorName(e) });
+                return isu.AbortError;
+            },
+        },
+    }
+}
 
 pub const WriteShape = Task.Define("Smithy Write Shape", writeShapeTask, .{
     .injects = &.{ SymbolsProvider, IssuesBag },
 });
-fn writeShapeTask(
-    self: *const Delegate,
-    symbols: *SymbolsProvider,
-    issues: *IssuesBag,
-    bld: *ContainerBuild,
-    id: SmithyId,
-) !void {
-    const shape = symbols.getShape(id) catch {
-        const policy: CodegenPolicy = self.readValue(CodegenPolicy, ScopeTag.codegen_policy) orelse .{};
-        switch (policy.unknown_shape) {
-            .skip => return issues.add(.{ .codegen_unknown_shape = @intFromEnum(id) }),
-            .abort => {
-                std.log.err("Unknown shape: `{}`.", .{id});
-                return IssuesBag.PolicyAbortError;
-            },
-        }
-    };
+fn writeShapeTask(self: *const Delegate, symbols: *SymbolsProvider, issues: *IssuesBag, bld: *ContainerBuild, id: SmithyId) !void {
+    const shape = (try getShapeSafe(self, symbols, issues, id)) orelse return;
 
-    (switch (shape) {
+    _ = switch (shape) {
+        .operation, .resource, .service => unreachable,
         .list => |m| writeListShape(self, symbols, bld, id, m),
         .map => |m| writeMapShape(self, symbols, bld, id, m),
         .str_enum => |m| writeStrEnumShape(self, symbols, bld, id, m),
         .int_enum => |m| writeIntEnumShape(self, symbols, bld, id, m),
         .tagged_uinon => |m| writeUnionShape(self, symbols, bld, id, m),
         .structure => |m| writeStructShape(self, symbols, bld, id, m),
-        .resource => |t| writeResourceShape(self, symbols, bld, id, t),
-        .service => |t| writeServiceShape(self, symbols, bld, id, t),
         .string => if (trt_constr.Enum.get(symbols, id)) |members|
             writeTraitEnumShape(self, symbols, bld, id, members)
         else
             error.InvalidRootShape,
         else => error.InvalidRootShape,
-    }) catch |e| {
-        const shape_name = symbols.getShapeNameRaw(id);
-        const name_id: IssuesBag.Issue.NameOrId = if (shape_name) |n|
-            .{ .name = n }
-        else |_|
-            .{ .id = @intFromEnum(id) };
-
-        const policy: CodegenPolicy = self.readValue(CodegenPolicy, ScopeTag.codegen_policy) orelse .{};
-        switch (e) {
-            error.InvalidRootShape => switch (policy.invalid_root) {
-                .skip => {
-                    try issues.add(.{ .codegen_invalid_root = name_id });
-                    return;
-                },
-                .abort => {
-                    if (shape_name) |n|
-                        std.log.err("Invalid root shape: `{s}`.", .{n})
-                    else |_|
-                        std.log.err("Invalid root shape: `{}`.", .{id});
-                    return IssuesBag.PolicyAbortError;
-                },
-            },
-            else => switch (policy.shape_codegen_fail) {
-                .skip => {
-                    return issues.add(.{ .codegen_shape_fail = .{
-                        .err = e,
-                        .item = name_id,
-                    } });
-                },
-                .abort => {
-                    if (shape_name) |n|
-                        std.log.err("Shape `{s}` codegen failed: `{s}`.", .{ n, @errorName(e) })
-                    else |_|
-                        std.log.err("Shape `{}` codegen failed: `{s}`.", .{ id, @errorName(e) });
-                    return IssuesBag.PolicyAbortError;
-                },
-            },
-        }
+    } catch |e| {
+        return handleShapeWriteError(self, symbols, issues, id, e);
     };
 }
 
-test "WriteShape" {
-    try smithyTester(&.{.unit}, struct {
+test WriteShape {
+    try shapeTester(&.{.unit}, struct {
         fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Unit") });
 
             try testing.expectEqualDeep(&.{
-                IssuesBag.Issue{ .codegen_invalid_root = .{ .id = @intFromEnum(SmithyId.of("test#Unit")) } },
+                isu.Issue{ .codegen_invalid_root = .{ .id = @intFromEnum(SmithyId.of("test#Unit")) } },
             }, tester.getService(IssuesBag).?.all());
         }
     }.eval, "");
@@ -155,8 +141,8 @@ fn writeListShape(
     try bld.public().constant(shape_name).assign(target_exp);
 }
 
-test "writeListShape" {
-    try smithyTester(&.{.list}, struct {
+test writeListShape {
+    try shapeTester(&.{.list}, struct {
         fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#List") });
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Set") });
@@ -197,8 +183,8 @@ fn writeMapShape(
     try bld.public().constant(shape_name).assign(bld.x.call(fn_name, args));
 }
 
-test "writeMapShape" {
-    try smithyTester(&.{.map}, struct {
+test writeMapShape {
+    try shapeTester(&.{.map}, struct {
         fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Map") });
         }
@@ -323,7 +309,7 @@ fn writeEnumShape(
     );
 }
 
-test "writeEnumShape" {
+test writeEnumShape {
     const BODY =
         \\    /// Used for backwards compatibility when adding new values.
         \\    UNKNOWN: []const u8,
@@ -348,7 +334,7 @@ test "writeEnumShape" {
         \\};
     ;
 
-    try smithyTester(&.{.enums_str}, struct {
+    try shapeTester(&.{.enums_str}, struct {
         fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Enum") });
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#EnumTrt") });
@@ -404,8 +390,8 @@ fn writeIntEnumShape(
     );
 }
 
-test "writeIntEnumShape" {
-    try smithyTester(&.{.enum_int}, struct {
+test writeIntEnumShape {
+    try shapeTester(&.{.enum_int}, struct {
         fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#IntEnum") });
         }
@@ -458,8 +444,8 @@ fn writeUnionShape(
     );
 }
 
-test "writeUnionShape" {
-    try smithyTester(&.{.union_str}, struct {
+test writeUnionShape {
+    try shapeTester(&.{.union_str}, struct {
         fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Union") });
         }
@@ -472,13 +458,7 @@ test "writeUnionShape" {
     );
 }
 
-fn writeStructShape(
-    self: *const Delegate,
-    symbols: *SymbolsProvider,
-    bld: *ContainerBuild,
-    id: SmithyId,
-    members: []const SmithyId,
-) !void {
+pub fn writeStructShape(self: *const Delegate, symbols: *SymbolsProvider, bld: *ContainerBuild, id: SmithyId, members: []const SmithyId) !void {
     const shape_name = try symbols.getShapeName(id, .type);
     try writeDocComment(self.alloc(), symbols, bld, id, false);
 
@@ -616,8 +596,8 @@ fn isStructShapeMemberOptional(symbols: *SymbolsProvider, id: SmithyId, is_input
     return true;
 }
 
-test "writeStructShape" {
-    try smithyTester(&.{ .structure, .err }, struct {
+test writeStructShape {
+    try shapeTester(&.{ .structure, .err }, struct {
         fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Struct") });
         }
@@ -646,466 +626,7 @@ test "writeStructShape" {
     );
 }
 
-fn writeOperationShapes(self: *const Delegate, symbols: *SymbolsProvider, bld: *ContainerBuild, id: SmithyId) !void {
-    const operation = (try symbols.getShape(id)).operation;
-
-    if (operation.input) |in_id| {
-        const members = (try symbols.getShape(in_id)).structure;
-        try writeStructShape(self, symbols, bld, in_id, members);
-    }
-
-    if (operation.output) |out_id| {
-        const members = (try symbols.getShape(out_id)).structure;
-        try writeStructShape(self, symbols, bld, out_id, members);
-    }
-}
-
-test "writeOperationShapes" {
-    const OpTest = Task.Define("Operation Test", struct {
-        fn eval(self: *const Delegate, symbols: *SymbolsProvider, bld: *ContainerBuild) anyerror!void {
-            try writeOperationShapes(self, symbols, bld, SmithyId.of("test.serve#Operation"));
-        }
-    }.eval, .{
-        .injects = &.{SymbolsProvider},
-    });
-
-    try smithyTester(&.{.service}, struct {
-        fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.runTask(OpTest, .{bld});
-        }
-    }.eval,
-        \\pub const OperationInput = struct {
-        \\    pub fn jsonStringify(self: @This(), jw: anytype) !void {
-        \\        try jw.beginObject();
-        \\
-        \\        try jw.endObject();
-        \\    }
-        \\};
-        \\
-        \\pub const OperationOutput = struct {
-        \\    pub fn jsonStringify(self: @This(), jw: anytype) !void {
-        \\        try jw.beginObject();
-        \\
-        \\        try jw.endObject();
-        \\    }
-        \\};
-    );
-}
-
-fn writeOperationFunc(self: *const Delegate, symbols: *SymbolsProvider, bld: *ContainerBuild, id: SmithyId) !void {
-    const operation = (try symbols.getShape(id)).operation;
-    const op_name = try symbols.getShapeName(id, .function);
-
-    const service_errors = try symbols.getServiceErrors();
-    const error_type = if (operation.errors.len + service_errors.len > 0)
-        try errorSetName(self.alloc(), op_name, "srvc_errors.")
-    else
-        null;
-
-    const input_type: ?[]const u8 = if (operation.input) |d| blk: {
-        try symbols.markVisited(d);
-        break :blk try symbols.getTypeName(d);
-    } else null;
-    const output_type: ?[]const u8 = if (operation.output) |d| blk: {
-        try symbols.markVisited(d);
-        break :blk try symbols.getTypeName(d);
-    } else null;
-
-    const return_type = if (error_type) |errors|
-        try std.fmt.allocPrint(self.alloc(), "!smithy.Response({s}, {s})", .{
-            output_type orelse "void",
-            errors,
-        })
-    else if (output_type) |s|
-        try std.fmt.allocPrint(self.alloc(), "!{s}", .{s})
-    else
-        "!void";
-
-    const auth_optional = symbols.hasTrait(id, trt_auth.optional_auth_id);
-    const auth_schemes = trt_auth.Auth.get(symbols, id) orelse
-        trt_auth.Auth.get(symbols, symbols.service_id) orelse
-        symbols.service_auth_schemes;
-
-    const shape = OperationShape{
-        .id = id,
-        .input_type = input_type,
-        .output_type = output_type,
-        .errors_type = error_type,
-        .return_type = return_type,
-        .auth_optional = auth_optional,
-        .auth_schemes = auth_schemes,
-    };
-
-    const context = .{ .self = self, .symbols = symbols, .shape = shape };
-    const func1 = bld.public().function(op_name)
-        .arg("self", bld.x.id(cnfg.service_client_type))
-        .arg(cnfg.alloc_param, bld.x.raw("Allocator"));
-    const func2 = if (input_type) |input| func1.arg("input", bld.x.raw(input)) else func1;
-    try func2.returns(bld.x.raw(return_type)).bodyWith(context, struct {
-        fn f(ctx: @TypeOf(context), b: *BlockBuild) !void {
-            try ctx.self.evaluate(OperationShapeHook, .{ b, ctx.shape });
-        }
-    }.f);
-}
-
-test "writeOperationFunc" {
-    const OpFuncTest = Task.Define("Operation Function Test", struct {
-        fn eval(self: *const Delegate, symbols: *SymbolsProvider, bld: *ContainerBuild) anyerror!void {
-            try writeOperationFunc(self, symbols, bld, SmithyId.of("test.serve#Operation"));
-        }
-    }.eval, .{
-        .injects = &.{SymbolsProvider},
-    });
-
-    try smithyTester(&.{.service}, struct {
-        fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.runTask(OpFuncTest, .{bld});
-        }
-    }.eval,
-        \\pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !smithy.Response(OperationOutput, srvc_errors.OperationError) {
-        \\    return undefined;
-        \\}
-    );
-}
-
-fn writeResourceShape(
-    self: *const Delegate,
-    symbols: *SymbolsProvider,
-    bld: *ContainerBuild,
-    id: SmithyId,
-    resource: *const syb.SmithyResource,
-) !void {
-    const LIFECYCLE_OPS = &.{ "create", "put", "read", "update", "delete", "list" };
-    const resource_name = try symbols.getShapeName(id, .type);
-    const context = .{ .self = self, .symbols = symbols, .id = id, .resource = resource };
-    try bld.public().constant(resource_name).assign(bld.x.@"struct"().bodyWith(context, struct {
-        fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
-            if (ctx.self.hasOverride(ResourceHeadHook)) {
-                try ctx.self.evaluate(ResourceHeadHook, .{ b, ctx.id, ctx.resource });
-            }
-            for (ctx.resource.identifiers) |d| {
-                try writeDocComment(ctx.self.alloc(), ctx.symbols, b, d.shape, true);
-                const type_name = try ctx.symbols.getTypeName(d.shape);
-                const shape_name = try name_util.snakeCase(ctx.self.alloc(), d.name);
-                try b.field(shape_name).typing(b.x.raw(type_name)).end();
-            }
-
-            inline for (LIFECYCLE_OPS) |field| {
-                if (@field(ctx.resource, field)) |op_id| {
-                    try writeOperationFunc(ctx.self, ctx.symbols, b, op_id);
-                }
-            }
-            for (ctx.resource.operations) |op_id| try writeOperationFunc(ctx.self, ctx.symbols, b, op_id);
-            for (ctx.resource.collection_ops) |op_id| try writeOperationFunc(ctx.self, ctx.symbols, b, op_id);
-        }
-    }.f));
-
-    inline for (LIFECYCLE_OPS) |field| {
-        if (@field(resource, field)) |op_id| {
-            try writeOperationShapes(self, symbols, bld, op_id);
-        }
-    }
-    for (resource.operations) |op_id| try writeOperationShapes(self, symbols, bld, op_id);
-    for (resource.collection_ops) |op_id| try writeOperationShapes(self, symbols, bld, op_id);
-
-    for (resource.resources) |rsc_id| try symbols.enqueue(rsc_id);
-}
-
-test "writeResourceShape" {
-    try smithyTester(&.{.service}, struct {
-        fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test.serve#Resource") });
-        }
-    }.eval,
-        \\pub const Resource = struct {
-        \\    forecast_id: []const u8,
-        \\
-        \\    pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !smithy.Response(OperationOutput, srvc_errors.OperationError) {
-        \\        return undefined;
-        \\    }
-        \\};
-        \\
-        \\pub const OperationInput = struct {
-        \\    pub fn jsonStringify(self: @This(), jw: anytype) !void {
-        \\        try jw.beginObject();
-        \\
-        \\        try jw.endObject();
-        \\    }
-        \\};
-        \\
-        \\pub const OperationOutput = struct {
-        \\    pub fn jsonStringify(self: @This(), jw: anytype) !void {
-        \\        try jw.beginObject();
-        \\
-        \\        try jw.endObject();
-        \\    }
-        \\};
-    );
-}
-
-fn writeServiceShape(
-    self: *const Delegate,
-    symbols: *SymbolsProvider,
-    bld: *ContainerBuild,
-    id: SmithyId,
-    service: *const syb.SmithyService,
-) !void {
-    //
-    // Auth schemes
-    //
-
-    std.debug.assert(symbols.service_auth_schemes.len == 0);
-    var auth_schemes = std.ArrayList(AuthId).init(self.alloc());
-
-    const sid = symbols.service_id;
-    if (symbols.hasTrait(sid, trt_auth.http_basic_id)) try auth_schemes.append(.http_basic);
-    if (symbols.hasTrait(sid, trt_auth.http_bearer_id)) try auth_schemes.append(.http_bearer);
-    if (symbols.hasTrait(sid, trt_auth.http_digest_id)) try auth_schemes.append(.http_digest);
-    if (symbols.hasTrait(sid, trt_auth.HttpApiKey.id)) try auth_schemes.append(.http_api_key);
-    if (self.hasOverride(ServiceAuthSchemesHook)) {
-        try self.evaluate(ServiceAuthSchemesHook, .{&auth_schemes});
-    }
-
-    std.mem.sort(AuthId, auth_schemes.items, {}, struct {
-        fn f(_: void, l: AuthId, r: AuthId) bool {
-            return std.ascii.lessThanIgnoreCase(std.mem.asBytes(&l), std.mem.asBytes(&r));
-        }
-    }.f);
-
-    symbols.service_auth_schemes = try auth_schemes.toOwnedSlice();
-    errdefer symbols.service_auth_schemes = &.{};
-
-    //
-    // Client struct
-    //
-
-    try writeDocComment(self.alloc(), symbols, bld, id, false);
-    const context = .{ .self = self, .symbols = symbols, .service = service };
-    try bld.public().constant(cnfg.service_client_type).assign(
-        bld.x.@"struct"().bodyWith(context, struct {
-            fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
-                if (ctx.self.hasOverride(ServiceHeadHook)) {
-                    try ctx.self.evaluate(ServiceHeadHook, .{ b, ctx.service });
-                }
-
-                for (ctx.service.operations) |op_id| {
-                    try writeOperationFunc(ctx.self, ctx.symbols, b, op_id);
-                }
-            }
-        }.f),
-    );
-
-    for (service.operations) |op_id| {
-        try writeOperationShapes(self, symbols, bld, op_id);
-    }
-}
-
-test "writeServiceShape" {
-    try smithyTester(&.{.service_with_input_members}, struct {
-        fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test.serve#Service") });
-        }
-    }.eval,
-        \\/// Some _service_...
-        \\pub const Client = struct {
-        \\    pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !smithy.Response(OperationOutput, srvc_errors.OperationError) {
-        \\        return undefined;
-        \\    }
-        \\};
-        \\
-        \\pub const OperationInput = struct {
-        \\    foo: bool,
-        \\    bar: ?bool = null,
-        \\
-        \\    pub fn jsonStringify(self: @This(), jw: anytype) !void {
-        \\        try jw.beginObject();
-        \\
-        \\        try jw.objectField("Foo");
-        \\
-        \\        try jw.write(self.foo);
-        \\
-        \\        if (self.bar) |v| {
-        \\            try jw.objectField("Bar");
-        \\
-        \\            try jw.write(v);
-        \\        }
-        \\
-        \\        try jw.endObject();
-        \\    }
-        \\};
-        \\
-        \\pub const OperationOutput = struct {
-        \\    pub fn jsonStringify(self: @This(), jw: anytype) !void {
-        \\        try jw.beginObject();
-        \\
-        \\        try jw.endObject();
-        \\    }
-        \\};
-    );
-}
-
-pub const WriteErrorSet = Task.Define("Smithy Write Error Set", writeErrorSetTask, .{
-    .injects = &.{SymbolsProvider},
-});
-fn writeErrorSetTask(
-    self: *const Delegate,
-    symbols: *SymbolsProvider,
-    bld: *ContainerBuild,
-    shape_id: SmithyId,
-    shape_errors: []const SmithyId,
-    common_errors: []const SmithyId,
-) anyerror!void {
-    if (shape_errors.len + common_errors.len == 0) return;
-
-    const shape_name = try symbols.getShapeName(shape_id, .type);
-    const type_name = try errorSetName(self.alloc(), shape_name, "");
-
-    const context = .{ .arena = self.alloc(), .symbols = symbols, .common_errors = common_errors, .shape_errors = shape_errors };
-    try bld.public().constant(type_name).assign(bld.x.@"enum"().bodyWith(context, struct {
-        fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
-            var members = std.ArrayList(ErrorSetMember).init(ctx.arena);
-            defer members.deinit();
-
-            for (ctx.common_errors) |m| try writeErrorSetMember(ctx.arena, ctx.symbols, b, &members, m);
-            for (ctx.shape_errors) |m| try writeErrorSetMember(ctx.arena, ctx.symbols, b, &members, m);
-
-            try b.public().function("source")
-                .arg("self", b.x.This())
-                .returns(b.x.raw("smithy.ErrorSource"))
-                .bodyWith(members.items, writeErrorSetSourceFn);
-
-            try b.public().function("httpStatus")
-                .arg("self", b.x.This())
-                .returns(b.x.raw("std.http.Status"))
-                .bodyWith(members.items, writeErrorSetStatusFn);
-
-            try b.public().function("retryable")
-                .arg("self", b.x.This())
-                .returns(b.x.typeOf(bool))
-                .bodyWith(members.items, writeErrorSetRetryFn);
-        }
-    }.f));
-}
-
-const ErrorSetMember = struct {
-    name: []const u8,
-    code: u10,
-    retryable: bool,
-    source: trt_refine.Error.Source,
-};
-
-fn errorSetName(allocator: Allocator, shape_name: []const u8, comptime prefix: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(allocator, prefix ++ "{c}{s}Error", .{
-        std.ascii.toUpper(shape_name[0]),
-        shape_name[1..shape_name.len],
-    });
-}
-
-fn writeErrorSetMember(
-    arena: Allocator,
-    symbols: *SymbolsProvider,
-    bld: *ContainerBuild,
-    list: *std.ArrayList(ErrorSetMember),
-    member: SmithyId,
-) !void {
-    var shape_name = try symbols.getShapeName(member, .field);
-    inline for (.{ "_error", "_exception" }) |suffix| {
-        if (std.ascii.endsWithIgnoreCase(shape_name, suffix)) {
-            shape_name = shape_name[0 .. shape_name.len - suffix.len];
-            break;
-        }
-    }
-
-    try writeDocComment(arena, symbols, bld, member, true);
-    try bld.field(shape_name).end();
-
-    const source = trt_refine.Error.get(symbols, member) orelse return error.MissingErrorTrait;
-    try list.append(.{
-        .name = shape_name,
-        .source = source,
-        .retryable = symbols.hasTrait(member, trt_behave.retryable_id),
-        .code = trt_http.HttpError.get(symbols, member) orelse if (source == .client) 400 else 500,
-    });
-}
-
-fn writeErrorSetSourceFn(members: []ErrorSetMember, bld: *BlockBuild) !void {
-    try bld.returns().switchWith(bld.x.id("self"), members, struct {
-        fn f(ms: []ErrorSetMember, b: *zig.SwitchBuild) !void {
-            for (ms) |m| try b.branch().case(b.x.dot().id(m.name)).body(b.x.raw(switch (m.source) {
-                .client => ".client",
-                .server => ".server",
-            }));
-        }
-    }.f).end();
-}
-
-fn writeErrorSetStatusFn(members: []ErrorSetMember, bld: *BlockBuild) !void {
-    try bld.constant("code").assign(bld.x.switchWith(bld.x.id("self"), members, struct {
-        fn f(ms: []ErrorSetMember, b: *zig.SwitchBuild) !void {
-            for (ms) |m| try b.branch().case(b.x.dot().id(m.name)).body(b.x.valueOf(m.code));
-        }
-    }.f));
-
-    try bld.returns().call("@enumFromInt", &.{bld.x.id("code")}).end();
-}
-
-fn writeErrorSetRetryFn(members: []ErrorSetMember, bld: *BlockBuild) !void {
-    try bld.returns().switchWith(bld.x.id("self"), members, struct {
-        fn f(ms: []ErrorSetMember, b: *zig.SwitchBuild) !void {
-            for (ms) |m| try b.branch().case(b.x.dot().id(m.name)).body(b.x.valueOf(m.retryable));
-        }
-    }.f).end();
-}
-
-test "WriteErrorSet" {
-    try smithyTester(&.{ .service, .err }, struct {
-        fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.runTask(WriteErrorSet, .{
-                bld,
-                SmithyId.of("test.serve#Operation"),
-                &.{SmithyId.of("test.error#NotFound")},
-                &.{SmithyId.of("test#ServiceError")},
-            });
-        }
-    }.eval, TEST_OPERATION_ERR);
-}
-pub const TEST_OPERATION_ERR =
-    \\pub const OperationError = enum {
-    \\    service,
-    \\    not_found,
-    \\
-    \\    pub fn source(self: @This()) smithy.ErrorSource {
-    \\        return switch (self) {
-    \\            .service => .client,
-    \\            .not_found => .server,
-    \\        };
-    \\    }
-    \\
-    \\    pub fn httpStatus(self: @This()) std.http.Status {
-    \\        const code = switch (self) {
-    \\            .service => 429,
-    \\            .not_found => 500,
-    \\        };
-    \\
-    \\        return @enumFromInt(code);
-    \\    }
-    \\
-    \\    pub fn retryable(self: @This()) bool {
-    \\        return switch (self) {
-    \\            .service => true,
-    \\            .not_found => false,
-    \\        };
-    \\    }
-    \\};
-;
-
-fn writeDocComment(
-    arena: Allocator,
-    symbols: *SymbolsProvider,
-    bld: *ContainerBuild,
-    id: SmithyId,
-    target_fallback: bool,
-) !void {
+pub fn writeDocComment(arena: Allocator, symbols: *SymbolsProvider, bld: *ContainerBuild, id: SmithyId, target_fallback: bool) !void {
     const docs = trt_docs.Documentation.get(symbols, id) orelse blk: {
         if (!target_fallback) break :blk null;
         const shape = symbols.getShape(id) catch break :blk null;
@@ -1154,7 +675,7 @@ pub fn writeDocument(x: ExprBuild, json_val: JsonValue) !zig.Expr {
     }
 }
 
-test "writeDocument" {
+test writeDocument {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const arena_alloc = arena.allocator();
     defer arena.deinit();
@@ -1185,7 +706,7 @@ test "writeDocument" {
     );
 }
 
-fn smithyTester(
+pub fn shapeTester(
     setup_symbols: []const test_symbols.Case,
     eval: *const fn (tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void,
     expected: []const u8,
@@ -1201,7 +722,7 @@ fn smithyTester(
 
     _ = try tester.provideService(try test_symbols.setup(tester.alloc(), setup_symbols), null);
 
-    try tester.defineValue(CodegenPolicy, ScopeTag.codegen_policy, .{
+    try tester.defineValue(CodegenBehavior, ScopeTag.codegen_behavior, .{
         .unknown_shape = .skip,
         .invalid_root = .skip,
         .shape_codegen_fail = .skip,
@@ -1235,8 +756,8 @@ fn smithyTester(
 pub const TEST_INVOKER = blk: {
     var builder = jobz.InvokerBuilder{};
 
-    _ = builder.Override(OperationShapeHook, "Test Operation Shape", struct {
-        fn f(_: *const Delegate, bld: *BlockBuild, _: OperationShape) anyerror!void {
+    _ = builder.Override(oper.OperationShapeHook, "Test Operation Shape", struct {
+        fn f(_: *const Delegate, bld: *BlockBuild, _: oper.OperationShape) anyerror!void {
             try bld.returns().raw("undefined").end();
         }
     }.f, .{});

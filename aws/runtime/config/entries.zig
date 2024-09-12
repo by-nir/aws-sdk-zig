@@ -91,7 +91,7 @@ test "parseUInt32" {
 }
 
 fn parseRegion(value: []const u8, out: *anyopaque) bool {
-    const region = Region.parseCode(value) orelse return false;
+    const region = Region.parse(value) orelse return false;
     const ref: *Region = @ptrCast(@alignCast(out));
     ref.* = region;
     return true;

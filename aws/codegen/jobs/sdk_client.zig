@@ -5,8 +5,8 @@ const Delegate = jobz.Delegate;
 const md = @import("razdaz").md;
 const zig = @import("razdaz").zig;
 const smithy = @import("smithy/codegen");
-const SmithyTask = smithy.SmithyTask;
-const SmithyOptions = smithy.SmithyOptions;
+const SmithyPipeline = smithy.PipelineTask;
+const SmithyOptions = smithy.PipelineOptions;
 const SmithyService = smithy.SmithyService;
 const SymbolsProvider = smithy.SymbolsProvider;
 const aws_cfg = @import("../config.zig");
@@ -39,44 +39,43 @@ fn sdkTask(
         try self.defineValue(*const WhitelistMap, ScopeTag.whitelist, &map);
     }
 
-    try self.evaluate(SmithyTask, .{ src_dir, smithy_config });
+    try self.evaluate(SmithyPipeline, .{ src_dir, smithy_config });
 }
 
 const smithy_config = SmithyOptions{
-    .policy_service = .{
+    .traits = aws_traits,
+    .rules_builtins = itg_rules.std_builtins,
+    .rules_funcs = itg_rules.std_functions,
+    .behavior_service = .{
         .process = .abort,
         .parse = .skip,
         .codegen = .skip,
     },
-    .policy_parse = .{
+    .behavior_parse = .{
         .property = .abort,
         .trait = .skip,
     },
-    .policy_codegen = .{
+    .behavior_codegen = .{
         .unknown_shape = .abort,
         .invalid_root = .abort,
         .shape_codegen_fail = .abort,
     },
-    .rules_builtins = itg_rules.std_builtins,
-    .rules_funcs = itg_rules.std_functions,
-    .traits = aws_traits,
 };
 
 pub const pipeline_invoker = blk: {
     var builder = jobz.InvokerBuilder{};
 
-    _ = builder.Override(smithy.ServiceFilterHook, "AWS Service Filter", filterSourceModelHook, .{});
+    _ = builder.Override(smithy.PipelineServiceFilterHook, "AWS Service Filter", filterSourceModelHook, .{});
     _ = builder.Override(smithy.ServiceReadmeHook, "AWS Service Readme", writeReadmeHook, .{});
-    _ = builder.Override(smithy.ScriptHeadHook, "AWS Script Head", writeScriptHeadHook, .{});
-    _ = builder.Override(smithy.ExtendEndpointScriptHook, "AWS Endpoint Script Head", extendEndpointScriptHook, .{
+    _ = builder.Override(smithy.ServiceScriptHeadHook, "AWS Service Script Head", writeScriptHeadHook, .{});
+    _ = builder.Override(smithy.ServiceAuthSchemesHook, "AWS Service Auth Schemes", itg_auth.extendAuthSchemes, .{
         .injects = &.{SymbolsProvider},
     });
-
-    _ = builder.Override(smithy.ExtendClientScriptHook, "AWS Client Script Head", extendClientScriptHook, .{});
-    _ = builder.Override(smithy.ServiceAuthSchemesHook, "AWS Service Auth Schemes", itg_auth.extendServiceAuthSchemes, .{
+    _ = builder.Override(smithy.ClientScriptHeadHook, "AWS Client Script Head", writeClientScriptHook, .{});
+    _ = builder.Override(smithy.ClientShapeHeadHook, "AWS Client Shape Head", writeClientHeadHook, .{
         .injects = &.{SymbolsProvider},
     });
-    _ = builder.Override(smithy.ServiceHeadHook, "AWS Service Shape Head", writeServiceHeadHook, .{
+    _ = builder.Override(smithy.EndpointScriptHeadHook, "AWS Endpoint Script Head", writeEndpointScriptHook, .{
         .injects = &.{SymbolsProvider},
     });
     _ = builder.Override(smithy.OperationShapeHook, "AWS Operation Shape", writeOperationShapeHook, .{
@@ -96,7 +95,7 @@ fn filterSourceModelHook(self: *const Delegate, filename: []const u8) bool {
     }
 }
 
-fn writeReadmeHook(_: *const Delegate, bld: md.ContainerAuthor, m: smithy.ReadmeMetadata) anyerror!void {
+fn writeReadmeHook(_: *const Delegate, bld: md.ContainerAuthor, m: smithy.ServiceReadmeMetadata) anyerror!void {
     var meta = m;
     if (std.mem.startsWith(u8, meta.title, "AWS ")) {
         meta.title = meta.title[4..meta.title.len];
@@ -113,7 +112,7 @@ fn writeScriptHeadHook(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!vo
     try bld.constant(aws_cfg.scope_private).assign(bld.x.id(aws_cfg.scope_runtime).dot().id("_private_"));
 }
 
-fn extendEndpointScriptHook(self: *const Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild) anyerror!void {
+fn writeEndpointScriptHook(self: *const Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild) anyerror!void {
     const rules_tid = smithy.traits.rules.EndpointRuleSet.id;
     const trait = symbols.getTrait(smithy.RuleSet, symbols.service_id, rules_tid) orelse unreachable;
 
@@ -139,12 +138,12 @@ fn extendEndpointScriptHook(self: *const Delegate, symbols: *SymbolsProvider, bl
     }.f);
 }
 
-fn extendClientScriptHook(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
+fn writeClientScriptHook(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
     try bld.constant(aws_cfg.scope_auth).assign(bld.x.id(aws_cfg.scope_private).dot().id("auth"));
     try bld.constant(aws_cfg.scope_protocol).assign(bld.x.id(aws_cfg.scope_private).dot().id("protocol"));
 }
 
-fn writeServiceHeadHook(_: *const Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild, shape: *const SmithyService) anyerror!void {
+fn writeClientHeadHook(_: *const Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild, shape: *const SmithyService) anyerror!void {
     const service = ServiceTrait.get(symbols, symbols.service_id) orelse return error.MissingServiceTrait;
     try bld.constant("service_code").assign(bld.x.valueOf(service.endpoint_prefix orelse return error.MissingServiceCode));
     try bld.constant("service_version").assign(bld.x.valueOf(shape.version orelse return error.MissingServiceApiVersion));
