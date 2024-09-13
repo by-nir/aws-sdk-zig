@@ -10,10 +10,11 @@ const Expr = zig.Expr;
 const ExprBuild = zig.ExprBuild;
 const rls = @import("model.zig");
 const Generator = @import("Generator.zig");
-const symbols = @import("../symbols.zig");
-const idHash = symbols.idHash;
-const name_util = @import("../../utils/names.zig");
 const cfg = @import("../../config.zig");
+const name_util = @import("../../utils/names.zig");
+
+const IdHashInt = u32;
+const idHash = std.hash.CityHash32.hash;
 
 pub fn Registry(comptime T: type) type {
     return []const struct { T.Id, T };
@@ -34,7 +35,7 @@ pub const BuiltIn = struct {
     /// Specifies whether an endpoint parameter has been deprecated.
     deprecated: ?rls.Deprecated = null,
 
-    pub const Id = enum(symbols.IdHashInt) {
+    pub const Id = enum(IdHashInt) {
         pub const NULL: Id = @enumFromInt(0);
 
         endpoint = idHash("SDK::Endpoint"),
@@ -68,7 +69,7 @@ pub const Function = struct {
 
     pub const GenFn = *const fn (gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) anyerror!Expr;
 
-    pub const Id = enum(symbols.IdHashInt) {
+    pub const Id = enum(IdHashInt) {
         pub const NULL: Id = @enumFromInt(0);
 
         boolean_equals = idHash("booleanEquals"),

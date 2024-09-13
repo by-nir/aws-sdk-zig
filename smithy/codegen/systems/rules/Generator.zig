@@ -14,10 +14,10 @@ const ContainerBuild = zig.ContainerBuild;
 const mdl = @import("model.zig");
 const lib = @import("library.zig");
 const Engine = @import("RulesEngine.zig");
+const cfg = @import("../../config.zig");
 const name_util = @import("../../utils/names.zig");
 const JsonValue = @import("../../utils/JsonReader.zig").Value;
-const evalDocument = @import("../../gen/shape.zig").writeDocument;
-const cfg = @import("../../config.zig");
+const evalDocument = @import("../../render/shape.zig").writeDocument;
 
 const ARG_CONFIG = "config";
 const CONDIT_VAL = "did_pass";

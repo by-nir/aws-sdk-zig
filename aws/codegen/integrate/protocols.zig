@@ -27,24 +27,24 @@ pub fn defaultHttpMethod(protocol: Protocol) std.http.Method {
     };
 }
 
-pub fn writeOperationRequest(arena: Allocator, symbols: *SymbolsProvider, bld: *zig.BlockBuild, shape: smithy.OperationShape, protocol: Protocol) !void {
+pub fn writeOperationRequest(arena: Allocator, symbols: *SymbolsProvider, bld: *zig.BlockBuild, func: smithy.OperationFunc, protocol: Protocol) !void {
     switch (protocol) {
-        .json_10 => try writeJson10Request(arena, symbols, bld, shape),
+        .json_10 => try writeJson10Request(arena, symbols, bld, func),
         else => return error.UnimplementedProtocol,
     }
 }
 
-pub fn writeOperationResponse(arena: Allocator, symbols: *SymbolsProvider, bld: *zig.BlockBuild, shape: smithy.OperationShape, protocol: Protocol) !void {
+pub fn writeOperationResponse(arena: Allocator, symbols: *SymbolsProvider, bld: *zig.BlockBuild, func: smithy.OperationFunc, protocol: Protocol) !void {
     switch (protocol) {
-        .json_10 => try writeJson10Response(arena, symbols, bld, shape),
+        .json_10 => try writeJson10Response(arena, symbols, bld, func),
         else => return error.UnimplementedProtocol,
     }
 }
 
-fn writeJson10Request(arena: Allocator, symbols: *SymbolsProvider, bld: *zig.BlockBuild, shape: smithy.OperationShape) !void {
+fn writeJson10Request(arena: Allocator, symbols: *SymbolsProvider, bld: *zig.BlockBuild, func: smithy.OperationFunc) !void {
     const target = try std.fmt.allocPrint(arena, "{s}.{s}", .{
         try symbols.getShapeNameRaw(symbols.service_id),
-        try symbols.getShapeNameRaw(shape.id),
+        try symbols.getShapeNameRaw(func.id),
     });
 
     const payload = bld.trys().id(aws_cfg.scope_protocol).dot().call("aws_json.inputJson10", &.{
@@ -58,11 +58,11 @@ fn writeJson10Request(arena: Allocator, symbols: *SymbolsProvider, bld: *zig.Blo
     try bld.defers(bld.x.id(aws_cfg.alloc_param).dot().raw("free(payload)"));
 }
 
-fn writeJson10Response(arena: Allocator, symbols: *SymbolsProvider, bld: *zig.BlockBuild, shape: smithy.OperationShape) !void {
+fn writeJson10Response(arena: Allocator, symbols: *SymbolsProvider, bld: *zig.BlockBuild, func: smithy.OperationFunc) !void {
     try bld.returns().id(aws_cfg.scope_protocol).dot().call("aws_json.outputJson10", &.{
         bld.x.id(aws_cfg.send_op_param),
-        if (shape.output_type) |s| bld.x.raw(s) else bld.x.typeOf(void),
-        if (shape.errors_type) |s| bld.x.raw(s) else bld.x.typeOf(void),
+        if (func.output_type) |s| bld.x.raw(s) else bld.x.typeOf(void),
+        if (func.errors_type) |s| bld.x.raw(s) else bld.x.typeOf(void),
         bld.x.raw(".{}"),
         bld.x.raw(".{}"),
     }).end();

@@ -4,8 +4,6 @@
 const std = @import("std");
 const testing = std.testing;
 const lib = @import("library.zig");
-const symbols = @import("../symbols.zig");
-const idHash = symbols.idHash;
 const JsonReader = @import("../../utils/JsonReader.zig");
 
 pub const Rule = union(enum) {

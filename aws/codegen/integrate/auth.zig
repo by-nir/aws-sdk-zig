@@ -31,13 +31,13 @@ const SignContext = struct {
     config_expr: ?zig.ExprBuild = null,
 };
 
-pub fn writeOperationAuth(_: Allocator, symbols: *SymbolsProvider, bld: *zig.BlockBuild, shape: smithy.OperationShape) !void {
-    std.debug.assert(shape.auth_schemes.len > 0);
-    if (symbols.hasTrait(shape.id, trt_smithy.optional_auth_id)) {
+pub fn writeOperationAuth(_: Allocator, symbols: *SymbolsProvider, bld: *zig.BlockBuild, func: smithy.OperationFunc) !void {
+    std.debug.assert(func.auth_schemes.len > 0);
+    if (symbols.hasTrait(func.id, trt_smithy.optional_auth_id)) {
         return error.OptionalAuthUnimplemented; // TODO
     }
 
-    pre_pass: for (shape.auth_schemes) |id| switch (id) {
+    pre_pass: for (func.auth_schemes) |id| switch (id) {
         trt_auth.SigV4.auth_id, trt_auth.SigV4A.auth_id => {
             try writeSignBuffer(bld);
             break :pre_pass;
@@ -47,12 +47,12 @@ pub fn writeOperationAuth(_: Allocator, symbols: *SymbolsProvider, bld: *zig.Blo
 
     const context = SignContext{
         .symbols = symbols,
-        .schems = shape.auth_schemes,
+        .schems = func.auth_schemes,
     };
     try bld.@"if"(bld.x.raw(aws_cfg.send_endpoint_param ++ ".auth_schemes.len > 0"))
         .body(bld.x.blockWith(context, writeSchemeResolver))
         .@"else"().body(
-        switch (shape.auth_schemes[0]) {
+        switch (func.auth_schemes[0]) {
             trt_auth.SigV4.auth_id => bld.x.blockWith(context, writeSigV4),
             else => return error.UnimplementedAuthScheme,
         },

@@ -65,27 +65,27 @@ const smithy_config = SmithyOptions{
 pub const pipeline_invoker = blk: {
     var builder = jobz.InvokerBuilder{};
 
-    _ = builder.Override(smithy.PipelineServiceFilterHook, "AWS Service Filter", filterSourceModelHook, .{});
-    _ = builder.Override(smithy.ServiceReadmeHook, "AWS Service Readme", writeReadmeHook, .{});
-    _ = builder.Override(smithy.ServiceScriptHeadHook, "AWS Service Script Head", writeScriptHeadHook, .{});
+    _ = builder.Override(smithy.PipelineServiceFilterHook, "AWS Service Filter", filterSourceModel, .{});
+    _ = builder.Override(smithy.ServiceReadmeHook, "AWS Service Readme", writeReadmeFile, .{});
+    _ = builder.Override(smithy.ServiceScriptHeadHook, "AWS Service Script Head", writeScriptHead, .{});
     _ = builder.Override(smithy.ServiceAuthSchemesHook, "AWS Service Auth Schemes", itg_auth.extendAuthSchemes, .{
         .injects = &.{SymbolsProvider},
     });
-    _ = builder.Override(smithy.ClientScriptHeadHook, "AWS Client Script Head", writeClientScriptHook, .{});
-    _ = builder.Override(smithy.ClientShapeHeadHook, "AWS Client Shape Head", writeClientHeadHook, .{
+    _ = builder.Override(smithy.ClientScriptHeadHook, "AWS Client Script Head", writeClientScriptHead, .{});
+    _ = builder.Override(smithy.ClientShapeHeadHook, "AWS Client Shape Head", writeClientShapeHead, .{
         .injects = &.{SymbolsProvider},
     });
-    _ = builder.Override(smithy.EndpointScriptHeadHook, "AWS Endpoint Script Head", writeEndpointScriptHook, .{
+    _ = builder.Override(smithy.ClientOperationFuncHook, "AWS Client Operation Func", writeOperationFunc, .{
         .injects = &.{SymbolsProvider},
     });
-    _ = builder.Override(smithy.OperationShapeHook, "AWS Operation Shape", writeOperationShapeHook, .{
+    _ = builder.Override(smithy.EndpointScriptHeadHook, "AWS Endpoint Script Head", writeEndpointScriptHead, .{
         .injects = &.{SymbolsProvider},
     });
 
     break :blk builder.consume();
 };
 
-fn filterSourceModelHook(self: *const Delegate, filename: []const u8) bool {
+fn filterSourceModel(self: *const Delegate, filename: []const u8) bool {
     if (std.mem.startsWith(u8, filename, "sdk-")) return false;
 
     if (self.readValue(*const WhitelistMap, ScopeTag.whitelist)) |map| {
@@ -95,7 +95,7 @@ fn filterSourceModelHook(self: *const Delegate, filename: []const u8) bool {
     }
 }
 
-fn writeReadmeHook(_: *const Delegate, bld: md.ContainerAuthor, m: smithy.ServiceReadmeMetadata) anyerror!void {
+fn writeReadmeFile(_: *const Delegate, bld: md.ContainerAuthor, m: smithy.ServiceReadmeMetadata) anyerror!void {
     var meta = m;
     if (std.mem.startsWith(u8, meta.title, "AWS ")) {
         meta.title = meta.title[4..meta.title.len];
@@ -107,12 +107,12 @@ fn writeReadmeHook(_: *const Delegate, bld: md.ContainerAuthor, m: smithy.Servic
     try bld.rawFmt(@embedFile("../template/README.footer.md.template"), .{ .title = meta.title });
 }
 
-fn writeScriptHeadHook(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
+fn writeScriptHead(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
     try bld.constant(aws_cfg.scope_runtime).assign(bld.x.import("aws-runtime"));
     try bld.constant(aws_cfg.scope_private).assign(bld.x.id(aws_cfg.scope_runtime).dot().id("_private_"));
 }
 
-fn writeEndpointScriptHook(self: *const Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild) anyerror!void {
+fn writeEndpointScriptHead(self: *const Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild) anyerror!void {
     const rules_tid = smithy.traits.rules.EndpointRuleSet.id;
     const trait = symbols.getTrait(smithy.RuleSet, symbols.service_id, rules_tid) orelse unreachable;
 
@@ -138,12 +138,12 @@ fn writeEndpointScriptHook(self: *const Delegate, symbols: *SymbolsProvider, bld
     }.f);
 }
 
-fn writeClientScriptHook(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
+fn writeClientScriptHead(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
     try bld.constant(aws_cfg.scope_auth).assign(bld.x.id(aws_cfg.scope_private).dot().id("auth"));
     try bld.constant(aws_cfg.scope_protocol).assign(bld.x.id(aws_cfg.scope_private).dot().id("protocol"));
 }
 
-fn writeClientHeadHook(_: *const Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild, shape: *const SmithyService) anyerror!void {
+fn writeClientShapeHead(_: *const Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild, shape: *const SmithyService) anyerror!void {
     const service = ServiceTrait.get(symbols, symbols.service_id) orelse return error.MissingServiceTrait;
     try bld.constant("service_code").assign(bld.x.valueOf(service.endpoint_prefix orelse return error.MissingServiceCode));
     try bld.constant("service_version").assign(bld.x.valueOf(shape.version orelse return error.MissingServiceApiVersion));
@@ -180,7 +180,7 @@ fn writeServiceDeinit(bld: *zig.BlockBuild) anyerror!void {
     try bld.raw("self.http.deinit()");
 }
 
-fn writeOperationShapeHook(self: *const Delegate, symbols: *SymbolsProvider, bld: *zig.BlockBuild, shape: smithy.OperationShape) anyerror!void {
+fn writeOperationFunc(self: *const Delegate, symbols: *SymbolsProvider, bld: *zig.BlockBuild, func: smithy.OperationFunc) anyerror!void {
     const alloc_expr = bld.x.id(aws_cfg.alloc_param);
 
     try bld.constant("endpoint").assign(bld.x.trys().call("srvc_endpoint.resolve", &.{
@@ -203,8 +203,8 @@ fn writeOperationShapeHook(self: *const Delegate, symbols: *SymbolsProvider, bld
     ));
     try bld.defers(bld.x.id(aws_cfg.send_op_param).dot().call("deinit", &.{}));
 
-    try itg_proto.writeOperationRequest(self.alloc(), symbols, bld, shape, protocol);
-    if (shape.auth_schemes.len > 0) try itg_auth.writeOperationAuth(self.alloc(), symbols, bld, shape);
+    try itg_proto.writeOperationRequest(self.alloc(), symbols, bld, func, protocol);
+    if (func.auth_schemes.len > 0) try itg_auth.writeOperationAuth(self.alloc(), symbols, bld, func);
     try bld.trys().call("self.http.sendSync", &.{bld.x.id(aws_cfg.send_op_param)}).end();
-    try itg_proto.writeOperationResponse(self.alloc(), symbols, bld, shape, protocol);
+    try itg_proto.writeOperationResponse(self.alloc(), symbols, bld, func, protocol);
 }

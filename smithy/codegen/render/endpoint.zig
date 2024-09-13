@@ -5,11 +5,10 @@ const jobz = @import("jobz");
 const zig = @import("razdaz").zig;
 const srvc = @import("service.zig");
 const cfg = @import("../config.zig");
-const syb = @import("../systems/symbols.zig");
-const SmithyId = syb.SmithyId;
-const SymbolsProvider = syb.SymbolsProvider;
+const SmithyId = @import("../model.zig").SmithyId;
 const IssuesBag = @import("../systems/issues.zig").IssuesBag;
 const RulesEngine = @import("../systems/rules.zig").RulesEngine;
+const SymbolsProvider = @import("../systems/SymbolsProvider.zig");
 const trt_rules = @import("../traits/rules.zig");
 const test_symbols = @import("../testing/symbols.zig");
 

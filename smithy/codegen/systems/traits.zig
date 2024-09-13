@@ -2,9 +2,10 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = std.testing.allocator;
-const syb = @import("symbols.zig");
-const SmithyId = syb.SmithyId;
-const TaggedValue = syb.SmithyTaggedValue;
+const mdl = @import("../model.zig");
+const SmithyId = mdl.SmithyId;
+const TaggedValue = mdl.SmithyTaggedValue;
+const SymbolsProvider = @import("SymbolsProvider.zig");
 const JsonReader = @import("../utils/JsonReader.zig");
 
 /// Parse the trait’s value from the source JSON AST, which will be used
@@ -150,7 +151,7 @@ pub fn StringTrait(trait_id: []const u8) type {
             return @ptrCast(value);
         }
 
-        pub fn get(symbols: *syb.SymbolsProvider, shape_id: SmithyId) ?[]const u8 {
+        pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?[]const u8 {
             return symbols.getTrait([]const u8, shape_id, id);
         }
     };

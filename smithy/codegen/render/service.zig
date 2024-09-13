@@ -1,3 +1,12 @@
+//! ```
+//! my-service/
+//! ├ README.md
+//! ├ client.zig
+//! ├ data_types.zig
+//! ├ endpoint.zig
+//! ├ operation/
+//!   ├ my-op-2.zig
+//! ```
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const test_alloc = std.testing.allocator;
@@ -7,12 +16,11 @@ const md = razdaz.md;
 const zig = razdaz.zig;
 const files_jobs = @import("razdaz/jobs").files;
 const codegen_jobs = @import("razdaz/jobs").codegen;
-const rsrc = @import("resource.zig");
-const ServiceClient = @import("client.zig").ServiceClient;
-const ClientErrors = @import("errors.zig").ClientErrors;
+const clnt = @import("client.zig");
 const ClientEndpoint = @import("endpoint.zig").ClientEndpoint;
+const ClientOperationsDir = @import("operation.zig").ClientOperationsDir;
 const ScopeTag = @import("../pipeline.zig").ScopeTag;
-const SymbolsProvider = @import("../systems/symbols.zig").SymbolsProvider;
+const SymbolsProvider = @import("../systems/SymbolsProvider.zig");
 const name_util = @import("../utils/names.zig");
 const trt_docs = @import("../traits/docs.zig");
 const trt_rules = @import("../traits/rules.zig");
@@ -36,25 +44,25 @@ pub const CodegenService = files_jobs.OpenDir.Task("Smithy Codegen Service", ser
     .injects = &.{SymbolsProvider},
 });
 fn serviceCodegenTask(self: *const jobz.Delegate, symbols: *SymbolsProvider) anyerror!void {
-    try detectAuthSchemes(self, symbols);
-    try self.evaluate(files_jobs.WriteFile.Chain(ServiceClient, .sync), .{ "client.zig", .{} });
+    if (self.hasOverride(ServiceReadmeHook)) {
+        try self.evaluate(ServiceReadme, .{ "README.md", .{} });
+    } else {
+        std.log.warn("Skipped readme generation – missing `ServiceReadmeHook` overide.", .{});
+    }
 
-    try self.evaluate(files_jobs.WriteFile.Chain(ClientErrors, .sync), .{ "errors.zig", .{} });
+    try detectAuthSchemes(self, symbols);
+    try self.evaluate(files_jobs.WriteFile.Chain(clnt.ServiceClient, .sync), .{ "client.zig", .{} });
 
     if (symbols.hasTrait(symbols.service_id, trt_rules.EndpointRuleSet.id)) {
         try self.evaluate(files_jobs.WriteFile.Chain(ClientEndpoint, .sync), .{ "endpoint.zig", .{} });
     }
 
-    const rsrc_ids = (try symbols.getShape(symbols.service_id)).service.resources;
-    for (rsrc_ids) |id| {
-        const filename = try rsrc.resourceFilename(self.alloc(), symbols, id);
-        try self.evaluate(files_jobs.WriteFile.Chain(rsrc.ClientResource, .sync), .{ filename, .{}, id });
+    if (symbols.service_data_shapes.len > 0) {
+        try self.evaluate(files_jobs.WriteFile.Chain(clnt.ClientDataTypes, .sync), .{ "data_types.zig", .{} });
     }
 
-    if (self.hasOverride(ServiceReadmeHook)) {
-        try self.evaluate(ServiceReadme, .{ "README.md", .{} });
-    } else {
-        std.log.warn("Skipped readme generation – missing `ServiceReadmeHook` overide.", .{});
+    if (symbols.service_operations.len > 0) {
+        try self.evaluate(ClientOperationsDir, .{ "operation", .{ .create_on_not_found = true } });
     }
 }
 
@@ -91,7 +99,7 @@ fn serviceReadmeTask(self: *const jobz.Delegate, symbols: *SymbolsProvider, writ
     const slug = self.readValue([]const u8, ScopeTag.slug) orelse return error.MissingSlug;
     const title = trt_docs.Title.get(symbols, sid) orelse try name_util.titleCase(self.alloc(), slug);
     const intro: ?[]const u8 = if (trt_docs.Documentation.get(symbols, sid)) |src|
-        try processIntro(self.alloc(), src)
+        try serviceReadmeWriteIntro(self.alloc(), src)
     else
         null;
 
@@ -102,7 +110,7 @@ fn serviceReadmeTask(self: *const jobz.Delegate, symbols: *SymbolsProvider, writ
     } });
 }
 
-fn processIntro(allocator: Allocator, source: []const u8) ![]const u8 {
+fn serviceReadmeWriteIntro(allocator: Allocator, source: []const u8) ![]const u8 {
     var build = try md.MutableDocument.init(allocator);
     try md.html.convert(allocator, build.root(), source);
     const markdown = try build.toReadOnly(allocator);

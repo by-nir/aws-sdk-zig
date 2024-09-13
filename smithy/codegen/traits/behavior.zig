@@ -1,8 +1,7 @@
 //! Behavior traits
 //!
 //! [Smithy Spec](https://smithy.io/2.0/spec/behavior-traits.html)
-const symbols = @import("../systems/symbols.zig");
-const SmithyId = symbols.SmithyId;
+const SmithyId = @import("../model.zig").SmithyId;
 const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
 
 // TODO: Remainig traits

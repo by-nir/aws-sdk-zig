@@ -2,16 +2,16 @@ const std = @import("std");
 const fs = std.fs;
 const jobz = @import("jobz");
 const DirOptions = @import("razdaz/jobs").files.DirOptions;
-const prelude = @import("prelude.zig");
+const prelude = @import("traits.zig");
 const rls = @import("systems/rules.zig");
 const trt = @import("systems/traits.zig");
 const isu = @import("systems/issues.zig");
-const SymbolsProvider = @import("systems/symbols.zig").SymbolsProvider;
-const RawModel = @import("parse/RawModel.zig");
+const SymbolsProvider = @import("systems/SymbolsProvider.zig");
+const Model = @import("parse/Model.zig");
 const ParseModel = @import("parse/parse.zig").ParseModel;
 const ParseBehavior = @import("parse/issues.zig").ParseBehavior;
-const CodegenService = @import("gen/service.zig").CodegenService;
-const CodegnBehavior = @import("gen/issues.zig").CodegenBehavior;
+const CodegnBehavior = @import("render/issues.zig").CodegenBehavior;
+const CodegenService = @import("render/service.zig").CodegenService;
 const JsonReader = @import("utils/JsonReader.zig");
 
 pub const ScopeTag = enum {
@@ -105,8 +105,8 @@ fn serviceReadAndParse(self: *const jobz.Delegate, src_dir: fs.Dir, json_name: [
     var reader = try JsonReader.initPersist(self.alloc(), json_file);
     defer reader.deinit();
 
-    var model: RawModel = try self.evaluate(ParseModel, .{&reader});
-    return model.consume(self.alloc());
+    var model: Model = try self.evaluate(ParseModel, .{&reader});
+    return SymbolsProvider.consumeModel(self.alloc(), &model);
 }
 
 fn handleIssue(

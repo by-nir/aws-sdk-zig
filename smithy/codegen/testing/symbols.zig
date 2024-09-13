@@ -1,16 +1,16 @@
 const std = @import("std");
 const test_alloc = std.testing.allocator;
-const syb = @import("../systems/symbols.zig");
-const SmithyId = syb.SmithyId;
-const SmithyType = syb.SmithyType;
-const SmithyMeta = syb.SmithyMeta;
-const SmithyService = syb.SmithyService;
-const SmithyResource = syb.SmithyResource;
-const SmithyOperation = syb.SmithyOperation;
-const TaggedValue = syb.SmithyTaggedValue;
-const SymbolsProvider = syb.SymbolsProvider;
+const mdl = @import("../model.zig");
+const SmithyId = mdl.SmithyId;
+const SmithyType = mdl.SmithyType;
+const SmithyMeta = mdl.SmithyMeta;
+const SmithyService = mdl.SmithyService;
+const SmithyResource = mdl.SmithyResource;
+const SmithyOperation = mdl.SmithyOperation;
+const TaggedValue = mdl.SmithyTaggedValue;
+const SymbolsProvider = @import("../systems/SymbolsProvider.zig");
 const rls = @import("../systems/rules.zig");
-const RawModel = @import("../parse/RawModel.zig");
+const Model = @import("../parse/Model.zig");
 const trt_http = @import("../traits/http.zig");
 const trt_rules = @import("../traits/rules.zig");
 const trt_refine = @import("../traits/refine.zig");
@@ -18,7 +18,7 @@ const trt_behave = @import("../traits/behavior.zig");
 const trt_constr = @import("../traits/constraint.zig");
 
 pub fn setup(arena: std.mem.Allocator, cases: []const Case) !SymbolsProvider {
-    var model = RawModel.init(test_alloc);
+    var model = Model.init(test_alloc);
     errdefer model.deinit();
 
     for (cases) |s| switch (s) {
@@ -35,7 +35,7 @@ pub fn setup(arena: std.mem.Allocator, cases: []const Case) !SymbolsProvider {
         .service_with_input_members => try setupServiceAndDeps(&model, true),
     };
 
-    return model.consume(arena);
+    return SymbolsProvider.consumeModel(arena, &model);
 }
 
 pub const Case = enum {
@@ -52,11 +52,11 @@ pub const Case = enum {
     service_with_input_members,
 };
 
-fn setupUnit(model: *RawModel) !void {
+fn setupUnit(model: *Model) !void {
     try model.shapes.put(test_alloc, SmithyId.of("test#Unit"), .unit);
 }
 
-fn setupRootAndChild(model: *RawModel) !void {
+fn setupRootAndChild(model: *Model) !void {
     try model.names.put(test_alloc, SmithyId.of("test#Root"), "Root");
     try model.shapes.put(test_alloc, SmithyId.of("test#Root"), .{
         .list = SmithyId.of("test#Root$child"),
@@ -72,7 +72,7 @@ fn setupRootAndChild(model: *RawModel) !void {
     });
 }
 
-fn setupList(model: *RawModel) !void {
+fn setupList(model: *Model) !void {
     try model.names.put(test_alloc, SmithyId.of("test#List"), "List");
     try model.shapes.put(test_alloc, SmithyId.of("test#List"), .{
         .list = .integer,
@@ -90,7 +90,7 @@ fn setupList(model: *RawModel) !void {
     });
 }
 
-fn setupMap(model: *RawModel) !void {
+fn setupMap(model: *Model) !void {
     try model.names.put(test_alloc, SmithyId.of("test#Map"), "Map");
     try model.shapes.put(test_alloc, SmithyId.of("test#Map"), .{
         .map = .{ .integer, .integer },
@@ -103,7 +103,7 @@ fn setupMap(model: *RawModel) !void {
 const ENUM_TRT: trt_constr.Enum.Sentinel = &.{ .{ .value = "FOO_BAR" }, .{ .value = "baz$qux", .name = "BAZ_QUX" } };
 const en1 = SmithyId.of("test#Enum$BAZ_QUX");
 const ENUM_STR = &.{ SmithyId.of("test#Enum$FOO_BAR"), en1 };
-fn setupEnums(model: *RawModel) !void {
+fn setupEnums(model: *Model) !void {
     try model.names.put(test_alloc, SmithyId.of("test#Enum"), "Enum");
     try model.shapes.put(test_alloc, SmithyId.of("test#Enum"), .{
         .str_enum = ENUM_STR,
@@ -125,7 +125,7 @@ fn setupEnums(model: *RawModel) !void {
     }});
 }
 
-fn setupIntEnum(model: *RawModel) !void {
+fn setupIntEnum(model: *Model) !void {
     const Static = struct {
         const ie1 = SmithyId.of("test#IntEnum$BAZ_QUX");
         const shape = &.{ SmithyId.of("test#IntEnum$FOO_BAR"), ie1 };
@@ -160,7 +160,7 @@ const un0 = SmithyId.of("test#Union$FOO");
 const un1 = SmithyId.of("test#Union$BAR");
 const un2 = SmithyId.of("test#Union$BAZ");
 const UNION = &.{ un0, un1, un2 };
-fn setupUnion(model: *RawModel) !void {
+fn setupUnion(model: *Model) !void {
     try model.names.put(test_alloc, SmithyId.of("test#Union"), "Union");
     try model.shapes.put(test_alloc, SmithyId.of("test#Union"), .{
         .tagged_uinon = UNION,
@@ -173,7 +173,7 @@ fn setupUnion(model: *RawModel) !void {
     try model.shapes.put(test_alloc, SmithyId.of("test#Union$BAZ"), .string);
 }
 
-fn setupStruct(model: *RawModel) !void {
+fn setupStruct(model: *Model) !void {
     const Static = struct {
         const ff = SmithyId.of("test#Struct$bazQux");
         const structure = &.{ SmithyId.of("test#Struct$fooBar"), ff };
@@ -223,7 +223,7 @@ fn setupStruct(model: *RawModel) !void {
 
 const ERROR_CODE: u10 = 429;
 const ERROR_SOURCE = trt_refine.Error.Source.client;
-fn setupError(model: *RawModel) !void {
+fn setupError(model: *Model) !void {
     try model.names.put(test_alloc, SmithyId.of("test#ServiceError"), "ServiceError");
     try model.shapes.put(test_alloc, SmithyId.of("test#ServiceError"), .{
         .structure = &.{},
@@ -235,7 +235,7 @@ fn setupError(model: *RawModel) !void {
     });
 }
 
-fn setupServiceAndDeps(model: *RawModel, with_input_members: bool) !void {
+fn setupServiceAndDeps(model: *Model, with_input_members: bool) !void {
     const Static = struct {
         const sd0 = SmithyId.of("test.serve#Operation");
         const sd1 = SmithyId.of("test.serve#Resource");

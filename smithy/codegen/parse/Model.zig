@@ -1,14 +1,14 @@
-//! Parsed symbols (shapes and metadata) of a Smithy model.
+//! Raw symbols (shapes and metadata) of a Smithy model.
 const std = @import("std");
 const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const syb = @import("../systems/symbols.zig");
-const SmithyId = syb.SmithyId;
-const SmithyType = syb.SmithyType;
-const SmithyMeta = syb.SmithyMeta;
-const TaggedValue = syb.SmithyTaggedValue;
+const mdl = @import("../model.zig");
+const SmithyId = mdl.SmithyId;
+const SmithyType = mdl.SmithyType;
+const SmithyMeta = mdl.SmithyMeta;
+const TaggedValue = mdl.SmithyTaggedValue;
 const TraitsProvider = @import("../systems/traits.zig").TraitsProvider;
 
 const Self = @This();
@@ -33,33 +33,6 @@ pub fn deinit(self: *Self) void {
     self.names.deinit(self.allocator);
 }
 
-pub fn consume(self: *Self, arena: Allocator) !syb.SymbolsProvider {
-    var dupe_meta = try self.meta.clone(arena);
-    errdefer dupe_meta.deinit(arena);
-
-    var dupe_shapes = try self.shapes.clone(arena);
-    errdefer dupe_shapes.deinit(arena);
-
-    var dupe_names = try self.names.clone(arena);
-    errdefer dupe_names.deinit(arena);
-
-    var dupe_traits = try self.traits.clone(arena);
-    errdefer dupe_traits.deinit(arena);
-
-    const dupe_mixins = try self.mixins.clone(arena);
-
-    defer self.deinit();
-    return .{
-        .arena = arena,
-        .service_id = self.service_id,
-        .model_meta = dupe_meta,
-        .model_shapes = dupe_shapes,
-        .model_names = dupe_names,
-        .model_traits = dupe_traits,
-        .model_mixins = dupe_mixins,
-    };
-}
-
 pub fn putMeta(self: *Self, key: SmithyId, value: SmithyMeta) !void {
     try self.meta.put(self.allocator, key, value);
 }
@@ -73,7 +46,7 @@ pub fn putName(self: *Self, id: SmithyId, name: []const u8) !void {
 }
 
 /// Returns `true` if expanded an existing traits list.
-pub fn putTraits(self: *Self, id: SmithyId, traits: []const syb.SmithyTaggedValue) !bool {
+pub fn putTraits(self: *Self, id: SmithyId, traits: []const mdl.SmithyTaggedValue) !bool {
     const result = try self.traits.getOrPut(self.allocator, id);
     if (!result.found_existing) {
         result.value_ptr.* = traits;

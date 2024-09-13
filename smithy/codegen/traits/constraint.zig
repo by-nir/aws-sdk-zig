@@ -8,9 +8,8 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const syb = @import("../systems/symbols.zig");
-const SmithyId = syb.SmithyId;
-const SymbolsProvider = syb.SymbolsProvider;
+const SmithyId = @import("../model.zig").SmithyId;
+const SymbolsProvider = @import("../systems/SymbolsProvider.zig");
 const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
 const JsonReader = @import("../utils/JsonReader.zig");
 

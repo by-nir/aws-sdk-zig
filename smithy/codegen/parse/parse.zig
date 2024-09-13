@@ -4,31 +4,27 @@ const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const jobz = @import("jobz");
-const RawModel = @import("RawModel.zig");
+const Model = @import("Model.zig");
 const ParseBehavior = @import("issues.zig").ParseBehavior;
+const SmithyProperty = @import("props.zig").SmithyProperty;
+const mdl = @import("../model.zig");
+const SmithyId = mdl.SmithyId;
+const SmithyType = mdl.SmithyType;
+const SmithyMeta = mdl.SmithyMeta;
 const ScopeTag = @import("../pipeline.zig").ScopeTag;
-const isu = @import("../systems/issues.zig");
-const syb = @import("../systems/symbols.zig");
-const SmithyId = syb.SmithyId;
-const SmithyType = syb.SmithyType;
-const SmithyMeta = syb.SmithyMeta;
 const trt = @import("../systems/traits.zig");
 const TraitsManager = trt.TraitsManager;
+const isu = @import("../systems/issues.zig");
 const JsonReader = @import("../utils/JsonReader.zig");
 const trt_refine = @import("../traits/refine.zig");
 
 pub const ParseModel = jobz.Task.Define("Smithy Parse Model", serviceParseTask, .{
     .injects = &.{ TraitsManager, isu.IssuesBag },
 });
-fn serviceParseTask(
-    self: *const jobz.Delegate,
-    traits_manager: *TraitsManager,
-    issues: *isu.IssuesBag,
-    json_reader: *JsonReader,
-) anyerror!RawModel {
+fn serviceParseTask(self: *const jobz.Delegate, traits_manager: *TraitsManager, issues: *isu.IssuesBag, json_reader: *JsonReader) anyerror!Model {
     const behavior = self.readValue(ParseBehavior, ScopeTag.parse_behavior) orelse ParseBehavior{};
 
-    var model = RawModel.init(self.alloc());
+    var model = Model.init(self.alloc());
     errdefer model.deinit();
 
     var parser = JsonParser{
@@ -56,7 +52,7 @@ const JsonParser = struct {
     traits_manager: *const TraitsManager,
     reader: *JsonReader,
     issues: *isu.IssuesBag,
-    model: *RawModel,
+    model: *Model,
 
     const Context = struct {
         name: ?[]const u8 = null,
@@ -65,11 +61,11 @@ const JsonParser = struct {
 
         pub const Target = union(enum) {
             none,
-            service: *syb.SmithyService,
-            resource: *syb.SmithyResource,
-            operation: *syb.SmithyOperation,
+            service: *mdl.SmithyService,
+            resource: *mdl.SmithyResource,
+            operation: *mdl.SmithyOperation,
             id_list: *std.ArrayListUnmanaged(SmithyId),
-            ref_map: *std.ArrayListUnmanaged(syb.SmithyRefMapValue),
+            ref_map: *std.ArrayListUnmanaged(mdl.SmithyRefMapValue),
             meta,
             meta_list: *std.ArrayListUnmanaged(SmithyMeta),
             meta_map: *std.ArrayListUnmanaged(SmithyMeta.Pair),
@@ -91,7 +87,7 @@ const JsonParser = struct {
     }
 
     fn parseProp(self: *JsonParser, prop_name: []const u8, ctx: Context) !void {
-        switch (syb.SmithyProperty.of(prop_name)) {
+        switch (SmithyProperty.of(prop_name)) {
             .smithy => try self.validateSmithyVersion(),
             .mixins => try self.parseMixins(ctx.id),
             .traits => try self.parseTraits(ctx.name.?, ctx.id),
@@ -192,7 +188,7 @@ const JsonParser = struct {
         comptime map: bool,
         parsFn: JsonReader.NextScopeFn(*JsonParser, Context, if (map) .object else .array),
     ) !void {
-        var list = std.ArrayListUnmanaged(if (map) syb.SmithyRefMapValue else SmithyId){};
+        var list = std.ArrayListUnmanaged(if (map) mdl.SmithyRefMapValue else SmithyId){};
         errdefer list.deinit(self.arena);
         if (map)
             try self.parseScope(.object, parsFn, .{ .target = .{ .ref_map = &list } })
@@ -246,7 +242,7 @@ const JsonParser = struct {
     }
 
     fn parseTraits(self: *JsonParser, parent_name: []const u8, parent_id: SmithyId) !void {
-        var traits: std.ArrayListUnmanaged(syb.SmithyTaggedValue) = .{};
+        var traits: std.ArrayListUnmanaged(mdl.SmithyTaggedValue) = .{};
         errdefer traits.deinit(self.arena);
         try self.reader.nextObjectBegin();
         while (try self.reader.peek() == .string) {
@@ -298,18 +294,18 @@ const JsonParser = struct {
                 return;
             },
             .service => .{ .service = blk: {
-                const ptr = try self.arena.create(syb.SmithyService);
-                ptr.* = mem.zeroInit(syb.SmithyService, .{});
+                const ptr = try self.arena.create(mdl.SmithyService);
+                ptr.* = mem.zeroInit(mdl.SmithyService, .{});
                 break :blk ptr;
             } },
             .resource => .{ .resource = blk: {
-                const ptr = try self.arena.create(syb.SmithyResource);
-                ptr.* = mem.zeroInit(syb.SmithyResource, .{});
+                const ptr = try self.arena.create(mdl.SmithyResource);
+                ptr.* = mem.zeroInit(mdl.SmithyResource, .{});
                 break :blk ptr;
             } },
             .operation => .{ .operation = blk: {
-                const ptr = try self.arena.create(syb.SmithyOperation);
-                ptr.* = mem.zeroInit(syb.SmithyOperation, .{});
+                const ptr = try self.arena.create(mdl.SmithyOperation);
+                ptr.* = mem.zeroInit(mdl.SmithyOperation, .{});
                 break :blk ptr;
             } },
             else => blk: {
@@ -344,7 +340,7 @@ const JsonParser = struct {
                     const boolean = JsonReader.Value{ .boolean = false };
                 };
                 if (mem.startsWith(u8, name, "smithy.api#Primitive")) {
-                    const traits = try self.arena.alloc(syb.SmithyTaggedValue, 1);
+                    const traits = try self.arena.alloc(mdl.SmithyTaggedValue, 1);
                     traits[0] = .{
                         .id = trt_refine.Default.id,
                         .value = switch (t) {

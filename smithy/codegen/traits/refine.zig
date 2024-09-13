@@ -6,10 +6,10 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const syb = @import("../systems/symbols.zig");
-const SmithyId = syb.SmithyId;
-const SmithyType = syb.SmithyType;
-const SymbolsProvider = syb.SymbolsProvider;
+const mdl = @import("../model.zig");
+const SmithyId = mdl.SmithyId;
+const SmithyType = mdl.SmithyType;
+const SymbolsProvider = @import("../systems/SymbolsProvider.zig");
 const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
 const JsonReader = @import("../utils/JsonReader.zig");
 
