@@ -25,7 +25,7 @@ pub const OperationScriptHeadHook = jobz.Task.Hook(
 
 pub fn operationFilename(allocator: Allocator, symbols: *SymbolsProvider, id: SmithyId, comptime nested: bool) ![]const u8 {
     const shape_name = try symbols.getShapeName(id, .field);
-    const template = comptime if (nested) "{s}.zig" else "operation/{s}.zig";
+    const template = comptime if (nested) "{s}.zig" else cfg.dir_operations ++ "/{s}.zig";
     return try std.fmt.allocPrint(allocator, template, .{shape_name});
 }
 
@@ -40,13 +40,19 @@ fn clientOperationsDirTask(self: *const jobz.Delegate, symbols: *SymbolsProvider
 }
 
 const ClientOperation = srvc.ScriptCodegen.Task("Smithy Codegen Client Operation", clientOperationTask, .{
-    .injects = &.{SymbolsProvider},
+    .injects = &.{ SymbolsProvider, IssuesBag },
 });
-fn clientOperationTask(self: *const jobz.Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild, id: SmithyId) anyerror!void {
-    const operation = (try symbols.getShape(id)).operation;
+fn clientOperationTask(
+    self: *const jobz.Delegate,
+    symbols: *SymbolsProvider,
+    issues: *IssuesBag,
+    bld: *zig.ContainerBuild,
+    id: SmithyId,
+) anyerror!void {
+    const operation = if (try shape.getShapeSafe(self, symbols, issues, id)) |s| s.operation else return;
 
     if (symbols.service_operations.len > 0) {
-        try bld.constant("srvc_types").assign(bld.x.import("data_types.zig"));
+        try bld.constant(cfg.types_scope).assign(bld.x.import("../" ++ cfg.types_filename));
     }
 
     if (self.hasOverride(OperationScriptHeadHook)) {
@@ -55,12 +61,12 @@ fn clientOperationTask(self: *const jobz.Delegate, symbols: *SymbolsProvider, bl
 
     if (operation.input) |in_id| {
         const members = (try symbols.getShape(in_id)).structure;
-        try shape.writeStructShape(self, symbols, bld, in_id, members, "OperationInput");
+        try shape.writeStructShape(self, symbols, bld, in_id, members, true, "OperationInput");
     }
 
     if (operation.output) |out_id| {
         const members = (try symbols.getShape(out_id)).structure;
-        try shape.writeStructShape(self, symbols, bld, out_id, members, "OperationOutput");
+        try shape.writeStructShape(self, symbols, bld, out_id, members, true, "OperationOutput");
     }
 
     if (symbols.service_errors.len + operation.errors.len > 0) {
@@ -180,7 +186,7 @@ test ClientOperation {
 
     symbols.service_id = SmithyId.of("test.serve#Service");
     try srvc.expectServiceScript(
-        \\const srvc_types = @import("data_types.zig");
+        \\const srvc_types = @import("../data_types.zig");
         \\
         \\pub const OperationInput = struct {
         \\    pub fn jsonStringify(self: @This(), jw: anytype) !void {

@@ -39,12 +39,12 @@ fn serviceClientTask(self: *const jobz.Delegate, symbols: *SymbolsProvider, bld:
     var testables = std.ArrayList([]const u8).init(self.alloc());
 
     if (symbols.hasTrait(sid, trt_rules.EndpointRuleSet.id)) {
-        try testables.append("srvc_endpoint");
-        try bld.constant("srvc_endpoint").assign(bld.x.import("endpoint.zig"));
+        try testables.append(cfg.endpoint_scope);
+        try bld.constant(cfg.endpoint_scope).assign(bld.x.import(cfg.endpoint_filename));
     }
 
-    try testables.append("srvc_types");
-    try bld.constant("srvc_types").assign(bld.x.import("data_types.zig"));
+    try testables.append(cfg.types_scope);
+    try bld.constant(cfg.types_scope).assign(bld.x.import(cfg.types_filename));
 
     if (self.hasOverride(ClientScriptHeadHook)) {
         try self.evaluate(ClientScriptHeadHook, .{bld});
@@ -254,6 +254,6 @@ pub const ClientDataTypes = srvc.ScriptCodegen.Task("Smithy Client Data Types Co
 });
 fn clientDataTypesTask(self: *const jobz.Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild) anyerror!void {
     for (symbols.service_data_shapes) |id| {
-        try self.evaluate(shape.WriteShape, .{ bld, id });
+        try self.evaluate(shape.WriteShape, .{ bld, id, false });
     }
 }

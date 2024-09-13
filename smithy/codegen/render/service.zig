@@ -19,6 +19,7 @@ const codegen_jobs = @import("razdaz/jobs").codegen;
 const clnt = @import("client.zig");
 const ClientEndpoint = @import("endpoint.zig").ClientEndpoint;
 const ClientOperationsDir = @import("operation.zig").ClientOperationsDir;
+const cfg = @import("../config.zig");
 const ScopeTag = @import("../pipeline.zig").ScopeTag;
 const SymbolsProvider = @import("../systems/SymbolsProvider.zig");
 const name_util = @import("../utils/names.zig");
@@ -54,15 +55,15 @@ fn serviceCodegenTask(self: *const jobz.Delegate, symbols: *SymbolsProvider) any
     try self.evaluate(files_jobs.WriteFile.Chain(clnt.ServiceClient, .sync), .{ "client.zig", .{} });
 
     if (symbols.hasTrait(symbols.service_id, trt_rules.EndpointRuleSet.id)) {
-        try self.evaluate(files_jobs.WriteFile.Chain(ClientEndpoint, .sync), .{ "endpoint.zig", .{} });
+        try self.evaluate(files_jobs.WriteFile.Chain(ClientEndpoint, .sync), .{ cfg.endpoint_filename, .{} });
     }
 
     if (symbols.service_data_shapes.len > 0) {
-        try self.evaluate(files_jobs.WriteFile.Chain(clnt.ClientDataTypes, .sync), .{ "data_types.zig", .{} });
+        try self.evaluate(files_jobs.WriteFile.Chain(clnt.ClientDataTypes, .sync), .{ cfg.types_filename, .{} });
     }
 
     if (symbols.service_operations.len > 0) {
-        try self.evaluate(ClientOperationsDir, .{ "operation", .{ .create_on_not_found = true } });
+        try self.evaluate(ClientOperationsDir, .{ cfg.dir_operations, .{ .create_on_not_found = true } });
     }
 }
 

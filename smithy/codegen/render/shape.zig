@@ -17,9 +17,10 @@ const CodegenBehavior = @import("issues.zig").CodegenBehavior;
 const mdl = @import("../model.zig");
 const SmithyId = mdl.SmithyId;
 const SmithyType = mdl.SmithyType;
-const SymbolsProvider = @import("../systems/SymbolsProvider.zig");
+const cfg = @import("../config.zig");
 const isu = @import("../systems/issues.zig");
 const IssuesBag = isu.IssuesBag;
+const SymbolsProvider = @import("../systems/SymbolsProvider.zig");
 const name_util = @import("../utils/names.zig");
 const JsonValue = @import("../utils/JsonReader.zig").Value;
 const trt_docs = @import("../traits/docs.zig");
@@ -86,17 +87,23 @@ pub fn handleShapeWriteError(self: *const Delegate, symbols: *SymbolsProvider, i
 pub const WriteShape = Task.Define("Smithy Write Shape", writeShapeTask, .{
     .injects = &.{ SymbolsProvider, IssuesBag },
 });
-fn writeShapeTask(self: *const Delegate, symbols: *SymbolsProvider, issues: *IssuesBag, bld: *ContainerBuild, id: SmithyId) !void {
+fn writeShapeTask(
+    self: *const Delegate,
+    symbols: *SymbolsProvider,
+    issues: *IssuesBag,
+    bld: *ContainerBuild,
+    id: SmithyId,
+    named_scope: bool,
+) !void {
     const shape = (try getShapeSafe(self, symbols, issues, id)) orelse return;
-
     _ = switch (shape) {
         .operation, .resource, .service => unreachable,
-        .list => |m| writeListShape(self, symbols, bld, id, m),
-        .map => |m| writeMapShape(self, symbols, bld, id, m),
+        .list => |m| writeListShape(self, symbols, bld, id, m, named_scope),
+        .map => |m| writeMapShape(self, symbols, bld, id, m, named_scope),
         .str_enum => |m| writeStrEnumShape(self, symbols, bld, id, m),
         .int_enum => |m| writeIntEnumShape(self, symbols, bld, id, m),
-        .tagged_uinon => |m| writeUnionShape(self, symbols, bld, id, m),
-        .structure => |m| writeStructShape(self, symbols, bld, id, m, null),
+        .tagged_uinon => |m| writeUnionShape(self, symbols, bld, id, m, named_scope),
+        .structure => |m| writeStructShape(self, symbols, bld, id, m, named_scope, null),
         .string => if (trt_constr.Enum.get(symbols, id)) |members|
             writeTraitEnumShape(self, symbols, bld, id, members)
         else
@@ -110,7 +117,7 @@ fn writeShapeTask(self: *const Delegate, symbols: *SymbolsProvider, issues: *Iss
 test WriteShape {
     try shapeTester(&.{.unit}, struct {
         fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Unit") });
+            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Unit"), false });
 
             try testing.expectEqualDeep(&.{
                 isu.Issue{ .codegen_invalid_root = .{ .id = @intFromEnum(SmithyId.of("test#Unit")) } },
@@ -125,6 +132,7 @@ fn writeListShape(
     bld: *ContainerBuild,
     id: SmithyId,
     memeber: SmithyId,
+    named_scope: bool,
 ) !void {
     const shape_name = try symbols.getShapeName(id, .type);
     const type_name = try typeName(symbols, memeber, named_scope);
@@ -144,8 +152,8 @@ fn writeListShape(
 test writeListShape {
     try shapeTester(&.{.list}, struct {
         fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#List") });
-            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Set") });
+            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#List"), false });
+            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Set"), false });
         }
     }.eval,
         \\pub const List = []const ?i32;
@@ -160,10 +168,11 @@ fn writeMapShape(
     bld: *ContainerBuild,
     id: SmithyId,
     memeber: [2]SmithyId,
+    named_scope: bool,
 ) !void {
     const shape_name = try symbols.getShapeName(id, .type);
-    const key_type = try typeName(symbols, memeber[0]);
-    const val_type = try typeName(symbols, memeber[1]);
+    const key_type = try typeName(symbols, memeber[0], named_scope);
+    const val_type = try typeName(symbols, memeber[1], named_scope);
     try writeDocComment(self.alloc(), symbols, bld, id, false);
 
     var value: ExprBuild = bld.x.raw(val_type);
@@ -186,7 +195,7 @@ fn writeMapShape(
 test writeMapShape {
     try shapeTester(&.{.map}, struct {
         fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Map") });
+            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Map"), false });
         }
     }.eval, "pub const Map = *const std.AutoArrayHashMapUnmanaged(i32, ?i32);");
 }
@@ -336,8 +345,8 @@ test writeEnumShape {
 
     try shapeTester(&.{.enums_str}, struct {
         fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Enum") });
-            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#EnumTrt") });
+            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Enum"), false });
+            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#EnumTrt"), false });
         }
     }.eval, "pub const Enum = union(enum) {\n" ++ BODY ++ "\n\n" ++
         "pub const EnumTrt = union(enum) {\n" ++ BODY);
@@ -393,7 +402,7 @@ fn writeIntEnumShape(
 test writeIntEnumShape {
     try shapeTester(&.{.enum_int}, struct {
         fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#IntEnum") });
+            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#IntEnum"), false });
         }
     }.eval,
         \\/// An **integer-based** enumeration.
@@ -422,16 +431,17 @@ fn writeUnionShape(
     bld: *ContainerBuild,
     id: SmithyId,
     members: []const SmithyId,
+    named_scope: bool,
 ) !void {
     const shape_name = try symbols.getShapeName(id, .type);
     try writeDocComment(self.alloc(), symbols, bld, id, false);
 
-    const context = .{ .symbols = symbols, .members = members };
+    const context = .{ .symbols = symbols, .members = members, .named = named_scope };
     try bld.public().constant(shape_name).assign(
         bld.x.@"union"().bodyWith(context, struct {
             fn f(ctx: @TypeOf(context), b: *ContainerBuild) !void {
                 for (ctx.members) |m| {
-                    const type_name = try typeName(ctx.symbols, m);
+                    const type_name = try typeName(ctx.symbols, m, ctx.named);
                     const member_name = try ctx.symbols.getShapeName(m, .field);
                     if (type_name.len > 0) {
                         try b.field(member_name).typing(b.x.raw(type_name)).end();
@@ -447,7 +457,7 @@ fn writeUnionShape(
 test writeUnionShape {
     try shapeTester(&.{.union_str}, struct {
         fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Union") });
+            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Union"), false });
         }
     }.eval,
         \\pub const Union = union(enum) {
@@ -464,6 +474,7 @@ pub fn writeStructShape(
     bld: *ContainerBuild,
     id: SmithyId,
     members: []const SmithyId,
+    named_scope: bool,
     override_name: ?[]const u8,
 ) !void {
     const ShapeBodyCtx = struct {
@@ -471,6 +482,7 @@ pub fn writeStructShape(
         symbols: *SymbolsProvider,
         id: SmithyId,
         members: []const SmithyId,
+        named_scope: bool,
     };
 
     const JsonStringifyFuncCtx = struct {
@@ -489,9 +501,9 @@ pub fn writeStructShape(
         fn shapeBody(ctx: ShapeBodyCtx, b: *ContainerBuild) !void {
             const is_input = ctx.symbols.hasTrait(ctx.id, trt_refine.input_id);
 
-            try writeStructShapeMixin(ctx.self.alloc(), ctx.symbols, b, is_input, ctx.id);
+            try writeStructShapeMixin(ctx.self.alloc(), ctx.symbols, b, is_input, ctx.id, ctx.named_scope);
             for (ctx.members) |m| {
-                try writeStructShapeMember(ctx.self.alloc(), ctx.symbols, b, is_input, m);
+                try writeStructShapeMember(ctx.self.alloc(), ctx.symbols, b, is_input, m, ctx.named_scope);
             }
 
             const json_ctx: JsonStringifyFuncCtx = .{
@@ -553,26 +565,41 @@ pub fn writeStructShape(
             .symbols = symbols,
             .id = id,
             .members = members,
+            .named_scope = named_scope,
         }, Closures.shapeBody),
     );
 }
 
-fn writeStructShapeMixin(arena: Allocator, symbols: *SymbolsProvider, bld: *ContainerBuild, is_input: bool, id: SmithyId) !void {
+fn writeStructShapeMixin(
+    arena: Allocator,
+    symbols: *SymbolsProvider,
+    bld: *ContainerBuild,
+    is_input: bool,
+    id: SmithyId,
+    named_scope: bool,
+) !void {
     const mixins = symbols.getMixins(id) orelse return;
     for (mixins) |mix_id| {
-        try writeStructShapeMixin(arena, symbols, bld, is_input, mix_id);
+        try writeStructShapeMixin(arena, symbols, bld, is_input, mix_id, named_scope);
         const mixin = (try symbols.getShape(mix_id)).structure;
         for (mixin) |m| {
-            try writeStructShapeMember(arena, symbols, bld, is_input, m);
+            try writeStructShapeMember(arena, symbols, bld, is_input, m, named_scope);
         }
     }
 }
 
-fn writeStructShapeMember(arena: Allocator, symbols: *SymbolsProvider, bld: *ContainerBuild, is_input: bool, id: SmithyId) !void {
+fn writeStructShapeMember(
+    arena: Allocator,
+    symbols: *SymbolsProvider,
+    bld: *ContainerBuild,
+    is_input: bool,
+    id: SmithyId,
+    named_scope: bool,
+) !void {
     const shape_name = try symbols.getShapeName(id, .field);
     const is_optional = isStructShapeMemberOptional(symbols, id, is_input);
 
-    var type_expr = bld.x.raw(try typeName(symbols, id));
+    var type_expr = bld.x.raw(try typeName(symbols, id, named_scope));
     if (is_optional) type_expr = bld.x.typeOptional(type_expr);
 
     try writeDocComment(arena, symbols, bld, id, true);
@@ -606,7 +633,7 @@ fn isStructShapeMemberOptional(symbols: *SymbolsProvider, id: SmithyId, is_input
 test writeStructShape {
     try shapeTester(&.{ .structure, .err }, struct {
         fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
-            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Struct") });
+            try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Struct"), false });
         }
     }.eval,
         \\pub const Struct = struct {
@@ -713,66 +740,58 @@ test writeDocument {
     );
 }
 
-pub fn typeName(symbols: *SymbolsProvider, id: SmithyId) ![]const u8 {
-    return switch (id) {
+pub fn typeName(symbols: *SymbolsProvider, id: SmithyId, named_scope: bool) ![]const u8 {
+    switch (id) {
         .str_enum, .int_enum, .list, .map, .structure, .tagged_uinon, .operation, .resource, .service, .apply => unreachable,
-        // A document’s consumer should parse it into a meaningful type manually:
-        .document => return error.UnexpectedDocumentShape,
-        // The union type generator assumes a unit is an empty string:
-        .unit => "",
-        .boolean => "bool",
-        .byte => "i8",
-        .short => "i16",
-        .integer => "i32",
-        .long => "i64",
-        .float => "f32",
-        .double => "f64",
-        .timestamp => "u64",
-        .string, .blob => "[]const u8",
-        .big_integer, .big_decimal => "[]const u8",
-        _ => |shape_id| blk: {
-            const shape = symbols.model_shapes.get(id) orelse {
-                return error.ShapeNotFound;
-            };
+        .document => return error.UnexpectedDocumentShape, // A document’s consumer should parse it into a meaningful type manually
+        .unit => return "", // The union type generator assumes a unit is an empty string
+        .boolean => return "bool",
+        .byte => return "i8",
+        .short => return "i16",
+        .integer => return "i32",
+        .long => return "i64",
+        .float => return "f32",
+        .double => return "f64",
+        .timestamp => return "u64",
+        .string, .blob => return "[]const u8",
+        .big_integer, .big_decimal => return "[]const u8",
+        _ => |shape_id| {
+            const shape = symbols.model_shapes.get(id) orelse return error.ShapeNotFound;
             switch (shape) {
-                .target => |target| break :blk try typeName(symbols, target),
-                inline .unit,
-                .blob,
-                .boolean,
-                .string,
-                .byte,
-                .short,
-                .integer,
-                .long,
-                .float,
-                .double,
-                .big_integer,
-                .big_decimal,
-                .timestamp,
-                .document,
-                => |_, g| {
+                inline .unit, .blob, .boolean, .string, .byte, .short, .integer, .long, .float, .double, .big_integer, .big_decimal, .timestamp, .document => |_, g| {
                     const type_id = std.enums.nameCast(SmithyId, g);
-                    break :blk try typeName(symbols, type_id);
+                    return try typeName(symbols, type_id, named_scope);
                 },
-                else => break :blk try symbols.getShapeName(shape_id, .type),
+                .target => |target| return try typeName(symbols, target, named_scope),
+                else => {
+                    const type_name = try symbols.getShapeName(shape_id, .type);
+                    return switch (named_scope) {
+                        false => type_name,
+                        true => std.fmt.allocPrint(symbols.arena, cfg.types_scope ++ ".{s}", .{type_name}),
+                    };
+                },
             }
         },
-    };
+    }
 }
 
 test typeName {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const arena_alloc = arena.allocator();
+    defer arena.deinit();
+
     const foo_id = SmithyId.of("test.simple#Foo");
     var symbols: SymbolsProvider = blk: {
         var shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType) = .{};
-        errdefer shapes.deinit(test_alloc);
-        try shapes.put(test_alloc, foo_id, .blob);
+        errdefer shapes.deinit(arena_alloc);
+        try shapes.put(arena_alloc, foo_id, .{ .structure = &.{} });
 
         var names: std.AutoHashMapUnmanaged(SmithyId, []const u8) = .{};
-        errdefer names.deinit(test_alloc);
-        try names.put(test_alloc, foo_id, "Foo");
+        errdefer names.deinit(arena_alloc);
+        try names.put(arena_alloc, foo_id, "Foo");
 
         break :blk .{
-            .arena = test_alloc,
+            .arena = arena_alloc,
             .service_id = SmithyId.NULL,
             .model_shapes = shapes,
             .model_names = names,
@@ -780,23 +799,24 @@ test typeName {
     };
     defer symbols.deinit();
 
-    try testing.expectEqualStrings("", try typeName(&symbols, .unit));
-    try testing.expectEqualStrings("bool", try typeName(&symbols, .boolean));
-    try testing.expectEqualStrings("i8", try typeName(&symbols, .byte));
-    try testing.expectEqualStrings("i16", try typeName(&symbols, .short));
-    try testing.expectEqualStrings("i32", try typeName(&symbols, .integer));
-    try testing.expectEqualStrings("i64", try typeName(&symbols, .long));
-    try testing.expectEqualStrings("f32", try typeName(&symbols, .float));
-    try testing.expectEqualStrings("f64", try typeName(&symbols, .double));
-    try testing.expectEqualStrings("u64", try typeName(&symbols, .timestamp));
-    try testing.expectEqualStrings("[]const u8", try typeName(&symbols, .blob));
-    try testing.expectEqualStrings("[]const u8", try typeName(&symbols, .string));
-    try testing.expectEqualStrings("[]const u8", try typeName(&symbols, .big_integer));
-    try testing.expectEqualStrings("[]const u8", try typeName(&symbols, .big_decimal));
+    try testing.expectError(error.UnexpectedDocumentShape, typeName(&symbols, SmithyId.document, false));
 
-    try testing.expectEqualStrings("[]const u8", try typeName(&symbols, foo_id));
+    try testing.expectEqualStrings("", try typeName(&symbols, .unit, false));
+    try testing.expectEqualStrings("bool", try typeName(&symbols, .boolean, false));
+    try testing.expectEqualStrings("i8", try typeName(&symbols, .byte, false));
+    try testing.expectEqualStrings("i16", try typeName(&symbols, .short, false));
+    try testing.expectEqualStrings("i32", try typeName(&symbols, .integer, false));
+    try testing.expectEqualStrings("i64", try typeName(&symbols, .long, false));
+    try testing.expectEqualStrings("f32", try typeName(&symbols, .float, false));
+    try testing.expectEqualStrings("f64", try typeName(&symbols, .double, false));
+    try testing.expectEqualStrings("u64", try typeName(&symbols, .timestamp, false));
+    try testing.expectEqualStrings("[]const u8", try typeName(&symbols, .blob, false));
+    try testing.expectEqualStrings("[]const u8", try typeName(&symbols, .string, false));
+    try testing.expectEqualStrings("[]const u8", try typeName(&symbols, .big_integer, false));
+    try testing.expectEqualStrings("[]const u8", try typeName(&symbols, .big_decimal, false));
 
-    try testing.expectError(error.UnexpectedDocumentShape, typeName(&symbols, SmithyId.document));
+    try testing.expectEqualStrings("Foo", try typeName(&symbols, foo_id, false));
+    try testing.expectEqualStrings("srvc_types.Foo", try typeName(&symbols, foo_id, true));
 }
 
 pub fn shapeTester(

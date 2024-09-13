@@ -151,7 +151,7 @@ fn writeClientShapeHead(_: *const Delegate, symbols: *SymbolsProvider, bld: *zig
     try bld.constant("service_cloudtrail").typing(bld.x.typeOf(?[]const u8)).assign(bld.x.valueOf(service.cloud_trail_source orelse null));
 
     try bld.field("config_sdk").typing(bld.x.id(aws_cfg.scope_private).dot().id("ClientConfig")).end();
-    try bld.field("config_endpoint").typing(bld.x.raw("srvc_endpoint.EndpointConfig")).end();
+    try bld.field("config_endpoint").typing(bld.x.raw(aws_cfg.endpoint_scope ++ ".EndpointConfig")).end();
     try bld.field("http").typing(bld.x.typePointer(true, bld.x.id(aws_cfg.scope_runtime).dot().id("HttpClient"))).end();
     try bld.field("TEMP_creds").typing(bld.x.id(aws_cfg.scope_runtime).dot().id("Credentials")).end();
 
@@ -170,7 +170,7 @@ fn writeServiceInit(bld: *zig.BlockBuild) anyerror!void {
 
     try bld.returns().structLiteral(null, &.{
         bld.x.structAssign("config_sdk", bld.x.id("client_cfg")),
-        bld.x.structAssign("config_endpoint", bld.x.call("srvc_endpoint.extractConfig", &.{bld.x.id("client_cfg")})),
+        bld.x.structAssign("config_endpoint", bld.x.call(aws_cfg.endpoint_scope ++ ".extractConfig", &.{bld.x.id("client_cfg")})),
         bld.x.structAssign("http", bld.x.raw("client_cfg.http_client")),
         bld.x.structAssign("TEMP_creds", bld.x.raw("client_cfg.credentials")),
     }).end();
@@ -183,7 +183,7 @@ fn writeServiceDeinit(bld: *zig.BlockBuild) anyerror!void {
 fn writeOperationFunc(self: *const Delegate, symbols: *SymbolsProvider, bld: *zig.BlockBuild, func: smithy.OperationFunc) anyerror!void {
     const alloc_expr = bld.x.id(aws_cfg.alloc_param);
 
-    try bld.constant("endpoint").assign(bld.x.trys().call("srvc_endpoint.resolve", &.{
+    try bld.constant("endpoint").assign(bld.x.trys().call(aws_cfg.endpoint_scope ++ ".resolve", &.{
         alloc_expr,
         bld.x.raw("self.config_endpoint"),
     }));

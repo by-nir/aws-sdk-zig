@@ -1,17 +1,32 @@
-/// Name of the allocator identifier.
+/// Name of the allocator identifier
 pub const alloc_param = "allocator";
 
-/// Name of the stack allocator identifier.
+/// Name of the stack allocator identifier
 pub const stack_alloc = "scratch_alloc";
 
-/// Endpoint configuration type name.
-pub const endpoint_config_type = "EndpointConfig";
-
-/// Endpoint resolve function identifier.
-pub const endpoint_resolve_fn = "resolve";
-
-/// Service client type name.
+/// Service client type name
 pub const service_client_type = "Client";
 
-/// Private runtime scope.
+/// Private runtime scope
 pub const scope_private = "smithy._private_";
+
+/// Endpoint scope
+pub const endpoint_scope = "srvc_types";
+
+/// Endpoint scope filename
+pub const endpoint_filename = "data_types.zig";
+
+/// Endpoint configuration type name
+pub const endpoint_config_type = "EndpointConfig";
+
+/// Endpoint resolve function identifier
+pub const endpoint_resolve_fn = "resolve";
+
+/// Named types scope
+pub const types_scope = "srvc_types";
+
+/// Named types scope filename
+pub const types_filename = "data_types.zig";
+
+/// Operations directory name
+pub const dir_operations = "operation";

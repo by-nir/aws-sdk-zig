@@ -104,6 +104,7 @@ fn filterServiceShapes(
                 try shape_queue.write(rsrc.operations);
                 try shape_queue.write(rsrc.collection_ops);
                 try shape_queue.write(rsrc.resources);
+                // TODO: Should evaluate `identifiers` and `properties`?
             },
             .service => |srvc| {
                 try shape_queue.write(srvc.operations);
@@ -127,8 +128,10 @@ fn filterServiceShapes(
                 try shape_queue.write(fields);
             },
             .target => |tid| try shape_queue.writeItem(tid),
+            // TODO: String may be an enum!
             .boolean, .byte, .short, .integer, .long, .float, .double, .blob, .string => {},
             else => |t| {
+                // TODO: unit, big_integer, big_decimal, timestamp, document,
                 std.log.warn("Unimplemented shape filter `{}`", .{t});
             },
         }
