@@ -9,6 +9,7 @@ pub const Set = containers.Set;
 const url = @import("url.zig");
 const http = @import("http.zig");
 const values = @import("values.zig");
+const serial = @import("serial.zig");
 const endpoint = @import("endpoint.zig");
 pub const _private_ = struct {
     pub const RulesUrl = url.RulesUrl;
@@ -20,6 +21,7 @@ pub const _private_ = struct {
     pub const AuthId = endpoint.AuthId;
     pub const Endpoint = endpoint.Endpoint;
     pub const AuthScheme = endpoint.AuthScheme;
+    pub const SerialType = serial.SerialType;
 };
 
 test {

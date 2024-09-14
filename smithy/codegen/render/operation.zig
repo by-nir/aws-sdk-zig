@@ -61,16 +61,25 @@ fn clientOperationTask(
     }
 
     if (operation.input) |in_id| {
+        const hint = try serialShapeHint(self, symbols, bld.x, in_id);
+        try bld.public().constant("serial_input_hint").assign(hint);
+
         const members = (try symbols.getShape(in_id)).structure;
         try shape.writeStructShape(symbols, bld, in_id, members, true, "OperationInput");
     }
 
     if (operation.output) |out_id| {
+        const hint = try serialShapeHint(self, symbols, bld.x, out_id);
+        try bld.public().constant("serial_output_hint").assign(hint);
+
         const members = (try symbols.getShape(out_id)).structure;
         try shape.writeStructShape(symbols, bld, out_id, members, true, "OperationOutput");
     }
 
     if (symbols.service_errors.len + operation.errors.len > 0) {
+        const hint = try serialErrorHint(self, symbols, bld.x, operation.errors, symbols.service_errors);
+        try bld.public().constant("serial_error_hint").assign(hint);
+
         try bld.public().constant("OperationError").assign(bld.x.@"enum"().bodyWith(ErrorSetCtx{
             .arena = self.alloc(),
             .symbols = symbols,
@@ -78,6 +87,90 @@ fn clientOperationTask(
             .common_errors = symbols.service_errors,
         }, writeErrorSet));
     }
+}
+
+fn serialShapeHint(
+    self: *const jobz.Delegate,
+    symbols: *SymbolsProvider,
+    exp: zig.ExprBuild,
+    id: SmithyId,
+) !zig.ExprBuild {
+    switch (try symbols.getShapeUnwrap(id)) {
+        inline .boolean,
+        .byte,
+        .short,
+        .integer,
+        .long,
+        .float,
+        .double,
+        .blob,
+        .string,
+        .int_enum,
+        .str_enum,
+        .trt_enum,
+        .big_integer,
+        .big_decimal,
+        .timestamp,
+        => |_, g| {
+            return exp.valueOf(g);
+        },
+        .list => |child| {
+            const variant = switch (shape.listType(symbols, id)) {
+                .standard => "list",
+                .sparse => "list_sparse",
+                .set => "set",
+            };
+            const member_hint = try serialShapeHint(self, symbols, exp, child);
+            return exp.structLiteral(null, &.{exp.structAssign(variant, member_hint)});
+        },
+        .map => |children| {
+            const typing = try shape.mapType(symbols, id, children[0]);
+            const variant = if (typing.sparse) "map_sparse" else "map";
+            const key_hint = if (typing.string)
+                exp.valueOf(.string)
+            else
+                try serialShapeHint(self, symbols, exp, children[0]);
+
+            return exp.structLiteral(null, &.{exp.structAssign(variant, exp.structLiteral(null, &.{
+                key_hint,
+                try serialShapeHint(self, symbols, exp, children[1]),
+            }))});
+        },
+        inline .structure, .tagged_uinon => |members, g| {
+            var hints = std.ArrayList(zig.ExprBuild).init(self.alloc());
+            const is_input = symbols.hasTrait(id, trt_refine.input_id);
+
+            for (members) |member| {
+                const name_raw = exp.valueOf(try symbols.getShapeName(member, .pascal, .{}));
+                const name_field = exp.valueOf(try symbols.getShapeName(member, .snake, .{}));
+                const is_required = exp.valueOf(!shape.isStructShapeMemberOptional(symbols, member, is_input));
+                const member_hint = try serialShapeHint(self, symbols, exp, member);
+                try hints.append(exp.structLiteral(null, &.{ name_raw, name_field, is_required, member_hint }));
+            }
+
+            const hints_expr = exp.structAssign(@tagName(g), exp.structLiteral(null, try hints.toOwnedSlice()));
+            return exp.structLiteral(null, &.{hints_expr});
+        },
+        .unit, .document, .operation, .resource, .service, .target => @panic("unexpected serial hint shape type"),
+    }
+}
+
+fn serialErrorHint(
+    self: *const jobz.Delegate,
+    symbols: *SymbolsProvider,
+    exp: zig.ExprBuild,
+    common_errors: []const SmithyId,
+    shape_errors: []const SmithyId,
+) !zig.ExprBuild {
+    var hints = std.ArrayList(zig.ExprBuild).init(self.alloc());
+    for ([2][]const SmithyId{ shape_errors, common_errors }) |id_list| {
+        for (id_list) |id| {
+            const name_raw = exp.valueOf(try symbols.getShapeName(id, .pascal, .{}));
+            const name_field = exp.valueOf(try getErrorName(symbols, id));
+            try hints.append(exp.structLiteral(null, &.{ name_raw, name_field, exp.structLiteral(null, &.{}) }));
+        }
+    }
+    return exp.structLiteral(null, try hints.toOwnedSlice());
 }
 
 const ErrorSetCtx = struct {
@@ -98,8 +191,8 @@ fn writeErrorSet(ctx: ErrorSetCtx, bld: *zig.ContainerBuild) !void {
     var members = std.ArrayList(ErrorSetMember).init(ctx.arena);
     defer members.deinit();
 
-    for (ctx.common_errors) |m| try writeErrorSetMember(ctx.symbols, bld, &members, m);
     for (ctx.shape_errors) |m| try writeErrorSetMember(ctx.symbols, bld, &members, m);
+    for (ctx.common_errors) |m| try writeErrorSetMember(ctx.symbols, bld, &members, m);
 
     try bld.public().function("source")
         .arg("self", bld.x.This())
@@ -123,15 +216,8 @@ fn writeErrorSetMember(
     list: *std.ArrayList(ErrorSetMember),
     member: SmithyId,
 ) !void {
-    var shape_name = try symbols.getShapeName(member, .snake, .{});
-    inline for (.{ "_error", "_exception" }) |suffix| {
-        if (std.ascii.endsWithIgnoreCase(shape_name, suffix)) {
-            shape_name = shape_name[0 .. shape_name.len - suffix.len];
-            break;
-        }
-    }
-
     try shape.writeDocComment(symbols, bld, member, true);
+    const shape_name = try getErrorName(symbols, member);
     try bld.field(shape_name).end();
 
     const source = trt_refine.Error.get(symbols, member) orelse return error.MissingErrorTrait;
@@ -172,6 +258,17 @@ fn writeErrorSetRetryFn(members: []ErrorSetMember, bld: *zig.BlockBuild) !void {
     }.f).end();
 }
 
+fn getErrorName(symbols: *SymbolsProvider, id: SmithyId) ![]const u8 {
+    var shape_name = try symbols.getShapeName(id, .snake, .{});
+    inline for (.{ "_error", "_exception" }) |suffix| {
+        if (std.ascii.endsWithIgnoreCase(shape_name, suffix)) {
+            shape_name = shape_name[0 .. shape_name.len - suffix.len];
+            break;
+        }
+    }
+    return shape_name;
+}
+
 test ClientOperation {
     var tester = try jobz.PipelineTester.init(.{});
     defer tester.deinit();
@@ -188,37 +285,52 @@ test ClientOperation {
     try srvc.expectServiceScript(
         \\const srvc_types = @import("../data_types.zig");
         \\
+        \\pub const serial_input_hint = .{.structure = .{ .{
+        \\    "Foo",
+        \\    "foo",
+        \\    true,
+        \\    .{.structure = .{}},
+        \\}, .{
+        \\    "Bar",
+        \\    "bar",
+        \\    false,
+        \\    .boolean,
+        \\} }};
+        \\
         \\pub const OperationInput = struct {
-        \\    pub fn jsonStringify(self: @This(), jw: anytype) !void {
-        \\        try jw.beginObject();
-        \\
-        \\        try jw.endObject();
-        \\    }
+        \\    foo: srvc_types.Foo,
+        \\    bar: ?bool = null,
         \\};
         \\
-        \\pub const OperationOutput = struct {
-        \\    pub fn jsonStringify(self: @This(), jw: anytype) !void {
-        \\        try jw.beginObject();
+        \\pub const serial_output_hint = .{.structure = .{}};
         \\
-        \\        try jw.endObject();
-        \\    }
-        \\};
+        \\pub const OperationOutput = struct {};
+        \\
+        \\pub const serial_error_hint = .{ .{
+        \\    "ServiceError",
+        \\    "service",
+        \\    .{},
+        \\}, .{
+        \\    "NotFound",
+        \\    "not_found",
+        \\    .{},
+        \\} };
         \\
         \\pub const OperationError = enum {
-        \\    service,
         \\    not_found,
+        \\    service,
         \\
         \\    pub fn source(self: @This()) smithy.ErrorSource {
         \\        return switch (self) {
-        \\            .service => .client,
         \\            .not_found => .server,
+        \\            .service => .client,
         \\        };
         \\    }
         \\
         \\    pub fn httpStatus(self: @This()) std.http.Status {
         \\        const code = switch (self) {
-        \\            .service => 429,
         \\            .not_found => 500,
+        \\            .service => 429,
         \\        };
         \\
         \\        return @enumFromInt(code);
@@ -226,8 +338,8 @@ test ClientOperation {
         \\
         \\    pub fn retryable(self: @This()) bool {
         \\        return switch (self) {
-        \\            .service => true,
         \\            .not_found => false,
+        \\            .service => true,
         \\        };
         \\    }
         \\};

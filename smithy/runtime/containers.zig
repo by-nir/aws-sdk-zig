@@ -68,17 +68,6 @@ pub fn Set(comptime T: type) type {
         pub fn remove(self: *Self, item: T) bool {
             return self.map.remove(item);
         }
-
-        pub fn jsonStringify(self: Self, jw: anytype) !void {
-            try jw.beginArray();
-
-            var it = self.map.keyIterator();
-            while (it.next()) |item| {
-                try jw.write(item);
-            }
-
-            try jw.endArray();
-        }
     };
 }
 

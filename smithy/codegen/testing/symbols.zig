@@ -17,7 +17,9 @@ const trt_refine = @import("../traits/refine.zig");
 const trt_behave = @import("../traits/behavior.zig");
 const trt_constr = @import("../traits/constraint.zig");
 
-pub fn setup(arena: std.mem.Allocator, cases: []const Case) !SymbolsProvider {
+pub const Part = enum { unit, root_child, list, map, enums_str, enum_int, union_str, structure, err, service };
+
+pub fn setup(arena: std.mem.Allocator, cases: []const Part) !SymbolsProvider {
     var model = Model.init(test_alloc);
     errdefer model.deinit();
 
@@ -31,26 +33,11 @@ pub fn setup(arena: std.mem.Allocator, cases: []const Case) !SymbolsProvider {
         .union_str => try setupUnion(&model),
         .structure => try setupStruct(&model),
         .err => try setupError(&model),
-        .service => try setupServiceAndDeps(&model, false),
-        .service_with_input_members => try setupServiceAndDeps(&model, true),
+        .service => try setupService(&model),
     };
 
     return SymbolsProvider.consumeModel(arena, &model);
 }
-
-pub const Case = enum {
-    unit,
-    root_child,
-    list,
-    map,
-    enums_str,
-    enum_int,
-    union_str,
-    structure,
-    err,
-    service,
-    service_with_input_members,
-};
 
 fn setupUnit(model: *Model) !void {
     try model.shapes.put(test_alloc, SmithyId.of("test#Unit"), .unit);
@@ -235,7 +222,7 @@ fn setupError(model: *Model) !void {
     });
 }
 
-fn setupServiceAndDeps(model: *Model, with_input_members: bool) !void {
+fn setupService(model: *Model) !void {
     const Static = struct {
         const sd0 = SmithyId.of("test.serve#Operation");
         const sd1 = SmithyId.of("test.serve#Resource");
@@ -310,19 +297,17 @@ fn setupServiceAndDeps(model: *Model, with_input_members: bool) !void {
 
     try model.names.put(test_alloc, SmithyId.of("test.serve#OperationInput"), "OperationInput");
     try model.shapes.put(test_alloc, SmithyId.of("test.serve#OperationInput"), .{
-        .structure = if (with_input_members) Static.operation_input else &.{},
+        .structure = Static.operation_input,
     });
 
-    if (with_input_members) {
-        try model.names.put(test_alloc, SmithyId.of("test.serve#OperationInput$Foo"), "Foo");
-        try model.shapes.put(test_alloc, SmithyId.of("test.serve#OperationInput$Foo"), .boolean);
-        try model.traits.put(test_alloc, SmithyId.of("test.serve#OperationInput$Foo"), &.{
-            .{ .id = trt_refine.required_id, .value = null },
-        });
+    try model.names.put(test_alloc, SmithyId.of("test.serve#OperationInput$Foo"), "Foo");
+    try model.shapes.put(test_alloc, SmithyId.of("test.serve#OperationInput$Foo"), .{ .structure = &.{} });
+    try model.traits.put(test_alloc, SmithyId.of("test.serve#OperationInput$Foo"), &.{
+        .{ .id = trt_refine.required_id, .value = null },
+    });
 
-        try model.names.put(test_alloc, SmithyId.of("test.serve#OperationInput$Bar"), "Bar");
-        try model.shapes.put(test_alloc, SmithyId.of("test.serve#OperationInput$Bar"), .boolean);
-    }
+    try model.names.put(test_alloc, SmithyId.of("test.serve#OperationInput$Bar"), "Bar");
+    try model.shapes.put(test_alloc, SmithyId.of("test.serve#OperationInput$Bar"), .boolean);
 
     try model.names.put(test_alloc, SmithyId.of("test.serve#OperationOutput"), "OperationOutput");
     try model.shapes.put(test_alloc, SmithyId.of("test.serve#OperationOutput"), .{

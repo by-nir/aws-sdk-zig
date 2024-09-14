@@ -29,6 +29,9 @@ pub const OperationFunc = struct {
     return_type: []const u8,
     auth_optional: bool,
     auth_schemes: []const trt_auth.AuthId,
+    serial_input: []const u8 = "",
+    serial_output: []const u8 = "",
+    serial_error: []const u8 = "",
 };
 
 pub const ServiceClient = srvc.ScriptCodegen.Task("Smithy Service Client Codegen", serviceClientTask, .{
@@ -38,14 +41,14 @@ fn serviceClientTask(self: *const jobz.Delegate, symbols: *SymbolsProvider, bld:
     const sid = symbols.service_id;
     var testables = std.ArrayList([]const u8).init(self.alloc());
 
-    if (symbols.service_data_shapes.len > 0) {
-        try bld.public().using(bld.x.import(cfg.types_filename));
-        try testables.append("@import(\"" ++ cfg.types_filename ++ "\")");
-    }
-
     if (symbols.hasTrait(sid, trt_rules.EndpointRuleSet.id)) {
         try testables.append(cfg.endpoint_scope);
         try bld.constant(cfg.endpoint_scope).assign(bld.x.import(cfg.endpoint_filename));
+    }
+
+    if (symbols.service_data_shapes.len > 0) {
+        try bld.public().using(bld.x.import(cfg.types_filename));
+        try testables.append("@import(\"" ++ cfg.types_filename ++ "\")");
     }
 
     if (self.hasOverride(ClientScriptHeadHook)) {
@@ -105,6 +108,8 @@ test ServiceClient {
     try srvc.expectServiceScript(
         \\const srvc_endpoint = @import("endpoint.zig");
         \\
+        \\pub usingnamespace @import("data_types.zig");
+        \\
         \\/// Some _service_...
         \\pub const Client = struct {
         \\    pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !smithy.Response(OperationOutput, OperationError) {
@@ -122,6 +127,8 @@ test ServiceClient {
         \\
         \\test {
         \\    _ = srvc_endpoint;
+        \\
+        \\    _ = @import("data_types.zig");
         \\
         \\    _ = op_operation;
         \\}
@@ -163,7 +170,7 @@ fn writeClientStruct(
 }
 
 test WriteClientStruct {
-    try shape.shapeTester(&.{.service_with_input_members}, struct {
+    try shape.shapeTester(&.{.service}, struct {
         fn eval(tester: *jobz.PipelineTester, bld: *zig.ContainerBuild) anyerror!void {
             try tester.runTask(WriteClientStruct, .{ bld, SmithyId.of("test.serve#Service") });
         }
@@ -179,13 +186,28 @@ test WriteClientStruct {
 
 fn writeOperationFunc(self: *const jobz.Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild, id: SmithyId) !void {
     const operation = (try symbols.getShape(id)).operation;
-    const input_type: ?[]const u8 = if (operation.input) |d| try shape.typeName(symbols, d, false) else null;
-    const output_type: ?[]const u8 = if (operation.output) |d| try shape.typeName(symbols, d, false) else null;
+    const input_type, const input_serial = if (operation.input) |d| .{
+        try shape.typeName(symbols, d, false),
+        try symbols.getShapeName(id, .snake, .{
+            .prefix = "op_",
+            .suffix = ".serial_input_hint",
+        }),
+    } else .{ null, "" };
+    const output_type, const output_serial = if (operation.output) |d| .{
+        try shape.typeName(symbols, d, false),
+        try symbols.getShapeName(id, .snake, .{
+            .prefix = "op_",
+            .suffix = ".serial_output_hint",
+        }),
+    } else .{ null, "" };
 
-    const error_type = if (operation.errors.len + symbols.service_errors.len > 0)
-        try symbols.getShapeName(id, .pascal, .{ .suffix = "Error" })
-    else
-        null;
+    const error_type, const error_serial = if (operation.errors.len + symbols.service_errors.len > 0) .{
+        try symbols.getShapeName(id, .pascal, .{ .suffix = "Error" }),
+        try symbols.getShapeName(id, .snake, .{
+            .prefix = "op_",
+            .suffix = ".serial_error_hint",
+        }),
+    } else .{ null, "" };
 
     const return_type = if (error_type) |errors|
         try std.fmt.allocPrint(self.alloc(), "!smithy.Response({s}, {s})", .{
@@ -210,6 +232,9 @@ fn writeOperationFunc(self: *const jobz.Delegate, symbols: *SymbolsProvider, bld
         .return_type = return_type,
         .auth_optional = auth_optional,
         .auth_schemes = auth_schemes,
+        .serial_input = input_serial,
+        .serial_output = output_serial,
+        .serial_error = error_serial,
     };
 
     const op_name = try symbols.getShapeName(id, .camel, .{});
@@ -252,4 +277,20 @@ fn clientDataTypesTask(self: *const jobz.Delegate, symbols: *SymbolsProvider, bl
     for (symbols.service_data_shapes) |id| {
         try self.evaluate(shape.WriteShape, .{ bld, id, false });
     }
+}
+
+test ClientDataTypes {
+    var tester = try jobz.PipelineTester.init(.{ .invoker = shape.TEST_INVOKER });
+    defer tester.deinit();
+
+    var issues = IssuesBag.init(test_alloc);
+    defer issues.deinit();
+    _ = try tester.provideService(&issues, null);
+
+    var symbols = try test_symbols.setup(tester.alloc(), &.{ .service, .err });
+    defer symbols.deinit();
+    _ = try tester.provideService(&symbols, null);
+
+    symbols.service_id = SmithyId.of("test.serve#Service");
+    try srvc.expectServiceScript("pub const Foo = struct {};", ClientDataTypes, tester.pipeline, .{});
 }
