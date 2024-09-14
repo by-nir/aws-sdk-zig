@@ -55,8 +55,7 @@ pub fn init(arena: Allocator, engine: Engine, params: ParamsList) !Self {
             .is_direct = is_direct,
             .is_optional = !param.required,
             .name = if (is_direct) blk: {
-                const name = try name_util.snakeCase(arena, kv.key);
-                defer arena.free(name);
+                const name = try name_util.formatCase(arena, .snake, kv.key);
                 break :blk try std.fmt.allocPrint(arena, ARG_CONFIG ++ ".{}", .{std.zig.fmtId(name)});
             } else blk: {
                 break :blk try std.fmt.allocPrint(arena, "param_{s}", .{name_util.SnakeCase{ .value = kv.key }});
@@ -91,7 +90,7 @@ pub fn generateParametersFields(self: *Self, bld: *ContainerBuild) !void {
         }
 
         const field = self.fields.get(kv.key).?;
-        const base = bld.field(try name_util.snakeCase(self.arena, param_name));
+        const base = bld.field(try name_util.formatCase(self.arena, .snake, param_name));
         if (field.is_optional or !field.is_direct) {
             try base.typing(bld.x.typeOptional(typing)).assign(bld.x.valueOf(null));
         } else {
@@ -208,7 +207,7 @@ fn generateParamBinding(
     }
     if (!param.required) typing = bld.x.typeOptional(typing);
 
-    const val_1 = bld.x.raw(ARG_CONFIG).dot().id(try name_util.snakeCase(self.arena, source_name));
+    const val_1 = bld.x.raw(ARG_CONFIG).dot().id(try name_util.formatCase(self.arena, .snake, source_name));
     const val_2 = if (default) |t| val_1.orElse().buildExpr(t) else blk: {
         if (param.required) return error.RulesRequiredParamHasNoValue;
         break :blk val_1;
@@ -260,7 +259,7 @@ fn generateResolverRules(self: *Self, bld: *BlockBuild, rules: []const mdl.Rule)
             // Prepare variables for assignments
             for (conditions) |cond| {
                 const assign = cond.assign orelse continue;
-                const var_name = try name_util.snakeCase(self.arena, assign);
+                const var_name = try name_util.formatCase(self.arena, .snake, assign);
 
                 const func = try self.engine.getFunc(cond.function);
                 const typing = func.returns orelse return error.RulesFuncReturnsAny;
@@ -838,7 +837,7 @@ pub fn evalFunc(
     errdefer expr.deinit(self.arena);
 
     if (assign) |name| {
-        const var_name = try name_util.snakeCase(self.arena, name);
+        const var_name = try name_util.formatCase(self.arena, .snake, name);
 
         const context = .{ .expr = expr, .var_name = var_name, .unwrap = func.returns_optional };
         return x.label(ASSIGN_LABEL).blockWith(context, struct {
@@ -903,7 +902,7 @@ pub fn evalArgRaw(self: *Self, x: ExprBuild, arg: mdl.ArgValue) anyerror!Expr {
             if (self.fields.get(s)) |field| {
                 return x.raw(field.name).consume();
             } else {
-                const field_name = try name_util.snakeCase(self.arena, s);
+                const field_name = try name_util.formatCase(self.arena, .snake, s);
                 return x.id(field_name).consume();
             }
         },
@@ -1065,7 +1064,7 @@ pub fn generateTests(self: *Self, bld: *ContainerBuild, cases: []const mdl.TestC
                 var params = std.ArrayList(ExprBuild).init(ctx.arena);
                 try params.ensureTotalCapacityPrecise(tc.params.len);
                 for (tc.params) |kv| {
-                    const field = try name_util.snakeCase(ctx.arena, kv.key);
+                    const field = try name_util.formatCase(ctx.arena, .snake, kv.key);
                     const expr = switch (kv.value) {
                         inline .boolean, .string => |t| try b.x.structAssign(field, b.x.valueOf(t.?)).consume(),
                         .string_array => |values| blk: {

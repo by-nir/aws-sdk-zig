@@ -27,7 +27,7 @@ fn regionsCodegenTask(self: *const Delegate, bld: *zig.ContainerBuild, defs: []c
 fn writeEnum(ctx: Context, bld: *zig.ContainerBuild) !void {
     var map = try std.ArrayList(zig.ExprBuild).initCapacity(ctx.arena, ctx.defs.len);
     for (ctx.defs) |def| {
-        const field = try name_util.snakeCase(ctx.arena, def.code);
+        const field = try name_util.formatCase(ctx.arena, .snake, def.code);
         const pair = &.{ bld.x.valueOf(def.code), bld.x.dot().id(field) };
         try map.append(bld.x.structLiteral(null, pair));
 
@@ -60,7 +60,7 @@ fn writeEnum(ctx: Context, bld: *zig.ContainerBuild) !void {
 
 fn writeToString(ctx: Context, bld: *zig.SwitchBuild) !void {
     for (ctx.defs) |def| {
-        const field = try name_util.snakeCase(ctx.arena, def.code);
+        const field = try name_util.formatCase(ctx.arena, .snake, def.code);
         try bld.branch().case(bld.x.dot().id(field)).body(bld.x.valueOf(def.code));
     }
 }

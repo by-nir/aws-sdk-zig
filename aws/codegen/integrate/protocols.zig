@@ -43,8 +43,8 @@ pub fn writeOperationResponse(arena: Allocator, symbols: *SymbolsProvider, bld: 
 
 fn writeJson10Request(arena: Allocator, symbols: *SymbolsProvider, bld: *zig.BlockBuild, func: smithy.OperationFunc) !void {
     const target = try std.fmt.allocPrint(arena, "{s}.{s}", .{
-        try symbols.getShapeNameRaw(symbols.service_id),
-        try symbols.getShapeNameRaw(func.id),
+        try symbols.getShapeName(symbols.service_id, .pascal, .{}),
+        try symbols.getShapeName(func.id, .pascal, .{}),
     });
 
     const payload = bld.trys().id(aws_cfg.scope_protocol).dot().call("aws_json.inputJson10", &.{

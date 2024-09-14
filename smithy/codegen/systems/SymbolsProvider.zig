@@ -1,19 +1,23 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
-const test_alloc = testing.allocator;
+const TraitsProvider = @import("traits.zig").TraitsProvider;
 const mdl = @import("../model.zig");
 const SmithyId = mdl.SmithyId;
 const SmithyType = mdl.SmithyType;
 const SmithyMeta = mdl.SmithyMeta;
 const SmithyTaggedValue = mdl.SmithyTaggedValue;
 const Model = @import("../parse/Model.zig");
-const TraitsProvider = @import("traits.zig").TraitsProvider;
 const name_util = @import("../utils/names.zig");
 const AuthId = @import("../traits/auth.zig").AuthId;
 const error_trait_id = @import("../traits/refine.zig").Error.id;
 
 const Self = @This();
+pub const NameCase = name_util.Case;
+pub const NameOptions = struct {
+    prefix: []const u8 = "",
+    suffix: []const u8 = "",
+};
 
 arena: Allocator,
 model_meta: std.AutoHashMapUnmanaged(SmithyId, SmithyMeta) = .{},
@@ -97,6 +101,7 @@ fn filterServiceShapes(
                 try shape_queue.write(op.errors);
             },
             .resource => |rsrc| {
+                // We ignore `identifiers` & `properties` shapes
                 inline for (&.{ "create", "put", "read", "update", "delete", "list" }) |field| {
                     if (@field(rsrc, field)) |oid| try shape_queue.writeItem(oid);
                 }
@@ -104,19 +109,22 @@ fn filterServiceShapes(
                 try shape_queue.write(rsrc.operations);
                 try shape_queue.write(rsrc.collection_ops);
                 try shape_queue.write(rsrc.resources);
-                // TODO: Should evaluate `identifiers` and `properties`?
             },
             .service => |srvc| {
                 try shape_queue.write(srvc.operations);
                 try shape_queue.write(srvc.resources);
             },
             .int_enum, .str_enum => try data_shapes.append(id),
+            .tagged_uinon => |fields| {
+                try data_shapes.append(id);
+                try shape_queue.write(fields);
+            },
             .list => |target| try shape_queue.writeItem(target),
             .map => |targets| {
                 try data_shapes.append(id);
                 try shape_queue.write(&targets);
             },
-            .tagged_uinon, .structure => |fields| {
+            .structure => |fields| {
                 var is_error = false;
                 if (traits.get(id)) |trts| for (0..trts.len) |i| {
                     if (trts[i].id != error_trait_id) continue;
@@ -148,77 +156,6 @@ pub fn deinit(self: *Self) void {
     self.model_mixins.deinit(self.arena);
 }
 
-//
-// Names
-//
-
-pub const NameFormat = enum {
-    /// field_name (snake case)
-    field,
-    /// functionName (camel case)
-    function,
-    /// TypeName (pascal case)
-    type,
-    // CONSTANT_NAME (scream case)
-    constant,
-    /// Title Name (title case)
-    title,
-};
-
-pub fn getShapeNameRaw(self: Self, id: SmithyId) ![]const u8 {
-    return self.model_names.get(id) orelse error.NameNotFound;
-}
-
-pub fn getShapeName(self: Self, id: SmithyId, format: NameFormat) ![]const u8 {
-    const raw = self.model_names.get(id) orelse return error.NameNotFound;
-    return switch (format) {
-        .type => raw, // we assume shape names are already in pascal case
-        .field => name_util.snakeCase(self.arena, raw),
-        .function => name_util.camelCase(self.arena, raw),
-        .constant => name_util.screamCase(self.arena, raw),
-        .title => name_util.titleCase(self.arena, raw),
-    };
-}
-
-test "names" {
-    var arena = std.heap.ArenaAllocator.init(test_alloc);
-    const arena_alloc = arena.allocator();
-    defer arena.deinit();
-
-    const foobar_id = SmithyId.of("test.simple#FooBar");
-    var symbols: Self = blk: {
-        var shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType) = .{};
-        errdefer shapes.deinit(arena_alloc);
-        try shapes.put(arena_alloc, foobar_id, .boolean);
-
-        var names: std.AutoHashMapUnmanaged(SmithyId, []const u8) = .{};
-        errdefer names.deinit(arena_alloc);
-        try names.put(arena_alloc, foobar_id, "FooBar");
-
-        break :blk Self{
-            .arena = arena_alloc,
-            .service_id = SmithyId.NULL,
-            .model_meta = .{},
-            .model_shapes = shapes,
-            .model_names = names,
-            .model_traits = .{},
-            .model_mixins = .{},
-        };
-    };
-    defer symbols.deinit();
-
-    try testing.expectEqualStrings("foo_bar", try symbols.getShapeName(foobar_id, .field));
-    try testing.expectEqualStrings("fooBar", try symbols.getShapeName(foobar_id, .function));
-    try testing.expectEqualStrings("FooBar", try symbols.getShapeName(foobar_id, .type));
-    try testing.expectEqualStrings("FOO_BAR", try symbols.getShapeName(foobar_id, .constant));
-    try testing.expectEqualStrings("Foo Bar", try symbols.getShapeName(foobar_id, .title));
-    try testing.expectError(error.NameNotFound, symbols.getShapeName(SmithyId.of("test#undefined"), .type));
-}
-
-//
-// Model
-//
-
 pub fn getMeta(self: Self, key: SmithyId) ?SmithyMeta {
     return self.model_meta.get(key);
 }
@@ -247,6 +184,17 @@ pub fn getShapeUnwrap(self: Self, id: SmithyId) !SmithyType {
     }
 }
 
+pub fn getShapeName(self: Self, id: SmithyId, comptime case: NameCase, comptime options: NameOptions) ![]const u8 {
+    const raw = self.model_names.get(id) orelse return error.NameNotFound;
+    const has_extras = options.prefix.len + options.suffix.len > 0;
+    if (case == .pascal and !has_extras) return raw;
+
+    return std.fmt.allocPrint(self.arena, options.prefix ++ "{s}" ++ options.suffix, .{switch (case) {
+        .pascal => raw,
+        else => name_util.CaseFormatter(case){ .value = raw },
+    }});
+}
+
 pub fn getTraits(self: Self, shape_id: SmithyId) ?TraitsProvider {
     const traits = self.model_traits.get(shape_id) orelse return null;
     return TraitsProvider{ .values = traits };
@@ -272,43 +220,49 @@ pub fn getTraitOpaque(self: Self, shape_id: SmithyId, trait_id: SmithyId) ?*cons
     return traits.getOpaque(trait_id);
 }
 
-test "model" {
+test Self {
     const int: u8 = 108;
     const shape_foo = SmithyId.of("test.simple#Foo");
     const shape_bar = SmithyId.of("test.simple#Bar");
+    const shape_bazqux = SmithyId.of("test.simple#BazQux");
     const trait_void = SmithyId.of("test.trait#Void");
     const trait_int = SmithyId.of("test.trait#Int");
 
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const arena_alloc = arena.allocator();
+    defer arena.deinit();
+
     var symbols: Self = blk: {
         var meta: std.AutoHashMapUnmanaged(SmithyId, SmithyMeta) = .{};
-        errdefer meta.deinit(test_alloc);
-        try meta.put(test_alloc, shape_foo, .{ .integer = 108 });
+        try meta.put(arena_alloc, shape_foo, .{ .integer = 108 });
 
         var shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType) = .{};
-        errdefer shapes.deinit(test_alloc);
-        try shapes.put(test_alloc, shape_foo, .blob);
-        try shapes.put(test_alloc, shape_bar, .{ .target = shape_foo });
+        errdefer shapes.deinit(arena_alloc);
+        try shapes.put(arena_alloc, shape_foo, .blob);
+        try shapes.put(arena_alloc, shape_bar, .{ .target = shape_foo });
+        try shapes.put(arena_alloc, shape_bazqux, .boolean);
 
         var names: std.AutoHashMapUnmanaged(SmithyId, []const u8) = .{};
-        errdefer names.deinit(test_alloc);
-        try names.put(test_alloc, shape_foo, "Foo");
+        errdefer names.deinit(arena_alloc);
+        try names.put(arena_alloc, shape_foo, "Foo");
+        try names.put(arena_alloc, shape_bazqux, "BazQux");
 
         var traits: std.AutoHashMapUnmanaged(SmithyId, []const SmithyTaggedValue) = .{};
-        errdefer traits.deinit(test_alloc);
-        try traits.put(test_alloc, shape_foo, &.{
+        errdefer traits.deinit(arena_alloc);
+        try traits.put(arena_alloc, shape_foo, &.{
             .{ .id = trait_void, .value = null },
             .{ .id = trait_int, .value = &int },
         });
 
         var mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId) = .{};
-        errdefer mixins.deinit(test_alloc);
-        try mixins.put(test_alloc, shape_foo, &.{
+        errdefer mixins.deinit(arena_alloc);
+        try mixins.put(arena_alloc, shape_foo, &.{
             SmithyId.of("test.mixin#Foo"),
             SmithyId.of("test.mixin#Bar"),
         });
 
         break :blk Self{
-            .arena = test_alloc,
+            .arena = arena_alloc,
             .service_id = SmithyId.NULL,
             .model_meta = meta,
             .model_shapes = shapes,
@@ -325,25 +279,14 @@ test "model" {
     );
 
     try testing.expectEqual(.blob, symbols.getShape(shape_foo));
-    try testing.expectError(
-        error.ShapeNotFound,
-        symbols.getShape(SmithyId.of("test#undefined")),
-    );
+    try testing.expectError(error.ShapeNotFound, symbols.getShape(SmithyId.of("test#undefined")));
 
     try testing.expectEqual(.blob, symbols.getShapeUnwrap(shape_bar));
-    try testing.expectError(
-        error.ShapeNotFound,
-        symbols.getShapeUnwrap(SmithyId.of("test#undefined")),
-    );
+    try testing.expectError(error.ShapeNotFound, symbols.getShapeUnwrap(SmithyId.of("test#undefined")));
 
-    try testing.expectEqualStrings("Foo", try symbols.getShapeNameRaw(shape_foo));
-    const field_name = try symbols.getShapeName(shape_foo, .field);
-    defer test_alloc.free(field_name);
-    try testing.expectEqualStrings("foo", field_name);
-    try testing.expectError(
-        error.NameNotFound,
-        symbols.getShapeName(SmithyId.of("test#undefined"), .type),
-    );
+    try testing.expectEqualStrings("Foo", try symbols.getShapeName(shape_foo, .pascal, .{}));
+    try testing.expectEqualStrings("foo", try symbols.getShapeName(shape_foo, .snake, .{}));
+    try testing.expectError(error.NameNotFound, symbols.getShapeName(SmithyId.of("test#undefined"), .pascal, .{}));
 
     try testing.expectEqualDeep(
         &.{ SmithyId.of("test.mixin#Foo"), SmithyId.of("test.mixin#Bar") },
@@ -354,4 +297,23 @@ test "model" {
         SmithyTaggedValue{ .id = trait_void, .value = null },
         SmithyTaggedValue{ .id = trait_int, .value = &int },
     } }, symbols.getTraits(shape_foo));
+
+    const extras = NameOptions{ .prefix = "<", .suffix = ">" };
+
+    try testing.expectEqualStrings("baz_qux", try symbols.getShapeName(shape_bazqux, .snake, .{}));
+    try testing.expectEqualStrings("<baz_qux>", try symbols.getShapeName(shape_bazqux, .snake, extras));
+
+    try testing.expectEqualStrings("bazQux", try symbols.getShapeName(shape_bazqux, .camel, .{}));
+    try testing.expectEqualStrings("<bazQux>", try symbols.getShapeName(shape_bazqux, .camel, extras));
+
+    try testing.expectEqualStrings("BAZ_QUX", try symbols.getShapeName(shape_bazqux, .scream, .{}));
+    try testing.expectEqualStrings("<BAZ_QUX>", try symbols.getShapeName(shape_bazqux, .scream, extras));
+
+    try testing.expectEqualStrings("Baz Qux", try symbols.getShapeName(shape_bazqux, .title, .{}));
+    try testing.expectEqualStrings("<Baz Qux>", try symbols.getShapeName(shape_bazqux, .title, extras));
+
+    try testing.expectEqualStrings("BazQux", try symbols.getShapeName(shape_bazqux, .pascal, .{}));
+    try testing.expectEqualStrings("<BazQux>", try symbols.getShapeName(shape_bazqux, .pascal, extras));
+
+    try testing.expectError(error.NameNotFound, symbols.getShapeName(SmithyId.of("test#undefined"), .pascal, .{}));
 }

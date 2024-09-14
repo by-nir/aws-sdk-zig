@@ -7,14 +7,17 @@ pub const stack_alloc = "scratch_alloc";
 /// Service client type name
 pub const service_client_type = "Client";
 
-/// Private runtime scope
-pub const scope_private = "smithy._private_";
+/// Runtime public scope
+pub const scope_public = "smithy";
+
+/// Runtime private scope
+pub const scope_private = scope_public ++ "._private_";
 
 /// Endpoint scope
-pub const endpoint_scope = "srvc_types";
+pub const endpoint_scope = "srvc_endpoint";
 
 /// Endpoint scope filename
-pub const endpoint_filename = "data_types.zig";
+pub const endpoint_filename = "endpoint.zig";
 
 /// Endpoint configuration type name
 pub const endpoint_config_type = "EndpointConfig";

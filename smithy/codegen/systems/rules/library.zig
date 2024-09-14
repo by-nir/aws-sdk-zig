@@ -223,7 +223,7 @@ fn fnGetAttr(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
         const i = mem.indexOfAnyPos(u8, path, pos, ".[") orelse path.len;
 
         {
-            const field = try name_util.snakeCase(alloc, path[pos..i]);
+            const field = try name_util.formatCase(alloc, .snake, path[pos..i]);
             defer if (!mem.eql(u8, field, path[pos..i])) alloc.free(field);
             try buffer.appendSlice(field);
         }

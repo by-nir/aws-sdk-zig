@@ -129,7 +129,7 @@ fn writeEndpointScriptHead(self: *const Delegate, symbols: *SymbolsProvider, bld
             for (ctx.params) |param| {
                 const id = param.value.built_in orelse continue;
                 const expr = try itg_rules.mapConfigBuiltins(b.x, id);
-                const val_field = try smithy.name_util.snakeCase(ctx.arena, param.key);
+                const val_field = try smithy.name_util.formatCase(ctx.arena, .snake, param.key);
                 try b.id("value").dot().id(val_field).assign().fromExpr(expr).end();
             }
 

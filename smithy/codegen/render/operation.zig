@@ -23,10 +23,11 @@ pub const OperationScriptHeadHook = jobz.Task.Hook(
     &.{ *zig.ContainerBuild, SmithyId },
 );
 
-pub fn operationFilename(allocator: Allocator, symbols: *SymbolsProvider, id: SmithyId, comptime nested: bool) ![]const u8 {
-    const shape_name = try symbols.getShapeName(id, .field);
-    const template = comptime if (nested) "{s}.zig" else cfg.dir_operations ++ "/{s}.zig";
-    return try std.fmt.allocPrint(allocator, template, .{shape_name});
+pub fn operationFilename(symbols: *SymbolsProvider, id: SmithyId, comptime nested: bool) ![]const u8 {
+    return try symbols.getShapeName(id, .snake, .{
+        .prefix = if (nested) "" else "operation/",
+        .suffix = ".zig",
+    });
 }
 
 pub const ClientOperationsDir = files_jobs.OpenDir.Task("Smithy Codegen Client Operations Directory", clientOperationsDirTask, .{
@@ -34,7 +35,7 @@ pub const ClientOperationsDir = files_jobs.OpenDir.Task("Smithy Codegen Client O
 });
 fn clientOperationsDirTask(self: *const jobz.Delegate, symbols: *SymbolsProvider) anyerror!void {
     for (symbols.service_operations) |oid| {
-        const filename = try operationFilename(self.alloc(), symbols, oid, true);
+        const filename = try operationFilename(symbols, oid, true);
         try self.evaluate(files_jobs.WriteFile.Chain(ClientOperation, .sync), .{ filename, .{}, oid });
     }
 }
@@ -61,12 +62,12 @@ fn clientOperationTask(
 
     if (operation.input) |in_id| {
         const members = (try symbols.getShape(in_id)).structure;
-        try shape.writeStructShape(self, symbols, bld, in_id, members, true, "OperationInput");
+        try shape.writeStructShape(symbols, bld, in_id, members, true, "OperationInput");
     }
 
     if (operation.output) |out_id| {
         const members = (try symbols.getShape(out_id)).structure;
-        try shape.writeStructShape(self, symbols, bld, out_id, members, true, "OperationOutput");
+        try shape.writeStructShape(symbols, bld, out_id, members, true, "OperationOutput");
     }
 
     if (symbols.service_errors.len + operation.errors.len > 0) {
@@ -97,8 +98,8 @@ fn writeErrorSet(ctx: ErrorSetCtx, bld: *zig.ContainerBuild) !void {
     var members = std.ArrayList(ErrorSetMember).init(ctx.arena);
     defer members.deinit();
 
-    for (ctx.common_errors) |m| try writeErrorSetMember(ctx.arena, ctx.symbols, bld, &members, m);
-    for (ctx.shape_errors) |m| try writeErrorSetMember(ctx.arena, ctx.symbols, bld, &members, m);
+    for (ctx.common_errors) |m| try writeErrorSetMember(ctx.symbols, bld, &members, m);
+    for (ctx.shape_errors) |m| try writeErrorSetMember(ctx.symbols, bld, &members, m);
 
     try bld.public().function("source")
         .arg("self", bld.x.This())
@@ -117,13 +118,12 @@ fn writeErrorSet(ctx: ErrorSetCtx, bld: *zig.ContainerBuild) !void {
 }
 
 fn writeErrorSetMember(
-    arena: Allocator,
     symbols: *SymbolsProvider,
     bld: *zig.ContainerBuild,
     list: *std.ArrayList(ErrorSetMember),
     member: SmithyId,
 ) !void {
-    var shape_name = try symbols.getShapeName(member, .field);
+    var shape_name = try symbols.getShapeName(member, .snake, .{});
     inline for (.{ "_error", "_exception" }) |suffix| {
         if (std.ascii.endsWithIgnoreCase(shape_name, suffix)) {
             shape_name = shape_name[0 .. shape_name.len - suffix.len];
@@ -131,7 +131,7 @@ fn writeErrorSetMember(
         }
     }
 
-    try shape.writeDocComment(arena, symbols, bld, member, true);
+    try shape.writeDocComment(symbols, bld, member, true);
     try bld.field(shape_name).end();
 
     const source = trt_refine.Error.get(symbols, member) orelse return error.MissingErrorTrait;

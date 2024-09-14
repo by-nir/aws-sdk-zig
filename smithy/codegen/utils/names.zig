@@ -5,10 +5,20 @@ const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = std.testing.allocator;
 
-const MutString = std.ArrayList(u8);
+pub const Case = enum { snake, scream, camel, pascal, title };
 
-pub fn snakeCase(allocator: Allocator, value: []const u8) ![]const u8 {
-    return fmt.allocPrint(allocator, "{s}", .{SnakeCase{ .value = value }});
+pub fn formatCase(allocator: Allocator, comptime case: Case, value: []const u8) ![]const u8 {
+    return fmt.allocPrint(allocator, "{s}", .{CaseFormatter(case){ .value = value }});
+}
+
+pub fn CaseFormatter(comptime case: Case) type {
+    return switch (case) {
+        .snake => SnakeCase,
+        .scream => ScreamCase,
+        .camel => CamelCase,
+        .pascal => PascalCase,
+        .title => TitleCase,
+    };
 }
 
 pub const SnakeCase = struct {
@@ -40,20 +50,12 @@ pub const SnakeCase = struct {
     }
 };
 
-test "snakeCase" {
-    var arena = std.heap.ArenaAllocator.init(test_alloc);
-    const arena_alloc = arena.allocator();
-    defer arena.deinit();
-
-    try testing.expectEqualStrings("foo_bar", try snakeCase(arena_alloc, "foo-bar"));
-    try testing.expectEqualStrings("foo_bar", try snakeCase(arena_alloc, "foo_bar"));
-    try testing.expectEqualStrings("foo_bar", try snakeCase(arena_alloc, "fooBar"));
-    try testing.expectEqualStrings("foo_bar", try snakeCase(arena_alloc, "FooBar"));
-    try testing.expectEqualStrings("foo_bar", try snakeCase(arena_alloc, "FOO_BAR"));
-}
-
-pub fn screamCase(allocator: Allocator, value: []const u8) ![]const u8 {
-    return fmt.allocPrint(allocator, "{s}", .{ScreamCase{ .value = value }});
+test SnakeCase {
+    try testing.expectFmt("foo_bar", "{s}", .{SnakeCase{ .value = "foo-bar" }});
+    try testing.expectFmt("foo_bar", "{s}", .{SnakeCase{ .value = "foo_bar" }});
+    try testing.expectFmt("foo_bar", "{s}", .{SnakeCase{ .value = "fooBar" }});
+    try testing.expectFmt("foo_bar", "{s}", .{SnakeCase{ .value = "FooBar" }});
+    try testing.expectFmt("foo_bar", "{s}", .{SnakeCase{ .value = "FOO_BAR" }});
 }
 
 pub const ScreamCase = struct {
@@ -87,20 +89,12 @@ pub const ScreamCase = struct {
     }
 };
 
-test "screamCase" {
-    var arena = std.heap.ArenaAllocator.init(test_alloc);
-    const arena_alloc = arena.allocator();
-    defer arena.deinit();
-
-    try testing.expectEqualStrings("FOO_BAR", try screamCase(arena_alloc, "foo-bar"));
-    try testing.expectEqualStrings("FOO_BAR", try screamCase(arena_alloc, "foo_bar"));
-    try testing.expectEqualStrings("FOO_BAR", try screamCase(arena_alloc, "fooBar"));
-    try testing.expectEqualStrings("FOO_BAR", try screamCase(arena_alloc, "FooBar"));
-    try testing.expectEqualStrings("FOO_BAR", try screamCase(arena_alloc, "FOO_BAR"));
-}
-
-pub fn camelCase(allocator: Allocator, value: []const u8) ![]const u8 {
-    return fmt.allocPrint(allocator, "{s}", .{CamelCase{ .value = value }});
+test ScreamCase {
+    try testing.expectFmt("FOO_BAR", "{s}", .{ScreamCase{ .value = "foo-bar" }});
+    try testing.expectFmt("FOO_BAR", "{s}", .{ScreamCase{ .value = "foo_bar" }});
+    try testing.expectFmt("FOO_BAR", "{s}", .{ScreamCase{ .value = "fooBar" }});
+    try testing.expectFmt("FOO_BAR", "{s}", .{ScreamCase{ .value = "FooBar" }});
+    try testing.expectFmt("FOO_BAR", "{s}", .{ScreamCase{ .value = "FOO_BAR" }});
 }
 
 pub const CamelCase = struct {
@@ -125,20 +119,12 @@ pub const CamelCase = struct {
     }
 };
 
-test "camelCase" {
-    var arena = std.heap.ArenaAllocator.init(test_alloc);
-    const arena_alloc = arena.allocator();
-    defer arena.deinit();
-
-    try testing.expectEqualStrings("fooBar", try camelCase(arena_alloc, "foo-bar"));
-    try testing.expectEqualStrings("fooBar", try camelCase(arena_alloc, "foo_bar"));
-    try testing.expectEqualStrings("fooBar", try camelCase(arena_alloc, "fooBar"));
-    try testing.expectEqualStrings("fooBar", try camelCase(arena_alloc, "FooBar"));
-    try testing.expectEqualStrings("fooBar", try camelCase(arena_alloc, "FOO_BAR"));
-}
-
-pub fn pascalCase(allocator: Allocator, value: []const u8) ![]const u8 {
-    return fmt.allocPrint(allocator, "{s}", .{PascalCase{ .value = value }});
+test CamelCase {
+    try testing.expectFmt("fooBar", "{s}", .{CamelCase{ .value = "foo-bar" }});
+    try testing.expectFmt("fooBar", "{s}", .{CamelCase{ .value = "foo_bar" }});
+    try testing.expectFmt("fooBar", "{s}", .{CamelCase{ .value = "fooBar" }});
+    try testing.expectFmt("fooBar", "{s}", .{CamelCase{ .value = "FooBar" }});
+    try testing.expectFmt("fooBar", "{s}", .{CamelCase{ .value = "FOO_BAR" }});
 }
 
 pub const PascalCase = struct {
@@ -163,20 +149,12 @@ pub const PascalCase = struct {
     }
 };
 
-test "pascalCase" {
-    var arena = std.heap.ArenaAllocator.init(test_alloc);
-    const arena_alloc = arena.allocator();
-    defer arena.deinit();
-
-    try testing.expectEqualStrings("FooBar", try pascalCase(arena_alloc, "foo-bar"));
-    try testing.expectEqualStrings("FooBar", try pascalCase(arena_alloc, "foo_bar"));
-    try testing.expectEqualStrings("FooBar", try pascalCase(arena_alloc, "fooBar"));
-    try testing.expectEqualStrings("FooBar", try pascalCase(arena_alloc, "FooBar"));
-    try testing.expectEqualStrings("FooBar", try pascalCase(arena_alloc, "FOO_BAR"));
-}
-
-pub fn titleCase(allocator: Allocator, value: []const u8) ![]const u8 {
-    return fmt.allocPrint(allocator, "{s}", .{TitleCase{ .value = value }});
+test PascalCase {
+    try testing.expectFmt("FooBar", "{s}", .{PascalCase{ .value = "foo-bar" }});
+    try testing.expectFmt("FooBar", "{s}", .{PascalCase{ .value = "foo_bar" }});
+    try testing.expectFmt("FooBar", "{s}", .{PascalCase{ .value = "fooBar" }});
+    try testing.expectFmt("FooBar", "{s}", .{PascalCase{ .value = "FooBar" }});
+    try testing.expectFmt("FooBar", "{s}", .{PascalCase{ .value = "FOO_BAR" }});
 }
 
 pub const TitleCase = struct {
@@ -213,17 +191,13 @@ pub const TitleCase = struct {
     }
 };
 
-test "titleCase" {
-    var arena = std.heap.ArenaAllocator.init(test_alloc);
-    const arena_alloc = arena.allocator();
-    defer arena.deinit();
-
-    try testing.expectEqualStrings("Foo Bar", try titleCase(arena_alloc, "foo-bar"));
-    try testing.expectEqualStrings("Foo Bar", try titleCase(arena_alloc, "foo_bar"));
-    try testing.expectEqualStrings("Foo Bar", try titleCase(arena_alloc, "fooBar"));
-    try testing.expectEqualStrings("Foo Bar", try titleCase(arena_alloc, "FooBar"));
-    try testing.expectEqualStrings("Foo Bar", try titleCase(arena_alloc, "FOO_BAR"));
-    try testing.expectEqualStrings("Foo Bar", try titleCase(arena_alloc, "foo-+bar"));
+test TitleCase {
+    try testing.expectFmt("Foo Bar", "{s}", .{TitleCase{ .value = "foo-bar" }});
+    try testing.expectFmt("Foo Bar", "{s}", .{TitleCase{ .value = "foo_bar" }});
+    try testing.expectFmt("Foo Bar", "{s}", .{TitleCase{ .value = "fooBar" }});
+    try testing.expectFmt("Foo Bar", "{s}", .{TitleCase{ .value = "FooBar" }});
+    try testing.expectFmt("Foo Bar", "{s}", .{TitleCase{ .value = "FOO_BAR" }});
+    try testing.expectFmt("Foo Bar", "{s}", .{TitleCase{ .value = "foo-+bar" }});
 }
 
 fn isDivider(c: u8) bool {

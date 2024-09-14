@@ -98,7 +98,7 @@ const ServiceReadme = files_jobs.WriteFile.Task("Service Readme Codegen", servic
 fn serviceReadmeTask(self: *const jobz.Delegate, symbols: *SymbolsProvider, writer: std.io.AnyWriter) anyerror!void {
     const sid = symbols.service_id;
     const slug = self.readValue([]const u8, ScopeTag.slug) orelse return error.MissingSlug;
-    const title = trt_docs.Title.get(symbols, sid) orelse try name_util.titleCase(self.alloc(), slug);
+    const title = trt_docs.Title.get(symbols, sid) orelse try name_util.formatCase(self.alloc(), .title, slug);
     const intro: ?[]const u8 = if (trt_docs.Documentation.get(symbols, sid)) |src|
         try serviceReadmeWriteIntro(self.alloc(), src)
     else
