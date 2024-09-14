@@ -12,11 +12,13 @@ const SmithyId = mdl.SmithyId;
 const SmithyType = mdl.SmithyType;
 const SmithyMeta = mdl.SmithyMeta;
 const ScopeTag = @import("../pipeline.zig").ScopeTag;
+const isu = @import("../systems/issues.zig");
 const trt = @import("../systems/traits.zig");
 const TraitsManager = trt.TraitsManager;
-const isu = @import("../systems/issues.zig");
+const TraitsProvider = trt.TraitsProvider;
 const JsonReader = @import("../utils/JsonReader.zig");
 const trt_refine = @import("../traits/refine.zig");
+const trt_constraint = @import("../traits/constraint.zig");
 
 pub const ParseModel = jobz.Task.Define("Smithy Parse Model", serviceParseTask, .{
     .injects = &.{ TraitsManager, isu.IssuesBag },
@@ -283,8 +285,8 @@ const JsonParser = struct {
         try self.reader.nextObjectBegin();
         try self.reader.nextStringEql("type");
         const shape_id = SmithyId.of(shape_name);
-        const typ = SmithyId.of(try self.reader.nextString());
-        const target: Context.Target = switch (typ) {
+        const shape_type = SmithyId.of(try self.reader.nextString());
+        const target: Context.Target = switch (shape_type) {
             .apply => {
                 try self.parseScope(.current, parseProp, Context{
                     .id = shape_id,
@@ -323,7 +325,7 @@ const JsonParser = struct {
             .id = shape_id,
             .target = target,
         });
-        try self.putShape(shape_id, typ, shape_name, target);
+        try self.putShape(shape_id, shape_type, shape_name, target);
     }
 
     fn putShape(self: *JsonParser, id: SmithyId, type_id: SmithyId, name: []const u8, target: Context.Target) !void {
@@ -354,17 +356,30 @@ const JsonParser = struct {
                 }
                 break :blk std.enums.nameCast(SmithyType, t);
             },
-            inline .blob, .string, .big_integer, .big_decimal, .timestamp, .document => |t| blk: {
+            .string => blk: {
+                // Detect deprecated enum trait
+                var is_enum_trait = false;
+                if (self.model.traits.get(id)) |ts| for (ts) |t| {
+                    if (t.id != trt_constraint.Enum.id) continue;
+                    is_enum_trait = true;
+                    break;
+                };
+
+                if (is_enum_trait) {
+                    try self.model.putShape(id, .trt_enum);
+                    try self.putName(id, .{ .absolute = name });
+                    return;
+                } else {
+                    break :blk SmithyType.string;
+                }
+            },
+            inline .blob, .big_integer, .big_decimal, .timestamp, .document => |t| blk: {
                 break :blk std.enums.nameCast(SmithyType, t);
             },
             inline .str_enum, .int_enum, .tagged_uinon, .structure => |t| switch (target) {
                 .id_list => |l| blk: {
                     is_named = true;
-                    break :blk @unionInit(
-                        SmithyType,
-                        @tagName(t),
-                        try l.toOwnedSlice(self.arena),
-                    );
+                    break :blk @unionInit(SmithyType, @tagName(t), try l.toOwnedSlice(self.arena));
                 },
                 else => return error.InvalidMemberTarget,
             },
@@ -481,7 +496,7 @@ const JsonParser = struct {
     }
 };
 
-test "parseJson" {
+test ParseModel {
     const Traits = struct {
         fn parseInt(allocator: Allocator, reader: *JsonReader) !*const anyopaque {
             const value = try reader.nextInteger();
@@ -520,7 +535,7 @@ test "parseJson" {
     );
     errdefer reader.deinit();
 
-    const model = try tester.runTask(ParseModel, .{&reader});
+    const model: Model = try tester.runTask(ParseModel, .{&reader});
 
     // Dispose the reader to make sure the required data is copied.
     reader.deinit();
@@ -545,15 +560,15 @@ test "parseJson" {
     // Metadata
     //
 
-    try model.expectMeta(SmithyId.of("nul"), .null);
-    try model.expectMeta(SmithyId.of("bol"), .{ .boolean = true });
-    try model.expectMeta(SmithyId.of("int"), .{ .integer = 108 });
-    try model.expectMeta(SmithyId.of("flt"), .{ .float = 1.08 });
-    try model.expectMeta(SmithyId.of("str"), .{ .string = "foo" });
-    try model.expectMeta(SmithyId.of("lst"), .{
+    try expectMeta(model, SmithyId.of("nul"), .null);
+    try expectMeta(model, SmithyId.of("bol"), .{ .boolean = true });
+    try expectMeta(model, SmithyId.of("int"), .{ .integer = 108 });
+    try expectMeta(model, SmithyId.of("flt"), .{ .float = 1.08 });
+    try expectMeta(model, SmithyId.of("str"), .{ .string = "foo" });
+    try expectMeta(model, SmithyId.of("lst"), .{
         .list = &.{ .{ .integer = 108 }, .{ .integer = 109 } },
     });
-    try model.expectMeta(SmithyId.of("map"), .{
+    try expectMeta(model, SmithyId.of("map"), .{
         .map = &.{.{ .key = SmithyId.of("key"), .value = .{ .integer = 108 } }},
     });
 
@@ -561,70 +576,64 @@ test "parseJson" {
     // Shapes
     //
 
-    try model.expectShape(SmithyId.of("test.simple#Blob"), .blob);
-    try model.expectHasTrait(
-        SmithyId.of("test.simple#Blob"),
-        SmithyId.of("test.trait#Void"),
-    );
+    try expectShape(model, SmithyId.of("test.simple#Blob"), .blob);
+    try expectHasTrait(model, SmithyId.of("test.simple#Blob"), SmithyId.of("test.trait#Void"));
 
-    try model.expectShape(SmithyId.of("test.simple#Boolean"), .boolean);
-    try model.expectMixins(SmithyId.of("test.simple#Boolean"), &.{
+    try expectShape(model, SmithyId.of("test.simple#Boolean"), .boolean);
+    try expectMixins(model, SmithyId.of("test.simple#Boolean"), &.{
         SmithyId.of("test.mixin#Mixin"),
     });
 
-    try model.expectShape(SmithyId.of("test.simple#Document"), .document);
-    try model.expectShape(SmithyId.of("test.simple#String"), .string);
-    try model.expectShape(SmithyId.of("test.simple#Byte"), .byte);
-    try model.expectShape(SmithyId.of("test.simple#Short"), .short);
-    try model.expectShape(SmithyId.of("test.simple#Integer"), .integer);
-    try model.expectShape(SmithyId.of("test.simple#Long"), .long);
-    try model.expectShape(SmithyId.of("test.simple#Float"), .float);
-    try model.expectShape(SmithyId.of("test.simple#Double"), .double);
-    try model.expectShape(SmithyId.of("test.simple#BigInteger"), .big_integer);
-    try model.expectShape(SmithyId.of("test.simple#BigDecimal"), .big_decimal);
-    try model.expectShape(SmithyId.of("test.simple#Timestamp"), .timestamp);
+    try expectShape(model, SmithyId.of("test.simple#Document"), .document);
+    try expectShape(model, SmithyId.of("test.simple#String"), .string);
+    try expectShape(model, SmithyId.of("test.simple#Byte"), .byte);
+    try expectShape(model, SmithyId.of("test.simple#Short"), .short);
+    try expectShape(model, SmithyId.of("test.simple#Integer"), .integer);
+    try expectShape(model, SmithyId.of("test.simple#Long"), .long);
+    try expectShape(model, SmithyId.of("test.simple#Float"), .float);
+    try expectShape(model, SmithyId.of("test.simple#Double"), .double);
+    try expectShape(model, SmithyId.of("test.simple#BigInteger"), .big_integer);
+    try expectShape(model, SmithyId.of("test.simple#BigDecimal"), .big_decimal);
+    try expectShape(model, SmithyId.of("test.simple#Timestamp"), .timestamp);
 
     const enum_foo = SmithyId.of("test.simple#Enum$FOO");
-    try model.expectShape(SmithyId.of("test.simple#Enum"), SmithyType{
+    try expectShape(model, SmithyId.of("test.simple#Enum"), SmithyType{
         .str_enum = &.{enum_foo},
     });
-    try model.expectShape(enum_foo, .unit);
-    try model.expectTrait(enum_foo, trt_refine.EnumValue.id, trt_refine.EnumValue.Val, .{
+    try expectShape(model, enum_foo, .unit);
+    try expectTrait(model, enum_foo, trt_refine.EnumValue.id, trt_refine.EnumValue.Val, .{
         .string = "foo",
     });
-    try model.expectName(SmithyId.of("test.simple#Enum"), "Enum");
-    try model.expectName(enum_foo, "FOO");
+    try expectName(model, SmithyId.of("test.simple#Enum"), "Enum");
+    try expectName(model, enum_foo, "FOO");
 
     const inum_foo = SmithyId.of("test.simple#IntEnum$FOO");
-    try model.expectShape(SmithyId.of("test.simple#IntEnum"), .{
+    try expectShape(model, SmithyId.of("test.simple#IntEnum"), .{
         .int_enum = &.{inum_foo},
     });
-    try model.expectShape(inum_foo, .unit);
-    try model.expectTrait(inum_foo, trt_refine.EnumValue.id, trt_refine.EnumValue.Val, .{
+    try expectShape(model, inum_foo, .unit);
+    try expectTrait(model, inum_foo, trt_refine.EnumValue.id, trt_refine.EnumValue.Val, .{
         .integer = 1,
     });
-    try model.expectName(SmithyId.of("test.simple#IntEnum"), "IntEnum");
-    try model.expectName(inum_foo, "FOO");
+    try expectName(model, SmithyId.of("test.simple#IntEnum"), "IntEnum");
+    try expectName(model, inum_foo, "FOO");
 
-    try model.expectShape(SmithyId.of("test.aggregate#List"), .{
+    try expectShape(model, SmithyId.of("test.aggregate#List"), .{
         .list = SmithyId.of("test.aggregate#List$member"),
     });
-    try model.expectShape(SmithyId.of("test.aggregate#List$member"), .string);
-    try model.expectHasTrait(
-        SmithyId.of("test.aggregate#List$member"),
-        SmithyId.of("test.trait#Void"),
-    );
+    try expectShape(model, SmithyId.of("test.aggregate#List$member"), .string);
+    try expectHasTrait(model, SmithyId.of("test.aggregate#List$member"), SmithyId.of("test.trait#Void"));
 
-    try model.expectShape(SmithyId.of("test.aggregate#Map"), .{
+    try expectShape(model, SmithyId.of("test.aggregate#Map"), .{
         .map = .{
             SmithyId.of("test.aggregate#Map$key"),
             SmithyId.of("test.aggregate#Map$value"),
         },
     });
-    try model.expectShape(SmithyId.of("test.aggregate#Map$key"), .string);
-    try model.expectShape(SmithyId.of("test.aggregate#Map$value"), .integer);
+    try expectShape(model, SmithyId.of("test.aggregate#Map$key"), .string);
+    try expectShape(model, SmithyId.of("test.aggregate#Map$value"), .integer);
 
-    try model.expectShape(SmithyId.of("test.aggregate#Structure"), .{
+    try expectShape(model, SmithyId.of("test.aggregate#Structure"), .{
         .structure = &.{
             SmithyId.of("test.aggregate#Structure$stringMember"),
             SmithyId.of("test.aggregate#Structure$numberMember"),
@@ -637,92 +646,55 @@ test "parseJson" {
             SmithyId.of("test.aggregate#Structure$primitiveDouble"),
         },
     });
-    try model.expectName(SmithyId.of("test.aggregate#Structure"), "Structure");
-    try model.expectShape(SmithyId.of("test.aggregate#Structure$stringMember"), .string);
+    try expectName(model, SmithyId.of("test.aggregate#Structure"), "Structure");
+    try expectShape(model, SmithyId.of("test.aggregate#Structure$stringMember"), .string);
 
-    try model.expectHasTrait(
-        SmithyId.of("test.aggregate#Structure$stringMember"),
-        SmithyId.of("test.trait#Void"),
-    );
-    try model.expectName(SmithyId.of("test.aggregate#Structure$stringMember"), "stringMember");
-    try model.expectTrait(
-        SmithyId.of("test.aggregate#Structure$stringMember"),
-        SmithyId.of("test.trait#Int"),
-        i64,
-        108,
-    );
+    try expectHasTrait(model, SmithyId.of("test.aggregate#Structure$stringMember"), SmithyId.of("test.trait#Void"));
+    try expectName(model, SmithyId.of("test.aggregate#Structure$stringMember"), "stringMember");
+    try expectTrait(model, SmithyId.of("test.aggregate#Structure$stringMember"), SmithyId.of("test.trait#Int"), i64, 108);
 
-    try model.expectShape(SmithyId.of("test.aggregate#Structure$numberMember"), .integer);
+    try expectShape(model, SmithyId.of("test.aggregate#Structure$numberMember"), .integer);
     // The traits merged with external `apply` traits.
-    try model.expectHasTrait(
-        SmithyId.of("test.aggregate#Structure$numberMember"),
-        SmithyId.of("test.trait#Void"),
-    );
-    try model.expectName(SmithyId.of("test.aggregate#Structure$numberMember"), "numberMember");
-    try model.expectTrait(
-        SmithyId.of("test.aggregate#Structure$numberMember"),
-        SmithyId.of("test.trait#Int"),
-        i64,
-        108,
-    );
+    try expectHasTrait(model, SmithyId.of("test.aggregate#Structure$numberMember"), SmithyId.of("test.trait#Void"));
+    try expectName(model, SmithyId.of("test.aggregate#Structure$numberMember"), "numberMember");
+    try expectTrait(model, SmithyId.of("test.aggregate#Structure$numberMember"), SmithyId.of("test.trait#Int"), i64, 108);
 
-    try model.expectTrait(
-        SmithyId.of("test.aggregate#Structure$primitiveBool"),
-        trt_refine.Default.id,
-        JsonReader.Value,
-        JsonReader.Value{ .boolean = false },
-    );
-    try model.expectTrait(
-        SmithyId.of("test.aggregate#Structure$primitiveByte"),
-        trt_refine.Default.id,
-        JsonReader.Value,
-        JsonReader.Value{ .integer = 0 },
-    );
-    try model.expectTrait(
-        SmithyId.of("test.aggregate#Structure$primitiveShort"),
-        trt_refine.Default.id,
-        JsonReader.Value,
-        JsonReader.Value{ .integer = 0 },
-    );
-    try model.expectTrait(
-        SmithyId.of("test.aggregate#Structure$primitiveInt"),
-        trt_refine.Default.id,
-        JsonReader.Value,
-        JsonReader.Value{ .integer = 0 },
-    );
-    try model.expectTrait(
-        SmithyId.of("test.aggregate#Structure$primitiveLong"),
-        trt_refine.Default.id,
-        JsonReader.Value,
-        JsonReader.Value{ .integer = 0 },
-    );
-    try model.expectTrait(
-        SmithyId.of("test.aggregate#Structure$primitiveFloat"),
-        trt_refine.Default.id,
-        JsonReader.Value,
-        JsonReader.Value{ .float = 0 },
-    );
-    try model.expectTrait(
-        SmithyId.of("test.aggregate#Structure$primitiveDouble"),
-        trt_refine.Default.id,
-        JsonReader.Value,
-        JsonReader.Value{ .float = 0 },
-    );
+    try expectTrait(model, SmithyId.of("test.aggregate#Structure$primitiveBool"), trt_refine.Default.id, JsonReader.Value, JsonReader.Value{
+        .boolean = false,
+    });
+    try expectTrait(model, SmithyId.of("test.aggregate#Structure$primitiveByte"), trt_refine.Default.id, JsonReader.Value, JsonReader.Value{
+        .integer = 0,
+    });
+    try expectTrait(model, SmithyId.of("test.aggregate#Structure$primitiveShort"), trt_refine.Default.id, JsonReader.Value, JsonReader.Value{
+        .integer = 0,
+    });
+    try expectTrait(model, SmithyId.of("test.aggregate#Structure$primitiveInt"), trt_refine.Default.id, JsonReader.Value, JsonReader.Value{
+        .integer = 0,
+    });
+    try expectTrait(model, SmithyId.of("test.aggregate#Structure$primitiveLong"), trt_refine.Default.id, JsonReader.Value, JsonReader.Value{
+        .integer = 0,
+    });
+    try expectTrait(model, SmithyId.of("test.aggregate#Structure$primitiveFloat"), trt_refine.Default.id, JsonReader.Value, JsonReader.Value{
+        .float = 0,
+    });
+    try expectTrait(model, SmithyId.of("test.aggregate#Structure$primitiveDouble"), trt_refine.Default.id, JsonReader.Value, JsonReader.Value{
+        .float = 0,
+    });
 
-    try model.expectShape(SmithyId.of("test.aggregate#Union"), .{
+    try expectShape(model, SmithyId.of("test.aggregate#Union"), .{
         .tagged_uinon = &.{
             SmithyId.of("test.aggregate#Union$a"),
             SmithyId.of("test.aggregate#Union$b"),
         },
     });
-    try model.expectName(SmithyId.of("test.aggregate#Union"), "Union");
-    try model.expectShape(SmithyId.of("test.aggregate#Union$a"), .string);
-    try model.expectShape(SmithyId.of("test.aggregate#Union$b"), .integer);
-    try model.expectName(SmithyId.of("test.aggregate#Union$a"), "a");
-    try model.expectName(SmithyId.of("test.aggregate#Union$b"), "b");
+    try expectName(model, SmithyId.of("test.aggregate#Union"), "Union");
+    try expectShape(model, SmithyId.of("test.aggregate#Union$a"), .string);
+    try expectShape(model, SmithyId.of("test.aggregate#Union$b"), .integer);
+    try expectName(model, SmithyId.of("test.aggregate#Union$a"), "a");
+    try expectName(model, SmithyId.of("test.aggregate#Union$b"), "b");
 
-    try model.expectName(SmithyId.of("test.serve#Operation"), "Operation");
-    try model.expectShape(SmithyId.of("test.serve#Operation"), .{
+    try expectName(model, SmithyId.of("test.serve#Operation"), "Operation");
+    try expectShape(model, SmithyId.of("test.serve#Operation"), .{
         .operation = &.{
             .input = SmithyId.of("test.operation#OperationInput"),
             .output = SmithyId.of("test.operation#OperationOutput"),
@@ -733,8 +705,8 @@ test "parseJson" {
         },
     });
 
-    try model.expectName(SmithyId.of("test.serve#Resource"), "Resource");
-    try model.expectShape(SmithyId.of("test.serve#Resource"), .{
+    try expectName(model, SmithyId.of("test.serve#Resource"), "Resource");
+    try expectShape(model, SmithyId.of("test.serve#Resource"), .{
         .resource = &.{
             .identifiers = &.{
                 .{ .name = "forecastId", .shape = SmithyId.of("smithy.api#String") },
@@ -753,8 +725,8 @@ test "parseJson" {
         },
     });
 
-    try model.expectName(SmithyId.of("test.serve#Service"), "Service");
-    try model.expectShape(SmithyId.of("test.serve#Service"), .{
+    try expectName(model, SmithyId.of("test.serve#Service"), "Service");
+    try expectShape(model, SmithyId.of("test.serve#Service"), .{
         .service = &.{
             .version = "2017-02-11",
             .operations = &.{SmithyId.of("test.serve#Operation")},
@@ -766,11 +738,35 @@ test "parseJson" {
             },
         },
     });
-    try model.expectTrait(
-        SmithyId.of("test.serve#Service"),
-        SmithyId.of("test.trait#Int"),
-        i64,
-        108,
-    );
+    try expectTrait(model, SmithyId.of("test.serve#Service"), SmithyId.of("test.trait#Int"), i64, 108);
     try testing.expectEqual(SmithyId.of("test.serve#Service"), model.service_id);
+}
+
+fn expectMeta(model: Model, id: SmithyId, expected: SmithyMeta) !void {
+    try testing.expectEqualDeep(expected, model.meta.get(id).?);
+}
+
+fn expectShape(model: Model, id: SmithyId, expected: SmithyType) !void {
+    try testing.expectEqualDeep(expected, model.shapes.get(id).?);
+}
+
+fn expectName(model: Model, id: SmithyId, expected: []const u8) !void {
+    try testing.expectEqualStrings(expected, model.names.get(id).?);
+}
+
+fn expectMixins(model: Model, id: SmithyId, expected: []const SmithyId) !void {
+    try testing.expectEqualDeep(expected, model.mixins.get(id));
+}
+
+fn expectHasTrait(model: Model, shape_id: SmithyId, trait_id: SmithyId) !void {
+    const values = model.traits.get(shape_id) orelse return error.TraitsNotFound;
+    const provider = TraitsProvider{ .values = values };
+    try testing.expect(provider.has(trait_id));
+}
+
+fn expectTrait(model: Model, shape_id: SmithyId, trait_id: SmithyId, comptime T: type, expected: T) !void {
+    const values = model.traits.get(shape_id) orelse return error.TraitsNotFound;
+    const provider = TraitsProvider{ .values = values };
+    const actual = provider.get(T, trait_id) orelse return error.ValueNotFound;
+    try testing.expectEqualDeep(expected, actual);
 }

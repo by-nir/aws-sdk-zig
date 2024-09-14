@@ -1,7 +1,6 @@
 //! Raw symbols (shapes and metadata) of a Smithy model.
 const std = @import("std");
-const mem = std.mem;
-const Allocator = mem.Allocator;
+const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const mdl = @import("../model.zig");
@@ -9,7 +8,6 @@ const SmithyId = mdl.SmithyId;
 const SmithyType = mdl.SmithyType;
 const SmithyMeta = mdl.SmithyMeta;
 const TaggedValue = mdl.SmithyTaggedValue;
-const TraitsProvider = @import("../systems/traits.zig").TraitsProvider;
 
 const Self = @This();
 
@@ -45,6 +43,10 @@ pub fn putName(self: *Self, id: SmithyId, name: []const u8) !void {
     try self.names.put(self.allocator, id, name);
 }
 
+pub fn putMixins(self: *Self, id: SmithyId, mixins: []const SmithyId) !void {
+    try self.mixins.put(self.allocator, id, mixins);
+}
+
 /// Returns `true` if expanded an existing traits list.
 pub fn putTraits(self: *Self, id: SmithyId, traits: []const mdl.SmithyTaggedValue) !bool {
     const result = try self.traits.getOrPut(self.allocator, id);
@@ -60,45 +62,6 @@ pub fn putTraits(self: *Self, id: SmithyId, traits: []const mdl.SmithyTaggedValu
     self.allocator.free(current);
     result.value_ptr.* = all;
     return true;
-}
-
-pub fn putMixins(self: *Self, id: SmithyId, mixins: []const SmithyId) !void {
-    try self.mixins.put(self.allocator, id, mixins);
-}
-
-pub fn expectMeta(self: Self, id: SmithyId, expected: SmithyMeta) !void {
-    try testing.expectEqualDeep(expected, self.meta.get(id).?);
-}
-
-pub fn expectShape(self: Self, id: SmithyId, expected: SmithyType) !void {
-    try testing.expectEqualDeep(expected, self.shapes.get(id).?);
-}
-
-pub fn expectName(self: Self, id: SmithyId, expected: []const u8) !void {
-    try testing.expectEqualStrings(expected, self.names.get(id).?);
-}
-
-pub fn expectHasTrait(self: Self, shape_id: SmithyId, trait_id: SmithyId) !void {
-    const values = self.traits.get(shape_id) orelse return error.TraitsNotFound;
-    const provider = TraitsProvider{ .values = values };
-    try testing.expect(provider.has(trait_id));
-}
-
-pub fn expectTrait(
-    self: Self,
-    shape_id: SmithyId,
-    trait_id: SmithyId,
-    comptime T: type,
-    expected: T,
-) !void {
-    const values = self.traits.get(shape_id) orelse return error.TraitsNotFound;
-    const provider = TraitsProvider{ .values = values };
-    const actual = provider.get(T, trait_id) orelse return error.ValueNotFound;
-    try testing.expectEqualDeep(expected, actual);
-}
-
-pub fn expectMixins(self: Self, id: SmithyId, expected: []const SmithyId) !void {
-    try testing.expectEqualDeep(expected, self.mixins.get(id));
 }
 
 test "putTraits" {

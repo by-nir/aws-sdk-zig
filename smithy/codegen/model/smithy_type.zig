@@ -30,6 +30,8 @@ pub const SmithyType = union(enum) {
     string,
     /// A string with a fixed set of values.
     str_enum: []const SmithyId,
+    /// Deprecated implementation of a string-based enum.
+    trt_enum,
     /// 8-bit signed integer ranging from -128 to 127 (inclusive).
     byte,
     /// 16-bit signed integer ranging from -32,768 to 32,767 (inclusive).

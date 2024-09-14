@@ -118,7 +118,7 @@ fn setupEnums(model: *Model) !void {
     }});
 
     try model.names.put(test_alloc, SmithyId.of("test#EnumTrt"), "EnumTrt");
-    try model.shapes.put(test_alloc, SmithyId.of("test#EnumTrt"), .string);
+    try model.shapes.put(test_alloc, SmithyId.of("test#EnumTrt"), .trt_enum);
     try model.traits.put(test_alloc, SmithyId.of("test#EnumTrt"), &.{.{
         .id = trt_constr.Enum.id,
         .value = ENUM_TRT,

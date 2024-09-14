@@ -99,14 +99,11 @@ fn writeShapeTask(
     _ = switch (shape) {
         .operation, .resource, .service, .list => unreachable,
         .map => |m| writeMapShape(symbols, bld, id, m, named_scope),
+        .trt_enum => writeTraitEnumShape(self, symbols, bld, id),
         .str_enum => |m| writeStrEnumShape(self, symbols, bld, id, m),
         .int_enum => |m| writeIntEnumShape(symbols, bld, id, m),
         .tagged_uinon => |m| writeUnionShape(symbols, bld, id, m, named_scope),
         .structure => |m| writeStructShape(symbols, bld, id, m, named_scope, null),
-        .string => if (trt_constr.Enum.get(symbols, id)) |members|
-            writeTraitEnumShape(self, symbols, bld, id, members)
-        else
-            error.InvalidRootShape,
         else => error.InvalidRootShape,
     } catch |e| {
         return handleShapeWriteError(self, symbols, issues, id, e);
@@ -177,13 +174,8 @@ fn writeStrEnumShape(
     try writeEnumShape(self.alloc(), symbols, bld, id, list.items);
 }
 
-fn writeTraitEnumShape(
-    self: *const Delegate,
-    symbols: *SymbolsProvider,
-    bld: *ContainerBuild,
-    id: SmithyId,
-    members: []const trt_constr.Enum.Member,
-) !void {
+fn writeTraitEnumShape(self: *const Delegate, symbols: *SymbolsProvider, bld: *ContainerBuild, id: SmithyId) !void {
+    const members = trt_constr.Enum.get(symbols, id) orelse unreachable;
     var list = try EnumList.initCapacity(self.alloc(), members.len);
     defer list.deinit();
     for (members) |m| {
@@ -489,7 +481,7 @@ pub fn writeStructShape(
             try b.trys().call("jw.objectField", &.{ctx.name}).end();
 
             switch (ctx.type) {
-                .boolean, .structure, .string, .byte, .short, .integer, .long, .float, .double, .str_enum, .int_enum, .list, .timestamp => {
+                .boolean, .structure, .string, .byte, .short, .integer, .long, .float, .double, .str_enum, .int_enum, .trt_enum, .list, .timestamp => {
                     try b.trys().call("jw.write", &.{ctx.value}).end();
                 },
                 else => |t| std.debug.panic("Unsupported JSON stringify for type `{}`.", .{t}),

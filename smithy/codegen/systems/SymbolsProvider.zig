@@ -94,27 +94,9 @@ fn filterServiceShapes(
         try visited.put(gpa, id, {});
 
         switch (shapes.get(id).?) {
-            .operation => |op| {
-                try operations.append(id);
-                if (op.input) |tid| try shape_queue.write(shapes.get(tid).?.structure);
-                if (op.output) |tid| try shape_queue.write(shapes.get(tid).?.structure);
-                try shape_queue.write(op.errors);
-            },
-            .resource => |rsrc| {
-                // We ignore `identifiers` & `properties` shapes
-                inline for (&.{ "create", "put", "read", "update", "delete", "list" }) |field| {
-                    if (@field(rsrc, field)) |oid| try shape_queue.writeItem(oid);
-                }
-
-                try shape_queue.write(rsrc.operations);
-                try shape_queue.write(rsrc.collection_ops);
-                try shape_queue.write(rsrc.resources);
-            },
-            .service => |srvc| {
-                try shape_queue.write(srvc.operations);
-                try shape_queue.write(srvc.resources);
-            },
-            .int_enum, .str_enum => try data_shapes.append(id),
+            .boolean, .byte, .short, .integer, .long, .float, .double, .string, .blob => {},
+            .target => |tid| try shape_queue.writeItem(tid),
+            .int_enum, .str_enum, .trt_enum => try data_shapes.append(id),
             .tagged_uinon => |fields| {
                 try data_shapes.append(id);
                 try shape_queue.write(fields);
@@ -135,9 +117,26 @@ fn filterServiceShapes(
                 if (!is_error) try data_shapes.append(id);
                 try shape_queue.write(fields);
             },
-            .target => |tid| try shape_queue.writeItem(tid),
-            // TODO: String may be an enum!
-            .boolean, .byte, .short, .integer, .long, .float, .double, .blob, .string => {},
+            .operation => |op| {
+                try operations.append(id);
+                if (op.input) |tid| try shape_queue.write(shapes.get(tid).?.structure);
+                if (op.output) |tid| try shape_queue.write(shapes.get(tid).?.structure);
+                try shape_queue.write(op.errors);
+            },
+            .resource => |rsrc| {
+                // We ignore `identifiers` & `properties` shapes
+                inline for (&.{ "create", "put", "read", "update", "delete", "list" }) |field| {
+                    if (@field(rsrc, field)) |oid| try shape_queue.writeItem(oid);
+                }
+
+                try shape_queue.write(rsrc.operations);
+                try shape_queue.write(rsrc.collection_ops);
+                try shape_queue.write(rsrc.resources);
+            },
+            .service => |srvc| {
+                try shape_queue.write(srvc.operations);
+                try shape_queue.write(srvc.resources);
+            },
             else => |t| {
                 // TODO: unit, big_integer, big_decimal, timestamp, document,
                 std.log.warn("Unimplemented shape filter `{}`", .{t});
