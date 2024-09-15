@@ -189,7 +189,7 @@ fn writeOperationFunc(self: *const Delegate, symbols: *SymbolsProvider, bld: *zi
     }));
     try bld.defers(bld.x.id("endpoint").dot().call("deinit", &.{alloc_expr}));
 
-    const protocol: itg_proto.Protocol = .json_10;
+    const protocol: itg_proto.Protocol = .json_1_0;
 
     try bld.variable(aws_cfg.send_op_param).assign(bld.x.trys().id(aws_cfg.scope_private).dot().call(
         "ClientOperation.init",

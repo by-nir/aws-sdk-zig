@@ -30,9 +30,11 @@ pub fn operationFilename(symbols: *SymbolsProvider, id: SmithyId, comptime neste
     });
 }
 
-pub const ClientOperationsDir = files_jobs.OpenDir.Task("Smithy Codegen Client Operations Directory", clientOperationsDirTask, .{
-    .injects = &.{SymbolsProvider},
-});
+pub const ClientOperationsDir = files_jobs.OpenDir.Task(
+    "Smithy Codegen Client Operations Directory",
+    clientOperationsDirTask,
+    .{ .injects = &.{SymbolsProvider} },
+);
 fn clientOperationsDirTask(self: *const jobz.Delegate, symbols: *SymbolsProvider) anyerror!void {
     for (symbols.service_operations) |oid| {
         const filename = try operationFilename(symbols, oid, true);
@@ -61,24 +63,24 @@ fn clientOperationTask(
     }
 
     if (operation.input) |in_id| {
-        const hint = try serialShapeHint(self, symbols, bld.x, in_id);
-        try bld.public().constant("serial_input_hint").assign(hint);
+        const scheme = try serialShapeScheme(self, symbols, bld.x, in_id);
+        try bld.public().constant("serial_input_scheme").assign(scheme);
 
         const members = (try symbols.getShape(in_id)).structure;
         try shape.writeStructShape(symbols, bld, in_id, members, true, "OperationInput");
     }
 
     if (operation.output) |out_id| {
-        const hint = try serialShapeHint(self, symbols, bld.x, out_id);
-        try bld.public().constant("serial_output_hint").assign(hint);
+        const scheme = try serialShapeScheme(self, symbols, bld.x, out_id);
+        try bld.public().constant("serial_output_scheme").assign(scheme);
 
         const members = (try symbols.getShape(out_id)).structure;
         try shape.writeStructShape(symbols, bld, out_id, members, true, "OperationOutput");
     }
 
     if (symbols.service_errors.len + operation.errors.len > 0) {
-        const hint = try serialErrorHint(self, symbols, bld.x, operation.errors, symbols.service_errors);
-        try bld.public().constant("serial_error_hint").assign(hint);
+        const scheme = try serialErrorScheme(self, symbols, bld.x, operation.errors, symbols.service_errors);
+        try bld.public().constant("serial_error_scheme").assign(scheme);
 
         try bld.public().constant("OperationError").assign(bld.x.@"enum"().bodyWith(ErrorSetCtx{
             .arena = self.alloc(),
@@ -89,7 +91,7 @@ fn clientOperationTask(
     }
 }
 
-fn serialShapeHint(
+fn serialShapeScheme(
     self: *const jobz.Delegate,
     symbols: *SymbolsProvider,
     exp: zig.ExprBuild,
@@ -111,66 +113,67 @@ fn serialShapeHint(
         .big_integer,
         .big_decimal,
         .timestamp,
-        => |_, g| {
-            return exp.valueOf(g);
-        },
-        .list => |child| {
-            const variant = switch (shape.listType(symbols, id)) {
-                .standard => "list",
-                .sparse => "list_sparse",
-                .set => "set",
+        => |_, g| return exp.structLiteral(null, &.{exp.valueOf(g)}),
+        .list => |member| {
+            const member_scheme = try serialShapeScheme(self, symbols, exp, member);
+            return switch (shape.listType(symbols, id)) {
+                .standard => exp.structLiteral(null, &.{ exp.valueOf(.list), exp.valueOf(true), member_scheme }),
+                .sparse => exp.structLiteral(null, &.{ exp.valueOf(.list), exp.valueOf(false), member_scheme }),
+                .set => exp.structLiteral(null, &.{ exp.valueOf(.set), member_scheme }),
             };
-            const member_hint = try serialShapeHint(self, symbols, exp, child);
-            return exp.structLiteral(null, &.{exp.structAssign(variant, member_hint)});
         },
-        .map => |children| {
-            const typing = try shape.mapType(symbols, id, children[0]);
-            const variant = if (typing.sparse) "map_sparse" else "map";
-            const key_hint = if (typing.string)
-                exp.valueOf(.string)
-            else
-                try serialShapeHint(self, symbols, exp, children[0]);
-
-            return exp.structLiteral(null, &.{exp.structAssign(variant, exp.structLiteral(null, &.{
-                key_hint,
-                try serialShapeHint(self, symbols, exp, children[1]),
-            }))});
+        .map => |members| {
+            const required = exp.valueOf(!symbols.hasTrait(id, trt_refine.sparse_id));
+            const key_scheme = try serialShapeScheme(self, symbols, exp, members[0]);
+            const val_scheme = try serialShapeScheme(self, symbols, exp, members[1]);
+            return exp.structLiteral(null, &.{ exp.valueOf(.map), required, key_scheme, val_scheme });
         },
         inline .structure, .tagged_uinon => |members, g| {
-            var hints = std.ArrayList(zig.ExprBuild).init(self.alloc());
+            var schemes = std.ArrayList(zig.ExprBuild).init(self.alloc());
             const is_input = symbols.hasTrait(id, trt_refine.input_id);
 
             for (members) |member| {
-                const name_raw = exp.valueOf(try symbols.getShapeName(member, .pascal, .{}));
+                const name_spec = exp.valueOf(try symbols.getShapeName(member, .pascal, .{}));
                 const name_field = exp.valueOf(try symbols.getShapeName(member, .snake, .{}));
-                const is_required = exp.valueOf(!shape.isStructShapeMemberOptional(symbols, member, is_input));
-                const member_hint = try serialShapeHint(self, symbols, exp, member);
-                try hints.append(exp.structLiteral(null, &.{ name_raw, name_field, is_required, member_hint }));
+                const member_scheme = try serialShapeScheme(self, symbols, exp, member);
+                if (g == .structure) {
+                    const is_required = exp.valueOf(!shape.isStructMemberOptional(symbols, member, is_input));
+                    try schemes.append(exp.structLiteral(null, &.{ name_spec, name_field, is_required, member_scheme }));
+                } else {
+                    try schemes.append(exp.structLiteral(null, &.{ name_spec, name_field, member_scheme }));
+                }
             }
 
-            const hints_expr = exp.structAssign(@tagName(g), exp.structLiteral(null, try hints.toOwnedSlice()));
-            return exp.structLiteral(null, &.{hints_expr});
+            return exp.structLiteral(null, &.{
+                exp.valueOf(g),
+                exp.structLiteral(null, try schemes.toOwnedSlice()),
+            });
         },
-        .unit, .document, .operation, .resource, .service, .target => @panic("unexpected serial hint shape type"),
+        .document => @panic("Document shape scheme construction not implemented"), // TODO
+        .unit, .operation, .resource, .service, .target => unreachable,
     }
 }
 
-fn serialErrorHint(
+fn serialErrorScheme(
     self: *const jobz.Delegate,
     symbols: *SymbolsProvider,
     exp: zig.ExprBuild,
     common_errors: []const SmithyId,
     shape_errors: []const SmithyId,
 ) !zig.ExprBuild {
-    var hints = std.ArrayList(zig.ExprBuild).init(self.alloc());
+    var scheme = std.ArrayList(zig.ExprBuild).init(self.alloc());
     for ([2][]const SmithyId{ shape_errors, common_errors }) |id_list| {
         for (id_list) |id| {
-            const name_raw = exp.valueOf(try symbols.getShapeName(id, .pascal, .{}));
+            const name_spec = exp.valueOf(try symbols.getShapeName(id, .pascal, .{}));
             const name_field = exp.valueOf(try getErrorName(symbols, id));
-            try hints.append(exp.structLiteral(null, &.{ name_raw, name_field, exp.structLiteral(null, &.{}) }));
+            try scheme.append(exp.structLiteral(null, &.{ name_spec, name_field, exp.structLiteral(null, &.{}) }));
         }
     }
-    return exp.structLiteral(null, try hints.toOwnedSlice());
+
+    return exp.structLiteral(null, &.{
+        exp.valueOf(.tagged_union),
+        exp.structLiteral(null, try scheme.toOwnedSlice()),
+    });
 }
 
 const ErrorSetCtx = struct {
@@ -285,28 +288,28 @@ test ClientOperation {
     try srvc.expectServiceScript(
         \\const srvc_types = @import("../data_types.zig");
         \\
-        \\pub const serial_input_hint = .{.structure = .{ .{
+        \\pub const serial_input_scheme = .{ .structure, .{ .{
         \\    "Foo",
         \\    "foo",
         \\    true,
-        \\    .{.structure = .{}},
+        \\    .{ .structure, .{} },
         \\}, .{
         \\    "Bar",
         \\    "bar",
         \\    false,
-        \\    .boolean,
-        \\} }};
+        \\    .{.boolean},
+        \\} } };
         \\
         \\pub const OperationInput = struct {
         \\    foo: srvc_types.Foo,
         \\    bar: ?bool = null,
         \\};
         \\
-        \\pub const serial_output_hint = .{.structure = .{}};
+        \\pub const serial_output_scheme = .{ .structure, .{} };
         \\
         \\pub const OperationOutput = struct {};
         \\
-        \\pub const serial_error_hint = .{ .{
+        \\pub const serial_error_scheme = .{ .tagged_union, .{ .{
         \\    "ServiceError",
         \\    "service",
         \\    .{},
@@ -314,7 +317,7 @@ test ClientOperation {
         \\    "NotFound",
         \\    "not_found",
         \\    .{},
-        \\} };
+        \\} } };
         \\
         \\pub const OperationError = enum {
         \\    not_found,

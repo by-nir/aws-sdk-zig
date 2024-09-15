@@ -29,9 +29,9 @@ pub const OperationFunc = struct {
     return_type: []const u8,
     auth_optional: bool,
     auth_schemes: []const trt_auth.AuthId,
-    serial_input: []const u8 = "",
-    serial_output: []const u8 = "",
-    serial_error: []const u8 = "",
+    serial_input: ?[]const u8,
+    serial_output: ?[]const u8,
+    serial_error: ?[]const u8,
 };
 
 pub const ServiceClient = srvc.ScriptCodegen.Task("Smithy Service Client Codegen", serviceClientTask, .{
@@ -40,6 +40,8 @@ pub const ServiceClient = srvc.ScriptCodegen.Task("Smithy Service Client Codegen
 fn serviceClientTask(self: *const jobz.Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild) anyerror!void {
     const sid = symbols.service_id;
     var testables = std.ArrayList([]const u8).init(self.alloc());
+
+    try bld.constant("ClientResult").assign(bld.x.raw(cfg.scope_public).dot().id("Result"));
 
     if (symbols.hasTrait(sid, trt_rules.EndpointRuleSet.id)) {
         try testables.append(cfg.endpoint_scope);
@@ -106,13 +108,15 @@ test ServiceClient {
 
     symbols.service_id = SmithyId.of("test.serve#Service");
     try srvc.expectServiceScript(
+        \\const ClientResult = smithy.Result;
+        \\
         \\const srvc_endpoint = @import("endpoint.zig");
         \\
         \\pub usingnamespace @import("data_types.zig");
         \\
         \\/// Some _service_...
         \\pub const Client = struct {
-        \\    pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !smithy.Response(OperationOutput, OperationError) {
+        \\    pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !ClientResult(OperationOutput, OperationError) {
         \\        return undefined;
         \\    }
         \\};
@@ -177,7 +181,7 @@ test WriteClientStruct {
     }.eval,
         \\/// Some _service_...
         \\pub const Client = struct {
-        \\    pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !smithy.Response(OperationOutput, OperationError) {
+        \\    pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !ClientResult(OperationOutput, OperationError) {
         \\        return undefined;
         \\    }
         \\};
@@ -190,27 +194,27 @@ fn writeOperationFunc(self: *const jobz.Delegate, symbols: *SymbolsProvider, bld
         try shape.typeName(symbols, d, false),
         try symbols.getShapeName(id, .snake, .{
             .prefix = "op_",
-            .suffix = ".serial_input_hint",
+            .suffix = ".serial_input_scheme",
         }),
-    } else .{ null, "" };
+    } else .{ null, null };
     const output_type, const output_serial = if (operation.output) |d| .{
         try shape.typeName(symbols, d, false),
         try symbols.getShapeName(id, .snake, .{
             .prefix = "op_",
-            .suffix = ".serial_output_hint",
+            .suffix = ".serial_output_scheme",
         }),
-    } else .{ null, "" };
+    } else .{ null, null };
 
     const error_type, const error_serial = if (operation.errors.len + symbols.service_errors.len > 0) .{
         try symbols.getShapeName(id, .pascal, .{ .suffix = "Error" }),
         try symbols.getShapeName(id, .snake, .{
             .prefix = "op_",
-            .suffix = ".serial_error_hint",
+            .suffix = ".serial_error_scheme",
         }),
-    } else .{ null, "" };
+    } else .{ null, null };
 
     const return_type = if (error_type) |errors|
-        try std.fmt.allocPrint(self.alloc(), "!smithy.Response({s}, {s})", .{
+        try std.fmt.allocPrint(self.alloc(), "!ClientResult({s}, {s})", .{
             output_type orelse "void",
             errors,
         })
@@ -264,7 +268,7 @@ test writeOperationFunc {
             try tester.runTask(OpFuncTest, .{bld});
         }
     }.eval,
-        \\pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !smithy.Response(OperationOutput, OperationError) {
+        \\pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !ClientResult(OperationOutput, OperationError) {
         \\    return undefined;
         \\}
     );

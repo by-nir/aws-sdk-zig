@@ -15,10 +15,9 @@ pub const SerialType = enum {
     big_decimal,
     timestamp,
     list,
-    list_sparse,
     set,
     map,
-    map_sparse,
+    document,
     structure,
     tagged_uinon,
 };

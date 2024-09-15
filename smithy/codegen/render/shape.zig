@@ -421,7 +421,7 @@ fn writeStructShapeMixin(symbols: *SymbolsProvider, bld: *ContainerBuild, is_inp
 
 fn writeStructShapeMember(symbols: *SymbolsProvider, bld: *ContainerBuild, is_input: bool, id: SmithyId, named_scope: bool) !void {
     const shape_name = try symbols.getShapeName(id, .snake, .{});
-    const is_optional = isStructShapeMemberOptional(symbols, id, is_input);
+    const is_optional = isStructMemberOptional(symbols, id, is_input);
 
     var type_expr = bld.x.raw(try typeName(symbols, id, named_scope));
     if (is_optional) type_expr = bld.x.typeOptional(type_expr);
@@ -443,7 +443,7 @@ fn writeStructShapeMember(symbols: *SymbolsProvider, bld: *ContainerBuild, is_in
 }
 
 /// https://smithy.io/2.0/spec/aggregate-types.html#structure-member-optionality
-pub fn isStructShapeMemberOptional(symbols: *SymbolsProvider, id: SmithyId, is_input: bool) bool {
+pub fn isStructMemberOptional(symbols: *SymbolsProvider, id: SmithyId, is_input: bool) bool {
     if (is_input) return true;
 
     if (symbols.getTraits(id)) |bag| {

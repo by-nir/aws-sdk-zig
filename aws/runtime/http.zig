@@ -100,7 +100,7 @@ pub const Client = struct {
         errdefer op.allocator.free(out_body);
 
         const out_headers = if (mem.indexOf(u8, &out_headers_buff, "\r\n\r\n")) |len|
-            try op.allocator.dupe(u8, out_headers_buff[0..len])
+            try op.allocator.dupe(u8, out_headers_buff[0 .. len + 4])
         else
             &.{};
 
@@ -156,6 +156,10 @@ pub const Response = struct {
     pub fn deinit(self: Response, allocator: Allocator) void {
         allocator.free(self.headers);
         allocator.free(self.body);
+    }
+
+    pub fn headersIterator(self: Response) std.http.HeaderIterator {
+        return std.http.HeaderIterator.init(self.headers);
     }
 };
 

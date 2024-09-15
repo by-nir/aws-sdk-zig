@@ -1,7 +1,7 @@
-const response = @import("response.zig");
-pub const Response = response.Response;
-pub const ResponseError = response.ResponseError;
-pub const ErrorSource = response.ErrorSource;
+const result = @import("result.zig");
+pub const Result = result.Result;
+pub const ResultError = result.ResultError;
+pub const ErrorSource = result.ErrorSource;
 
 const containers = @import("containers.zig");
 pub const Set = containers.Set;
@@ -27,7 +27,7 @@ pub const _private_ = struct {
 test {
     _ = url;
     _ = http;
-    _ = response;
+    _ = result;
     _ = values;
     _ = endpoint;
     _ = containers;

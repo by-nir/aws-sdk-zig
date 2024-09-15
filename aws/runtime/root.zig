@@ -1,7 +1,7 @@
 const smithy = @import("smithy/runtime");
 pub const Set = smithy.Set;
-pub const Response = smithy.Response;
-pub const ResponseError = smithy.ResponseError;
+pub const Result = smithy.Result;
+pub const ResultError = smithy.ResultError;
 pub const ErrorSource = smithy.ErrorSource;
 
 const endpoint = @import("infra/endpoint.zig");
@@ -23,8 +23,6 @@ const auth_schemes = @import("auth/schemes.zig");
 const auth_creds = @import("auth/creds.zig");
 pub const Credentials = auth_creds.Credentials;
 
-const proto_aws_json = @import("protocols/aws_json.zig");
-
 pub const _private_ = struct {
     pub const ClientConfig = conf.ClientConfig;
     pub const ClientOperation = http.Operation;
@@ -37,9 +35,11 @@ pub const _private_ = struct {
     pub const SignBuffer = auth_sign.SignBuffer;
     pub const auth = auth_schemes;
     pub const protocol = struct {
-        pub const aws_json = proto_aws_json;
+        pub const json = protocol_json;
     };
 };
+
+const protocol_json = @import("protocols/json.zig");
 
 test {
     _ = @import("utils/url.zig");
@@ -55,7 +55,7 @@ test {
     _ = auth_creds;
     _ = auth_schemes;
     _ = @import("auth/sigv4.zig");
-    _ = proto_aws_json;
+    _ = protocol_json;
     _ = http;
     _ = conf;
 }

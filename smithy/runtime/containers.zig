@@ -8,6 +8,7 @@ pub fn Set(comptime T: type) type {
 
     return struct {
         const Self = @This();
+        pub const Item = T;
         pub const Size = Map.Size;
         pub const Iterator = Map.KeyIterator;
 
