@@ -41,18 +41,18 @@ pub fn writeOperationRequest(
     }
 }
 
-pub fn writeOperationResponse(
+pub fn writeOperationResult(
     arena: Allocator,
     symbols: *SymbolsProvider,
     bld: *zig.BlockBuild,
     func: smithy.OperationFunc,
     protocol: Protocol,
-) !void {
-    switch (protocol) {
-        .json_1_0 => try writeAwsJsonResponse(arena, 10, symbols, bld, func),
-        .json_1_1 => try writeAwsJsonResponse(arena, 11, symbols, bld, func),
-        else => return error.UnimplementedProtocol,
-    }
+) !zig.ExprBuild {
+    return switch (protocol) {
+        .json_1_0 => try writeAwsJsonResult(arena, 10, symbols, bld.x, func),
+        .json_1_1 => try writeAwsJsonResult(arena, 11, symbols, bld.x, func),
+        else => error.UnimplementedProtocol,
+    };
 }
 
 fn writeAwsJsonRequest(
@@ -83,23 +83,23 @@ fn writeAwsJsonRequest(
     try bld.defers(bld.x.id(aws_cfg.alloc_param).dot().raw("free(payload)"));
 }
 
-fn writeAwsJsonResponse(
+fn writeAwsJsonResult(
     _: Allocator,
     comptime flavor: u8,
     _: *SymbolsProvider,
-    bld: *zig.BlockBuild,
+    exp: zig.ExprBuild,
     func: smithy.OperationFunc,
-) !void {
-    try bld.returns().id(aws_cfg.scope_protocol).dot().call("json.operationResponse", &.{
-        bld.x.valueOf(switch (flavor) {
+) !zig.ExprBuild {
+    return exp.id(aws_cfg.scope_protocol).dot().call("json.operationResponse", &.{
+        exp.valueOf(switch (flavor) {
             10 => .aws_1_0,
             11 => .aws_1_1,
             else => unreachable,
         }),
-        if (func.output_type) |s| bld.x.raw(s) else bld.x.typeOf(void),
-        if (func.serial_output) |s| bld.x.raw(s) else bld.x.structLiteral(null, &.{}),
-        if (func.errors_type) |s| bld.x.raw(s) else bld.x.typeOf(void),
-        if (func.serial_error) |s| bld.x.raw(s) else bld.x.structLiteral(null, &.{}),
-        bld.x.id(aws_cfg.send_op_param),
-    }).end();
+        if (func.output_type) |s| exp.raw(s) else exp.typeOf(void),
+        if (func.serial_output) |s| exp.raw(s) else exp.structLiteral(null, &.{}),
+        if (func.errors_type) |s| exp.raw(s) else exp.typeOf(void),
+        if (func.serial_error) |s| exp.raw(s) else exp.structLiteral(null, &.{}),
+        exp.id(aws_cfg.send_op_param),
+    });
 }

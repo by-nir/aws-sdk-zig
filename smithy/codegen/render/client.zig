@@ -41,16 +41,9 @@ fn serviceClientTask(self: *const jobz.Delegate, symbols: *SymbolsProvider, bld:
     const sid = symbols.service_id;
     var testables = std.ArrayList([]const u8).init(self.alloc());
 
-    try bld.constant("ClientResult").assign(bld.x.raw(cfg.scope_public).dot().id("Result"));
-
     if (symbols.hasTrait(sid, trt_rules.EndpointRuleSet.id)) {
         try testables.append(cfg.endpoint_scope);
         try bld.constant(cfg.endpoint_scope).assign(bld.x.import(cfg.endpoint_filename));
-    }
-
-    if (symbols.service_data_shapes.len > 0) {
-        try bld.public().using(bld.x.import(cfg.types_filename));
-        try testables.append("@import(\"" ++ cfg.types_filename ++ "\")");
     }
 
     if (self.hasOverride(ClientScriptHeadHook)) {
@@ -59,28 +52,20 @@ fn serviceClientTask(self: *const jobz.Delegate, symbols: *SymbolsProvider, bld:
 
     try self.evaluate(WriteClientStruct, .{ bld, sid });
 
+    if (symbols.service_data_shapes.len > 0) {
+        try bld.public().using(bld.x.import(cfg.types_filename));
+        try testables.append("@import(\"" ++ cfg.types_filename ++ "\")");
+    }
+
     for (symbols.service_operations) |oid| {
-        const field_name = try symbols.getShapeName(oid, .snake, .{ .prefix = "op_" });
+        const field_name = try symbols.getShapeName(oid, .snake, .{ .suffix = "_op" });
         try testables.append(field_name);
 
         const filename = try oper.operationFilename(symbols, oid, false);
         try bld.constant(field_name).assign(bld.x.import(filename));
 
-        const op_shape = (try symbols.getShape(oid)).operation;
-        if (op_shape.input) |tid| {
-            const type_name = try symbols.getShapeName(tid, .pascal, .{});
-            try bld.public().constant(type_name).assign(bld.x.id(field_name).dot().id("OperationInput"));
-        }
-
-        if (op_shape.output) |tid| {
-            const type_name = try symbols.getShapeName(tid, .pascal, .{});
-            try bld.public().constant(type_name).assign(bld.x.id(field_name).dot().id("OperationOutput"));
-        }
-
-        if (symbols.service_errors.len + op_shape.errors.len > 0) {
-            const type_name = try symbols.getShapeName(oid, .pascal, .{ .suffix = "Error" });
-            try bld.public().constant(type_name).assign(bld.x.id(field_name).dot().id("OperationError"));
-        }
+        const type_name = try symbols.getShapeName(oid, .pascal, .{});
+        try bld.public().constant(type_name).assign(bld.x.id(field_name).dot().id(type_name));
     }
 
     try bld.testBlockWith(null, testables.items, struct {
@@ -108,33 +93,27 @@ test ServiceClient {
 
     symbols.service_id = SmithyId.of("test.serve#Service");
     try srvc.expectServiceScript(
-        \\const ClientResult = smithy.Result;
-        \\
         \\const srvc_endpoint = @import("endpoint.zig");
-        \\
-        \\pub usingnamespace @import("data_types.zig");
         \\
         \\/// Some _service_...
         \\pub const Client = struct {
-        \\    pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !ClientResult(OperationOutput, OperationError) {
+        \\    pub fn myOperation(self: Client, allocator: Allocator, input: MyOperation.Input) !MyOperation.Result {
         \\        return undefined;
         \\    }
         \\};
         \\
-        \\const op_operation = @import("operation/operation.zig");
+        \\pub usingnamespace @import("data_types.zig");
         \\
-        \\pub const OperationInput = op_operation.OperationInput;
+        \\const my_operation_op = @import("operation/my_operation.zig");
         \\
-        \\pub const OperationOutput = op_operation.OperationOutput;
-        \\
-        \\pub const OperationError = op_operation.OperationError;
+        \\pub const MyOperation = my_operation_op.MyOperation;
         \\
         \\test {
         \\    _ = srvc_endpoint;
         \\
         \\    _ = @import("data_types.zig");
         \\
-        \\    _ = op_operation;
+        \\    _ = my_operation_op;
         \\}
     , ServiceClient, tester.pipeline, .{});
 }
@@ -181,7 +160,7 @@ test WriteClientStruct {
     }.eval,
         \\/// Some _service_...
         \\pub const Client = struct {
-        \\    pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !ClientResult(OperationOutput, OperationError) {
+        \\    pub fn myOperation(self: Client, allocator: Allocator, input: MyOperation.Input) !MyOperation.Result {
         \\        return undefined;
         \\    }
         \\};
@@ -190,38 +169,27 @@ test WriteClientStruct {
 
 fn writeOperationFunc(self: *const jobz.Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild, id: SmithyId) !void {
     const operation = (try symbols.getShape(id)).operation;
-    const input_type, const input_serial = if (operation.input) |d| .{
-        try shape.typeName(symbols, d, false),
-        try symbols.getShapeName(id, .snake, .{
-            .prefix = "op_",
-            .suffix = ".serial_input_scheme",
-        }),
+    const input_type, const input_serial = if (operation.input != null) .{
+        try symbols.getShapeName(id, .pascal, .{ .suffix = ".Input" }),
+        try symbols.getShapeName(id, .snake, .{ .suffix = "_op.serial_input_scheme" }),
     } else .{ null, null };
-    const output_type, const output_serial = if (operation.output) |d| .{
-        try shape.typeName(symbols, d, false),
-        try symbols.getShapeName(id, .snake, .{
-            .prefix = "op_",
-            .suffix = ".serial_output_scheme",
-        }),
+    const output_type, const output_serial = if (operation.output != null) .{
+        try symbols.getShapeName(id, .pascal, .{ .suffix = ".Output" }),
+        try symbols.getShapeName(id, .snake, .{ .suffix = "_op.serial_output_scheme" }),
     } else .{ null, null };
 
     const error_type, const error_serial = if (operation.errors.len + symbols.service_errors.len > 0) .{
-        try symbols.getShapeName(id, .pascal, .{ .suffix = "Error" }),
-        try symbols.getShapeName(id, .snake, .{
-            .prefix = "op_",
-            .suffix = ".serial_error_scheme",
-        }),
+        try symbols.getShapeName(id, .pascal, .{ .suffix = ".Error" }),
+        try symbols.getShapeName(id, .snake, .{ .suffix = "_op.serial_error_scheme" }),
     } else .{ null, null };
 
-    const return_type = if (error_type) |errors|
-        try std.fmt.allocPrint(self.alloc(), "!ClientResult({s}, {s})", .{
-            output_type orelse "void",
-            errors,
-        })
-    else if (output_type) |s|
-        try std.fmt.allocPrint(self.alloc(), "!{s}", .{s})
-    else
-        "!void";
+    const return_type = switch ((error_type orelse output_type) != null) {
+        false => "!void",
+        true => try symbols.getShapeName(id, .pascal, .{
+            .prefix = "!",
+            .suffix = ".Result",
+        }),
+    };
 
     const auth_optional = symbols.hasTrait(id, trt_auth.optional_auth_id);
     const auth_schemes = trt_auth.Auth.get(symbols, id) orelse
@@ -257,7 +225,7 @@ fn writeOperationFunc(self: *const jobz.Delegate, symbols: *SymbolsProvider, bld
 test writeOperationFunc {
     const OpFuncTest = jobz.Task.Define("Operation Function Test", struct {
         fn eval(self: *const jobz.Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild) anyerror!void {
-            try writeOperationFunc(self, symbols, bld, SmithyId.of("test.serve#Operation"));
+            try writeOperationFunc(self, symbols, bld, SmithyId.of("test.serve#MyOperation"));
         }
     }.eval, .{
         .injects = &.{SymbolsProvider},
@@ -268,7 +236,7 @@ test writeOperationFunc {
             try tester.runTask(OpFuncTest, .{bld});
         }
     }.eval,
-        \\pub fn operation(self: Client, allocator: Allocator, input: OperationInput) !ClientResult(OperationOutput, OperationError) {
+        \\pub fn myOperation(self: Client, allocator: Allocator, input: MyOperation.Input) !MyOperation.Result {
         \\    return undefined;
         \\}
     );

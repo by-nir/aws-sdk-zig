@@ -206,5 +206,10 @@ fn writeOperationFunc(self: *const Delegate, symbols: *SymbolsProvider, bld: *zi
     try itg_proto.writeOperationRequest(self.alloc(), symbols, bld, func, protocol);
     if (func.auth_schemes.len > 0) try itg_auth.writeOperationAuth(self.alloc(), symbols, bld, func);
     try bld.trys().call("self.http.sendSync", &.{bld.x.id(aws_cfg.send_op_param)}).end();
-    try itg_proto.writeOperationResponse(self.alloc(), symbols, bld, func, protocol);
+
+    const result = try itg_proto.writeOperationResult(self.alloc(), symbols, bld, func, protocol);
+    switch ((func.output_type orelse func.errors_type) == null) {
+        true => try bld.trys().buildExpr(result).end(),
+        false => try bld.returns().buildExpr(result).end(),
+    }
 }

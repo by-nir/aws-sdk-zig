@@ -224,7 +224,7 @@ fn setupError(model: *Model) !void {
 
 fn setupService(model: *Model) !void {
     const Static = struct {
-        const sd0 = SmithyId.of("test.serve#Operation");
+        const sd0 = SmithyId.of("test.serve#MyOperation");
         const sd1 = SmithyId.of("test.serve#Resource");
         const sd2 = SmithyId.of("test#ServiceError");
         const service = SmithyService{
@@ -242,7 +242,7 @@ fn setupService(model: *Model) !void {
             .{ .id = trt_rules.EndpointRuleSet.id, .value = &rule_set },
             .{ .id = trt_rules.EndpointTests.id, .value = rule_test_cases.ptr },
         };
-        const rd0 = SmithyId.of("test.serve#Operation");
+        const rd0 = SmithyId.of("test.serve#MyOperation");
         const resource = SmithyResource{
             .identifiers = &.{
                 .{ .name = "forecastId", .shape = SmithyId.of("smithy.api#String") },
@@ -250,15 +250,15 @@ fn setupService(model: *Model) !void {
             .operations = &.{rd0},
             .resources = &.{},
         };
-        const od0 = SmithyId.of("test.serve#OperationOutput");
+        const od0 = SmithyId.of("test.serve#MyOperationOutput");
         const od1 = SmithyId.of("test.error#NotFound");
         const operation = SmithyOperation{
-            .input = SmithyId.of("test.serve#OperationInput"),
+            .input = SmithyId.of("test.serve#MyOperationInput"),
             .output = od0,
             .errors = &.{od1},
         };
-        const n1 = SmithyId.of("test.serve#OperationInput$Bar");
-        const operation_input: []const SmithyId = &.{ SmithyId.of("test.serve#OperationInput$Foo"), n1 };
+        const n1 = SmithyId.of("test.serve#MyOperationInput$Bar");
+        const operation_input: []const SmithyId = &.{ SmithyId.of("test.serve#MyOperationInput$Foo"), n1 };
         const rule_set: rls.RuleSet = .{
             .parameters = &[_]rls.StringKV(rls.Parameter){.{
                 .key = "foo",
@@ -290,27 +290,27 @@ fn setupService(model: *Model) !void {
         .resource = &Static.resource,
     });
 
-    try model.names.put(test_alloc, SmithyId.of("test.serve#Operation"), "Operation");
-    try model.shapes.put(test_alloc, SmithyId.of("test.serve#Operation"), .{
+    try model.names.put(test_alloc, SmithyId.of("test.serve#MyOperation"), "MyOperation");
+    try model.shapes.put(test_alloc, SmithyId.of("test.serve#MyOperation"), .{
         .operation = &Static.operation,
     });
 
-    try model.names.put(test_alloc, SmithyId.of("test.serve#OperationInput"), "OperationInput");
-    try model.shapes.put(test_alloc, SmithyId.of("test.serve#OperationInput"), .{
+    try model.names.put(test_alloc, SmithyId.of("test.serve#MyOperationInput"), "MyOperationInput");
+    try model.shapes.put(test_alloc, SmithyId.of("test.serve#MyOperationInput"), .{
         .structure = Static.operation_input,
     });
 
-    try model.names.put(test_alloc, SmithyId.of("test.serve#OperationInput$Foo"), "Foo");
-    try model.shapes.put(test_alloc, SmithyId.of("test.serve#OperationInput$Foo"), .{ .structure = &.{} });
-    try model.traits.put(test_alloc, SmithyId.of("test.serve#OperationInput$Foo"), &.{
+    try model.names.put(test_alloc, SmithyId.of("test.serve#MyOperationInput$Foo"), "Foo");
+    try model.shapes.put(test_alloc, SmithyId.of("test.serve#MyOperationInput$Foo"), .{ .structure = &.{} });
+    try model.traits.put(test_alloc, SmithyId.of("test.serve#MyOperationInput$Foo"), &.{
         .{ .id = trt_refine.required_id, .value = null },
     });
 
-    try model.names.put(test_alloc, SmithyId.of("test.serve#OperationInput$Bar"), "Bar");
-    try model.shapes.put(test_alloc, SmithyId.of("test.serve#OperationInput$Bar"), .boolean);
+    try model.names.put(test_alloc, SmithyId.of("test.serve#MyOperationInput$Bar"), "Bar");
+    try model.shapes.put(test_alloc, SmithyId.of("test.serve#MyOperationInput$Bar"), .boolean);
 
-    try model.names.put(test_alloc, SmithyId.of("test.serve#OperationOutput"), "OperationOutput");
-    try model.shapes.put(test_alloc, SmithyId.of("test.serve#OperationOutput"), .{
+    try model.names.put(test_alloc, SmithyId.of("test.serve#MyOperationOutput"), "MyOperationOutput");
+    try model.shapes.put(test_alloc, SmithyId.of("test.serve#MyOperationOutput"), .{
         .structure = &.{},
     });
 

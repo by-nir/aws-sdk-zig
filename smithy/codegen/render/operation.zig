@@ -62,32 +62,54 @@ fn clientOperationTask(
         try self.evaluate(OperationScriptHeadHook, .{ bld, id });
     }
 
+    const context = .{ .arena = self.alloc(), .op = operation, .symbols = symbols };
+    try bld.public().constant(try symbols.getShapeName(id, .pascal, .{})).assign(
+        bld.x.@"struct"().bodyWith(context, struct {
+            fn f(ctx: @TypeOf(context), b: *zig.ContainerBuild) !void {
+                const has_errors = ctx.symbols.service_errors.len + ctx.op.errors.len > 0;
+
+                if (ctx.op.output != null or has_errors) {
+                    try b.public().constant("Result").assign(b.x.raw(cfg.scope_public).dot().call("Result", &.{
+                        if (ctx.op.output != null) b.x.id("Output") else b.x.typeOf(void),
+                        if (has_errors) b.x.id("Error") else b.x.typeOf(void),
+                    }));
+                }
+
+                if (ctx.op.input) |in_id| {
+                    const members = (try ctx.symbols.getShape(in_id)).structure;
+                    try shape.writeStructShape(ctx.symbols, b, in_id, members, true, "Input");
+                }
+
+                if (ctx.op.output) |out_id| {
+                    const members = (try ctx.symbols.getShape(out_id)).structure;
+                    try shape.writeStructShape(ctx.symbols, b, out_id, members, true, "Output");
+                }
+
+                if (ctx.symbols.service_errors.len + ctx.op.errors.len > 0) {
+                    try b.public().constant("Error").assign(b.x.@"enum"().bodyWith(ErrorSetCtx{
+                        .arena = ctx.arena,
+                        .symbols = ctx.symbols,
+                        .shape_errors = ctx.op.errors,
+                        .common_errors = ctx.symbols.service_errors,
+                    }, writeErrorSet));
+                }
+            }
+        }.f),
+    );
+
     if (operation.input) |in_id| {
         const scheme = try serialShapeScheme(self, symbols, bld.x, in_id);
         try bld.public().constant("serial_input_scheme").assign(scheme);
-
-        const members = (try symbols.getShape(in_id)).structure;
-        try shape.writeStructShape(symbols, bld, in_id, members, true, "OperationInput");
     }
 
     if (operation.output) |out_id| {
         const scheme = try serialShapeScheme(self, symbols, bld.x, out_id);
         try bld.public().constant("serial_output_scheme").assign(scheme);
-
-        const members = (try symbols.getShape(out_id)).structure;
-        try shape.writeStructShape(symbols, bld, out_id, members, true, "OperationOutput");
     }
 
     if (symbols.service_errors.len + operation.errors.len > 0) {
         const scheme = try serialErrorScheme(self, symbols, bld.x, operation.errors, symbols.service_errors);
         try bld.public().constant("serial_error_scheme").assign(scheme);
-
-        try bld.public().constant("OperationError").assign(bld.x.@"enum"().bodyWith(ErrorSetCtx{
-            .arena = self.alloc(),
-            .symbols = symbols,
-            .shape_errors = operation.errors,
-            .common_errors = symbols.service_errors,
-        }, writeErrorSet));
     }
 }
 
@@ -288,6 +310,45 @@ test ClientOperation {
     try srvc.expectServiceScript(
         \\const srvc_types = @import("../data_types.zig");
         \\
+        \\pub const MyOperation = struct {
+        \\    pub const Result = smithy.Result(Output, Error);
+        \\
+        \\    pub const Input = struct {
+        \\        foo: srvc_types.Foo,
+        \\        bar: ?bool = null,
+        \\    };
+        \\
+        \\    pub const Output = struct {};
+        \\
+        \\    pub const Error = enum {
+        \\        not_found,
+        \\        service,
+        \\
+        \\        pub fn source(self: @This()) smithy.ErrorSource {
+        \\            return switch (self) {
+        \\                .not_found => .server,
+        \\                .service => .client,
+        \\            };
+        \\        }
+        \\
+        \\        pub fn httpStatus(self: @This()) std.http.Status {
+        \\            const code = switch (self) {
+        \\                .not_found => 500,
+        \\                .service => 429,
+        \\            };
+        \\
+        \\            return @enumFromInt(code);
+        \\        }
+        \\
+        \\        pub fn retryable(self: @This()) bool {
+        \\            return switch (self) {
+        \\                .not_found => false,
+        \\                .service => true,
+        \\            };
+        \\        }
+        \\    };
+        \\};
+        \\
         \\pub const serial_input_scheme = .{ .structure, .{ .{
         \\    "Foo",
         \\    "foo",
@@ -300,14 +361,7 @@ test ClientOperation {
         \\    .{.boolean},
         \\} } };
         \\
-        \\pub const OperationInput = struct {
-        \\    foo: srvc_types.Foo,
-        \\    bar: ?bool = null,
-        \\};
-        \\
         \\pub const serial_output_scheme = .{ .structure, .{} };
-        \\
-        \\pub const OperationOutput = struct {};
         \\
         \\pub const serial_error_scheme = .{ .tagged_union, .{ .{
         \\    "ServiceError",
@@ -318,33 +372,5 @@ test ClientOperation {
         \\    "not_found",
         \\    .{},
         \\} } };
-        \\
-        \\pub const OperationError = enum {
-        \\    not_found,
-        \\    service,
-        \\
-        \\    pub fn source(self: @This()) smithy.ErrorSource {
-        \\        return switch (self) {
-        \\            .not_found => .server,
-        \\            .service => .client,
-        \\        };
-        \\    }
-        \\
-        \\    pub fn httpStatus(self: @This()) std.http.Status {
-        \\        const code = switch (self) {
-        \\            .not_found => 500,
-        \\            .service => 429,
-        \\        };
-        \\
-        \\        return @enumFromInt(code);
-        \\    }
-        \\
-        \\    pub fn retryable(self: @This()) bool {
-        \\        return switch (self) {
-        \\            .not_found => false,
-        \\            .service => true,
-        \\        };
-        \\    }
-        \\};
-    , ClientOperation, tester.pipeline, .{SmithyId.of("test.serve#Operation")});
+    , ClientOperation, tester.pipeline, .{SmithyId.of("test.serve#MyOperation")});
 }
