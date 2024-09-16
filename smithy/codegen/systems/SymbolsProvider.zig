@@ -97,7 +97,7 @@ fn filterServiceShapes(
             .boolean, .byte, .short, .integer, .long, .float, .double, .string, .blob => {},
             .target => |tid| try shape_queue.writeItem(tid),
             .int_enum, .str_enum, .trt_enum => try data_shapes.append(id),
-            .tagged_uinon => |fields| {
+            .tagged_union => |fields| {
                 try data_shapes.append(id);
                 try shape_queue.write(fields);
             },

@@ -142,7 +142,7 @@ test "Arn" {
 
 // https://github.com/smithy-lang/smithy-rs/blob/main/rust-runtime/inlineable/src/endpoint_lib/s3.rs
 pub fn isVirtualHostableS3Bucket(label: []const u8, allow_subdomains: bool) bool {
-    if (!smithy._private_.isValidHostLabel(label, allow_subdomains)) return false;
+    if (!smithy.isValidHostLabel(label, allow_subdomains)) return false;
     if (allow_subdomains) {
         var it = mem.splitScalar(u8, label, '.');
         while (it.next()) |part| {

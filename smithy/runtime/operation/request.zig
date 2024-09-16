@@ -1,7 +1,17 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const Document = @import("values.zig").Document;
-const HttpHeader = @import("http.zig").HttpHeader;
+const Document = @import("document.zig").Document;
+
+pub const HttpHeader = struct {
+    key: []const u8,
+    values: []const []const u8,
+
+    pub fn deinit(self: HttpHeader, allocator: Allocator) void {
+        for (self.values) |value| allocator.free(value);
+        allocator.free(self.values);
+        allocator.free(self.key);
+    }
+};
 
 pub const Endpoint = struct {
     url: []const u8,

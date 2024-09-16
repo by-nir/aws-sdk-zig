@@ -73,7 +73,7 @@ test ClientEndpoint {
         \\    foo: ?bool = null,
         \\};
         \\
-        \\pub fn resolve(allocator: Allocator, config: EndpointConfig) !smithy._private_.Endpoint {
+        \\pub fn resolve(allocator: Allocator, config: EndpointConfig) !smithy.Endpoint {
         \\    var local_buffer: [512]u8 = undefined;
         \\
         \\    var local_heap = std.heap.FixedBufferAllocator.init(&local_buffer);

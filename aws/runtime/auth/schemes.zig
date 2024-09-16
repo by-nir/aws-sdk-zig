@@ -2,8 +2,6 @@
 const std = @import("std");
 const mem = std.mem;
 const smithy = @import("smithy/runtime");
-const AuthId = smithy._private_.AuthId;
-const AuthScheme = smithy._private_.AuthScheme;
 const sig = @import("sigv4.zig");
 const http = @import("../http.zig");
 const Credentials = @import("creds.zig").Credentials;
@@ -22,7 +20,7 @@ pub const SigV4Scheme = struct {
     /// When `true` clients must not perform any path normalization during signing.
     disable_normalize_path: bool = false,
 
-    pub fn evaluate(service: []const u8, region: []const u8, endpoint: ?AuthScheme) SigV4Scheme {
+    pub fn evaluate(service: []const u8, region: []const u8, endpoint: ?smithy.AuthScheme) SigV4Scheme {
         var scheme = SigV4Scheme{
             .signing_name = service,
             .signing_region = region,
@@ -30,7 +28,7 @@ pub const SigV4Scheme = struct {
 
         const override = endpoint orelse return scheme;
 
-        std.debug.assert(override.id == AuthId.of("sigv4"));
+        std.debug.assert(override.id == smithy.AuthId.of("sigv4"));
         for (override.properties) |prop| {
             if (mem.eql(u8, "signingName", prop.key)) {
                 scheme.signing_name = prop.document.getString();
@@ -93,9 +91,9 @@ pub const SigV4AScheme = struct {
     /// When `true` clients must not perform any path normalization during signing.
     disable_normalize_path: bool = false,
 
-    pub fn evaluate(endpoint: AuthScheme, service: []const u8, region: []const u8) SigV4AScheme {
+    pub fn evaluate(endpoint: smithy.AuthScheme, service: []const u8, region: []const u8) SigV4AScheme {
         _ = region; // autofix
-        std.debug.assert(endpoint.id == AuthId.of("sigv4a"));
+        std.debug.assert(endpoint.id == smithy.AuthId.of("sigv4a"));
         var scheme = SigV4AScheme{
             .signing_name = service,
             .signing_region_set = &.{},

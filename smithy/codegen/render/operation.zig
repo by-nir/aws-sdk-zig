@@ -54,6 +54,8 @@ fn clientOperationTask(
 ) anyerror!void {
     const operation = if (try shape.getShapeSafe(self, symbols, issues, id)) |s| s.operation else return;
 
+    try bld.constant("SerialType").assign(bld.x.id(cfg.scope_runtime).dot().id("SerialType"));
+
     if (symbols.service_operations.len > 0) {
         try bld.constant(cfg.types_scope).assign(bld.x.import("../" ++ cfg.types_filename));
     }
@@ -69,7 +71,7 @@ fn clientOperationTask(
                 const has_errors = ctx.symbols.service_errors.len + ctx.op.errors.len > 0;
 
                 if (ctx.op.output != null or has_errors) {
-                    try b.public().constant("Result").assign(b.x.raw(cfg.scope_public).dot().call("Result", &.{
+                    try b.public().constant("Result").assign(b.x.raw(cfg.scope_runtime).dot().call("Result", &.{
                         if (ctx.op.output != null) b.x.id("Output") else b.x.typeOf(void),
                         if (has_errors) b.x.id("Error") else b.x.typeOf(void),
                     }));
@@ -135,22 +137,22 @@ fn serialShapeScheme(
         .big_integer,
         .big_decimal,
         .timestamp,
-        => |_, g| return exp.structLiteral(null, &.{exp.valueOf(g)}),
+        => |_, g| return exp.structLiteral(null, &.{exp.id("SerialType").valueOf(g)}),
         .list => |member| {
             const member_scheme = try serialShapeScheme(self, symbols, exp, member);
-            return switch (shape.listType(symbols, id)) {
-                .standard => exp.structLiteral(null, &.{ exp.valueOf(.list), exp.valueOf(true), member_scheme }),
-                .sparse => exp.structLiteral(null, &.{ exp.valueOf(.list), exp.valueOf(false), member_scheme }),
-                .set => exp.structLiteral(null, &.{ exp.valueOf(.set), member_scheme }),
-            };
+            return exp.structLiteral(null, switch (shape.listType(symbols, id)) {
+                .standard => &.{ exp.id("SerialType").valueOf(.list), exp.valueOf(true), member_scheme },
+                .sparse => &.{ exp.id("SerialType").valueOf(.list), exp.valueOf(false), member_scheme },
+                .set => &.{ exp.id("SerialType").valueOf(.set), member_scheme },
+            });
         },
         .map => |members| {
             const required = exp.valueOf(!symbols.hasTrait(id, trt_refine.sparse_id));
             const key_scheme = try serialShapeScheme(self, symbols, exp, members[0]);
             const val_scheme = try serialShapeScheme(self, symbols, exp, members[1]);
-            return exp.structLiteral(null, &.{ exp.valueOf(.map), required, key_scheme, val_scheme });
+            return exp.structLiteral(null, &.{ exp.id("SerialType").valueOf(.map), required, key_scheme, val_scheme });
         },
-        inline .structure, .tagged_uinon => |members, g| {
+        inline .structure, .tagged_union => |members, g| {
             var schemes = std.ArrayList(zig.ExprBuild).init(self.alloc());
             const is_input = symbols.hasTrait(id, trt_refine.input_id);
 
@@ -167,7 +169,7 @@ fn serialShapeScheme(
             }
 
             return exp.structLiteral(null, &.{
-                exp.valueOf(g),
+                exp.id("SerialType").valueOf(g),
                 exp.structLiteral(null, try schemes.toOwnedSlice()),
             });
         },
@@ -193,7 +195,7 @@ fn serialErrorScheme(
     }
 
     return exp.structLiteral(null, &.{
-        exp.valueOf(.tagged_union),
+        exp.id("SerialType").valueOf(.tagged_union),
         exp.structLiteral(null, try scheme.toOwnedSlice()),
     });
 }
@@ -308,6 +310,8 @@ test ClientOperation {
 
     symbols.service_id = SmithyId.of("test.serve#Service");
     try srvc.expectServiceScript(
+        \\const SerialType = smithy.SerialType;
+        \\
         \\const srvc_types = @import("../data_types.zig");
         \\
         \\pub const MyOperation = struct {
@@ -349,21 +353,21 @@ test ClientOperation {
         \\    };
         \\};
         \\
-        \\pub const serial_input_scheme = .{ .structure, .{ .{
+        \\pub const serial_input_scheme = .{ SerialType.structure, .{ .{
         \\    "Foo",
         \\    "foo",
         \\    true,
-        \\    .{ .structure, .{} },
+        \\    .{ SerialType.structure, .{} },
         \\}, .{
         \\    "Bar",
         \\    "bar",
         \\    false,
-        \\    .{.boolean},
+        \\    .{SerialType.boolean},
         \\} } };
         \\
-        \\pub const serial_output_scheme = .{ .structure, .{} };
+        \\pub const serial_output_scheme = .{ SerialType.structure, .{} };
         \\
-        \\pub const serial_error_scheme = .{ .tagged_union, .{ .{
+        \\pub const serial_error_scheme = .{ SerialType.tagged_union, .{ .{
         \\    "ServiceError",
         \\    "service",
         \\    .{},

@@ -102,7 +102,7 @@ fn writeShapeTask(
         .trt_enum => writeTraitEnumShape(self, symbols, bld, id),
         .str_enum => |m| writeStrEnumShape(self, symbols, bld, id, m),
         .int_enum => |m| writeIntEnumShape(symbols, bld, id, m),
-        .tagged_uinon => |m| writeUnionShape(symbols, bld, id, m, named_scope),
+        .tagged_union => |m| writeUnionShape(symbols, bld, id, m, named_scope),
         .structure => |m| writeStructShape(symbols, bld, id, m, named_scope, null),
         else => error.InvalidRootShape,
     } catch |e| {
@@ -537,7 +537,7 @@ pub fn listType(symbols: *SymbolsProvider, shape_id: SmithyId) ListType {
 
 pub fn typeName(symbols: *SymbolsProvider, id: SmithyId, named_scope: bool) ![]const u8 {
     switch (id) {
-        .str_enum, .int_enum, .list, .map, .structure, .tagged_uinon, .operation, .resource, .service, .apply => unreachable,
+        .str_enum, .int_enum, .list, .map, .structure, .tagged_union, .operation, .resource, .service, .apply => unreachable,
         .document => return error.UnexpectedDocumentShape, // A document’s consumer should parse it into a meaningful type manually
         .unit => return "", // The union type generator assumes a unit is an empty string
         .boolean => return "bool",

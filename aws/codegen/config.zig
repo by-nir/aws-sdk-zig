@@ -13,7 +13,7 @@ pub const endpoint_config_type = smithy.endpoint_config_type;
 pub const service_client_type = smithy.service_client_type;
 
 /// Smithy runtime scope
-pub const scope_smithy = smithy.scope_private;
+pub const scope_smithy = smithy.scope_runtime;
 
 /// Endpoint scope
 pub const endpoint_scope = smithy.endpoint_scope;

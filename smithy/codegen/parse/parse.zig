@@ -376,7 +376,7 @@ const JsonParser = struct {
             inline .blob, .big_integer, .big_decimal, .timestamp, .document => |t| blk: {
                 break :blk std.enums.nameCast(SmithyType, t);
             },
-            inline .str_enum, .int_enum, .tagged_uinon, .structure => |t| switch (target) {
+            inline .str_enum, .int_enum, .tagged_union, .structure => |t| switch (target) {
                 .id_list => |l| blk: {
                     is_named = true;
                     break :blk @unionInit(SmithyType, @tagName(t), try l.toOwnedSlice(self.arena));
@@ -682,7 +682,7 @@ test ParseModel {
     });
 
     try expectShape(model, SmithyId.of("test.aggregate#Union"), .{
-        .tagged_uinon = &.{
+        .tagged_union = &.{
             SmithyId.of("test.aggregate#Union$a"),
             SmithyId.of("test.aggregate#Union$b"),
         },

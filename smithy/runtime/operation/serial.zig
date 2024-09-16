@@ -19,5 +19,5 @@ pub const SerialType = enum {
     map,
     document,
     structure,
-    tagged_uinon,
+    tagged_union,
 };

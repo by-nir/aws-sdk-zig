@@ -166,7 +166,7 @@ fn serviceScriptGenTask(
 ) anyerror!void {
     try bld.constant("std").assign(bld.x.import("std"));
     try bld.constant("Allocator").assign(bld.x.raw("std.mem.Allocator"));
-    try bld.constant("smithy").assign(bld.x.import("smithy"));
+    try bld.constant(cfg.scope_runtime).assign(bld.x.import("smithy"));
 
     if (self.hasOverride(ScriptHeadHook)) {
         try self.evaluate(ScriptHeadHook, .{bld});

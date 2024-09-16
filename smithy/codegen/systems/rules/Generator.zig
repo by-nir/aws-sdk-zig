@@ -122,7 +122,7 @@ pub fn generateResolver(self: *Self, bld: *ContainerBuild, rules: []const mdl.Ru
     try bld.public().function(cfg.endpoint_resolve_fn)
         .arg(cfg.alloc_param, bld.x.id("Allocator"))
         .arg(ARG_CONFIG, bld.x.raw(cfg.endpoint_config_type))
-        .returns(bld.x.raw("!" ++ cfg.scope_private ++ ".Endpoint"))
+        .returns(bld.x.raw("!" ++ cfg.scope_runtime ++ ".Endpoint"))
         .bodyWith(context, struct {
         fn f(ctx: @TypeOf(context), b: *BlockBuild) !void {
             try b.variable("local_buffer").typing(b.typeOf([512]u8)).assign(b.x.raw("undefined"));
@@ -151,7 +151,7 @@ test "generateResolver" {
     });
 
     try tst.expect(
-        \\pub fn resolve(allocator: Allocator, config: EndpointConfig) !smithy._private_.Endpoint {
+        \\pub fn resolve(allocator: Allocator, config: EndpointConfig) !smithy.Endpoint {
         \\    var local_buffer: [512]u8 = undefined;
         \\
         \\    var local_heap = std.heap.FixedBufferAllocator.init(&local_buffer);
@@ -446,7 +446,7 @@ fn generateEndpointRule(self: *Self, bld: *BlockBuild, endpoint: mdl.Endpoint) !
     const headers = if (endpoint.headers) |headers| blk: {
         try bld.constant("headers").assign(
             bld.x.trys().id(cfg.alloc_param).dot().call("alloc", &.{
-                bld.x.raw(cfg.scope_private).dot().id("HttpHeader"),
+                bld.x.raw(cfg.scope_runtime).dot().id("HttpHeader"),
                 bld.x.valueOf(headers.len),
             }),
         );
@@ -477,7 +477,7 @@ fn generateEndpointRule(self: *Self, bld: *BlockBuild, endpoint: mdl.Endpoint) !
 
         try bld.constant("properties").assign(
             bld.x.trys().id(cfg.alloc_param).dot().call("alloc", &.{
-                bld.x.raw(cfg.scope_private).dot().raw("Document.KV"),
+                bld.x.raw(cfg.scope_runtime).dot().raw("Document.KV"),
                 bld.x.valueOf(if (auth_schemes == null) props.len else props.len - 1),
             }),
         );
@@ -498,7 +498,7 @@ fn generateEndpointRule(self: *Self, bld: *BlockBuild, endpoint: mdl.Endpoint) !
     const auth = if (auth_schemes) |schemes| blk: {
         try bld.constant("schemes").assign(
             bld.x.trys().id(cfg.alloc_param).dot().call("alloc", &.{
-                bld.x.raw(cfg.scope_private).dot().id("AuthScheme"),
+                bld.x.raw(cfg.scope_runtime).dot().id("AuthScheme"),
                 bld.x.valueOf(schemes.len),
             }),
         );
@@ -514,7 +514,7 @@ fn generateEndpointRule(self: *Self, bld: *BlockBuild, endpoint: mdl.Endpoint) !
             const id = try std.fmt.allocPrint(self.arena, "scheme_{d}", .{i});
             try bld.constant(id).assign(
                 bld.x.trys().id(cfg.alloc_param).dot().call("alloc", &.{
-                    bld.x.raw(cfg.scope_private).dot().raw("Document.KV"),
+                    bld.x.raw(cfg.scope_runtime).dot().raw("Document.KV"),
                     bld.x.valueOf(props.len),
                 }),
             );
@@ -616,7 +616,7 @@ test "generateEndpointRule" {
         \\
         \\    errdefer allocator.free(url);
         \\
-        \\    const headers = try allocator.alloc(smithy._private_.HttpHeader, 2);
+        \\    const headers = try allocator.alloc(smithy.HttpHeader, 2);
         \\
         \\    errdefer allocator.free(headers);
         \\
@@ -632,7 +632,7 @@ test "generateEndpointRule" {
         \\
         \\    headers[1] = .{ .key = "bar", .values = head_1 };
         \\
-        \\    const properties = try allocator.alloc(smithy._private_.Document.KV, 1);
+        \\    const properties = try allocator.alloc(smithy.Document.KV, 1);
         \\
         \\    errdefer allocator.free(properties);
         \\
@@ -642,11 +642,11 @@ test "generateEndpointRule" {
         \\        .document = .null,
         \\    };
         \\
-        \\    const schemes = try allocator.alloc(smithy._private_.AuthScheme, 1);
+        \\    const schemes = try allocator.alloc(smithy.AuthScheme, 1);
         \\
         \\    errdefer allocator.free(schemes);
         \\
-        \\    const scheme_0 = try allocator.alloc(smithy._private_.Document.KV, 1);
+        \\    const scheme_0 = try allocator.alloc(smithy.Document.KV, 1);
         \\
         \\    errdefer allocator.free(scheme_0);
         \\
@@ -1115,7 +1115,7 @@ pub fn generateTests(self: *Self, bld: *ContainerBuild, cases: []const mdl.TestC
                                 }));
                             }
                             const expected = b.x.fromExpr(try b.x.structLiteral(
-                                b.x.raw("&[_]" ++ cfg.scope_private ++ ".HttpHeader"),
+                                b.x.raw("&[_]" ++ cfg.scope_runtime ++ ".HttpHeader"),
                                 try list.toOwnedSlice(),
                             ).consume());
                             try b.trys().call(
@@ -1141,7 +1141,7 @@ pub fn generateTests(self: *Self, bld: *ContainerBuild, cases: []const mdl.TestC
                                 }));
                             }
                             const expected = b.x.fromExpr(try b.x.structLiteral(
-                                b.x.raw("&[_]" ++ cfg.scope_private ++ ".Document.KV"),
+                                b.x.raw("&[_]" ++ cfg.scope_runtime ++ ".Document.KV"),
                                 try list.toOwnedSlice(),
                             ).consume());
 
@@ -1172,7 +1172,7 @@ pub fn generateTests(self: *Self, bld: *ContainerBuild, cases: []const mdl.TestC
                                 }));
                             }
                             const expected = b.x.fromExpr(try b.x.structLiteral(
-                                b.x.raw("&[_]" ++ cfg.scope_private ++ ".AuthScheme"),
+                                b.x.raw("&[_]" ++ cfg.scope_runtime ++ ".AuthScheme"),
                                 try list.toOwnedSlice(),
                             ).consume());
 
@@ -1247,15 +1247,15 @@ test "generateTests" {
         \\
         \\    try std.testing.expectEqualStrings("https://example.com", endpoint.url);
         \\
-        \\    try std.testing.expectEqualDeep(&[_]smithy._private_.HttpHeader{.{ .key = "foo", .values = &.{ "bar", "baz" } }}, endpoint.headers);
+        \\    try std.testing.expectEqualDeep(&[_]smithy.HttpHeader{.{ .key = "foo", .values = &.{ "bar", "baz" } }}, endpoint.headers);
         \\
-        \\    try std.testing.expectEqualDeep(&[_]smithy._private_.Document.KV{.{
+        \\    try std.testing.expectEqualDeep(&[_]smithy.Document.KV{.{
         \\        .key = "qux",
         \\        .key_alloc = false,
         \\        .document = .null,
         \\    }}, endpoint.properties);
         \\
-        \\    try std.testing.expectEqualDeep(&[_]smithy._private_.AuthScheme{.{ .id = smithy.intenral.AuthId.of("auth"), .properties = &.{.{
+        \\    try std.testing.expectEqualDeep(&[_]smithy.AuthScheme{.{ .id = smithy.intenral.AuthId.of("auth"), .properties = &.{.{
         \\        .key = "value",
         \\        .key_alloc = false,
         \\        .document = .{.integer = 108},

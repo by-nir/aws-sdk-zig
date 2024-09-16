@@ -5,9 +5,6 @@ const std = @import("std");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const smithy = @import("smithy/runtime");
-const Result = smithy.Result;
-const ResultError = smithy.ResultError;
-const SerialType = smithy._private_.SerialType;
 const Response = @import("../http.zig").Response;
 const Operation = @import("../http.zig").Operation;
 
@@ -47,7 +44,7 @@ pub fn operationRequest(
 }
 
 fn serializeValue(json: *JsonWriter, comptime scheme: anytype, value: anytype) !void {
-    switch (@as(SerialType, scheme[0])) {
+    switch (@as(smithy.SerialType, scheme[0])) {
         .boolean, .byte, .short, .integer, .long, .string => try json.write(value),
         inline .float, .double => |_, g| {
             const T = if (g == .double) f64 else f32;
@@ -108,7 +105,7 @@ fn serializeValue(json: *JsonWriter, comptime scheme: anytype, value: anytype) !
         },
         .int_enum => try json.write(@as(i32, @intFromEnum(value))),
         .str_enum, .trt_enum => try json.write(value.toString()),
-        .tagged_uinon => {
+        .tagged_union => {
             const members = scheme[1];
             try json.beginObject();
             switch (value) {
@@ -164,7 +161,7 @@ pub fn operationResponse(
     comptime Err: type,
     comptime err_scheme: anytype,
     op: *Operation,
-) !Result(Out, Err) {
+) !smithy.Result(Out, Err) {
     const rsp = op.response orelse return error.MissingResponse;
     return switch (rsp.status.class()) {
         .success => .{ .ok = try handleOutput(flavor, Out, out_scheme, op.allocator, rsp) },
@@ -199,7 +196,7 @@ fn handleError(
     comptime scheme: anytype,
     allocator: Allocator,
     response: Response,
-) !ResultError(E) {
+) !smithy.ResultError(E) {
     var stream = std.io.fixedBufferStream(response.body);
     var reader = std.json.reader(allocator, stream.reader());
     defer reader.deinit();
@@ -290,7 +287,7 @@ test sanitizeErrorCode {
 }
 
 fn parseValue(allocator: Allocator, json: *JsonReader, comptime scheme: anytype, value: anytype) !void {
-    switch (@as(SerialType, scheme[0])) {
+    switch (@as(smithy.SerialType, scheme[0])) {
         .boolean => value.* = try std.json.innerParse(bool, allocator, json, .{}),
         .byte => value.* = try std.json.innerParse(i8, allocator, json, .{}),
         .short => value.* = try std.json.innerParse(i16, allocator, json, .{}),
@@ -434,7 +431,7 @@ fn parseValue(allocator: Allocator, json: *JsonReader, comptime scheme: anytype,
 
             value.* = resolved;
         },
-        .tagged_uinon => {
+        .tagged_union => {
             const members = scheme[1];
             const Union = ValueType(value);
 

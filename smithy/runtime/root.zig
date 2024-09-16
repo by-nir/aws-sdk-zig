@@ -1,36 +1,33 @@
-const result = @import("result.zig");
+const result = @import("primitives/result.zig");
 pub const Result = result.Result;
 pub const ResultError = result.ResultError;
 pub const ErrorSource = result.ErrorSource;
 
-const containers = @import("containers.zig");
-pub const Set = containers.Set;
+pub const Set = @import("primitives/set.zig").Set;
 
-const url = @import("url.zig");
-pub const RulesUrl = url.RulesUrl;
-pub const uriEncode = url.uriEncode;
-pub const isValidHostLabel = url.isValidHostLabel;
+const rules = @import("operation/rules.zig");
+pub const RulesUrl = rules.RulesUrl;
+pub const uriEncode = rules.uriEncode;
+pub const isValidHostLabel = rules.isValidHostLabel;
+pub const substring = rules.substring;
 
-const http = @import("http.zig");
-pub const HttpHeader = http.HttpHeader;
+const request = @import("operation/request.zig");
+pub const AuthId = request.AuthId;
+pub const Endpoint = request.Endpoint;
+pub const AuthScheme = request.AuthScheme;
+pub const HttpHeader = request.HttpHeader;
 
-const values = @import("values.zig");
-pub const Document = values.Document;
-pub const substring = values.substring;
+const document = @import("operation/document.zig");
+pub const Document = document.Document;
 
-const endpoint = @import("endpoint.zig");
-pub const AuthId = endpoint.AuthId;
-pub const Endpoint = endpoint.Endpoint;
-pub const AuthScheme = endpoint.AuthScheme;
-
-const serial = @import("serial.zig");
+const serial = @import("operation/serial.zig");
 pub const SerialType = serial.SerialType;
 
 test {
-    _ = url;
-    _ = http;
     _ = result;
-    _ = values;
-    _ = endpoint;
-    _ = containers;
+    _ = @import("primitives/set.zig");
+    _ = document;
+    _ = request;
+    _ = rules;
+    _ = serial;
 }

@@ -149,9 +149,7 @@ const un2 = SmithyId.of("test#Union$BAZ");
 const UNION = &.{ un0, un1, un2 };
 fn setupUnion(model: *Model) !void {
     try model.names.put(test_alloc, SmithyId.of("test#Union"), "Union");
-    try model.shapes.put(test_alloc, SmithyId.of("test#Union"), .{
-        .tagged_uinon = UNION,
-    });
+    try model.shapes.put(test_alloc, SmithyId.of("test#Union"), .{ .tagged_union = UNION });
     try model.names.put(test_alloc, SmithyId.of("test#Union$FOO"), "FOO");
     try model.shapes.put(test_alloc, SmithyId.of("test#Union$FOO"), .unit);
     try model.names.put(test_alloc, SmithyId.of("test#Union$BAR"), "BAR");

@@ -72,7 +72,7 @@ pub fn Set(comptime T: type) type {
     };
 }
 
-test "SetUnmanaged" {
+test Set {
     var set = Set(u32){};
     errdefer set.deinit(test_alloc);
 

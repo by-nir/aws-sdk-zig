@@ -275,7 +275,7 @@ test "fnStringEquals" {
 fn fnIsValidHostLabel(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
     const subdomains = try gen.evalArg(x, args[1]);
-    return x.call(cfg.scope_private ++ ".isValidHostLabel", &.{
+    return x.call(cfg.scope_runtime ++ ".isValidHostLabel", &.{
         x.fromExpr(value),
         x.fromExpr(subdomains),
     }).consume();
@@ -285,36 +285,36 @@ test "fnIsValidHostLabel" {
     try Function.expect(fnIsValidHostLabel, &.{
         .{ .string = "foo" },
         .{ .boolean = false },
-    }, cfg.scope_private ++ ".isValidHostLabel(\"foo\", false)");
+    }, cfg.scope_runtime ++ ".isValidHostLabel(\"foo\", false)");
 }
 
 fn fnParseUrl(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
-    return x.call(cfg.scope_private ++ ".RulesUrl.init", &.{ x.id(cfg.stack_alloc), x.fromExpr(value) })
+    return x.call(cfg.scope_runtime ++ ".RulesUrl.init", &.{ x.id(cfg.stack_alloc), x.fromExpr(value) })
         .@"catch"().body(x.valueOf(null)).consume();
 }
 
 test "fnParseUrl" {
     try Function.expect(fnParseUrl, &.{
         .{ .string = "http://example.com" },
-    }, cfg.scope_private ++ ".RulesUrl.init(" ++ cfg.stack_alloc ++ ", \"http://example.com\") catch null");
+    }, cfg.scope_runtime ++ ".RulesUrl.init(" ++ cfg.stack_alloc ++ ", \"http://example.com\") catch null");
 }
 
 fn fnUriEncode(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
     return x.trys()
-        .call(cfg.scope_private ++ ".uriEncode", &.{ x.id(cfg.stack_alloc), x.fromExpr(value) })
+        .call(cfg.scope_runtime ++ ".uriEncode", &.{ x.id(cfg.stack_alloc), x.fromExpr(value) })
         .consume();
 }
 
 test "fnUriEncode" {
     try Function.expect(fnUriEncode, &.{
         .{ .string = "foo" },
-    }, "try " ++ cfg.scope_private ++ ".uriEncode(" ++ cfg.stack_alloc ++ ", \"foo\")");
+    }, "try " ++ cfg.scope_runtime ++ ".uriEncode(" ++ cfg.stack_alloc ++ ", \"foo\")");
 }
 
 fn fnSubstring(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
-    return x.call(cfg.scope_private ++ ".substring", &.{
+    return x.call(cfg.scope_runtime ++ ".substring", &.{
         x.fromExpr(try gen.evalArg(x, args[0])),
         x.fromExpr(try gen.evalArg(x, args[1])),
         x.fromExpr(try gen.evalArg(x, args[2])),
@@ -328,5 +328,5 @@ test "fnSubstring" {
         .{ .integer = 0 },
         .{ .integer = 2 },
         .{ .boolean = false },
-    }, cfg.scope_private ++ ".substring(\"foo\", 0, 2, false) catch null");
+    }, cfg.scope_runtime ++ ".substring(\"foo\", 0, 2, false) catch null");
 }
