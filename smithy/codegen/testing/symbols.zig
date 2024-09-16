@@ -80,7 +80,7 @@ fn setupList(model: *Model) !void {
 fn setupMap(model: *Model) !void {
     try model.names.put(test_alloc, SmithyId.of("test#Map"), "Map");
     try model.shapes.put(test_alloc, SmithyId.of("test#Map"), .{
-        .map = .{ .integer, .integer },
+        .map = .{ .string, .integer },
     });
     try model.traits.put(test_alloc, SmithyId.of("test#Map"), &.{
         .{ .id = trt_refine.sparse_id, .value = null },

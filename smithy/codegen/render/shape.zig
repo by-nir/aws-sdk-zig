@@ -122,40 +122,18 @@ test WriteShape {
     }.eval, "");
 }
 
-pub const MapType = struct {
-    string: bool,
-    sparse: bool,
-};
-
-pub fn mapType(symbols: *SymbolsProvider, list_id: SmithyId, key_id: SmithyId) !MapType {
-    return .{
-        .string = try symbols.getShapeUnwrap(key_id) == .string,
-        .sparse = symbols.hasTrait(list_id, trt_refine.sparse_id),
-    };
-}
-
 fn writeMapShape(symbols: *SymbolsProvider, bld: *ContainerBuild, id: SmithyId, memeber: [2]SmithyId, named_scope: bool) !void {
-    const typing = try mapType(symbols, id, memeber[0]);
     const val_type = try typeName(symbols, memeber[1], named_scope);
     const shape_name = try symbols.getShapeName(id, .pascal, .{});
 
     try writeDocComment(symbols, bld, id, false);
 
     var value = bld.x.raw(val_type);
-    if (typing.sparse) value = bld.x.typeOptional(value);
-
-    var fn_name: []const u8 = undefined;
-    var args: []const ExprBuild = undefined;
-    if (typing.string) {
-        fn_name = "std.StringArrayHashMapUnmanaged";
-        args = &.{value};
-    } else {
-        fn_name = "std.AutoArrayHashMapUnmanaged";
-        const key = try typeName(symbols, memeber[0], named_scope);
-        args = &.{ bld.x.raw(key), value };
+    if (symbols.hasTrait(id, trt_refine.sparse_id)) {
+        value = bld.x.typeOptional(value);
     }
 
-    try bld.public().constant(shape_name).assign(bld.x.call(fn_name, args));
+    try bld.public().constant(shape_name).assign(bld.x.call("std.StringArrayHashMapUnmanaged", &.{value}));
 }
 
 test writeMapShape {
@@ -163,7 +141,7 @@ test writeMapShape {
         fn eval(tester: *jobz.PipelineTester, bld: *ContainerBuild) anyerror!void {
             try tester.runTask(WriteShape, .{ bld, SmithyId.of("test#Map"), false });
         }
-    }.eval, "pub const Map = std.AutoArrayHashMapUnmanaged(i32, ?i32);");
+    }.eval, "pub const Map = std.StringArrayHashMapUnmanaged(?i32);");
 }
 
 fn writeStrEnumShape(
