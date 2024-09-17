@@ -4,12 +4,7 @@ const zig = @import("razdaz").zig;
 const smithy = @import("smithy/codegen");
 const SymbolsProvider = smithy.SymbolsProvider;
 const aws_cfg = @import("../config.zig");
-
-// TODO: Unit tests
-
-// TODO: S3 (and maybe others):
-// const payload_hash = request.payloadHash();
-// try request.addHeader("x-amz-content-sha256", &payload_hash);
+const trt_proto = @import("../traits/protocols.zig");
 
 pub const Protocol = enum {
     json_1_0,
@@ -20,7 +15,72 @@ pub const Protocol = enum {
     ec2_query,
 };
 
-pub fn defaultHttpMethod(protocol: Protocol) std.http.Method {
+pub fn resolveServiceProtocol(symbols: *SymbolsProvider) !Protocol {
+    const traits = symbols.getTraits(symbols.service_id) orelse return error.MissingServiceTraits;
+    for (traits.values) |trait| {
+        switch (trait.id) {
+            trt_proto.AwsJson10.id => return .json_1_0,
+            trt_proto.AwsJson11.id => return .json_1_1,
+            else => {},
+        }
+    }
+    return error.UnsupportedServiceProtocol;
+}
+
+/// [ALPN Protocol ID](https://www.iana.org/assignments/tls-extensiontype-values/tls-extensiontype-values.xhtml#alpn-protocol-ids)
+pub const Transport = enum {
+    http_1_1,
+    // http_2,
+};
+
+pub const ServiceTransports = struct {
+    http_request: Transport,
+    http_stream: Transport,
+};
+
+const default_transport: Transport = .http_1_1;
+
+const supported_transports = std.StaticStringMap(Transport).initComptime(.{
+    .{ "http/1.1", .http_1_1 },
+    // .{"h2", .http_2},
+});
+
+/// Assumes the service supports the protocol
+pub fn resolveServiceTransport(symbols: *SymbolsProvider, protocol: Protocol) !ServiceTransports {
+    const StringsSlice = []const []const u8;
+    const request_priority: StringsSlice, const stream_priority: StringsSlice = blk: {
+        switch (protocol) {
+            .json_1_0 => {
+                const value = trt_proto.AwsJson10.get(symbols, symbols.service_id).?;
+                break :blk .{ value.http orelse &.{}, value.event_stream_http orelse &.{} };
+            },
+            .json_1_1 => {
+                const value = trt_proto.AwsJson11.get(symbols, symbols.service_id).?;
+                break :blk .{ value.http orelse &.{}, value.event_stream_http orelse &.{} };
+            },
+            else => return error.UnimplementedServiceProtocol,
+        }
+    };
+
+    const request = try resolveTransportPriority(request_priority, default_transport);
+    const stream = try resolveTransportPriority(stream_priority, request);
+    return .{
+        .http_request = request,
+        .http_stream = stream,
+    };
+}
+
+fn resolveTransportPriority(transports: []const []const u8, default: Transport) !Transport {
+    if (transports.len == 0) return default;
+
+    for (transports) |transport| {
+        if (supported_transports.get(transport)) |t| return t;
+    }
+
+    return error.UnsupportedTransports;
+}
+
+pub fn resolveHttpMethod(protocol: Protocol) std.http.Method {
     return switch (protocol) {
         .json_1_0, .json_1_1 => .POST,
         else => unreachable,

@@ -190,13 +190,15 @@ fn writeOperationFunc(
         bld.x.raw("self.config_endpoint"),
     }));
 
-    const protocol: itg_proto.Protocol = .json_1_0;
+    const protocol = try itg_proto.resolveServiceProtocol(symbols);
+    const transport = try itg_proto.resolveServiceTransport(symbols, protocol);
+    _ = transport;
 
     try bld.constant(aws_cfg.send_op_param).assign(bld.x.trys().id(aws_cfg.scope_private).dot().call(
         "ClientOperation.new",
         &.{
             bld.x.id(aws_cfg.scratch_alloc),
-            bld.x.valueOf(itg_proto.defaultHttpMethod(protocol)),
+            bld.x.valueOf(itg_proto.resolveHttpMethod(protocol)),
             bld.x.raw("std.Uri.parse(endpoint.url) catch unreachable"),
             bld.x.raw("self.config_sdk.app_id"),
             bld.x.valueOf(null), // TODO: trace_id

@@ -37,7 +37,7 @@ pub const SigV4A = AuthTrait("aws.auth#sigv4a");
 /// [Smithy Spec](https://smithy.io/2.0/aws/aws-auth.html#aws-auth-unsignedpayload-trait)
 pub const unsigned_payload_id = SmithyId.of("aws.auth#unsignedPayload");
 
-fn AuthTrait(trait_id: []const u8) type {
+fn AuthTrait(comptime trait_id: []const u8) type {
     return struct {
         pub const id = SmithyId.of(trait_id);
         pub const auth_id = smithy.traits.auth.AuthId.of(trait_id);
@@ -60,7 +60,7 @@ fn AuthTrait(trait_id: []const u8) type {
                     value.name = try reader.nextStringAlloc(arena);
                     required -= 1;
                 } else {
-                    std.log.warn("Unknown httpApiKeyAuth trait property `{s}`", .{prop});
+                    std.log.warn("Unknown `" ++ trait_id ++ "` trait property `{s}`", .{prop});
                     try reader.skipValueOrScope();
                 }
             }
@@ -86,7 +86,7 @@ test "AuthTrait" {
     );
     errdefer reader.deinit();
 
-    const TestAuth = AuthTrait("smithy.api#test");
+    const TestAuth = AuthTrait("smithy.api#testAuth");
     const auth: *const TestAuth.Value = @ptrCast(@alignCast(try TestAuth.parse(arena_alloc, &reader)));
     reader.deinit();
     try testing.expectEqualDeep(&TestAuth.Value{ .name = "Foo" }, auth);
