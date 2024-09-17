@@ -1,19 +1,51 @@
+const jobz = @import("jobz");
 const zig = @import("razdaz").zig;
 const Expr = zig.Expr;
 const ExprBuild = zig.ExprBuild;
 const smithy = @import("smithy/codegen");
 const Function = smithy.RulesFunc;
 const BuiltIn = smithy.RulesBuiltIn;
-const FunctionsRegistry = smithy.RulesFuncsRegistry;
-const BuiltInsRegistry = smithy.RulesBuiltInsRegistry;
 const ArgValue = smithy.RulesArgValue;
 const Generator = smithy.RulesGenerator;
+const SymbolsProvider = smithy.SymbolsProvider;
+const FunctionsRegistry = smithy.RulesFuncsRegistry;
+const BuiltInsRegistry = smithy.RulesBuiltInsRegistry;
 const aws_cfg = @import("../config.zig");
 
 const RulesId = smithy.RulesBuiltIn.Id;
 
+pub fn writeEndpointScriptHead(
+    self: *const jobz.Delegate,
+    symbols: *SymbolsProvider,
+    bld: *zig.ContainerBuild,
+) anyerror!void {
+    const rules_tid = smithy.traits.rules.EndpointRuleSet.id;
+    const trait = symbols.getTrait(smithy.RuleSet, symbols.service_id, rules_tid) orelse unreachable;
+
+    const context = .{ .arena = self.alloc(), .params = trait.parameters };
+    try bld.public().function("extractConfig")
+        .arg("source", null)
+        .returns(bld.x.id(aws_cfg.endpoint_config_type)).bodyWith(context, struct {
+        fn f(ctx: @TypeOf(context), b: *zig.BlockBuild) !void {
+            try b.@"if"(b.x.raw("@typeInfo(@TypeOf(source)) != .@\"struct\""))
+                .body(b.x.raw("@compileError(\"Endpoint’s `extractConfig` expect a source of type struct.\")")).end();
+
+            try b.variable("value").typing(b.x.id(aws_cfg.endpoint_config_type)).assign(b.x.raw(".{}"));
+
+            for (ctx.params) |param| {
+                const id = param.value.built_in orelse continue;
+                const expr = try mapConfigBuiltins(b.x, id);
+                const val_field = try smithy.name_util.formatCase(ctx.arena, .snake, param.key);
+                try b.id("value").dot().id(val_field).assign().fromExpr(expr).end();
+            }
+
+            try b.returns().id("value").end();
+        }
+    }.f);
+}
+
 /// Provides a mapping from an endpoint built-in to a config value.
-pub fn mapConfigBuiltins(x: ExprBuild, id: RulesId) !Expr {
+fn mapConfigBuiltins(x: ExprBuild, id: RulesId) !Expr {
     const field: []const u8 = switch (id) {
         // Smithy
         RulesId.endpoint => "endpoint_url",
@@ -123,7 +155,7 @@ test "fnPartition" {
 fn fnParseArn(gen: *Generator, x: ExprBuild, args: []const ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
     return x.call(aws_cfg.scope_private ++ ".Arn.init", &.{
-        x.id(aws_cfg.stack_alloc),
+        x.id(aws_cfg.scratch_alloc),
         x.fromExpr(value),
     }).consume();
 }

@@ -33,12 +33,11 @@ pub fn ResultError(comptime E: type) type {
         const Self = @This();
 
         kind: E,
-        message: ?[]const u8,
-        allocator: Allocator,
+        message: ?[]const u8 = null,
+        arena: ?std.heap.ArenaAllocator = null,
 
         pub fn deinit(self: Self) void {
-            if (@hasDecl(E, "deinit")) self.kind.deinit(self.allocator);
-            if (self.message) |s| self.allocator.free(s);
+            if (self.arena) |arena| arena.deinit();
         }
 
         pub fn httpStatus(self: Self) std.http.Status {

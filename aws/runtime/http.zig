@@ -84,8 +84,6 @@ pub const Client = struct {
 
         var out_headers_buff: HeadersRawBuffer = undefined;
         var out_body_buff = std.ArrayList(u8).init(op.allocator);
-        errdefer out_body_buff.deinit();
-
         const result = try self.http.fetch(.{
             .method = op.request.method,
             .location = .{ .uri = op.request.endpoint },
@@ -97,8 +95,6 @@ pub const Client = struct {
         });
 
         const out_body = try out_body_buff.toOwnedSlice();
-        errdefer op.allocator.free(out_body);
-
         const out_headers = if (mem.indexOf(u8, &out_headers_buff, "\r\n\r\n")) |len|
             try op.allocator.dupe(u8, out_headers_buff[0 .. len + 4])
         else
@@ -118,9 +114,14 @@ pub const Operation = struct {
     request: Request,
     response: ?Response = null,
 
-    pub fn init(allocator: Allocator, method: std.http.Method, endpoint: std.Uri, app_id: ?[]const u8, trace_id: ?[]const u8) !*Operation {
+    pub fn new(
+        allocator: Allocator,
+        method: std.http.Method,
+        endpoint: std.Uri,
+        app_id: ?[]const u8,
+        trace_id: ?[]const u8,
+    ) !*Operation {
         const self = try allocator.create(Operation);
-        errdefer allocator.destroy(self);
         self.* = .{
             .allocator = allocator,
             .time = TimeStr.now(),
@@ -131,7 +132,6 @@ pub const Operation = struct {
             .endpoint = endpoint,
             .method = method,
         };
-        errdefer request.deinit(allocator);
 
         try request.headers.put(allocator, "x-amz-date", self.time.timestamp());
         try request.headers.put(allocator, "host", try endpoint.host.?.toRawMaybeAlloc(undefined));
@@ -140,23 +140,12 @@ pub const Operation = struct {
         self.request = request;
         return self;
     }
-
-    pub fn deinit(self: *Operation) void {
-        self.request.deinit(self.allocator);
-        if (self.response) |t| t.deinit(self.allocator);
-        self.allocator.destroy(self);
-    }
 };
 
 pub const Response = struct {
     status: std.http.Status,
     headers: []const u8,
     body: []const u8,
-
-    pub fn deinit(self: Response, allocator: Allocator) void {
-        allocator.free(self.headers);
-        allocator.free(self.body);
-    }
 
     pub fn headersIterator(self: Response) std.http.HeaderIterator {
         return std.http.HeaderIterator.init(self.headers);
@@ -178,11 +167,6 @@ pub const Request = struct {
         .{ "accept-encoding", "accept_encoding" },
         .{ "connection", "connection" },
     });
-
-    pub fn deinit(self: *Request, allocator: Allocator) void {
-        self.query.deinit(allocator);
-        self.headers.deinit(allocator);
-    }
 
     pub fn stringifyQuery(self: Request, out_buffer: *QueryBuffer) ![]const u8 {
         var scratch_buff: HeadersRawBuffer = undefined;
@@ -290,8 +274,10 @@ fn sortHeaderName(_: void, lhs: std.http.Header, rhs: std.http.Header) bool {
 }
 
 test "Request.stringifyQuery" {
-    var request = try testRequest();
-    defer request.deinit(test_alloc);
+    var arena = std.heap.ArenaAllocator.init(test_alloc);
+    defer arena.deinit();
+
+    var request = try testRequest(arena.allocator());
 
     var buffer: QueryBuffer = undefined;
     const query = try request.stringifyQuery(&buffer);
@@ -299,8 +285,10 @@ test "Request.stringifyQuery" {
 }
 
 test "Request.stringifyHeaders" {
-    var request = try testRequest();
-    defer request.deinit(test_alloc);
+    var arena = std.heap.ArenaAllocator.init(test_alloc);
+    defer arena.deinit();
+
+    var request = try testRequest(arena.allocator());
 
     var buffer: HeadersRawBuffer = undefined;
     const headers = try request.stringifyHeaders(&buffer);
@@ -308,8 +296,10 @@ test "Request.stringifyHeaders" {
 }
 
 test "Request.stringifyHeadNames" {
-    var request = try testRequest();
-    defer request.deinit(test_alloc);
+    var arena = std.heap.ArenaAllocator.init(test_alloc);
+    defer arena.deinit();
+
+    var request = try testRequest(arena.allocator());
 
     var buffer: QueryBuffer = undefined;
     const names = try request.stringifyHeadNames(&buffer);
@@ -317,26 +307,28 @@ test "Request.stringifyHeadNames" {
 }
 
 test "Request.hashPayload" {
-    var request = try testRequest();
-    defer request.deinit(test_alloc);
+    var arena = std.heap.ArenaAllocator.init(test_alloc);
+    defer arena.deinit();
+
+    var request = try testRequest(arena.allocator());
 
     var hash: hashing.HashStr = undefined;
     request.hashPayload(&hash);
     try testing.expectEqualStrings("269dce1a5bb90188b2d9cf542a7c30e410c7d8251e34a97bfea56062df51ae23", &hash);
 }
 
-fn testRequest() !Request {
+fn testRequest(allocator: Allocator) !Request {
     var request = Request{
         .method = .GET,
         .endpoint = .{ .scheme = "http" },
         .payload = "foo-bar-baz",
     };
 
-    try request.headers.put(test_alloc, "Host", "s3.amazonaws.com");
-    try request.headers.put(test_alloc, "X-amz-date", "20130708T220855Z");
+    try request.headers.put(allocator, "Host", "s3.amazonaws.com");
+    try request.headers.put(allocator, "X-amz-date", "20130708T220855Z");
 
-    try request.query.put(test_alloc, "foo", "%bar");
-    try request.query.put(test_alloc, "baz", "$qux");
+    try request.query.put(allocator, "foo", "%bar");
+    try request.query.put(allocator, "baz", "$qux");
 
     return request;
 }

@@ -4,7 +4,10 @@ const smithy = @import("smithy/codegen").config;
 pub const alloc_param = smithy.alloc_param;
 
 /// Name of the stack allocator identifier
-pub const stack_alloc = smithy.stack_alloc;
+pub const scratch_alloc = smithy.scratch_alloc;
+
+/// Name of the operation output arena identifier
+pub const output_arena = "output_arena";
 
 /// Endpoint configuration type name
 pub const endpoint_config_type = smithy.endpoint_config_type;

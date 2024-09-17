@@ -67,7 +67,7 @@ fn writeAwsJsonRequest(
         try symbols.getShapeName(func.id, .pascal, .{}),
     });
 
-    const payload = bld.trys().id(aws_cfg.scope_protocol).dot().call("json.operationRequest", &.{
+    try bld.trys().id(aws_cfg.scope_protocol).dot().call("json.operationRequest", &.{
         bld.x.valueOf(switch (flavor) {
             10 => .aws_1_0,
             11 => .aws_1_1,
@@ -77,10 +77,7 @@ fn writeAwsJsonRequest(
         if (func.serial_input) |s| bld.x.raw(s) else bld.x.structLiteral(null, &.{}),
         bld.x.id(aws_cfg.send_op_param),
         bld.x.id(aws_cfg.send_input_param),
-    });
-
-    try bld.constant("payload").assign(payload);
-    try bld.defers(bld.x.id(aws_cfg.alloc_param).dot().raw("free(payload)"));
+    }).end();
 }
 
 fn writeAwsJsonResult(
@@ -100,6 +97,7 @@ fn writeAwsJsonResult(
         if (func.serial_output) |s| exp.raw(s) else exp.structLiteral(null, &.{}),
         if (func.errors_type) |s| exp.raw(s) else exp.typeOf(void),
         if (func.serial_error) |s| exp.raw(s) else exp.structLiteral(null, &.{}),
+        exp.addressOf().id(aws_cfg.output_arena),
         exp.id(aws_cfg.send_op_param),
     });
 }

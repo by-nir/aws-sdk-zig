@@ -126,9 +126,9 @@ pub fn generateResolver(self: *Self, bld: *ContainerBuild, rules: []const mdl.Ru
         .bodyWith(context, struct {
         fn f(ctx: @TypeOf(context), b: *BlockBuild) !void {
             try b.variable("local_buffer").typing(b.typeOf([512]u8)).assign(b.x.raw("undefined"));
-            try b.variable("local_heap").assign(b.x.call("std.heap.FixedBufferAllocator.init", &.{b.x.addressOf().id("local_buffer")}));
-            try b.constant(cfg.stack_alloc).assign(b.x.raw("local_heap.allocator()"));
-            try b.discard().id(cfg.stack_alloc).end();
+            try b.variable("fixed_buffer").assign(b.x.call("std.heap.FixedBufferAllocator.init", &.{b.x.addressOf().id("local_buffer")}));
+            try b.constant(cfg.scratch_alloc).assign(b.x.raw("fixed_buffer.allocator()"));
+            try b.discard().id(cfg.scratch_alloc).end();
 
             for (ctx.self.params) |kv| {
                 const field = ctx.self.fields.get(kv.key).?;
@@ -154,9 +154,9 @@ test "generateResolver" {
         \\pub fn resolve(allocator: Allocator, config: EndpointConfig) !smithy.Endpoint {
         \\    var local_buffer: [512]u8 = undefined;
         \\
-        \\    var local_heap = std.heap.FixedBufferAllocator.init(&local_buffer);
+        \\    var fixed_buffer = std.heap.FixedBufferAllocator.init(&local_buffer);
         \\
-        \\    const scratch_alloc = local_heap.allocator();
+        \\    const scratch_alloc = fixed_buffer.allocator();
         \\
         \\    _ = scratch_alloc;
         \\

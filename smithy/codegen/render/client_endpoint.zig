@@ -76,9 +76,9 @@ test ClientEndpoint {
         \\pub fn resolve(allocator: Allocator, config: EndpointConfig) !smithy.Endpoint {
         \\    var local_buffer: [512]u8 = undefined;
         \\
-        \\    var local_heap = std.heap.FixedBufferAllocator.init(&local_buffer);
+        \\    var fixed_buffer = std.heap.FixedBufferAllocator.init(&local_buffer);
         \\
-        \\    const scratch_alloc = local_heap.allocator();
+        \\    const scratch_alloc = fixed_buffer.allocator();
         \\
         \\    _ = scratch_alloc;
         \\

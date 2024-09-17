@@ -2,7 +2,7 @@
 pub const alloc_param = "allocator";
 
 /// Name of the stack allocator identifier
-pub const stack_alloc = "scratch_alloc";
+pub const scratch_alloc = "scratch_alloc";
 
 /// Service client type name
 pub const service_client_type = "Client";

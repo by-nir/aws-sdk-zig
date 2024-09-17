@@ -290,27 +290,27 @@ test "fnIsValidHostLabel" {
 
 fn fnParseUrl(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
-    return x.call(cfg.runtime_scope ++ ".RulesUrl.init", &.{ x.id(cfg.stack_alloc), x.fromExpr(value) })
+    return x.call(cfg.runtime_scope ++ ".RulesUrl.init", &.{ x.id(cfg.scratch_alloc), x.fromExpr(value) })
         .@"catch"().body(x.valueOf(null)).consume();
 }
 
 test "fnParseUrl" {
     try Function.expect(fnParseUrl, &.{
         .{ .string = "http://example.com" },
-    }, cfg.runtime_scope ++ ".RulesUrl.init(" ++ cfg.stack_alloc ++ ", \"http://example.com\") catch null");
+    }, cfg.runtime_scope ++ ".RulesUrl.init(" ++ cfg.scratch_alloc ++ ", \"http://example.com\") catch null");
 }
 
 fn fnUriEncode(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
     return x.trys()
-        .call(cfg.runtime_scope ++ ".uriEncode", &.{ x.id(cfg.stack_alloc), x.fromExpr(value) })
+        .call(cfg.runtime_scope ++ ".uriEncode", &.{ x.id(cfg.scratch_alloc), x.fromExpr(value) })
         .consume();
 }
 
 test "fnUriEncode" {
     try Function.expect(fnUriEncode, &.{
         .{ .string = "foo" },
-    }, "try " ++ cfg.runtime_scope ++ ".uriEncode(" ++ cfg.stack_alloc ++ ", \"foo\")");
+    }, "try " ++ cfg.runtime_scope ++ ".uriEncode(" ++ cfg.scratch_alloc ++ ", \"foo\")");
 }
 
 fn fnSubstring(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {

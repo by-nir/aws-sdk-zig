@@ -1,13 +1,12 @@
 const std = @import("std");
 const jobz = @import("jobz");
-const Task = jobz.Task;
 const Delegate = jobz.Delegate;
 const md = @import("razdaz").md;
 const zig = @import("razdaz").zig;
 const smithy = @import("smithy/codegen");
 const SmithyPipeline = smithy.PipelineTask;
-const SmithyOptions = smithy.PipelineOptions;
 const SmithyService = smithy.SmithyService;
+const SmithyOptions = smithy.PipelineOptions;
 const SymbolsProvider = smithy.SymbolsProvider;
 const aws_cfg = @import("../config.zig");
 const itg_auth = @import("../integrate/auth.zig");
@@ -20,7 +19,7 @@ const CONFIG_TYPENAME = "Config";
 const ScopeTag = enum { whitelist };
 const WhitelistMap = std.StringHashMapUnmanaged(void);
 
-pub const Sdk = Task.Define("AWS SDK Client", sdkTask, .{});
+pub const Sdk = jobz.Task.Define("AWS SDK Client", sdkTask, .{});
 fn sdkTask(
     self: *const Delegate,
     src_dir: std.fs.Dir,
@@ -73,9 +72,12 @@ pub const pipeline_invoker = blk: {
     _ = builder.Override(smithy.ClientOperationFuncHook, "AWS Client Operation Func", writeOperationFunc, .{
         .injects = &.{SymbolsProvider},
     });
-    _ = builder.Override(smithy.EndpointScriptHeadHook, "AWS Endpoint Script Head", writeEndpointScriptHead, .{
-        .injects = &.{SymbolsProvider},
-    });
+    _ = builder.Override(
+        smithy.EndpointScriptHeadHook,
+        "AWS Endpoint Script Head",
+        itg_rules.writeEndpointScriptHead,
+        .{ .injects = &.{SymbolsProvider} },
+    );
 
     break :blk builder.consume();
 };
@@ -107,38 +109,17 @@ fn writeScriptHead(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
     try bld.constant(aws_cfg.scope_private).assign(bld.x.id(aws_cfg.scope_runtime).dot().id("_private_"));
 }
 
-fn writeEndpointScriptHead(self: *const Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild) anyerror!void {
-    const rules_tid = smithy.traits.rules.EndpointRuleSet.id;
-    const trait = symbols.getTrait(smithy.RuleSet, symbols.service_id, rules_tid) orelse unreachable;
-
-    const context = .{ .arena = self.alloc(), .params = trait.parameters };
-    try bld.public().function("extractConfig")
-        .arg("source", null)
-        .returns(bld.x.id(aws_cfg.endpoint_config_type)).bodyWith(context, struct {
-        fn f(ctx: @TypeOf(context), b: *zig.BlockBuild) !void {
-            try b.@"if"(b.x.raw("@typeInfo(@TypeOf(source)) != .@\"struct\""))
-                .body(b.x.raw("@compileError(\"Endpoint’s `extractConfig` expect a source of type struct.\")")).end();
-
-            try b.variable("value").typing(b.x.id(aws_cfg.endpoint_config_type)).assign(b.x.raw(".{}"));
-
-            for (ctx.params) |param| {
-                const id = param.value.built_in orelse continue;
-                const expr = try itg_rules.mapConfigBuiltins(b.x, id);
-                const val_field = try smithy.name_util.formatCase(ctx.arena, .snake, param.key);
-                try b.id("value").dot().id(val_field).assign().fromExpr(expr).end();
-            }
-
-            try b.returns().id("value").end();
-        }
-    }.f);
-}
-
 fn writeClientScriptHead(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
     try bld.constant(aws_cfg.scope_auth).assign(bld.x.id(aws_cfg.scope_private).dot().id("auth"));
     try bld.constant(aws_cfg.scope_protocol).assign(bld.x.id(aws_cfg.scope_private).dot().id("protocol"));
 }
 
-fn writeClientShapeHead(_: *const Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild, shape: *const SmithyService) anyerror!void {
+fn writeClientShapeHead(
+    _: *const Delegate,
+    symbols: *SymbolsProvider,
+    bld: *zig.ContainerBuild,
+    shape: *const SmithyService,
+) anyerror!void {
     const service = ServiceTrait.get(symbols, symbols.service_id) orelse return error.MissingServiceTrait;
     try bld.constant("service_code").assign(bld.x.valueOf(service.endpoint_prefix orelse return error.MissingServiceCode));
     try bld.constant("service_version").assign(bld.x.valueOf(shape.version orelse return error.MissingServiceApiVersion));
@@ -161,11 +142,16 @@ fn writeClientShapeHead(_: *const Delegate, symbols: *SymbolsProvider, bld: *zig
 }
 
 fn writeServiceInit(bld: *zig.BlockBuild) anyerror!void {
-    try bld.constant("client_cfg").assign(bld.x.trys().id(aws_cfg.scope_private).dot().raw("ClientConfig.resolve(config)"));
+    try bld.constant("client_cfg").assign(
+        bld.x.trys().id(aws_cfg.scope_private).dot().raw("ClientConfig.resolve(config)"),
+    );
 
     try bld.returns().structLiteral(null, &.{
-        bld.x.structAssign("config_sdk", bld.x.id("client_cfg")),
-        bld.x.structAssign("config_endpoint", bld.x.call(aws_cfg.endpoint_scope ++ ".extractConfig", &.{bld.x.id("client_cfg")})),
+        bld.x.structAssign("config_sdk", bld.x.id("client_cfg")), // TODO: remove
+        bld.x.structAssign("config_endpoint", bld.x.call(
+            aws_cfg.endpoint_scope ++ ".extractConfig",
+            &.{bld.x.id("client_cfg")},
+        )),
         bld.x.structAssign("http", bld.x.raw("client_cfg.http_client")),
         bld.x.structAssign("TEMP_creds", bld.x.raw("client_cfg.credentials")),
     }).end();
@@ -175,32 +161,56 @@ fn writeServiceDeinit(bld: *zig.BlockBuild) anyerror!void {
     try bld.raw("self.http.deinit()");
 }
 
-fn writeOperationFunc(self: *const Delegate, symbols: *SymbolsProvider, bld: *zig.BlockBuild, func: smithy.OperationFunc) anyerror!void {
-    const alloc_expr = bld.x.id(aws_cfg.alloc_param);
+/// ### Operation Memory Management
+///
+/// The user provides an allocator (assummed GPA), we use it to init two arenas:
+/// 1. Scratch arena for the lifetime of **processing** the request
+/// 2. Output arena for the output/error payload – user ownes the returned memory
+///
+/// The `ClientOperation` is created using the scratch arena.
+/// Components who participate in the processing of the request can allocate
+/// memory from it, while safly assuming that memory will be freed on their behalf.
+///
+/// The protocol implementations can use both the scratch and the output arenas.
+/// They are also responsible for passing the output arena alongside the result.
+fn writeOperationFunc(
+    self: *const Delegate,
+    symbols: *SymbolsProvider,
+    bld: *zig.BlockBuild,
+    func: smithy.OperationFunc,
+) anyerror!void {
+    try bld.variable("scratch_arena").assign(
+        bld.x.call("std.heap.ArenaAllocator.init", &.{bld.x.id(aws_cfg.alloc_param)}),
+    );
+    try bld.constant(aws_cfg.scratch_alloc).assign(bld.x.id("scratch_arena").dot().call("allocator", &.{}));
+    try bld.defers(bld.x.id("scratch_arena").dot().call("deinit", &.{}));
 
     try bld.constant("endpoint").assign(bld.x.trys().call(aws_cfg.endpoint_scope ++ ".resolve", &.{
-        alloc_expr,
+        bld.x.id(aws_cfg.scratch_alloc),
         bld.x.raw("self.config_endpoint"),
     }));
-    try bld.defers(bld.x.id("endpoint").dot().call("deinit", &.{alloc_expr}));
 
     const protocol: itg_proto.Protocol = .json_1_0;
 
-    try bld.variable(aws_cfg.send_op_param).assign(bld.x.trys().id(aws_cfg.scope_private).dot().call(
-        "ClientOperation.init",
+    try bld.constant(aws_cfg.send_op_param).assign(bld.x.trys().id(aws_cfg.scope_private).dot().call(
+        "ClientOperation.new",
         &.{
-            alloc_expr,
+            bld.x.id(aws_cfg.scratch_alloc),
             bld.x.valueOf(itg_proto.defaultHttpMethod(protocol)),
             bld.x.raw("std.Uri.parse(endpoint.url) catch unreachable"),
             bld.x.raw("self.config_sdk.app_id"),
             bld.x.valueOf(null), // TODO: trace_id
         },
     ));
-    try bld.defers(bld.x.id(aws_cfg.send_op_param).dot().call("deinit", &.{}));
 
     try itg_proto.writeOperationRequest(self.alloc(), symbols, bld, func, protocol);
     if (func.auth_schemes.len > 0) try itg_auth.writeOperationAuth(self.alloc(), symbols, bld, func);
     try bld.trys().call("self.http.sendSync", &.{bld.x.id(aws_cfg.send_op_param)}).end();
+
+    try bld.variable(aws_cfg.output_arena).assign(
+        bld.x.call("std.heap.ArenaAllocator.init", &.{bld.x.id(aws_cfg.alloc_param)}),
+    );
+    try bld.errorDefers().body((bld.x.id(aws_cfg.output_arena).dot().call("deinit", &.{})));
 
     const result = try itg_proto.writeOperationResult(self.alloc(), symbols, bld, func, protocol);
     switch ((func.output_type orelse func.errors_type) == null) {

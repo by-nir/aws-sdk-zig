@@ -24,7 +24,7 @@ pub fn operationRequest(
     comptime scheme: anytype,
     op: *Operation,
     input: anytype,
-) ![]const u8 {
+) !void {
     const req = &op.request;
     try req.headers.put(op.allocator, "x-amz-target", target);
     try req.headers.put(op.allocator, "content-type", switch (flavor) {
@@ -37,10 +37,7 @@ pub fn operationRequest(
 
     var json = std.json.writeStream(payload.writer(), .{});
     try serializeValue(&json, scheme, input);
-
-    const payload_bytes = try payload.toOwnedSlice();
-    req.payload = payload_bytes;
-    return payload_bytes;
+    req.payload = try payload.toOwnedSlice();
 }
 
 fn serializeValue(json: *JsonWriter, comptime scheme: anytype, value: anytype) !void {
@@ -160,14 +157,15 @@ pub fn operationResponse(
     comptime out_scheme: anytype,
     comptime Err: type,
     comptime err_scheme: anytype,
+    output_arena: *std.heap.ArenaAllocator,
     op: *Operation,
 ) !smithy.Result(Out, Err) {
     const rsp = op.response orelse return error.MissingResponse;
     return switch (rsp.status.class()) {
-        .success => .{ .ok = try handleOutput(flavor, Out, out_scheme, op.allocator, rsp) },
+        .success => .{ .ok = try handleOutput(flavor, Out, out_scheme, op.allocator, output_arena, rsp) },
         .client_error,
         .server_error,
-        => .{ .fail = try handleError(flavor, Err, err_scheme, op.allocator, rsp) },
+        => .{ .fail = try handleError(flavor, Err, err_scheme, op.allocator, output_arena, rsp) },
         else => error.UnexpectedResponseStatus,
     };
 }
@@ -176,24 +174,19 @@ fn handleOutput(
     comptime _: JsonFlavor,
     comptime T: type,
     comptime scheme: anytype,
-    allocator: Allocator,
+    scratch_alloc: Allocator,
+    output_arena: *std.heap.ArenaAllocator,
     response: Response,
 ) !T {
     if (response.body.len == 0) return .{};
 
     var stream = std.io.fixedBufferStream(response.body);
-    var reader = std.json.reader(allocator, stream.reader());
+    var reader = std.json.reader(scratch_alloc, stream.reader());
     defer reader.deinit();
 
-    var scratch = std.heap.ArenaAllocator.init(allocator);
-    defer scratch.deinit();
-
-    var persist = std.heap.ArenaAllocator.init(allocator);
-    errdefer persist.deinit();
-
     var value: T = .{};
-    try parseValue(scratch.allocator(), persist.allocator(), &reader, scheme, &value);
-    value.arena = persist;
+    try parseValue(scratch_alloc, output_arena.allocator(), &reader, scheme, &value);
+    if (output_arena.queryCapacity() > 0) value.arena = output_arena.*;
     return value;
 }
 
@@ -201,12 +194,12 @@ fn handleError(
     comptime _: JsonFlavor,
     comptime E: type,
     comptime scheme: anytype,
-    allocator: Allocator,
+    scratch_alloc: Allocator,
+    output_arena: *std.heap.ArenaAllocator,
     response: Response,
 ) !smithy.ResultError(E) {
     var stream = std.io.fixedBufferStream(response.body);
-    var reader = std.json.reader(allocator, stream.reader());
-    defer reader.deinit();
+    var reader = std.json.reader(scratch_alloc, stream.reader());
 
     const body_code, const body_msg = try parseBodyError(&reader);
     const header_code = parseHeaderError(response);
@@ -227,10 +220,12 @@ fn handleError(
         return error.UnresolvedResponseError;
     };
 
+    const msg = body_msg orelse return .{ .kind = resolved };
+    const dupe = try output_arena.allocator().dupe(u8, msg);
     return .{
         .kind = resolved,
-        .message = if (body_msg) |s| try allocator.dupe(u8, s) else null,
-        .allocator = allocator,
+        .message = dupe,
+        .arena = output_arena.*,
     };
 }
 
@@ -294,7 +289,7 @@ test sanitizeErrorCode {
     try testing.expectEqualStrings("FooError", sanitizeErrorCode("aws.protocoltests.restjson#FooError:http://internal.amazon.com/coral/com.amazon.coral.validate/").?);
 }
 
-fn parseValue(scratch_alloc: Allocator, persist_alloc: Allocator, json: *JsonReader, comptime scheme: anytype, value: anytype) !void {
+fn parseValue(scratch_alloc: Allocator, output_alloc: Allocator, json: *JsonReader, comptime scheme: anytype, value: anytype) !void {
     switch (@as(smithy.SerialType, scheme[0])) {
         .boolean => value.* = try std.json.innerParse(bool, scratch_alloc, json, .{}),
         .byte => value.* = try std.json.innerParse(i8, scratch_alloc, json, .{}),
@@ -304,20 +299,19 @@ fn parseValue(scratch_alloc: Allocator, persist_alloc: Allocator, json: *JsonRea
         .float => value.* = try std.json.innerParse(f32, scratch_alloc, json, .{}),
         .double => value.* = try std.json.innerParse(f64, scratch_alloc, json, .{}),
         .string => {
-            value.* = try std.json.innerParse([]const u8, persist_alloc, json, .{
+            value.* = try std.json.innerParse([]const u8, output_alloc, json, .{
                 .allocate = .alloc_always,
                 .max_value_len = std.json.default_max_value_len,
             });
         },
         .blob => {
             const str_value = try std.json.innerParse([]const u8, scratch_alloc, json, .{
-                .allocate = .alloc_always,
+                .allocate = .alloc_if_needed,
                 .max_value_len = std.json.default_max_value_len,
             });
-            defer scratch_alloc.free(str_value);
 
             const size = try std.base64.standard.Decoder.calcSizeForSlice(str_value);
-            const target = try persist_alloc.alloc(u8, size);
+            const target = try output_alloc.alloc(u8, size);
             try std.base64.standard.Decoder.decode(target, str_value);
             value.* = target;
         },
@@ -331,7 +325,7 @@ fn parseValue(scratch_alloc: Allocator, persist_alloc: Allocator, json: *JsonRea
                 else => unreachable,
             };
 
-            var list = std.ArrayList(Child).init(persist_alloc);
+            var list = std.ArrayList(Child).init(output_alloc);
 
             switch (try json.next()) {
                 .array_begin => {},
@@ -342,7 +336,7 @@ fn parseValue(scratch_alloc: Allocator, persist_alloc: Allocator, json: *JsonRea
                 if (!required and .null == try json.peekNextTokenType()) {
                     try list.append(null);
                 } else {
-                    try parseValue(scratch_alloc, persist_alloc, json, member_scheme, try list.addOne());
+                    try parseValue(scratch_alloc, output_alloc, json, member_scheme, try list.addOne());
                 }
             }
 
@@ -366,8 +360,8 @@ fn parseValue(scratch_alloc: Allocator, persist_alloc: Allocator, json: *JsonRea
 
             while (try json.peekNextTokenType() != .array_end) {
                 var item: Set.Item = undefined;
-                try parseValue(scratch_alloc, persist_alloc, json, member_scheme, &item);
-                try set.internal.putNoClobber(persist_alloc, item, {});
+                try parseValue(scratch_alloc, output_alloc, json, member_scheme, &item);
+                try set.internal.putNoClobber(output_alloc, item, {});
             }
 
             switch (try json.next()) {
@@ -393,19 +387,17 @@ fn parseValue(scratch_alloc: Allocator, persist_alloc: Allocator, json: *JsonRea
             }
 
             while (try json.peekNextTokenType() != .object_end) {
-                const key_token = try json.nextAlloc(scratch_alloc, .alloc_if_needed);
-                defer freeToken(scratch_alloc, key_token);
-                const key = switch (key_token) {
-                    .string, .allocated_string => |s| s,
-                    else => return error.UnexpectedToken,
-                };
+                const key = try std.json.innerParse([]const u8, scratch_alloc, json, .{
+                    .allocate = .alloc_if_needed,
+                    .max_value_len = std.json.default_max_value_len,
+                });
 
                 if (!required and .null == try json.peekNextTokenType()) {
-                    try map.internal.putNoClobber(persist_alloc, key, null);
+                    try map.internal.putNoClobber(output_alloc, key, null);
                 } else {
                     var item: Item = undefined;
-                    try parseValue(scratch_alloc, persist_alloc, json, val_scheme, &item);
-                    try map.internal.putNoClobber(persist_alloc, key, item);
+                    try parseValue(scratch_alloc, output_alloc, json, val_scheme, &item);
+                    try map.internal.putNoClobber(output_alloc, key, item);
                 }
             }
 
@@ -425,14 +417,14 @@ fn parseValue(scratch_alloc: Allocator, persist_alloc: Allocator, json: *JsonRea
             value.* = @enumFromInt(int_value);
         },
         .str_enum, .trt_enum => {
-            const str_value = try std.json.innerParse([]const u8, persist_alloc, json, .{
+            const str_value = try std.json.innerParse([]const u8, output_alloc, json, .{
                 .allocate = .alloc_always,
                 .max_value_len = std.json.default_max_value_len,
             });
 
             const T = ValueType(value);
             const resolved = T.parse(str_value);
-            if (resolved != .UNKNOWN) persist_alloc.free(str_value);
+            if (resolved != .UNKNOWN) output_alloc.free(str_value);
 
             value.* = resolved;
         },
@@ -445,12 +437,10 @@ fn parseValue(scratch_alloc: Allocator, persist_alloc: Allocator, json: *JsonRea
                 else => return error.UnexpectedToken,
             }
 
-            const key_token = try json.nextAlloc(scratch_alloc, .alloc_if_needed);
-            defer freeToken(scratch_alloc, key_token);
-            const key = switch (key_token) {
-                .string, .allocated_string => |s| s,
-                else => return error.UnexpectedToken,
-            };
+            const key = try std.json.innerParse([]const u8, scratch_alloc, json, .{
+                .allocate = .alloc_if_needed,
+                .max_value_len = std.json.default_max_value_len,
+            });
 
             var found = false;
             inline for (members) |member| {
@@ -459,9 +449,8 @@ fn parseValue(scratch_alloc: Allocator, persist_alloc: Allocator, json: *JsonRea
                 const val_scheme = member[2];
 
                 if (std.mem.eql(u8, spec_name, key)) {
-                    const Item = std.meta.TagPayloadByName(Union, field_name);
-                    var item: Item = undefined;
-                    try parseValue(scratch_alloc, persist_alloc, json, val_scheme, &item);
+                    var item: std.meta.TagPayloadByName(Union, field_name) = undefined;
+                    try parseValue(scratch_alloc, output_alloc, json, val_scheme, &item);
                     value.* = @unionInit(Union, field_name, item);
                     found = true;
                 }
@@ -486,11 +475,10 @@ fn parseValue(scratch_alloc: Allocator, persist_alloc: Allocator, json: *JsonRea
             }
 
             obj: while (try json.peekNextTokenType() != .object_end) {
-                const prop_token = try json.nextAlloc(scratch_alloc, .alloc_if_needed);
-                const prop_name = switch (prop_token) {
-                    .string, .allocated_string => |s| s,
-                    else => return error.UnexpectedToken,
-                };
+                const key = try std.json.innerParse([]const u8, scratch_alloc, json, .{
+                    .allocate = .alloc_if_needed,
+                    .max_value_len = std.json.default_max_value_len,
+                });
 
                 inline for (members) |member| {
                     const name_spec: []const u8 = member[0];
@@ -498,21 +486,18 @@ fn parseValue(scratch_alloc: Allocator, persist_alloc: Allocator, json: *JsonRea
                     const required: bool = member[2];
                     const member_scheme = member[3];
 
-                    if (std.mem.eql(u8, name_spec, prop_name)) {
-                        freeToken(scratch_alloc, prop_token);
-
+                    if (std.mem.eql(u8, name_spec, key)) {
                         if (!required and .null == try json.peekNextTokenType()) {
                             @field(value, name_field) = null;
                         } else {
-                            try parseValue(scratch_alloc, persist_alloc, json, member_scheme, &@field(value, name_field));
+                            try parseValue(scratch_alloc, output_alloc, json, member_scheme, &@field(value, name_field));
                         }
 
                         continue :obj;
                     }
                 }
 
-                log.err("Unexpected response struct field: `{s}`", .{prop_name});
-                freeToken(scratch_alloc, prop_token);
+                log.err("Unexpected response struct field: `{s}`", .{key});
                 return error.UnexpectedResponseStructField;
             }
 
@@ -533,11 +518,4 @@ fn ValueType(value: anytype) type {
         .optional => |m| m.child,
         else => @TypeOf(value.*),
     };
-}
-
-fn freeToken(allocator: Allocator, token: std.json.Token) void {
-    switch (token) {
-        .allocated_string, .allocated_number => allocator.free(token.allocated_string),
-        else => {},
-    }
 }
