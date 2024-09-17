@@ -19,11 +19,11 @@ const trt_constr = @import("../traits/constraint.zig");
 
 pub const Part = enum { unit, root_child, list, map, enums_str, enum_int, union_str, structure, err, service };
 
-pub fn setup(arena: std.mem.Allocator, cases: []const Part) !SymbolsProvider {
+pub fn setup(arena: std.mem.Allocator, parts: []const Part) !SymbolsProvider {
     var model = Model.init(test_alloc);
     errdefer model.deinit();
 
-    for (cases) |s| switch (s) {
+    for (parts) |s| switch (s) {
         .unit => try setupUnit(&model),
         .root_child => try setupRootAndChild(&model),
         .list => try setupList(&model),
@@ -183,7 +183,7 @@ fn setupStruct(model: *Model) !void {
     try model.mixins.put(test_alloc, SmithyId.of("test#Struct"), Static.mixins);
 
     try model.names.put(test_alloc, SmithyId.of("test#Struct$fooBar"), "fooBar");
-    try model.shapes.put(test_alloc, SmithyId.of("test#Struct$fooBar"), .integer);
+    try model.shapes.put(test_alloc, SmithyId.of("test#Struct$fooBar"), .string);
     try model.traits.put(test_alloc, SmithyId.of("test#Struct$fooBar"), &Static.member_traits);
 
     try model.names.put(test_alloc, SmithyId.of("test#Struct$bazQux"), "bazQux");
@@ -257,6 +257,7 @@ fn setupService(model: *Model) !void {
         };
         const n1 = SmithyId.of("test.serve#MyOperationInput$Bar");
         const operation_input: []const SmithyId = &.{ SmithyId.of("test.serve#MyOperationInput$Foo"), n1 };
+        const operation_Output: []const SmithyId = &.{SmithyId.of("test.serve#MyOperationOutput$Qux")};
         const rule_set: rls.RuleSet = .{
             .parameters = &[_]rls.StringKV(rls.Parameter){.{
                 .key = "foo",
@@ -309,8 +310,11 @@ fn setupService(model: *Model) !void {
 
     try model.names.put(test_alloc, SmithyId.of("test.serve#MyOperationOutput"), "MyOperationOutput");
     try model.shapes.put(test_alloc, SmithyId.of("test.serve#MyOperationOutput"), .{
-        .structure = &.{},
+        .structure = Static.operation_Output,
     });
+
+    try model.names.put(test_alloc, SmithyId.of("test.serve#MyOperationOutput$Qux"), "Qux");
+    try model.shapes.put(test_alloc, SmithyId.of("test.serve#MyOperationOutput$Qux"), .string);
 
     try model.names.put(test_alloc, SmithyId.of("test.error#NotFound"), "NotFound");
     try model.shapes.put(test_alloc, SmithyId.of("test.error#NotFound"), .{

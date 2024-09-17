@@ -102,10 +102,7 @@ fn filterServiceShapes(
                 try shape_queue.write(fields);
             },
             .list => |target| try shape_queue.writeItem(target),
-            .map => |targets| {
-                try data_shapes.append(id);
-                try shape_queue.write(&targets);
-            },
+            .map => |targets| try shape_queue.write(&targets),
             .structure => |fields| {
                 var is_error = false;
                 if (traits.get(id)) |trts| for (0..trts.len) |i| {

@@ -24,21 +24,19 @@ const parse_issues = @import("parse/issues.zig");
 pub const ParseBehavior = parse_issues.ParseBehavior;
 
 // Render
-const gen_issues = @import("render/issues.zig");
-pub const CodegenBehavior = gen_issues.CodegenBehavior;
 const gen_service = @import("render/service.zig");
 pub const ServiceScriptHeadHook = gen_service.ScriptHeadHook;
 pub const ServiceReadmeHook = gen_service.ServiceReadmeHook;
 pub const ServiceReadmeMetadata = gen_service.ServiceReadmeMetadata;
 pub const ServiceAuthSchemesHook = gen_service.ServiceAuthSchemesHook;
-const gen_endpoint = @import("render/endpoint.zig");
-pub const EndpointScriptHeadHook = gen_endpoint.EndpointScriptHeadHook;
 const gen_client = @import("render/client.zig");
 pub const ClientScriptHeadHook = gen_client.ClientScriptHeadHook;
 pub const ClientShapeHeadHook = gen_client.ClientShapeHeadHook;
 pub const ClientOperationFuncHook = gen_client.ClientOperationFuncHook;
 pub const OperationFunc = gen_client.OperationFunc;
-const gen_operation = @import("render/operation.zig");
+const gen_endpoint = @import("render/client_endpoint.zig");
+pub const EndpointScriptHeadHook = gen_endpoint.EndpointScriptHeadHook;
+const gen_operation = @import("render/client_operation.zig");
 pub const OperationScriptHeadHook = gen_operation.OperationScriptHeadHook;
 
 // Systems
@@ -84,9 +82,9 @@ test {
     _ = @import("parse/parse.zig");
 
     // Render
-    _ = gen_issues;
     _ = @import("render/shape.zig");
     _ = gen_operation;
+    _ = gen_endpoint;
     _ = gen_client;
     _ = gen_service;
 

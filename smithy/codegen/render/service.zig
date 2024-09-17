@@ -17,8 +17,8 @@ const zig = razdaz.zig;
 const files_jobs = @import("razdaz/jobs").files;
 const codegen_jobs = @import("razdaz/jobs").codegen;
 const clnt = @import("client.zig");
-const ClientEndpoint = @import("endpoint.zig").ClientEndpoint;
-const ClientOperationsDir = @import("operation.zig").ClientOperationsDir;
+const ClientEndpoint = @import("client_endpoint.zig").ClientEndpoint;
+const ClientOperationsDir = @import("client_operation.zig").ClientOperationsDir;
 const cfg = @import("../config.zig");
 const ScopeTag = @import("../pipeline.zig").ScopeTag;
 const SymbolsProvider = @import("../systems/SymbolsProvider.zig");
@@ -166,7 +166,7 @@ fn serviceScriptGenTask(
 ) anyerror!void {
     try bld.constant("std").assign(bld.x.import("std"));
     try bld.constant("Allocator").assign(bld.x.raw("std.mem.Allocator"));
-    try bld.constant(cfg.scope_runtime).assign(bld.x.import("smithy"));
+    try bld.constant(cfg.runtime_scope).assign(bld.x.import("smithy"));
 
     if (self.hasOverride(ScriptHeadHook)) {
         try self.evaluate(ScriptHeadHook, .{bld});

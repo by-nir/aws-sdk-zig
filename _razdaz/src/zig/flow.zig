@@ -427,7 +427,13 @@ pub const Branch = struct {
     }
 
     fn writeBody(self: Branch, writer: *Writer) !void {
-        if (self.payload) |p| try writer.appendFmt("|{_}| ", .{std.zig.fmtId(p)});
+        if (self.payload) |p| {
+            if (p[0] == '*') {
+                try writer.appendFmt("|*{_}| ", .{std.zig.fmtId(p[1..p.len])});
+            } else {
+                try writer.appendFmt("|{_}| ", .{std.zig.fmtId(p)});
+            }
+        }
         try writer.appendValue(self.body);
     }
 

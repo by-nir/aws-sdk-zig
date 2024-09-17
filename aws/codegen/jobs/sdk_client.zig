@@ -48,17 +48,12 @@ const smithy_config = SmithyOptions{
     .rules_funcs = itg_rules.std_functions,
     .behavior_service = .{
         .process = .abort,
-        .parse = .skip,
-        .codegen = .skip,
+        .parse = .abort,
+        .codegen = .abort,
     },
     .behavior_parse = .{
         .property = .abort,
         .trait = .skip,
-    },
-    .behavior_codegen = .{
-        .unknown_shape = .abort,
-        .invalid_root = .abort,
-        .shape_codegen_fail = .abort,
     },
 };
 

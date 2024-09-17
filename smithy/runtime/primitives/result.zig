@@ -1,21 +1,24 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+pub const ErrorSource = enum {
+    client,
+    server,
+};
+
 pub fn Result(comptime T: type, comptime E: type) type {
     return union(enum) {
         ok: T,
         fail: ResultError(E),
 
-        pub fn deinit(self: @This(), allocator: Allocator) void {
+        pub fn deinit(self: @This()) void {
             switch (self) {
-                .ok => |t| if (@hasDecl(T, "deinit")) t.deinit(allocator),
-                .fail => |t| t.deinit(allocator),
+                .ok => |t| if (@typeInfo(T) == .@"struct" and @hasDecl(T, "deinit")) t.deinit(),
+                .fail => |t| t.deinit(),
             }
         }
     };
 }
-
-pub const ErrorSource = enum { client, server };
 
 pub fn ResultError(comptime E: type) type {
     switch (@typeInfo(E)) {
@@ -31,10 +34,11 @@ pub fn ResultError(comptime E: type) type {
 
         kind: E,
         message: ?[]const u8,
+        allocator: Allocator,
 
-        pub fn deinit(self: Self, allocator: Allocator) void {
-            if (@hasDecl(E, "deinit")) self.kind.deinit(allocator);
-            if (self.message) |s| allocator.free(s);
+        pub fn deinit(self: Self) void {
+            if (@hasDecl(E, "deinit")) self.kind.deinit(self.allocator);
+            if (self.message) |s| self.allocator.free(s);
         }
 
         pub fn httpStatus(self: Self) std.http.Status {

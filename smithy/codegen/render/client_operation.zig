@@ -52,9 +52,7 @@ fn clientOperationTask(
     bld: *zig.ContainerBuild,
     id: SmithyId,
 ) anyerror!void {
-    const operation = if (try shape.getShapeSafe(self, symbols, issues, id)) |s| s.operation else return;
-
-    try bld.constant("SerialType").assign(bld.x.id(cfg.scope_runtime).dot().id("SerialType"));
+    try bld.constant("SerialType").assign(bld.x.id(cfg.runtime_scope).dot().id("SerialType"));
 
     if (symbols.service_operations.len > 0) {
         try bld.constant(cfg.types_scope).assign(bld.x.import("../" ++ cfg.types_filename));
@@ -64,31 +62,43 @@ fn clientOperationTask(
         try self.evaluate(OperationScriptHeadHook, .{ bld, id });
     }
 
-    const context = .{ .arena = self.alloc(), .op = operation, .symbols = symbols };
+    const operation = (try symbols.getShape(id)).operation;
+    const context = .{ .arena = self.alloc(), .op = operation, .symbols = symbols, .issues = issues };
     try bld.public().constant(try symbols.getShapeName(id, .pascal, .{})).assign(
         bld.x.@"struct"().bodyWith(context, struct {
             fn f(ctx: @TypeOf(context), b: *zig.ContainerBuild) !void {
                 const has_errors = ctx.symbols.service_errors.len + ctx.op.errors.len > 0;
 
-                if (ctx.op.output != null or has_errors) {
-                    try b.public().constant("Result").assign(b.x.raw(cfg.scope_runtime).dot().call("Result", &.{
-                        if (ctx.op.output != null) b.x.id("Output") else b.x.typeOf(void),
-                        if (has_errors) b.x.id("Error") else b.x.typeOf(void),
-                    }));
-                }
+                try b.public().constant("Result").assign(blk: {
+                    const payload = if (ctx.op.output != null) b.x.id("Output") else b.x.typeOf(void);
+                    if (has_errors) {
+                        break :blk b.x.raw(cfg.runtime_scope).dot().call("Result", &.{ payload, b.x.id("ErrorKind") });
+                    } else {
+                        break :blk payload;
+                    }
+                });
 
                 if (ctx.op.input) |in_id| {
-                    const members = (try ctx.symbols.getShape(in_id)).structure;
-                    try shape.writeStructShape(ctx.symbols, b, in_id, members, true, "Input");
+                    try shape.writeShapeDecleration(ctx.arena, ctx.symbols, b, in_id, .{
+                        .identifier = "Input",
+                        .scope = cfg.types_scope,
+                    });
                 }
 
                 if (ctx.op.output) |out_id| {
-                    const members = (try ctx.symbols.getShape(out_id)).structure;
-                    try shape.writeStructShape(ctx.symbols, b, out_id, members, true, "Output");
+                    try shape.writeShapeDecleration(ctx.arena, ctx.symbols, b, out_id, .{
+                        .identifier = "Output",
+                        .scope = cfg.types_scope,
+                        .is_output = true,
+                    });
                 }
 
                 if (ctx.symbols.service_errors.len + ctx.op.errors.len > 0) {
-                    try b.public().constant("Error").assign(b.x.@"enum"().bodyWith(ErrorSetCtx{
+                    try b.public().constant("Error").assign(b.x.raw(cfg.runtime_scope).dot().call("ResultError", &.{
+                        b.x.id("ErrorKind"),
+                    }));
+
+                    try b.public().constant("ErrorKind").assign(b.x.@"enum"().bodyWith(ErrorSetCtx{
                         .arena = ctx.arena,
                         .symbols = ctx.symbols,
                         .shape_errors = ctx.op.errors,
@@ -223,7 +233,7 @@ fn writeErrorSet(ctx: ErrorSetCtx, bld: *zig.ContainerBuild) !void {
 
     try bld.public().function("source")
         .arg("self", bld.x.This())
-        .returns(bld.x.raw("smithy.ErrorSource"))
+        .returns(bld.x.raw(cfg.runtime_scope).dot().id("ErrorSource"))
         .bodyWith(members.items, writeErrorSetSourceFn);
 
     try bld.public().function("httpStatus")
@@ -315,16 +325,25 @@ test ClientOperation {
         \\const srvc_types = @import("../data_types.zig");
         \\
         \\pub const MyOperation = struct {
-        \\    pub const Result = smithy.Result(Output, Error);
+        \\    pub const Result = smithy.Result(Output, ErrorKind);
         \\
         \\    pub const Input = struct {
         \\        foo: srvc_types.Foo,
         \\        bar: ?bool = null,
         \\    };
         \\
-        \\    pub const Output = struct {};
+        \\    pub const Output = struct {
+        \\        qux: ?[]const u8 = null,
+        \\        arena: ?std.heap.ArenaAllocator = null,
         \\
-        \\    pub const Error = enum {
+        \\        pub fn deinit(self: @This()) void {
+        \\            if (self.arena) |arena| arena.deinit();
+        \\        }
+        \\    };
+        \\
+        \\    pub const Error = smithy.ResultError(ErrorKind);
+        \\
+        \\    pub const ErrorKind = enum {
         \\        not_found,
         \\        service,
         \\
@@ -365,7 +384,12 @@ test ClientOperation {
         \\    .{SerialType.boolean},
         \\} } };
         \\
-        \\pub const serial_output_scheme = .{ SerialType.structure, .{} };
+        \\pub const serial_output_scheme = .{ SerialType.structure, .{.{
+        \\    "Qux",
+        \\    "qux",
+        \\    false,
+        \\    .{SerialType.string},
+        \\}} };
         \\
         \\pub const serial_error_scheme = .{ SerialType.tagged_union, .{ .{
         \\    "ServiceError",

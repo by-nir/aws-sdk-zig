@@ -10,7 +10,6 @@ const SymbolsProvider = @import("systems/SymbolsProvider.zig");
 const Model = @import("parse/Model.zig");
 const ParseModel = @import("parse/parse.zig").ParseModel;
 const ParseBehavior = @import("parse/issues.zig").ParseBehavior;
-const CodegnBehavior = @import("render/issues.zig").CodegenBehavior;
 const CodegenService = @import("render/service.zig").CodegenService;
 const JsonReader = @import("utils/JsonReader.zig");
 
@@ -32,7 +31,6 @@ pub const PipelineOptions = struct {
     rules_funcs: rls.FunctionsRegistry = &.{},
     behavior_service: PipelineBehavior = .{},
     behavior_parse: ParseBehavior = .{},
-    behavior_codegen: CodegnBehavior = .{},
 };
 
 pub const PipelineServiceFilterHook = jobz.Task.Hook("Smithy Service Filter", bool, &.{[]const u8});
@@ -41,7 +39,6 @@ pub const Pipeline = jobz.Task.Define("Smithy Service Pipeline", smithyTask, .{}
 fn smithyTask(self: *const jobz.Delegate, src_dir: fs.Dir, options: PipelineOptions) anyerror!void {
     const behavior = options.behavior_service;
     try self.defineValue(ParseBehavior, ScopeTag.parse_behavior, options.behavior_parse);
-    try self.defineValue(CodegnBehavior, ScopeTag.codegen_behavior, options.behavior_codegen);
 
     const traits_manager: *trt.TraitsManager = try self.provide(trt.TraitsManager{}, null);
     try prelude.registerTraits(self.alloc(), traits_manager);

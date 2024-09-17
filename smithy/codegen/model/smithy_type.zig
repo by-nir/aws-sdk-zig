@@ -67,7 +67,7 @@ pub const SmithyType = union(enum) {
     /// Fixed set of named heterogeneous members.
     structure: []const SmithyId,
     /// Tagged union data structure that can take on one of several different, but fixed, types.
-    tagged_uinon: []const SmithyId,
+    tagged_union: []const SmithyId,
 
     //
     // Service types have specific semantics and define services, resources, and operations.

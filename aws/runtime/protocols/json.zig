@@ -185,8 +185,15 @@ fn handleOutput(
     var reader = std.json.reader(allocator, stream.reader());
     defer reader.deinit();
 
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+
+    var persist = std.heap.ArenaAllocator.init(allocator);
+    errdefer persist.deinit();
+
     var value: T = .{};
-    try parseValue(allocator, &reader, scheme, &value);
+    try parseValue(scratch.allocator(), persist.allocator(), &reader, scheme, &value);
+    value.arena = persist;
     return value;
 }
 
@@ -223,6 +230,7 @@ fn handleError(
     return .{
         .kind = resolved,
         .message = if (body_msg) |s| try allocator.dupe(u8, s) else null,
+        .allocator = allocator,
     };
 }
 
@@ -286,30 +294,30 @@ test sanitizeErrorCode {
     try testing.expectEqualStrings("FooError", sanitizeErrorCode("aws.protocoltests.restjson#FooError:http://internal.amazon.com/coral/com.amazon.coral.validate/").?);
 }
 
-fn parseValue(allocator: Allocator, json: *JsonReader, comptime scheme: anytype, value: anytype) !void {
+fn parseValue(scratch_alloc: Allocator, persist_alloc: Allocator, json: *JsonReader, comptime scheme: anytype, value: anytype) !void {
     switch (@as(smithy.SerialType, scheme[0])) {
-        .boolean => value.* = try std.json.innerParse(bool, allocator, json, .{}),
-        .byte => value.* = try std.json.innerParse(i8, allocator, json, .{}),
-        .short => value.* = try std.json.innerParse(i16, allocator, json, .{}),
-        .integer => value.* = try std.json.innerParse(i32, allocator, json, .{}),
-        .long => value.* = try std.json.innerParse(i64, allocator, json, .{}),
-        .float => value.* = try std.json.innerParse(f32, allocator, json, .{}),
-        .double => value.* = try std.json.innerParse(f64, allocator, json, .{}),
+        .boolean => value.* = try std.json.innerParse(bool, scratch_alloc, json, .{}),
+        .byte => value.* = try std.json.innerParse(i8, scratch_alloc, json, .{}),
+        .short => value.* = try std.json.innerParse(i16, scratch_alloc, json, .{}),
+        .integer => value.* = try std.json.innerParse(i32, scratch_alloc, json, .{}),
+        .long => value.* = try std.json.innerParse(i64, scratch_alloc, json, .{}),
+        .float => value.* = try std.json.innerParse(f32, scratch_alloc, json, .{}),
+        .double => value.* = try std.json.innerParse(f64, scratch_alloc, json, .{}),
         .string => {
-            value.* = try std.json.innerParse([]const u8, allocator, json, .{
+            value.* = try std.json.innerParse([]const u8, persist_alloc, json, .{
                 .allocate = .alloc_always,
                 .max_value_len = std.json.default_max_value_len,
             });
         },
         .blob => {
-            const str_value = try std.json.innerParse([]const u8, allocator, json, .{
+            const str_value = try std.json.innerParse([]const u8, scratch_alloc, json, .{
                 .allocate = .alloc_always,
                 .max_value_len = std.json.default_max_value_len,
             });
-            defer allocator.free(str_value);
+            defer scratch_alloc.free(str_value);
 
             const size = try std.base64.standard.Decoder.calcSizeForSlice(str_value);
-            const target = try allocator.alloc(u8, size);
+            const target = try persist_alloc.alloc(u8, size);
             try std.base64.standard.Decoder.decode(target, str_value);
             value.* = target;
         },
@@ -323,8 +331,7 @@ fn parseValue(allocator: Allocator, json: *JsonReader, comptime scheme: anytype,
                 else => unreachable,
             };
 
-            var list = std.ArrayList(Child).init(allocator);
-            errdefer list.deinit();
+            var list = std.ArrayList(Child).init(persist_alloc);
 
             switch (try json.next()) {
                 .array_begin => {},
@@ -335,7 +342,7 @@ fn parseValue(allocator: Allocator, json: *JsonReader, comptime scheme: anytype,
                 if (!required and .null == try json.peekNextTokenType()) {
                     try list.append(null);
                 } else {
-                    try parseValue(allocator, json, member_scheme, try list.addOne());
+                    try parseValue(scratch_alloc, persist_alloc, json, member_scheme, try list.addOne());
                 }
             }
 
@@ -351,7 +358,6 @@ fn parseValue(allocator: Allocator, json: *JsonReader, comptime scheme: anytype,
 
             const Set = ValueType(value);
             var set = Set{};
-            errdefer set.deinit(allocator);
 
             switch (try json.next()) {
                 .array_begin => {},
@@ -360,8 +366,8 @@ fn parseValue(allocator: Allocator, json: *JsonReader, comptime scheme: anytype,
 
             while (try json.peekNextTokenType() != .array_end) {
                 var item: Set.Item = undefined;
-                try parseValue(allocator, json, member_scheme, &item);
-                try set.put(allocator, item);
+                try parseValue(scratch_alloc, persist_alloc, json, member_scheme, &item);
+                try set.internal.putNoClobber(persist_alloc, item, {});
             }
 
             switch (try json.next()) {
@@ -369,7 +375,7 @@ fn parseValue(allocator: Allocator, json: *JsonReader, comptime scheme: anytype,
                 else => return error.UnexpectedToken,
             }
 
-            value.* = try set.toOwnedSlice();
+            value.* = set;
         },
         .map => {
             const required = scheme[1];
@@ -380,7 +386,6 @@ fn parseValue(allocator: Allocator, json: *JsonReader, comptime scheme: anytype,
             const Item = std.meta.fieldInfo(HashMap.KV, .value).type;
 
             var map = HashMap{};
-            errdefer map.deinit(allocator);
 
             switch (try json.next()) {
                 .object_begin => {},
@@ -388,19 +393,19 @@ fn parseValue(allocator: Allocator, json: *JsonReader, comptime scheme: anytype,
             }
 
             while (try json.peekNextTokenType() != .object_end) {
-                const key_token = try json.nextAlloc(allocator, .alloc_if_needed);
-                defer freeToken(allocator, key_token);
+                const key_token = try json.nextAlloc(scratch_alloc, .alloc_if_needed);
+                defer freeToken(scratch_alloc, key_token);
                 const key = switch (key_token) {
                     .string, .allocated_string => |s| s,
                     else => return error.UnexpectedToken,
                 };
 
                 if (!required and .null == try json.peekNextTokenType()) {
-                    try map.put(allocator, key, null);
+                    try map.internal.putNoClobber(persist_alloc, key, null);
                 } else {
                     var item: Item = undefined;
-                    try parseValue(allocator, json, val_scheme, &item);
-                    try map.put(allocator, key, item);
+                    try parseValue(scratch_alloc, persist_alloc, json, val_scheme, &item);
+                    try map.internal.putNoClobber(persist_alloc, key, item);
                 }
             }
 
@@ -414,20 +419,20 @@ fn parseValue(allocator: Allocator, json: *JsonReader, comptime scheme: anytype,
         .int_enum => {
             const Enum = ValueType(value);
             const Int = std.meta.Tag(Enum);
-            const int_value = try std.json.innerParse(Int, allocator, json, .{
+            const int_value = try std.json.innerParse(Int, scratch_alloc, json, .{
                 .max_value_len = std.json.default_max_value_len,
             });
             value.* = @enumFromInt(int_value);
         },
         .str_enum, .trt_enum => {
-            const str_value = try std.json.innerParse([]const u8, allocator, json, .{
+            const str_value = try std.json.innerParse([]const u8, persist_alloc, json, .{
                 .allocate = .alloc_always,
                 .max_value_len = std.json.default_max_value_len,
             });
 
             const T = ValueType(value);
             const resolved = T.parse(str_value);
-            if (resolved != .UNKNOWN) allocator.free(str_value);
+            if (resolved != .UNKNOWN) persist_alloc.free(str_value);
 
             value.* = resolved;
         },
@@ -440,8 +445,8 @@ fn parseValue(allocator: Allocator, json: *JsonReader, comptime scheme: anytype,
                 else => return error.UnexpectedToken,
             }
 
-            const key_token = try json.nextAlloc(allocator, .alloc_if_needed);
-            defer freeToken(allocator, key_token);
+            const key_token = try json.nextAlloc(scratch_alloc, .alloc_if_needed);
+            defer freeToken(scratch_alloc, key_token);
             const key = switch (key_token) {
                 .string, .allocated_string => |s| s,
                 else => return error.UnexpectedToken,
@@ -455,9 +460,8 @@ fn parseValue(allocator: Allocator, json: *JsonReader, comptime scheme: anytype,
 
                 if (std.mem.eql(u8, spec_name, key)) {
                     const Item = std.meta.TagPayloadByName(Union, field_name);
-
                     var item: Item = undefined;
-                    try parseValue(allocator, json, val_scheme, &item);
+                    try parseValue(scratch_alloc, persist_alloc, json, val_scheme, &item);
                     value.* = @unionInit(Union, field_name, item);
                     found = true;
                 }
@@ -482,9 +486,7 @@ fn parseValue(allocator: Allocator, json: *JsonReader, comptime scheme: anytype,
             }
 
             obj: while (try json.peekNextTokenType() != .object_end) {
-                const prop_token = try json.nextAlloc(allocator, .alloc_if_needed);
-                defer freeToken(allocator, prop_token);
-
+                const prop_token = try json.nextAlloc(scratch_alloc, .alloc_if_needed);
                 const prop_name = switch (prop_token) {
                     .string, .allocated_string => |s| s,
                     else => return error.UnexpectedToken,
@@ -497,10 +499,12 @@ fn parseValue(allocator: Allocator, json: *JsonReader, comptime scheme: anytype,
                     const member_scheme = member[3];
 
                     if (std.mem.eql(u8, name_spec, prop_name)) {
+                        freeToken(scratch_alloc, prop_token);
+
                         if (!required and .null == try json.peekNextTokenType()) {
                             @field(value, name_field) = null;
                         } else {
-                            try parseValue(allocator, json, member_scheme, &@field(value, name_field));
+                            try parseValue(scratch_alloc, persist_alloc, json, member_scheme, &@field(value, name_field));
                         }
 
                         continue :obj;
@@ -508,6 +512,7 @@ fn parseValue(allocator: Allocator, json: *JsonReader, comptime scheme: anytype,
                 }
 
                 log.err("Unexpected response struct field: `{s}`", .{prop_name});
+                freeToken(scratch_alloc, prop_token);
                 return error.UnexpectedResponseStructField;
             }
 

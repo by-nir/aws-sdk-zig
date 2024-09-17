@@ -8,7 +8,7 @@ pub const stack_alloc = "scratch_alloc";
 pub const service_client_type = "Client";
 
 /// Runtime public scope
-pub const scope_runtime = "smithy";
+pub const runtime_scope = "smithy";
 
 /// Endpoint scope
 pub const endpoint_scope = "srvc_endpoint";

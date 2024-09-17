@@ -122,7 +122,7 @@ pub fn generateResolver(self: *Self, bld: *ContainerBuild, rules: []const mdl.Ru
     try bld.public().function(cfg.endpoint_resolve_fn)
         .arg(cfg.alloc_param, bld.x.id("Allocator"))
         .arg(ARG_CONFIG, bld.x.raw(cfg.endpoint_config_type))
-        .returns(bld.x.raw("!" ++ cfg.scope_runtime ++ ".Endpoint"))
+        .returns(bld.x.raw("!" ++ cfg.runtime_scope ++ ".Endpoint"))
         .bodyWith(context, struct {
         fn f(ctx: @TypeOf(context), b: *BlockBuild) !void {
             try b.variable("local_buffer").typing(b.typeOf([512]u8)).assign(b.x.raw("undefined"));
@@ -446,7 +446,7 @@ fn generateEndpointRule(self: *Self, bld: *BlockBuild, endpoint: mdl.Endpoint) !
     const headers = if (endpoint.headers) |headers| blk: {
         try bld.constant("headers").assign(
             bld.x.trys().id(cfg.alloc_param).dot().call("alloc", &.{
-                bld.x.raw(cfg.scope_runtime).dot().id("HttpHeader"),
+                bld.x.raw(cfg.runtime_scope).dot().id("HttpHeader"),
                 bld.x.valueOf(headers.len),
             }),
         );
@@ -477,7 +477,7 @@ fn generateEndpointRule(self: *Self, bld: *BlockBuild, endpoint: mdl.Endpoint) !
 
         try bld.constant("properties").assign(
             bld.x.trys().id(cfg.alloc_param).dot().call("alloc", &.{
-                bld.x.raw(cfg.scope_runtime).dot().raw("Document.KV"),
+                bld.x.raw(cfg.runtime_scope).dot().raw("Document.KV"),
                 bld.x.valueOf(if (auth_schemes == null) props.len else props.len - 1),
             }),
         );
@@ -498,7 +498,7 @@ fn generateEndpointRule(self: *Self, bld: *BlockBuild, endpoint: mdl.Endpoint) !
     const auth = if (auth_schemes) |schemes| blk: {
         try bld.constant("schemes").assign(
             bld.x.trys().id(cfg.alloc_param).dot().call("alloc", &.{
-                bld.x.raw(cfg.scope_runtime).dot().id("AuthScheme"),
+                bld.x.raw(cfg.runtime_scope).dot().id("AuthScheme"),
                 bld.x.valueOf(schemes.len),
             }),
         );
@@ -514,7 +514,7 @@ fn generateEndpointRule(self: *Self, bld: *BlockBuild, endpoint: mdl.Endpoint) !
             const id = try std.fmt.allocPrint(self.arena, "scheme_{d}", .{i});
             try bld.constant(id).assign(
                 bld.x.trys().id(cfg.alloc_param).dot().call("alloc", &.{
-                    bld.x.raw(cfg.scope_runtime).dot().raw("Document.KV"),
+                    bld.x.raw(cfg.runtime_scope).dot().raw("Document.KV"),
                     bld.x.valueOf(props.len),
                 }),
             );
@@ -528,7 +528,7 @@ fn generateEndpointRule(self: *Self, bld: *BlockBuild, endpoint: mdl.Endpoint) !
             }
 
             try bld.id("schemes").valIndexer(bld.valueOf(i)).assign().structLiteral(null, &.{
-                bld.x.structAssign("id", bld.x.call("smithy.intenral.AuthId.of", &.{bld.x.valueOf(name)})),
+                bld.x.structAssign("id", bld.x.call(cfg.runtime_scope ++ ".AuthId.of", &.{bld.x.valueOf(name)})),
                 bld.x.structAssign("properties", bld.x.id(id)),
             }).end();
         }
@@ -656,7 +656,7 @@ test "generateEndpointRule" {
         \\        .document = .{.integer = 108},
         \\    };
         \\
-        \\    schemes[0] = .{ .id = smithy.intenral.AuthId.of("auth"), .properties = scheme_0 };
+        \\    schemes[0] = .{ .id = smithy.AuthId.of("auth"), .properties = scheme_0 };
         \\
         \\    return .{
         \\        .url = url,
@@ -1115,7 +1115,7 @@ pub fn generateTests(self: *Self, bld: *ContainerBuild, cases: []const mdl.TestC
                                 }));
                             }
                             const expected = b.x.fromExpr(try b.x.structLiteral(
-                                b.x.raw("&[_]" ++ cfg.scope_runtime ++ ".HttpHeader"),
+                                b.x.raw("&[_]" ++ cfg.runtime_scope ++ ".HttpHeader"),
                                 try list.toOwnedSlice(),
                             ).consume());
                             try b.trys().call(
@@ -1141,7 +1141,7 @@ pub fn generateTests(self: *Self, bld: *ContainerBuild, cases: []const mdl.TestC
                                 }));
                             }
                             const expected = b.x.fromExpr(try b.x.structLiteral(
-                                b.x.raw("&[_]" ++ cfg.scope_runtime ++ ".Document.KV"),
+                                b.x.raw("&[_]" ++ cfg.runtime_scope ++ ".Document.KV"),
                                 try list.toOwnedSlice(),
                             ).consume());
 
@@ -1167,12 +1167,12 @@ pub fn generateTests(self: *Self, bld: *ContainerBuild, cases: []const mdl.TestC
                                     }));
                                 }
                                 list.appendAssumeCapacity(b.x.structLiteral(null, &.{
-                                    b.x.structAssign("id", b.x.call("smithy.intenral.AuthId.of", &.{b.x.valueOf(name)})),
+                                    b.x.structAssign("id", b.x.call(cfg.runtime_scope ++ ".AuthId.of", &.{b.x.valueOf(name)})),
                                     b.x.structAssign("properties", b.x.addressOf().structLiteral(null, try prop_exprs.toOwnedSlice())),
                                 }));
                             }
                             const expected = b.x.fromExpr(try b.x.structLiteral(
-                                b.x.raw("&[_]" ++ cfg.scope_runtime ++ ".AuthScheme"),
+                                b.x.raw("&[_]" ++ cfg.runtime_scope ++ ".AuthScheme"),
                                 try list.toOwnedSlice(),
                             ).consume());
 
@@ -1255,7 +1255,7 @@ test "generateTests" {
         \\        .document = .null,
         \\    }}, endpoint.properties);
         \\
-        \\    try std.testing.expectEqualDeep(&[_]smithy.AuthScheme{.{ .id = smithy.intenral.AuthId.of("auth"), .properties = &.{.{
+        \\    try std.testing.expectEqualDeep(&[_]smithy.AuthScheme{.{ .id = smithy.AuthId.of("auth"), .properties = &.{.{
         \\        .key = "value",
         \\        .key_alloc = false,
         \\        .document = .{.integer = 108},

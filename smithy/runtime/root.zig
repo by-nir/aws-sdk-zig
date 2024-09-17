@@ -3,7 +3,9 @@ pub const Result = result.Result;
 pub const ResultError = result.ResultError;
 pub const ErrorSource = result.ErrorSource;
 
-pub const Set = @import("primitives/set.zig").Set;
+const collection = @import("primitives/collection.zig");
+pub const Set = collection.Set;
+pub const Map = collection.Map;
 
 const rules = @import("operation/rules.zig");
 pub const RulesUrl = rules.RulesUrl;
@@ -25,7 +27,7 @@ pub const SerialType = serial.SerialType;
 
 test {
     _ = result;
-    _ = @import("primitives/set.zig");
+    _ = collection;
     _ = document;
     _ = request;
     _ = rules;

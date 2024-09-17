@@ -561,6 +561,14 @@ pub const BlockBuild = struct {
         try b.expect("foo.bar");
     }
 
+    pub fn fromExpr(self: *BlockBuild, value: Expr) ExprBuild {
+        return self.startChain().fromExpr(value);
+    }
+
+    pub fn buildExpr(self: *BlockBuild, value: ExprBuild) ExprBuild {
+        return self.startChain().buildExpr(value);
+    }
+
     pub fn comment(self: *BlockBuild, kind: ExprComment.Kind, value: []const u8) !void {
         try self.append(.{ .comment = .{
             .kind = kind,
