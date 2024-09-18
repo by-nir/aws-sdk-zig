@@ -110,6 +110,7 @@ const HtmlFragmenter = struct {
                 const scratch = self.scratch.items;
                 if (scratch.len == idx + 1 or scratch[0] != '<') continue;
                 if (scratch.len > 2 and scratch[1] == '/' and scratch[scratch.len - 2] == '/') continue; // `</>`, `</···/>`
+                if (scratch.len > 2 and scratch[1] != '/' and !std.ascii.isAlphabetic(scratch[1])) continue; // `<=+->`
 
                 // Valid tag
                 return Fragment{ .tag = scratch };
@@ -139,7 +140,8 @@ const HtmlFragmenter = struct {
 };
 
 test "HtmlFragmenter" {
-    var frags = HtmlFragmenter.init(test_alloc, "foo bar<baz>qux</baz><foo /></invalid/></invalid /></><img src=\"#\" />");
+    const raw = "foo bar<baz>qux</baz><foo /></invalid/></invalid /></><=+-><img src=\"#\" />";
+    var frags = HtmlFragmenter.init(test_alloc, raw);
     defer frags.deinit();
 
     try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .text = "foo bar" }, (try frags.next()).?);
@@ -150,6 +152,7 @@ test "HtmlFragmenter" {
     try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .text = "</invalid/>" }, (try frags.next()).?);
     try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .text = "</invalid />" }, (try frags.next()).?);
     try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .text = "</>" }, (try frags.next()).?);
+    try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .text = "<=+->" }, (try frags.next()).?);
     try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .tag = "<img src=\"#\" />" }, (try frags.next()).?);
     try testing.expectEqual(null, try frags.next());
 }
@@ -217,7 +220,7 @@ fn parseNode(frags: *HtmlFragmenter, tree: *HtmlTree, parent: srct.NodeHandle, p
             .tag => |s| {
                 const meta = TagMeta.parse(s);
                 switch (meta.kind) {
-                    .close => if (meta.tag == parent_tag) return else return error.UnexpectedClosingTag,
+                    .close => return if (meta.tag == parent_tag) {} else error.UnexpectedClosingTag,
                     inline else => |g| {
                         const node = if (meta.attrs) |attrs|
                             try tree.appendNodePayload(parent, meta.tag, []const u8, attrs)
@@ -329,25 +332,46 @@ fn convertStyledNode(bld: *md.StyledAuthor, html: HtmlTree.Viewer, node: srct.No
     switch (tag) {
         .text => try bld.plain(html.payload(node, []const u8)),
         .b, .strong => {
-            const text = TEMP_extractNodeText(html, node);
-            try bld.bold(text);
+            assert(html.countChildren(node) > 0);
+            if (isPlainTextChildren(html, node)) {
+                try bld.bold(html.payload(html.childAt(node, 0), []const u8));
+            } else {
+                var styled = try bld.boldStyled();
+                try convertStyledParent(&styled, html, node);
+            }
         },
         .i, .em => {
-            const text = TEMP_extractNodeText(html, node);
-            try bld.italic(text);
+            assert(html.countChildren(node) > 0);
+            if (isPlainTextChildren(html, node)) {
+                try bld.italic(html.payload(html.childAt(node, 0), []const u8));
+            } else {
+                var styled = try bld.italicStyled();
+                try convertStyledParent(&styled, html, node);
+            }
         },
         .code => {
-            const text = TEMP_extractNodeText(html, node);
-            try bld.code(text);
+            assert(html.countChildren(node) > 0);
+            if (isPlainTextChildren(html, node)) {
+                try bld.code(html.payload(html.childAt(node, 0), []const u8));
+            } else {
+                var styled = try bld.boldStyled();
+                try convertStyledParent(&styled, html, node);
+            }
         },
         .a => {
-            const payload = html.payload(node, []const u8);
-            const start = 6 + (mem.indexOf(u8, payload, "href=\"") orelse return error.MissingHrefAttribute);
-            const end = mem.indexOfScalarPos(u8, payload, start, '"') orelse return error.MissingHrefAttribute;
-            const href = payload[start..end];
+            const href = if (html.payloadOrNull(node, []const u8)) |payload| blk: {
+                const start = 6 + (mem.indexOf(u8, payload, "href=\"") orelse return error.MissingHrefAttribute);
+                const end = mem.indexOfScalarPos(u8, payload, start, '"') orelse return error.MissingHrefAttribute;
+                break :blk payload[start..end];
+            } else "";
 
-            const text = TEMP_extractNodeText(html, node);
-            try bld.link(href, null, text);
+            assert(html.countChildren(node) > 0);
+            if (isPlainTextChildren(html, node)) {
+                try bld.link(href, null, html.payload(html.childAt(node, 0), []const u8));
+            } else {
+                var styled = try bld.linkStyled(href, null);
+                try convertStyledParent(&styled, html, node);
+            }
         },
         else => {
             log.warn("Unrecognized tag: `<{}>`", .{tag});
@@ -355,10 +379,15 @@ fn convertStyledNode(bld: *md.StyledAuthor, html: HtmlTree.Viewer, node: srct.No
     }
 }
 
-// TODO: Support arbitrary nested children
-fn TEMP_extractNodeText(html: HtmlTree.Viewer, node: srct.NodeHandle) []const u8 {
-    assert(html.countChildren(node) == 1);
-    return html.payload(html.childAt(node, 0), []const u8);
+fn convertStyledParent(bld: *md.StyledAuthor, html: HtmlTree.Viewer, node: srct.NodeHandle) anyerror!void {
+    var it = html.iterateChildren(node);
+    while (it.next()) |child| {
+        try convertStyledNode(bld, html, child, html.tag(child));
+    }
+}
+
+fn isPlainTextChildren(html: HtmlTree.Viewer, node: srct.NodeHandle) bool {
+    return html.countChildren(node) == 1 and html.tag(html.childAt(node, 0)) == .text;
 }
 
 test "convert" {
@@ -380,6 +409,8 @@ test "convert" {
         \\- `Bar 107`
         \\- Baz 108
     );
+
+    try expectConvert("<p><a href=\"#\">foo <i>bar</i> baz</a></p>", "[foo _bar_ baz](#)");
 
     try expectConvert(
         \\<ul>

@@ -62,15 +62,15 @@ const Mark = enum {
     block_table_row,
     block_table_cell,
     block_code,
-    text_plain,
-    text_italic,
-    text_bold,
-    text_bold_italic,
-    text_code,
-    text_link,
+    inline_plain,
+    inline_italic,
+    inline_bold,
+    inline_bold_italic,
+    inline_code,
+    inline_link,
 
     pub fn is_inline(self: Mark) bool {
-        return @intFromEnum(self) >= @intFromEnum(Mark.text_plain);
+        return @intFromEnum(self) >= @intFromEnum(Mark.inline_plain);
     }
 };
 
@@ -93,12 +93,12 @@ pub const Document = struct {
 
     fn writeNode(writer: *Writer, tree: TreeViewer, node: srct.NodeHandle) anyerror!void {
         switch (tree.tag(node)) {
-            .block_raw, .text_plain => try writer.appendString(tree.payload(node, []const u8)),
-            .text_italic => try writer.appendFmt("_{s}_", .{tree.payload(node, []const u8)}),
-            .text_bold => try writer.appendFmt("**{s}**", .{tree.payload(node, []const u8)}),
-            .text_bold_italic => try writer.appendFmt("***{s}***", .{tree.payload(node, []const u8)}),
-            .text_code => try writer.appendFmt("`{s}`", .{tree.payload(node, []const u8)}),
-            .text_link => {
+            .block_raw, .inline_plain => try writer.appendString(tree.payload(node, []const u8)),
+            .inline_italic => try writeInlineNode(writer, tree, "_", node),
+            .inline_bold => try writeInlineNode(writer, tree, "**", node),
+            .inline_bold_italic => try writeInlineNode(writer, tree, "***", node),
+            .inline_code => try writeInlineNode(writer, tree, "`", node),
+            .inline_link => {
                 const payload = tree.payload(node, MarkLink);
                 try writer.appendChar('[');
                 try writeNodeChildren(writer, tree, node, .inlined);
@@ -264,9 +264,22 @@ pub const Document = struct {
         try writer.breakString("");
     }
 
+    fn writeInlineNode(writer: *Writer, tree: TreeViewer, comptime mark: []const u8, node: srct.NodeHandle) !void {
+        try writer.appendString(mark);
+        if (tree.countChildren(node) > 0) {
+            try writeNodeChildren(writer, tree, node, .inlined);
+        } else {
+            try writer.appendString(tree.payload(node, []const u8));
+        }
+        try writer.appendString(mark);
+    }
+
     fn writeNodeInlineSpace(writer: *Writer, tree: TreeViewer, next: ?srct.NodeHandle) !void {
-        const node = next orelse return;
-        if (mem.indexOfScalar(u8, ".,;:?!", tree.payload(node, []const u8)[0]) != null) return;
+        var node = next orelse return;
+        while (tree.countChildren(node) > 0) node = tree.childAt(node, 0);
+        const start_text = tree.payload(node, []const u8);
+
+        if (mem.indexOfScalar(u8, ".,;:?!", start_text[0]) != null) return;
         try writer.appendChar(' ');
     }
 };
@@ -311,14 +324,14 @@ test "MarkdownDocument: Paragraph & Text" {
 
         const node = try tree.appendNode(srct.ROOT, .block_paragraph);
 
-        _ = try tree.appendNodePayload(node, .text_plain, []const u8, "text");
-        _ = try tree.appendNodePayload(node, .text_italic, []const u8, "italic");
-        _ = try tree.appendNodePayload(node, .text_bold, []const u8, "bold");
-        _ = try tree.appendNodePayload(node, .text_bold_italic, []const u8, "bold italic");
-        _ = try tree.appendNodePayload(node, .text_code, []const u8, "code");
+        _ = try tree.appendNodePayload(node, .inline_plain, []const u8, "text");
+        _ = try tree.appendNodePayload(node, .inline_italic, []const u8, "italic");
+        _ = try tree.appendNodePayload(node, .inline_bold, []const u8, "bold");
+        _ = try tree.appendNodePayload(node, .inline_bold_italic, []const u8, "bold italic");
+        _ = try tree.appendNodePayload(node, .inline_code, []const u8, "code");
 
-        const child = try tree.appendNodePayload(node, .text_link, MarkLink, .{ .href = "#" });
-        _ = try tree.appendNodePayload(child, .text_plain, []const u8, "link");
+        const child = try tree.appendNodePayload(node, .inline_link, MarkLink, .{ .href = "#" });
+        _ = try tree.appendNodePayload(child, .inline_plain, []const u8, "link");
 
         break :blk Document{ .tree = try tree.toReadOnly(test_alloc) };
     };
@@ -332,7 +345,7 @@ test "MarkdownDocument: Heading" {
         errdefer tree.deinit();
 
         const node = try tree.appendNodePayload(srct.ROOT, .block_heading, u8, 2);
-        _ = try tree.appendNodePayload(node, .text_plain, []const u8, "Foo");
+        _ = try tree.appendNodePayload(node, .inline_plain, []const u8, "Foo");
 
         break :blk Document{ .tree = try tree.toReadOnly(test_alloc) };
     };
@@ -346,15 +359,15 @@ test "MarkdownDocument: Quote" {
         errdefer tree.deinit();
 
         var node = try tree.appendNode(srct.ROOT, .block_quote);
-        _ = try tree.appendNodePayload(node, .text_plain, []const u8, "foo");
+        _ = try tree.appendNodePayload(node, .inline_plain, []const u8, "foo");
 
         node = try tree.appendNode(srct.ROOT, .block_quote);
 
         var para = try tree.appendNode(node, .block_paragraph);
-        _ = try tree.appendNodePayload(para, .text_plain, []const u8, "bar");
+        _ = try tree.appendNodePayload(para, .inline_plain, []const u8, "bar");
 
         para = try tree.appendNode(node, .block_paragraph);
-        _ = try tree.appendNodePayload(para, .text_plain, []const u8, "baz");
+        _ = try tree.appendNodePayload(para, .inline_plain, []const u8, "baz");
 
         break :blk Document{ .tree = try tree.toReadOnly(test_alloc) };
     };
@@ -395,36 +408,36 @@ test "MarkdownDocument: List" {
             const node = try tree.appendNodePayload(srct.ROOT, .block_list, ListKind, .unordered);
 
             var item = try tree.appendNode(node, .block_list_item);
-            _ = try tree.appendNodePayload(item, .text_plain, []const u8, "foo");
+            _ = try tree.appendNodePayload(item, .inline_plain, []const u8, "foo");
 
             item = try tree.appendNode(node, .block_list_item);
 
             var para = try tree.appendNode(item, .block_paragraph);
-            _ = try tree.appendNodePayload(para, .text_plain, []const u8, "bar");
+            _ = try tree.appendNodePayload(para, .inline_plain, []const u8, "bar");
 
             para = try tree.appendNode(item, .block_paragraph);
-            _ = try tree.appendNodePayload(para, .text_plain, []const u8, "baz");
+            _ = try tree.appendNodePayload(para, .inline_plain, []const u8, "baz");
 
             item = try tree.appendNode(node, .block_list_item);
-            _ = try tree.appendNodePayload(item, .text_plain, []const u8, "qux");
+            _ = try tree.appendNodePayload(item, .inline_plain, []const u8, "qux");
         }
 
         {
             const node = try tree.appendNodePayload(srct.ROOT, .block_list, ListKind, .ordered);
 
             var item = try tree.appendNode(node, .block_list_item);
-            _ = try tree.appendNodePayload(item, .text_plain, []const u8, "foo");
+            _ = try tree.appendNodePayload(item, .inline_plain, []const u8, "foo");
 
             item = try tree.appendNode(node, .block_list_item);
-            _ = try tree.appendNodePayload(item, .text_plain, []const u8, "bar");
+            _ = try tree.appendNodePayload(item, .inline_plain, []const u8, "bar");
 
             const sublist = try tree.appendNodePayload(node, .block_list, ListKind, .ordered);
 
             item = try tree.appendNode(sublist, .block_list_item);
-            _ = try tree.appendNodePayload(item, .text_plain, []const u8, "baz");
+            _ = try tree.appendNodePayload(item, .inline_plain, []const u8, "baz");
 
             item = try tree.appendNode(sublist, .block_list_item);
-            _ = try tree.appendNodePayload(item, .text_plain, []const u8, "qux");
+            _ = try tree.appendNodePayload(item, .inline_plain, []const u8, "qux");
         }
 
         break :blk Document{ .tree = try tree.toReadOnly(test_alloc) };
@@ -456,54 +469,54 @@ test "MarkdownDocument: Table" {
             .self_width = 1,
             .dynamic_width = 8,
         });
-        _ = try tree.appendNodePayload(cell, .text_plain, []const u8, "A");
+        _ = try tree.appendNodePayload(cell, .inline_plain, []const u8, "A");
 
         cell = try tree.appendNodePayload(table, .block_table_column, MarkColumn, .{
             .aligns = .center,
             .self_width = 1,
             .dynamic_width = 11,
         });
-        _ = try tree.appendNodePayload(cell, .text_plain, []const u8, "B");
+        _ = try tree.appendNodePayload(cell, .inline_plain, []const u8, "B");
 
         cell = try tree.appendNodePayload(table, .block_table_column, MarkColumn, .{
             .aligns = .left,
             .self_width = 1,
             .dynamic_width = 7,
         });
-        _ = try tree.appendNodePayload(cell, .text_plain, []const u8, "C");
+        _ = try tree.appendNodePayload(cell, .inline_plain, []const u8, "C");
 
         var row = try tree.appendNode(table, .block_table_row);
 
         cell = try tree.appendNodePayload(row, .block_table_cell, u8, 8);
-        _ = try tree.appendNodePayload(cell, .text_plain, []const u8, "A01 Foo!");
+        _ = try tree.appendNodePayload(cell, .inline_plain, []const u8, "A01 Foo!");
 
         cell = try tree.appendNodePayload(row, .block_table_cell, u8, 3);
-        _ = try tree.appendNodePayload(cell, .text_plain, []const u8, "B01");
+        _ = try tree.appendNodePayload(cell, .inline_plain, []const u8, "B01");
 
         cell = try tree.appendNodePayload(row, .block_table_cell, u8, 3);
-        _ = try tree.appendNodePayload(cell, .text_plain, []const u8, "C01");
+        _ = try tree.appendNodePayload(cell, .inline_plain, []const u8, "C01");
 
         row = try tree.appendNode(table, .block_table_row);
 
         cell = try tree.appendNodePayload(row, .block_table_cell, u8, 3);
-        _ = try tree.appendNodePayload(cell, .text_plain, []const u8, "A02");
+        _ = try tree.appendNodePayload(cell, .inline_plain, []const u8, "A02");
 
         cell = try tree.appendNodePayload(row, .block_table_cell, u8, 11);
-        _ = try tree.appendNodePayload(cell, .text_plain, []const u8, "B02 Bar Baz");
+        _ = try tree.appendNodePayload(cell, .inline_plain, []const u8, "B02 Bar Baz");
 
         cell = try tree.appendNodePayload(row, .block_table_cell, u8, 3);
-        _ = try tree.appendNodePayload(cell, .text_plain, []const u8, "C02");
+        _ = try tree.appendNodePayload(cell, .inline_plain, []const u8, "C02");
 
         row = try tree.appendNode(table, .block_table_row);
 
         cell = try tree.appendNodePayload(row, .block_table_cell, u8, 3);
-        _ = try tree.appendNodePayload(cell, .text_plain, []const u8, "A03");
+        _ = try tree.appendNodePayload(cell, .inline_plain, []const u8, "A03");
 
         cell = try tree.appendNodePayload(row, .block_table_cell, u8, 3);
-        _ = try tree.appendNodePayload(cell, .text_plain, []const u8, "B03");
+        _ = try tree.appendNodePayload(cell, .inline_plain, []const u8, "B03");
 
         cell = try tree.appendNodePayload(row, .block_table_cell, u8, 7);
-        _ = try tree.appendNodePayload(cell, .text_plain, []const u8, "C03 Qux");
+        _ = try tree.appendNodePayload(cell, .inline_plain, []const u8, "C03 Qux");
 
         break :blk Document{ .tree = try tree.toReadOnly(test_alloc) };
     };
@@ -577,7 +590,7 @@ pub const ContainerAuthor = struct {
         const node = try self.tree.appendNodePayload(self.parent, .block_heading, u8, level);
         errdefer self.tree.dropNode(node);
 
-        _ = try self.tree.appendNodePayload(node, .text_plain, []const u8, text);
+        _ = try self.tree.appendNodePayload(node, .inline_plain, []const u8, text);
     }
 
     pub fn headingFmt(self: ContainerAuthor, level: u8, comptime format: []const u8, args: anytype) !void {
@@ -585,7 +598,7 @@ pub const ContainerAuthor = struct {
         const node = try self.tree.appendNodePayload(self.parent, .block_heading, u8, level);
         errdefer self.tree.dropNode(node);
 
-        _ = try self.tree.appendNodePayloadFmt(node, .text_plain, format, args);
+        _ = try self.tree.appendNodePayloadFmt(node, .inline_plain, format, args);
     }
 
     pub fn headingStyled(self: ContainerAuthor, level: u8) !StyledAuthor {
@@ -599,14 +612,14 @@ pub const ContainerAuthor = struct {
         const node = try self.tree.appendNode(self.parent, .block_paragraph);
         errdefer self.tree.dropNode(node);
 
-        _ = try self.tree.appendNodePayload(node, .text_plain, []const u8, text);
+        _ = try self.tree.appendNodePayload(node, .inline_plain, []const u8, text);
     }
 
     pub fn paragraphFmt(self: ContainerAuthor, comptime format: []const u8, args: anytype) !void {
         const node = try self.tree.appendNode(self.parent, .block_paragraph);
         errdefer self.tree.dropNode(node);
 
-        _ = try self.tree.appendNodePayloadFmt(node, .text_plain, format, args);
+        _ = try self.tree.appendNodePayloadFmt(node, .inline_plain, format, args);
     }
 
     pub fn paragraphStyled(self: ContainerAuthor) !StyledAuthor {
@@ -620,14 +633,14 @@ pub const ContainerAuthor = struct {
         const node = try self.tree.appendNode(self.parent, .block_quote);
         errdefer self.tree.dropNode(node);
 
-        _ = try self.tree.appendNodePayload(node, .text_plain, []const u8, text);
+        _ = try self.tree.appendNodePayload(node, .inline_plain, []const u8, text);
     }
 
     pub fn quoteFmt(self: ContainerAuthor, comptime format: []const u8, args: anytype) !void {
         const node = try self.tree.appendNode(self.parent, .block_quote);
         errdefer self.tree.dropNode(node);
 
-        _ = try self.tree.appendNodePayloadFmt(node, .text_plain, format, args);
+        _ = try self.tree.appendNodePayloadFmt(node, .inline_plain, format, args);
     }
 
     pub fn quoteStyled(self: ContainerAuthor) !StyledAuthor {
@@ -709,12 +722,12 @@ pub const StyledAuthor = struct {
     }
 
     pub fn plain(self: *StyledAuthor, text: []const u8) !void {
-        _ = try self.tree.appendNodePayload(self.parent, .text_plain, []const u8, text);
+        _ = try self.tree.appendNodePayload(self.parent, .inline_plain, []const u8, text);
         if (self.callback) |*cb| cb.increment(text.len);
     }
 
     pub fn plainFmt(self: *StyledAuthor, comptime format: []const u8, args: anytype) !void {
-        const node = try self.tree.appendNode(self.parent, .text_plain);
+        const node = try self.tree.appendNode(self.parent, .inline_plain);
         errdefer self.tree.dropNode(node);
 
         const len = try self.tree.setPayloadFmt(node, format, args);
@@ -722,76 +735,104 @@ pub const StyledAuthor = struct {
     }
 
     pub fn italic(self: *StyledAuthor, text: []const u8) !void {
-        _ = try self.tree.appendNodePayload(self.parent, .text_italic, []const u8, text);
+        _ = try self.tree.appendNodePayload(self.parent, .inline_italic, []const u8, text);
         if (self.callback) |*cb| cb.increment(2 + text.len);
     }
 
     pub fn italicFmt(self: *StyledAuthor, comptime format: []const u8, args: anytype) !void {
-        const node = try self.tree.appendNode(self.parent, .text_italic);
+        const node = try self.tree.appendNode(self.parent, .inline_italic);
         errdefer self.tree.dropNode(node);
 
         const len = try self.tree.setPayloadFmt(node, format, args);
         if (self.callback) |*cb| cb.increment(2 + len);
     }
 
+    pub fn italicStyled(self: *StyledAuthor) !StyledAuthor {
+        return StyledAuthor{
+            .tree = self.tree,
+            .parent = try self.tree.appendNode(self.parent, .inline_italic),
+        };
+    }
+
     pub fn bold(self: *StyledAuthor, text: []const u8) !void {
-        _ = try self.tree.appendNodePayload(self.parent, .text_bold, []const u8, text);
+        _ = try self.tree.appendNodePayload(self.parent, .inline_bold, []const u8, text);
         if (self.callback) |*cb| cb.increment(4 + text.len);
     }
 
     pub fn boldFmt(self: *StyledAuthor, comptime format: []const u8, args: anytype) !void {
-        const node = try self.tree.appendNode(self.parent, .text_bold);
+        const node = try self.tree.appendNode(self.parent, .inline_bold);
         errdefer self.tree.dropNode(node);
 
         const len = try self.tree.setPayloadFmt(node, format, args);
         if (self.callback) |*cb| cb.increment(4 + len);
     }
 
+    pub fn boldStyled(self: *StyledAuthor) !StyledAuthor {
+        return StyledAuthor{
+            .tree = self.tree,
+            .parent = try self.tree.appendNode(self.parent, .inline_bold),
+        };
+    }
+
     pub fn boldItalic(self: *StyledAuthor, text: []const u8) !void {
-        _ = try self.tree.appendNodePayload(self.parent, .text_bold_italic, []const u8, text);
+        _ = try self.tree.appendNodePayload(self.parent, .inline_bold_italic, []const u8, text);
         if (self.callback) |*cb| cb.increment(6 + text.len);
     }
 
     pub fn boldItalicFmt(self: *StyledAuthor, comptime format: []const u8, args: anytype) !void {
-        const node = try self.tree.appendNode(self.parent, .text_bold_italic);
+        const node = try self.tree.appendNode(self.parent, .inline_bold_italic);
         errdefer self.tree.dropNode(node);
 
         const len = try self.tree.setPayloadFmt(node, format, args);
         if (self.callback) |*cb| cb.increment(6 + len);
     }
 
+    pub fn boldItalicStyled(self: *StyledAuthor) !StyledAuthor {
+        return StyledAuthor{
+            .tree = self.tree,
+            .parent = try self.tree.appendNode(self.parent, .inline_bold_italic),
+        };
+    }
+
     pub fn code(self: *StyledAuthor, text: []const u8) !void {
-        _ = try self.tree.appendNodePayload(self.parent, .text_code, []const u8, text);
+        _ = try self.tree.appendNodePayload(self.parent, .inline_code, []const u8, text);
         if (self.callback) |*cb| cb.increment(2 + text.len);
     }
 
     pub fn codeFmt(self: *StyledAuthor, comptime format: []const u8, args: anytype) !void {
-        const node = try self.tree.appendNode(self.parent, .text_code);
+        const node = try self.tree.appendNode(self.parent, .inline_code);
         errdefer self.tree.dropNode(node);
 
         const len = try self.tree.setPayloadFmt(node, format, args);
         if (self.callback) |*cb| cb.increment(2 + len);
     }
 
+    pub fn codeStyled(self: *StyledAuthor) !StyledAuthor {
+        return StyledAuthor{
+            .tree = self.tree,
+            .parent = try self.tree.appendNode(self.parent, .inline_code),
+        };
+    }
+
     pub fn link(self: *StyledAuthor, href: []const u8, title: ?[]const u8, text: []const u8) !void {
-        const node = try self.tree.appendNodePayload(self.parent, .text_link, MarkLink, .{
+        const node = try self.tree.appendNodePayload(self.parent, .inline_link, MarkLink, .{
             .href = href,
             .title = title orelse "",
         });
         errdefer self.tree.dropNode(node);
 
-        _ = try self.tree.appendNodePayload(node, .text_plain, []const u8, text);
+        _ = try self.tree.appendNodePayload(node, .inline_plain, []const u8, text);
         if (self.callback) |*cb| cb.increment(4 + href.len + text.len);
     }
 
     pub fn linkFmt(self: *StyledAuthor, href: []const u8, title: ?[]const u8, comptime format: []const u8, args: anytype) !void {
-        const node = try self.tree.appendNodePayload(self.parent, .text_link, MarkLink, .{
+        const node = try self.tree.appendNodePayload(self.parent, .inline_link, MarkLink, .{
             .href = href,
             .title = title orelse "",
         });
         errdefer self.tree.dropNode(node);
 
-        const child = try self.tree.appendNode(node, .text_plain);
+        const child = try self.tree.appendNode(node, .inline_plain);
         errdefer self.tree.dropNode(child);
 
         const len = try self.tree.setPayloadFmt(child, format, args);
@@ -799,7 +840,7 @@ pub const StyledAuthor = struct {
     }
 
     pub fn linkStyled(self: *StyledAuthor, href: []const u8, title: ?[]const u8) !StyledAuthor {
-        const node = try self.tree.appendNodePayload(self.parent, .text_link, MarkLink, .{
+        const node = try self.tree.appendNodePayload(self.parent, .inline_link, MarkLink, .{
             .href = href,
             .title = title orelse "",
         });
@@ -841,14 +882,14 @@ pub const ListAuthor = struct {
         const child = try self.tree.appendNode(self.parent, .block_list_item);
         errdefer self.tree.dropNode(child);
 
-        _ = try self.tree.appendNodePayload(child, .text_plain, []const u8, value);
+        _ = try self.tree.appendNodePayload(child, .inline_plain, []const u8, value);
     }
 
     pub fn textFmt(self: ListAuthor, comptime format: []const u8, args: anytype) !void {
         const child = try self.tree.appendNode(self.parent, .block_list_item);
         errdefer self.tree.dropNode(child);
 
-        _ = try self.tree.appendNodePayloadFmt(child, .text_plain, format, args);
+        _ = try self.tree.appendNodePayloadFmt(child, .inline_plain, format, args);
     }
 
     pub fn textStyled(self: ListAuthor) !StyledAuthor {
@@ -915,7 +956,7 @@ pub const TableAuthor = struct {
         const child = try self.tree.appendNodePayload(self.parent, .block_table_column, MarkColumn, .{});
         errdefer self.tree.dropNode(child);
 
-        _ = try self.tree.appendNodePayload(child, .text_plain, []const u8, value);
+        _ = try self.tree.appendNodePayload(child, .inline_plain, []const u8, value);
     }
 
     pub fn columnFmt(self: *TableAuthor, aligns: ColumnAlign, comptime format: []const u8, args: anytype) !void {
@@ -924,7 +965,7 @@ pub const TableAuthor = struct {
         const child = try self.tree.appendNodePayload(self.parent, .block_table_column, MarkColumn, .{});
         errdefer self.tree.dropNode(child);
 
-        const text = try self.tree.appendNode(child, .text_plain);
+        const text = try self.tree.appendNode(child, .inline_plain);
         errdefer self.tree.dropNode(text);
 
         const len = try self.tree.setPayloadFmt(text, format, args);
@@ -978,7 +1019,7 @@ pub const TableAuthor = struct {
             const child = try self.tree.appendNodePayload(tbl_row, .block_table_cell, u8, @truncate(cell.len));
             errdefer self.tree.dropNode(child);
 
-            _ = try self.tree.appendNodePayload(child, .text_plain, []const u8, cell);
+            _ = try self.tree.appendNodePayload(child, .inline_plain, []const u8, cell);
 
             const col = &self.columns.items[i];
             if (cell.len > col.dynamic_width) col.dynamic_width = @truncate(cell.len);
@@ -1013,7 +1054,7 @@ pub const TableAuthor = struct {
             const child = try self.tree.appendNodePayload(self.parent, .block_table_cell, u8, @truncate(value.len));
             errdefer self.tree.dropNode(child);
 
-            _ = try self.tree.appendNodePayload(child, .text_plain, []const u8, value);
+            _ = try self.tree.appendNodePayload(child, .inline_plain, []const u8, value);
 
             if (value.len > col.dynamic_width) col.dynamic_width = @truncate(value.len);
         }
@@ -1026,7 +1067,7 @@ pub const TableAuthor = struct {
             const child = try self.tree.appendNode(self.parent, .block_table_cell);
             errdefer self.tree.dropNode(child);
 
-            const text = try self.tree.appendNode(child, .text_plain);
+            const text = try self.tree.appendNode(child, .inline_plain);
             errdefer self.tree.dropNode(text);
 
             const width = try self.tree.setPayloadFmt(text, format, args);
@@ -1109,21 +1150,37 @@ test "MutableDocument: Paragraph & Text" {
         errdefer style.deinit();
         try style.plain("text");
         try style.plainFmt("text{d}", .{108});
+
         try style.italic("italic");
         try style.italicFmt("italic {d}", .{108});
+        var sub_style = try style.italicStyled();
+        errdefer sub_style.deinit();
+        try sub_style.plain("italic style");
+        try sub_style.seal();
+
         try style.bold("bold");
         try style.boldFmt("bold {d}", .{108});
+        sub_style = try style.boldStyled();
+        try sub_style.plain("bold style");
+        try sub_style.seal();
+
         try style.boldItalic("bold italic");
         try style.boldItalicFmt("bold italic {d}", .{108});
+        sub_style = try style.boldItalicStyled();
+        try sub_style.plain("bold italic style");
+        try sub_style.seal();
+
         try style.code("code");
         try style.codeFmt("code {d}", .{108});
+        sub_style = try style.codeStyled();
+        try sub_style.plain("code style");
+        try sub_style.seal();
+
         try style.link("#", "title", "link");
         try style.linkFmt("#", null, "link {d}", .{108});
-
-        var link = try style.linkStyled("#", null);
-        errdefer link.deinit();
-        try link.plain("link style");
-        try link.seal();
+        sub_style = try style.linkStyled("#", null);
+        try sub_style.plain("link style");
+        try sub_style.seal();
 
         try style.seal();
         break :blk try md.toReadOnly(test_alloc);
@@ -1134,8 +1191,9 @@ test "MutableDocument: Paragraph & Text" {
         \\
         \\bar108
         \\
-        \\text text108 _italic_ _italic 108_ **bold** **bold 108** ***bold italic***
-    ++ " ***bold italic 108*** `code` `code 108` [link](# \"title\") [link 108](#) [link style](#)", doc);
+        \\text text108 _italic_ _italic 108_ _italic style_ **bold** **bold 108** **bold style**
+    ++ " ***bold italic*** ***bold italic 108*** ***bold italic style*** `code` `code 108` `code style`" ++
+        " [link](# \"title\") [link 108](#) [link style](#)", doc);
 }
 
 test "MutableDocument: Heading" {

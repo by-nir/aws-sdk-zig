@@ -208,6 +208,12 @@ pub fn SourceViewer(comptime Tag: type) type {
             return self.serial.get(T, handle);
         }
 
+        pub fn payloadOrNull(self: Self, node: NodeHandle, comptime T: type) ?T {
+            const handle = self.hierarchy.payload(node);
+            if (handle.isEmpty()) return null;
+            return self.serial.get(T, handle);
+        }
+
         pub fn countChildren(self: Self, parent: NodeHandle) Indexer {
             return self.hierarchy.countChildren(parent);
         }

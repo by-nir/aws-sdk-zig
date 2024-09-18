@@ -640,16 +640,19 @@ pub const ExprBuild = struct {
         return self.append(.{ .keyword_tight = .period_asterisk });
     }
 
+    /// `[<some_value>]`
     pub fn valIndexer(self: *const ExprBuild, i: ExprBuild) ExprBuild {
         const dupe = self.dupeExpr(i) catch |err| return self.append(err);
         return self.append(.{ .type = .{ .val_index = dupe } });
     }
 
+    /// `<some_value>..`
     pub fn valFrom(self: *const ExprBuild, i: ExprBuild) ExprBuild {
         const dupe = self.dupeExpr(i) catch |err| return self.append(err);
         return self.append(.{ .type = .{ .val_from = dupe } });
     }
 
+    /// `<some_value>..<some_value>`
     pub fn valRange(self: *const ExprBuild, a: ExprBuild, b: ExprBuild) ExprBuild {
         const range = self.allocator.create([2]Expr) catch |err| {
             a.deinit();
@@ -688,7 +691,7 @@ pub const ExprBuild = struct {
         try ExprBuild.init(test_alloc).comma().dot().unwrap().deref()
             .addressOf().valIndexer(_raw("8")).valFrom(_raw("8")).valRange(_raw("6"), _raw("8"))
             .orElse().assign().op(.not).op(.@"~").op(.eql)
-            .expect(", ..?.*&[8][8..][6..8] orelse  = !~ == ");
+            .expect(", ..?.*&[8]8..6..8 orelse  = !~ == ");
     }
 
     pub fn import(self: *const ExprBuild, name: []const u8) ExprBuild {

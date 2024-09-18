@@ -136,7 +136,7 @@ fn filterServiceShapes(
             },
             else => |t| {
                 // TODO: unit, big_integer, big_decimal, timestamp, document,
-                std.log.warn("Unimplemented shape filter `{}`", .{t});
+                std.log.warn("Unimplemented shape filter `{s}`", .{@tagName(t)});
             },
         }
     }
