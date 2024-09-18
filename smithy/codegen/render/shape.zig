@@ -400,8 +400,16 @@ fn writeStructShapeMember(
         if (is_optional) break :blk bld.x.valueOf(null);
         if (trt_refine.Default.get(symbols, id)) |json| {
             break :blk switch (try symbols.getShapeUnwrap(id)) {
-                .str_enum => bld.x.dot().raw(json.string),
+                .boolean => bld.x.valueOf(json.boolean),
+                .str_enum, .trt_enum, .string => bld.x.dot().raw(json.string),
                 .int_enum => bld.x.call("@enumFromInt", &.{bld.x.valueOf(json.integer)}),
+                .byte, .short, .integer, .long => bld.x.valueOf(json.integer),
+                .float, .double => bld.x.valueOf(json.float),
+                inline .blob, .map, .list, .timestamp, .document => |_, g| {
+                    // TODO
+                    std.log.warn("Unimplemented default value `{s}`", .{@tagName(g)});
+                    unreachable;
+                },
                 else => unreachable,
             };
         }
@@ -659,7 +667,7 @@ fn isAllocatedType(symbols: *const SymbolsProvider, id: SmithyId) !bool {
         },
         inline .big_integer, .big_decimal, .timestamp, .document => |_, g| {
             // TODO
-            std.log.warn("Unimplemented shape allocated decider `{}`", .{g});
+            std.log.warn("Unimplemented shape allocated decider `{s}`", .{@tagName(g)});
             return false;
         },
         else => return false,

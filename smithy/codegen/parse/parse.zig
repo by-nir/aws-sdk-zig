@@ -106,7 +106,10 @@ const JsonParser = struct {
                 else => return error.InvalidShapeProperty,
             },
             inline .input, .output => |prop| switch (ctx.target) {
-                .operation => |t| try self.parseShapeRefField(t, @tagName(prop)),
+                .operation => |t| {
+                    const ref_id = try self.parseShapeRef();
+                    if (ref_id != .unit) @field(t, @tagName(prop)) = ref_id;
+                },
                 else => return error.InvalidShapeProperty,
             },
             inline .create, .put, .read, .update, .delete, .list => |prop| switch (ctx.target) {
