@@ -128,8 +128,8 @@ fn writeClientShapeHead(
 
     try bld.field("config_sdk").typing(bld.x.id(aws_cfg.scope_private).dot().id("ClientConfig")).end();
     try bld.field("config_endpoint").typing(bld.x.raw(aws_cfg.endpoint_scope ++ ".EndpointConfig")).end();
-    try bld.field("http").typing(bld.x.typePointer(true, bld.x.id(aws_cfg.scope_runtime).dot().id("HttpClient"))).end();
-    try bld.field("TEMP_creds").typing(bld.x.id(aws_cfg.scope_runtime).dot().id("Credentials")).end();
+    try bld.field("http").typing(bld.x.typePointer(true, bld.x.id(aws_cfg.scope_private).dot().id("HttpClient"))).end();
+    try bld.field("identity").typing(bld.x.typePointer(true, bld.x.id(aws_cfg.scope_private).dot().id("IdentityManager"))).end();
 
     try bld.public().function("init")
         .arg("config", bld.x.id(aws_cfg.scope_runtime).dot().id("Config"))
@@ -143,22 +143,23 @@ fn writeClientShapeHead(
 
 fn writeServiceInit(bld: *zig.BlockBuild) anyerror!void {
     try bld.constant("client_cfg").assign(
-        bld.x.trys().id(aws_cfg.scope_private).dot().raw("ClientConfig.resolve(config)"),
+        bld.x.trys().id(aws_cfg.scope_private).dot().raw("ClientConfig.resolveFrom(config)"),
     );
 
     try bld.returns().structLiteral(null, &.{
-        bld.x.structAssign("config_sdk", bld.x.id("client_cfg")), // TODO: remove
+        bld.x.structAssign("config_sdk", bld.x.id("client_cfg")),
         bld.x.structAssign("config_endpoint", bld.x.call(
             aws_cfg.endpoint_scope ++ ".extractConfig",
             &.{bld.x.id("client_cfg")},
         )),
         bld.x.structAssign("http", bld.x.raw("client_cfg.http_client")),
-        bld.x.structAssign("TEMP_creds", bld.x.raw("client_cfg.credentials")),
+        bld.x.structAssign("identity", bld.x.raw("client_cfg.identity_manager")),
     }).end();
 }
 
 fn writeServiceDeinit(bld: *zig.BlockBuild) anyerror!void {
     try bld.raw("self.http.deinit()");
+    try bld.raw("self.identity.deinit()");
 }
 
 /// ### Operation Memory Management

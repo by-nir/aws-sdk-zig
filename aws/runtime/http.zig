@@ -12,41 +12,41 @@ const SharedResource = @import("utils/SharedResource.zig");
 const log = std.log.scoped(.aws_sdk);
 const StringArrayMap = std.StringArrayHashMapUnmanaged([]const u8);
 
-// Provides a shared HTTP client for multiple SDK clients.
-pub const ClientProvider = struct {
+/// Provides a shared HTTP client for multiple SDK clients.
+pub const SharedClient = struct {
     allocator: Allocator,
     client: Client = undefined,
-    resource: SharedResource = .{},
+    tracker: SharedResource = .{},
 
-    pub fn init(allocator: Allocator) ClientProvider {
+    pub fn init(allocator: Allocator) SharedClient {
         return .{ .allocator = allocator };
     }
 
-    pub fn deinit(self: *ClientProvider) void {
-        const count = self.resource.countSafe();
+    pub fn deinit(self: *SharedClient) void {
+        const count = self.tracker.countSafe();
         if (count == 0) return;
 
-        log.warn("Shared Http Client deinitialized while still used by {d} SDK clients.", .{count});
+        log.warn("Deinit shared Http Client while still used by {d} SDK clients.", .{count});
         self.client.forceDeinit();
         self.* = undefined;
     }
 
-    pub fn retain(self: *ClientProvider) *Client {
-        self.resource.retainCallback(createClient, self);
+    pub fn retain(self: *SharedClient) *Client {
+        self.tracker.retainCallback(createClient, self);
         return &self.client;
     }
 
-    pub fn release(self: *ClientProvider, client: *Client) void {
+    pub fn release(self: *SharedClient, client: *Client) void {
         std.debug.assert(@intFromPtr(&self.client) == @intFromPtr(client));
-        self.resource.releaseCallback(destroyClient, self);
+        self.tracker.releaseCallback(destroyClient, self);
     }
 
-    fn createClient(self: *ClientProvider) void {
+    fn createClient(self: *SharedClient) void {
         self.client = Client.init(self.allocator);
-        self.client.provider = self;
+        self.client.shared = self;
     }
 
-    fn destroyClient(self: *ClientProvider) void {
+    fn destroyClient(self: *SharedClient) void {
         self.client.forceDeinit();
     }
 };
@@ -58,14 +58,14 @@ pub const HeadersPairsBuffer = [MAX_HEADERS_COUNT]std.http.Header;
 
 pub const Client = struct {
     http: HttpClient,
-    provider: ?*ClientProvider = null,
+    shared: ?*SharedClient = null,
 
     pub fn init(allocator: Allocator) Client {
         return .{ .http = .{ .allocator = allocator } };
     }
 
     pub fn deinit(self: *Client) void {
-        if (self.provider) |p| p.release(self) else self.forceDeinit();
+        if (self.shared) |p| p.release(self) else self.forceDeinit();
     }
 
     fn forceDeinit(self: *Client) void {

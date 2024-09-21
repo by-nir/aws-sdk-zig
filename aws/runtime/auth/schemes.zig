@@ -4,7 +4,7 @@ const mem = std.mem;
 const smithy = @import("smithy/runtime");
 const sig = @import("sigv4.zig");
 const http = @import("../http.zig");
-const Credentials = @import("creds.zig").Credentials;
+const Credentials = @import("identity.zig").Credentials;
 const Region = @import("../infra/region.gen.zig").Region;
 const hashing = @import("../utils/hashing.zig");
 

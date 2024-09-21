@@ -17,8 +17,8 @@ const SmithyId = smithy.SmithyId;
 const SymbolsProvider = smithy.SymbolsProvider;
 const trt_smithy = smithy.traits.auth;
 const AuthId = trt_smithy.AuthId;
-const trt_auth = @import("../traits/auth.zig");
 const aws_cfg = @import("../config.zig");
+const trt_auth = @import("../traits/auth.zig");
 
 pub fn extendAuthSchemes(_: *const Delegate, symbols: *SymbolsProvider, schemes: *std.ArrayList(AuthId)) anyerror!void {
     if (symbols.hasTrait(symbols.service_id, trt_auth.SigV4.id)) try schemes.append(trt_auth.SigV4.auth_id);
@@ -104,10 +104,13 @@ fn writeSigV4(ctx: SignContext, bld: *zig.BlockBuild) !void {
         }),
     );
 
+    try bld.constant("identity").assign(bld.x.trys().call("self.identity.TEMP_resolve", &.{}));
+    try bld.defers(bld.x.call("self.identity.release", &.{bld.x.id("identity")}));
+
     try bld.trys().raw(aws_cfg.scope_auth).dot().call("signV4", &.{
         bld.x.addressOf().id("auth_buffer"),
         bld.x.id(aws_cfg.send_op_param),
         bld.x.id("scheme_config"),
-        bld.x.raw("self.TEMP_creds"),
+        bld.x.raw("identity.as(.credentials)"),
     }).end();
 }

@@ -12,23 +12,26 @@ pub const Region = region.Region;
 
 const conf = @import("config.zig");
 pub const Config = conf.Config;
+pub const SharedConfig = conf.SharedConfig;
 pub const ConfigOptions = conf.ConfigOptions;
-pub const ConfigResources = conf.ConfigResources;
 
 const http = @import("http.zig");
-pub const HttpClient = http.Client;
-pub const SharedHttpClient = http.ClientProvider;
+pub const HttpClient = http.SharedClient;
+
+const identity = @import("auth/identity.zig");
+pub const IdentityManager = identity.SharedManager;
+pub const StaticCredentials = identity.StaticCredentialsResolver;
 
 const auth_sign = @import("auth/sigv4.zig");
 const auth_schemes = @import("auth/schemes.zig");
-const auth_creds = @import("auth/creds.zig");
-pub const Credentials = auth_creds.Credentials;
 
 pub const _private_ = struct {
     pub const ClientConfig = conf.ClientConfig;
-    pub const ClientOperation = http.Operation;
     pub const ClientRequest = http.Request;
     pub const ClientResponse = http.Response;
+    pub const ClientOperation = http.Operation;
+    pub const HttpClient = http.Client;
+    pub const IdentityManager = identity.Manager;
     pub const Arn = endpoint.Arn;
     pub const Partition = endpoint.Partition;
     pub const isVirtualHostableS3Bucket = endpoint.isVirtualHostableS3Bucket;
@@ -49,11 +52,12 @@ test {
     _ = @import("utils/SharedResource.zig");
     _ = @import("config/entries.zig");
     _ = @import("config/env.zig");
+    _ = @import("config/profile.zig");
     _ = region;
     _ = endpoint;
     _ = partition;
     _ = _private_.ClientOperation;
-    _ = auth_creds;
+    _ = identity;
     _ = auth_schemes;
     _ = @import("auth/sigv4.zig");
     _ = protocol_json;

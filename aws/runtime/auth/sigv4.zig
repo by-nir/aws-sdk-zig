@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const crds = @import("creds.zig");
+const crds = @import("identity.zig");
 const hashing = @import("../utils/hashing.zig");
 const TimeStr = @import("../utils/TimeStr.zig");
 
@@ -11,7 +11,7 @@ const V4_ALGO = "AWS4-HMAC-SHA256";
 pub const SignBuffer = [256]u8;
 const SignatureBuffer = [512]u8;
 const CanonicalBuffer = [2 * 1024]u8;
-const AccessSecretV4 = [V4_PREFIX.len + crds.SECRET_LEN]u8;
+const AccessSecretV4 = [V4_PREFIX.len + crds.CREDS_SECRET_LEN]u8;
 
 pub const Target = struct {
     service: []const u8,
