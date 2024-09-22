@@ -4,6 +4,7 @@ const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const testing = std.testing;
 const test_alloc = testing.allocator;
+const env = @import("../config/env.zig");
 const SharedResource = @import("../utils/SharedResource.zig");
 
 const log = std.log.scoped(.aws_sdk);
@@ -131,7 +132,7 @@ pub const Manager = struct {
             return identity;
         }
 
-        return error.NoSuitableIdentityProvider;
+        return error.CantResolveIdentity;
     }
 
     pub fn release(self: *Manager, identity: Identity) void {
@@ -240,9 +241,8 @@ pub const StaticCredsProvider = struct {
     }
 
     fn resolve(ctx: *const anyopaque, _: Allocator, kind: Identity.Kind) anyerror!?Identity {
-        if (kind != .credentials) return null;
-
         const self = ctxSelf(ctx);
+        if (kind != .credentials) return null;
         return .{
             .data = &self.creds,
             .kind = .credentials,
@@ -261,7 +261,94 @@ test StaticCredsProvider {
     var static = StaticCredsProvider.from(TEST_ID, TEST_SECRET);
     const static_resolver = static.identityResolver();
 
-    const identity = try static_resolver.resolve(test_alloc);
+    const identity = (try static_resolver.resolve(test_alloc, .credentials)).?;
+    defer static_resolver.destroy(identity, test_alloc);
+    try testing.expectEqual(null, identity.expiration);
+    try testing.expectEqual(.credentials, identity.kind);
+
+    const creds = identity.as(.credentials);
+    try testing.expectEqualStrings(TEST_ID, creds.access_id);
+    try testing.expectEqualStrings(TEST_SECRET, creds.access_secret);
+    try testing.expectEqual(null, creds.session_token);
+}
+
+pub const EnvironmentCredsProvider = struct {
+    pub fn identityResolver(self: *const EnvironmentCredsProvider) IdentityResolver {
+        return .{
+            .ctx = self,
+            .vtable = &vtable,
+        };
+    }
+
+    const vtable = IdentityResolver.VTable{
+        .resolve = resolve,
+        .destroy = destroy,
+    };
+
+    fn ctxSelf(ctx: *const anyopaque) *const EnvironmentCredsProvider {
+        return @ptrCast(@alignCast(ctx));
+    }
+
+    fn resolve(ctx: *const anyopaque, allocator: Allocator, kind: Identity.Kind) anyerror!?Identity {
+        const self = ctxSelf(ctx);
+        if (kind != .credentials) return null;
+
+        _ = try env.loadEnvironment(allocator);
+        defer env.releaseEnvironment();
+
+        const access_id = blk: {
+            const val = env.readValue(.access_id) orelse return null;
+            break :blk try allocator.dupe(u8, val);
+        };
+        errdefer allocator.free(access_id);
+
+        const access_secret = blk: {
+            const val = env.readValue(.access_secret) orelse return null;
+            break :blk try allocator.dupe(u8, val);
+        };
+        errdefer allocator.free(access_secret);
+
+        const session_token = blk: {
+            const val = env.readValue(.session_token) orelse break :blk null;
+            break :blk try allocator.dupe(u8, val);
+        };
+        errdefer if (session_token) |token| allocator.free(token);
+
+        const creds = try allocator.create(Credentials);
+        creds.* = .{
+            .access_id = access_id,
+            .access_secret = access_secret,
+            .session_token = session_token,
+        };
+
+        return .{
+            .data = creds,
+            .kind = .credentials,
+            .expiration = null,
+            .resolver = self.identityResolver(),
+        };
+    }
+
+    fn destroy(_: *const anyopaque, identity: Identity, allocator: Allocator) void {
+        const creds: *const Credentials = @ptrCast(@alignCast(identity.data));
+        allocator.free(creds.access_id);
+        allocator.free(creds.access_secret);
+        if (creds.session_token) |token| allocator.free(token);
+        allocator.destroy(creds);
+    }
+};
+
+test EnvironmentCredsProvider {
+    _ = try env.loadEnvironment(test_alloc);
+    defer env.releaseEnvironment();
+
+    env.overrideValue(.access_id, TEST_ID);
+    env.overrideValue(.access_secret, TEST_SECRET);
+
+    const static: EnvironmentCredsProvider = .{};
+    const static_resolver = static.identityResolver();
+
+    const identity = (try static_resolver.resolve(test_alloc, .credentials)).?;
     defer static_resolver.destroy(identity, test_alloc);
     try testing.expectEqual(null, identity.expiration);
     try testing.expectEqual(.credentials, identity.kind);

@@ -106,7 +106,6 @@ fn writeSigV4(ctx: SignContext, bld: *zig.BlockBuild) !void {
     try bld.constant("identity").assign(
         bld.x.trys().call("self.identity.resolve", &.{bld.x.dot().id("credentials")}),
     );
-    try bld.defers(bld.x.call("self.identity.release", &.{bld.x.id("identity")}));
 
     try bld.trys().raw(aws_cfg.scope_auth).dot().call("signV4", &.{
         bld.x.addressOf().id("auth_buffer"),

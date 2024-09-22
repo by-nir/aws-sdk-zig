@@ -3,13 +3,17 @@ const testing = std.testing;
 const Region = @import("../infra/region.gen.zig").Region;
 
 pub const Entry = struct {
-    Type: *const anyopaque,
     field: []const u8,
     key_env: ?[]const u8,
     key_profile: ?[]const u8,
+    type_ref: *const anyopaque,
     parseFn: ?*const fn (value: []const u8, out: *anyopaque) bool,
 
-    pub fn new(
+    pub fn Type(comptime self: Entry) type {
+        return @as(*const type, @ptrCast(@alignCast(self.type_ref))).*;
+    }
+
+    fn new(
         field: []const u8,
         T: type,
         env: ?[]const u8,
@@ -17,12 +21,19 @@ pub const Entry = struct {
         parseFn: ?*const fn (value: []const u8, out: *anyopaque) bool,
     ) Entry {
         return Entry{
-            .Type = &T,
+            .type_ref = &T,
             .field = field,
             .key_env = env,
             .key_profile = profile,
             .parseFn = parseFn,
         };
+    }
+
+    pub fn parse(comptime self: Entry, s: []const u8) !self.Type() {
+        const parseFn = (comptime self.parseFn) orelse return s;
+        var out: self.Type() = undefined;
+        if (!parseFn(s, &out)) return error.EnvConfigParseFailed;
+        return out;
     }
 };
 
