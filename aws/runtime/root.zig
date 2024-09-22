@@ -20,7 +20,7 @@ pub const HttpClient = http.SharedClient;
 
 const identity = @import("auth/identity.zig");
 pub const IdentityManager = identity.SharedManager;
-pub const StaticCredentials = identity.StaticCredentialsResolver;
+pub const StaticCredentials = identity.StaticCredsProvider;
 
 const auth_sign = @import("auth/sigv4.zig");
 const auth_schemes = @import("auth/schemes.zig");

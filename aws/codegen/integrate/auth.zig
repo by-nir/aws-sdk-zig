@@ -1,13 +1,3 @@
-//! https://smithy.io/2.0/aws/rules-engine/auth-schemes.html
-//!
-//! If an authSchemes property is present on an Endpoint object, clients MUST resolve
-//! an authentication scheme to use via the following process:
-//!
-//! 1. Iterate through configuration objects in the authSchemes property.
-//! 2. If the name property in a configuration object contains a supported authentication scheme, resolve this scheme.
-//! 3. If the name is unknown or unsupported, ignore it and continue iterating.
-//! 4. If the list has been fully iterated and no scheme has been resolved, clients MUST return an error.
-
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const zig = @import("razdaz").zig;
@@ -65,6 +55,15 @@ fn writeSignBuffer(bld: *zig.BlockBuild) !void {
         .assign(bld.x.raw("undefined"));
 }
 
+/// https://smithy.io/2.0/aws/rules-engine/auth-schemes.html
+///
+/// If an authSchemes property is present on an Endpoint object, clients MUST resolve
+/// an authentication scheme to use via the following process:
+///
+/// 1. Iterate through configuration objects in the authSchemes property.
+/// 2. If the name property in a configuration object contains a supported authentication scheme, resolve this scheme.
+/// 3. If the name is unknown or unsupported, ignore it and continue iterating.
+/// 4. If the list has been fully iterated and no scheme has been resolved, clients MUST return an error.
 fn writeSchemeResolver(ctx: SignContext, bld: *zig.BlockBuild) !void {
     try bld.@"for"()
         .iter(bld.x.raw(aws_cfg.send_endpoint_param ++ ".auth_schemes"), "scheme")
@@ -104,7 +103,9 @@ fn writeSigV4(ctx: SignContext, bld: *zig.BlockBuild) !void {
         }),
     );
 
-    try bld.constant("identity").assign(bld.x.trys().call("self.identity.TEMP_resolve", &.{}));
+    try bld.constant("identity").assign(
+        bld.x.trys().call("self.identity.resolve", &.{bld.x.dot().id("credentials")}),
+    );
     try bld.defers(bld.x.call("self.identity.release", &.{bld.x.id("identity")}));
 
     try bld.trys().raw(aws_cfg.scope_auth).dot().call("signV4", &.{

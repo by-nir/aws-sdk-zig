@@ -68,58 +68,67 @@ pub const SharedConfig = struct {
     pub const Builder = struct {
         allocator: Allocator,
         options: ConfigOptions = .{},
-        http_provider: ?*http.SharedClient = null,
-        identity_manager: ?*identity.SharedManager = null,
-
-        pub fn deinit(self: *Builder) void {
-            self.* = undefined;
-        }
+        shared_http: ?*http.SharedClient = null,
+        shared_identity: ?*identity.SharedManager = null,
 
         /// The AWS region configured for the SDK client.
         /// [AWS Spec](https://docs.aws.amazon.com/sdkref/latest/guide/feature-region.html)
-        pub fn setRegion(self: *Builder, region: Region) void {
-            self.options.region = region;
+        pub fn region(self: Builder, r: Region) Builder {
+            var dupe = self;
+            dupe.options.region = r;
+            return dupe;
         }
 
         /// A name to add to the user agent string.
         /// Supported characters are alphanumeric characters and the following: `!#$%&'*+-.^_`|~`
         /// [AWS Spec](https://docs.aws.amazon.com/sdkref/latest/guide/feature-appid.html)
-        pub fn setAppId(self: *Builder, id: []const u8) void {
-            self.options.app_id = id;
+        pub fn appId(self: Builder, id: []const u8) Builder {
+            var dupe = self;
+            dupe.options.app_id = id;
+            return dupe;
         }
 
         /// Override the endpoint URL.
-        pub fn setEndpointUrl(self: *Builder, url: []const u8) void {
-            self.options.endpoint_url = url;
+        pub fn endpointUrl(self: Builder, url: []const u8) Builder {
+            var dupe = self;
+            dupe.options.endpoint_url = url;
+            return dupe;
         }
 
         /// When true, send this request to the FIPS-compliant regional endpoint.
         /// If no FIPS-compliant endpoint can be determined, dispatching the request will return an error.
         /// [AWS Spec](https://docs.aws.amazon.com/sdkref/latest/guide/feature-endpoints.html)
-        pub fn setUseFips(self: *Builder, value: bool) void {
-            self.options.use_fips = value;
+        pub fn useFips(self: Builder, value: bool) Builder {
+            var dupe = self;
+            dupe.options.use_fips = value;
+            return dupe;
         }
 
         /// When true, send this request to the dual-stack regional endpoint.
         /// If no dual-stack endpoint can be determined, dispatching the request will return an error.
         /// [AWS Spec](https://docs.aws.amazon.com/sdkref/latest/guide/feature-endpoints.html)
-        pub fn setUseDualStack(self: *Builder, value: bool) void {
-            self.options.use_dual_stacks = value;
+        pub fn useDualStack(self: Builder, value: bool) Builder {
+            var dupe = self;
+            dupe.options.use_dual_stacks = value;
+            return dupe;
         }
 
-        pub fn setHttpClient(self: *Builder, client: *http.SharedClient) void {
-            self.http_provider = client;
+        pub fn httpClient(self: Builder, client: *http.SharedClient) Builder {
+            var dupe = self;
+            dupe.shared_http = client;
+            return dupe;
         }
 
-        pub fn setIdentityManager(self: *Builder, manager: *identity.SharedManager) void {
-            self.identity_manager = manager;
+        pub fn identityManager(self: Builder, manager: *identity.SharedManager) Builder {
+            var dupe = self;
+            dupe.shared_identity = manager;
+            return dupe;
         }
 
-        pub fn consume(self: *Builder) SharedConfig {
-            const http_provider: Resource(http.SharedClient) = if (self.http_provider) |t| .{ .unmanaged = t } else .none;
-            const identity_manager: Resource(identity.SharedManager) = if (self.identity_manager) |t| .{ .unmanaged = t } else .none;
+        pub fn consume(self: *const Builder) SharedConfig {
+            const http_provider: Resource(http.SharedClient) = if (self.shared_http) |t| .{ .unmanaged = t } else .none;
+            const identity_manager: Resource(identity.SharedManager) = if (self.shared_identity) |t| .{ .unmanaged = t } else .none;
 
-            defer self.* = undefined;
             return .{
                 .allocator = self.allocator,
                 .options = self.options,

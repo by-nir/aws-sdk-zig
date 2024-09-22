@@ -27,10 +27,7 @@ pub const SharedManager = struct {
 
     /// Use the standard identity resoulution chain.
     pub fn initStandard(allocator: Allocator) SharedManager {
-        return .{
-            .allocator = allocator,
-            .resolvers = &.{},
-        };
+        return initChain(allocator, &.{});
     }
 
     /// Use a manual fallback chain of identity resolvers.
@@ -73,12 +70,24 @@ pub const SharedManager = struct {
 pub const Manager = struct {
     allocator: Allocator,
     resolvers: []const IdentityResolver,
+    cache: std.ArrayListUnmanaged(Identity) = .{},
+    /// Maximum duration in seconds to cache an identity.
+    max_cache_duration: u32 = 15 * std.time.s_per_min,
+    /// Dureation in seconds before the specified expiration to consider an identity expired.
+    expiration_buffer: f32 = 10,
+    prng: std.Random.DefaultPrng,
+    rand: ?std.Random = null,
     shared: ?*SharedManager = null,
 
     pub fn init(allocator: Allocator, resolvers: []const IdentityResolver) Manager {
         return .{
             .allocator = allocator,
             .resolvers = resolvers,
+            .prng = .init(blk: {
+                var seed: u64 = undefined;
+                std.posix.getrandom(std.mem.asBytes(&seed)) catch @panic("posix random failed");
+                break :blk seed;
+            }),
         };
     }
 
@@ -87,15 +96,42 @@ pub const Manager = struct {
     }
 
     fn forceDeinit(self: *Manager) void {
-        _ = self; // autofix
+        for (self.cache.items) |identity| identity.resolver.destroy(identity, self.allocator);
+        self.cache.deinit(self.allocator);
     }
 
-    pub fn TEMP_resolve(self: *Manager) !Identity {
-        if (self.resolvers.len == 0) {
-            return error.TEMP_MissingCredentials;
-        } else {
-            return self.resolvers[0].resolve(self.allocator);
+    pub fn resolve(self: *Manager, kind: Identity.Kind) !Identity {
+        if (self.resolvers.len == 0) return error.NoIdentityResolvers;
+        if (self.rand == null) self.rand = self.prng.random();
+
+        var i: usize = 0;
+        const now = std.time.timestamp();
+        while (i < self.cache.items.len) {
+            const identity = self.cache.items[i];
+            if (identity.expiration != null and identity.expiration.? < now) {
+                identity.resolver.destroy(identity, self.allocator);
+                _ = self.cache.orderedRemove(i);
+            } else if (identity.kind == kind) {
+                return identity;
+            } else {
+                i += 1;
+            }
         }
+
+        for (self.resolvers) |resolver| {
+            var identity = (try resolver.resolve(self.allocator, kind)) orelse continue;
+            errdefer resolver.destroy(identity, self.allocator);
+
+            const max = std.time.timestamp() + self.max_cache_duration; // Refresh time in case of a remote resolver
+            const expire = if (identity.expiration) |exp| @min(exp, max) else max;
+            const jitter: u32 = @intFromFloat(self.expiration_buffer * self.rand.?.float(f32));
+            identity.expiration = expire - jitter;
+
+            try self.cache.append(self.allocator, identity);
+            return identity;
+        }
+
+        return error.NoSuitableIdentityProvider;
     }
 
     pub fn release(self: *Manager, identity: Identity) void {
@@ -161,12 +197,12 @@ pub const IdentityResolver = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        resolve: *const fn (ctx: *const anyopaque, allocator: Allocator) anyerror!Identity,
+        resolve: *const fn (ctx: *const anyopaque, allocator: Allocator, kind: Identity.Kind) anyerror!?Identity,
         destroy: *const fn (ctx: *const anyopaque, identity: Identity, allocator: Allocator) void,
     };
 
-    pub inline fn resolve(self: IdentityResolver, allocator: Allocator) anyerror!Identity {
-        return self.vtable.resolve(self.ctx, allocator);
+    pub inline fn resolve(self: IdentityResolver, allocator: Allocator, kind: Identity.Kind) anyerror!?Identity {
+        return self.vtable.resolve(self.ctx, allocator, kind);
     }
 
     pub inline fn destroy(self: IdentityResolver, identity: Identity, allocator: Allocator) void {
@@ -174,10 +210,10 @@ pub const IdentityResolver = struct {
     }
 };
 
-pub const StaticCredentialsResolver = struct {
+pub const StaticCredsProvider = struct {
     creds: Credentials,
 
-    pub fn from(id: []const u8, secret: []const u8) StaticCredentialsResolver {
+    pub fn from(id: []const u8, secret: []const u8) StaticCredsProvider {
         assert(id.len == CREDS_ID_LEN);
         assert(secret.len == CREDS_SECRET_LEN);
 
@@ -187,7 +223,7 @@ pub const StaticCredentialsResolver = struct {
         } };
     }
 
-    pub fn identityResolver(self: *const StaticCredentialsResolver) IdentityResolver {
+    pub fn identityResolver(self: *const StaticCredsProvider) IdentityResolver {
         return .{
             .ctx = self,
             .vtable = &vtable,
@@ -199,11 +235,13 @@ pub const StaticCredentialsResolver = struct {
         .destroy = destroy,
     };
 
-    fn ctxSelf(ctx: *const anyopaque) *const StaticCredentialsResolver {
+    fn ctxSelf(ctx: *const anyopaque) *const StaticCredsProvider {
         return @ptrCast(@alignCast(ctx));
     }
 
-    fn resolve(ctx: *const anyopaque, _: Allocator) anyerror!Identity {
+    fn resolve(ctx: *const anyopaque, _: Allocator, kind: Identity.Kind) anyerror!?Identity {
+        if (kind != .credentials) return null;
+
         const self = ctxSelf(ctx);
         return .{
             .data = &self.creds,
@@ -219,8 +257,8 @@ pub const StaticCredentialsResolver = struct {
     }
 };
 
-test StaticCredentialsResolver {
-    var static = StaticCredentialsResolver.from(TEST_ID, TEST_SECRET);
+test StaticCredsProvider {
+    var static = StaticCredsProvider.from(TEST_ID, TEST_SECRET);
     const static_resolver = static.identityResolver();
 
     const identity = try static_resolver.resolve(test_alloc);
