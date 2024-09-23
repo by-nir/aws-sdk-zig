@@ -177,6 +177,12 @@ pub const Credentials = struct {
     pub fn validSlicesLength(self: Credentials) bool {
         return self.access_id.len == CREDS_ID_LEN and self.access_secret.len == CREDS_SECRET_LEN;
     }
+
+    pub fn deinit(self: Credentials, allocator: Allocator) void {
+        allocator.free(self.access_id);
+        allocator.free(self.access_secret);
+        if (self.session_token) |token| allocator.free(token);
+    }
 };
 
 /// Identity type required to sign requests using Smithy’s token-based HTTP auth schemes.

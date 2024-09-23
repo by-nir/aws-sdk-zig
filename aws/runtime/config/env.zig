@@ -5,7 +5,7 @@ const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const Entry = @import("entries.zig").Entry;
-const all_entries = @import("entries.zig").entries;
+const entries = @import("entries.zig").env_entries;
 const SharedResource = @import("../utils/SharedResource.zig");
 
 var tracker = SharedResource{};
@@ -109,16 +109,3 @@ test {
         .ua_app_id = "foo",
     }, env);
 }
-
-const entries: std.StaticStringMap(Entry) = blk: {
-    var map_len: usize = 0;
-    var map: [all_entries.len]struct { []const u8, Entry } = undefined;
-
-    for (all_entries) |entry| {
-        if (entry.key_env == null) continue;
-        map[map_len] = .{ entry.key_env.?, entry };
-        map_len += 1;
-    }
-
-    break :blk std.StaticStringMap(Entry).initComptime(map[0..map_len]);
-};
