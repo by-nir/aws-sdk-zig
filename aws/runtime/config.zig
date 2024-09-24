@@ -1,6 +1,6 @@
 const std = @import("std");
-const Allocator = std.mem.Allocator;
 const testing = std.testing;
+const Allocator = std.mem.Allocator;
 const http = @import("http.zig");
 const identity = @import("auth/identity.zig");
 const Region = @import("infra/region.gen.zig").Region;

@@ -4,7 +4,8 @@ const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const env = @import("../config/env.zig");
+const conf_env = @import("../config/env.zig");
+const conf_profile = @import("../config/profile.zig");
 const SharedResource = @import("../utils/SharedResource.zig");
 
 const log = std.log.scoped(.aws_sdk);
@@ -183,6 +184,24 @@ pub const Credentials = struct {
         allocator.free(self.access_secret);
         if (self.session_token) |token| allocator.free(token);
     }
+
+    /// Deep copy of the value strings.
+    pub fn clone(self: Credentials, allocator: Allocator) !Credentials {
+        const access_id = try allocator.dupe(u8, self.access_id);
+        errdefer allocator.free(access_id);
+
+        const access_secret = try allocator.dupe(u8, self.access_secret);
+        errdefer allocator.free(access_secret);
+
+        const session_token = if (self.session_token) |s| try allocator.dupe(u8, s) else null;
+        errdefer if (session_token) |token| allocator.free(token);
+
+        return .{
+            .access_id = access_id,
+            .access_secret = access_secret,
+            .session_token = session_token,
+        };
+    }
 };
 
 /// Identity type required to sign requests using Smithy’s token-based HTTP auth schemes.
@@ -295,27 +314,27 @@ pub const EnvironmentCredsProvider = struct {
         return @ptrCast(@alignCast(ctx));
     }
 
-    fn resolve(ctx: *const anyopaque, allocator: Allocator, kind: Identity.Kind) anyerror!?Identity {
+    fn resolve(ctx: *const anyopaque, allocator: Allocator, kind: Identity.Kind) !?Identity {
         const self = ctxSelf(ctx);
         if (kind != .credentials) return null;
 
-        _ = try env.loadEnvironment(allocator);
-        defer env.releaseEnvironment();
+        _ = try conf_env.loadEnvironment(allocator);
+        defer conf_env.releaseEnvironment();
 
         const access_id = blk: {
-            const val = env.readValue(.access_id) orelse return null;
+            const val = conf_env.readValue(.access_id) orelse return null;
             break :blk try allocator.dupe(u8, val);
         };
         errdefer allocator.free(access_id);
 
         const access_secret = blk: {
-            const val = env.readValue(.access_secret) orelse return null;
+            const val = conf_env.readValue(.access_secret) orelse return null;
             break :blk try allocator.dupe(u8, val);
         };
         errdefer allocator.free(access_secret);
 
         const session_token = blk: {
-            const val = env.readValue(.session_token) orelse break :blk null;
+            const val = conf_env.readValue(.session_token) orelse break :blk null;
             break :blk try allocator.dupe(u8, val);
         };
         errdefer if (session_token) |token| allocator.free(token);
@@ -337,21 +356,86 @@ pub const EnvironmentCredsProvider = struct {
 
     fn destroy(_: *const anyopaque, identity: Identity, allocator: Allocator) void {
         const creds: *const Credentials = @ptrCast(@alignCast(identity.data));
-        allocator.free(creds.access_id);
-        allocator.free(creds.access_secret);
-        if (creds.session_token) |token| allocator.free(token);
+        creds.deinit(allocator);
         allocator.destroy(creds);
     }
 };
 
 test EnvironmentCredsProvider {
-    _ = try env.loadEnvironment(test_alloc);
-    defer env.releaseEnvironment();
+    _ = try conf_env.loadEnvironment(test_alloc);
+    defer conf_env.releaseEnvironment();
 
-    env.overrideValue(.access_id, TEST_ID);
-    env.overrideValue(.access_secret, TEST_SECRET);
+    conf_env.overrideValue(.access_id, TEST_ID);
+    conf_env.overrideValue(.access_secret, TEST_SECRET);
 
     const static: EnvironmentCredsProvider = .{};
+    const static_resolver = static.identityResolver();
+
+    const identity = (try static_resolver.resolve(test_alloc, .credentials)).?;
+    defer static_resolver.destroy(identity, test_alloc);
+    try testing.expectEqual(null, identity.expiration);
+    try testing.expectEqual(.credentials, identity.kind);
+
+    const creds = identity.as(.credentials);
+    try testing.expectEqualStrings(TEST_ID, creds.access_id);
+    try testing.expectEqualStrings(TEST_SECRET, creds.access_secret);
+    try testing.expectEqual(null, creds.session_token);
+}
+
+pub const FileCredsProvider = struct {
+    /// The profile name to use, or `null` to use the _default_ profile.
+    profile_name: ?[]const u8 = null,
+    /// Override the standard shared credentials file location.
+    /// Supports `~/` home directory expansion.
+    override_path: ?[]const u8 = null,
+
+    pub fn identityResolver(self: *const FileCredsProvider) IdentityResolver {
+        return .{
+            .ctx = self,
+            .vtable = &vtable,
+        };
+    }
+
+    const vtable = IdentityResolver.VTable{
+        .resolve = resolve,
+        .destroy = destroy,
+    };
+
+    fn ctxSelf(ctx: *const anyopaque) *const FileCredsProvider {
+        return @ptrCast(@alignCast(ctx));
+    }
+
+    fn resolve(ctx: *const anyopaque, allocator: Allocator, kind: Identity.Kind) !?Identity {
+        const self = ctxSelf(ctx);
+        if (kind != .credentials) return null;
+
+        var file = try conf_profile.readCredsFile(allocator, self.override_path);
+        defer file.deinit();
+
+        const creds = (try file.getCredsAlloc(allocator, self.profile_name)) orelse return null;
+        const dupe = try allocator.create(Credentials);
+        dupe.* = creds;
+
+        return .{
+            .data = dupe,
+            .kind = .credentials,
+            .expiration = null,
+            .resolver = self.identityResolver(),
+        };
+    }
+
+    fn destroy(_: *const anyopaque, identity: Identity, allocator: Allocator) void {
+        const creds: *const Credentials = @ptrCast(@alignCast(identity.data));
+        creds.deinit(allocator);
+        allocator.destroy(creds);
+    }
+};
+
+test FileCredsProvider {
+    var path_buff: [256]u8 = undefined;
+    const static: FileCredsProvider = .{
+        .override_path = try std.fs.cwd().realpath("runtime/testing/aws_credentials", &path_buff),
+    };
     const static_resolver = static.identityResolver();
 
     const identity = (try static_resolver.resolve(test_alloc, .credentials)).?;

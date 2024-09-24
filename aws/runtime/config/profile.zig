@@ -14,14 +14,14 @@ const fs = @import("../utils/fs.zig");
 const log = std.log.scoped(.aws_sdk);
 
 /// If `path` is empty will use the defaule credentials file.
-pub fn parseCredsFile(allocator: Allocator, override_path: ?[]const u8) !AwsCredsFile {
+pub fn readCredsFile(allocator: Allocator, override_path: ?[]const u8) !AwsCredsFile {
     var buffer: [4096]u8 = undefined;
     const source = try readFile(&buffer, override_path, "~/.aws/credentials", "%USERPROFILE%\\.aws\\credentials");
     return parseCredsIni(allocator, source);
 }
 
 /// If `path` is empty will use the defaule configuration file.
-pub fn parseConfigFile(allocator: Allocator, override_path: ?[]const u8) !AwsConfigFile {
+pub fn readConfigFile(allocator: Allocator, override_path: ?[]const u8) !AwsConfigFile {
     var buffer: [4096]u8 = undefined;
     const source = try readFile(&buffer, override_path, "~/.aws/config", "%USERPROFILE%\\.aws\\config");
     return parseConfigIni(allocator, source);
@@ -75,6 +75,13 @@ pub const AwsCredsFile = struct {
     /// Leave `name` empty to use the default profile.
     pub fn getCreds(self: AwsCredsFile, name: ?[]const u8) ?Credentials {
         return self.creds.get(name orelse "default");
+    }
+
+    /// Allocates the string values.
+    /// Leave `name` empty to use the default profile.
+    pub fn getCredsAlloc(self: AwsCredsFile, allocator: Allocator, name: ?[]const u8) !?Credentials {
+        const creds = self.creds.get(name orelse "default") orelse return null;
+        return try creds.clone(allocator);
     }
 };
 
