@@ -65,6 +65,7 @@ test {
     _ = @import("traits.zig");
     _ = @import("integrate/auth.zig");
     _ = @import("integrate/rules.zig");
+    _ = @import("integrate/errors.zig");
     _ = @import("integrate/protocols.zig");
     _ = conf_partition;
     _ = conf_region;

@@ -93,7 +93,7 @@ fn extendServiceSchemes(self: *const jobz.Delegate, symbols: *SymbolsProvider) !
     };
 
     // Prefill common errors
-    for (service.errors) |eid| try extension.appendError(try symbols.resolveError(eid));
+    for (service.errors) |eid| try extension.appendError(try symbols.buildError(eid));
 
     // Prefill auth schemes
     if (symbols.hasTrait(sid, trt_auth.http_basic_id)) try extension.appendAuthScheme(.http_basic);

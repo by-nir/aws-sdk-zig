@@ -165,22 +165,13 @@ pub fn deinit(self: *Self) void {
     self.model_mixins.deinit(self.arena);
 }
 
-pub fn resolveError(self: *Self, id: SmithyId) !Error {
+pub fn buildError(self: *Self, id: SmithyId) !Error {
+    const api_name = try self.getShapeName(id, .pascal, .{});
+    const field_name = try self.getShapeName(id, .snake, .{});
     const retryable = self.hasTrait(id, trt_behave.retryable_id);
     const source = trt_refine.Error.get(self, id) orelse return error.MissingErrorTrait;
     const http_status: std.http.Status = trt_http.HttpError.get(self, id) orelse
         if (source == .client) .bad_request else .internal_server_error;
-
-    const api_name = try self.getShapeName(id, .pascal, .{});
-    const field_name = blk: {
-        var shape = try self.getShapeName(id, .snake, .{});
-        inline for (.{ "_error", "_exception" }) |suffix| {
-            if (std.ascii.endsWithIgnoreCase(shape, suffix)) {
-                break :blk shape[0 .. shape.len - suffix.len];
-            }
-        }
-        break :blk shape;
-    };
 
     const html_docs = blk: {
         if (trt_docs.Documentation.get(self, id)) |s| break :blk s;

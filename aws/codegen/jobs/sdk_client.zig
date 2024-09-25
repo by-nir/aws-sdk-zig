@@ -11,6 +11,7 @@ const SymbolsProvider = smithy.SymbolsProvider;
 const aws_cfg = @import("../config.zig");
 const itg_auth = @import("../integrate/auth.zig");
 const itg_rules = @import("../integrate/rules.zig");
+const itg_errors = @import("../integrate/errors.zig");
 const itg_proto = @import("../integrate/protocols.zig");
 const aws_traits = @import("../traits.zig").aws_traits;
 const ServiceTrait = @import("../traits/core.zig").Service;
@@ -111,6 +112,7 @@ fn writeScriptHead(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
 
 fn extendService(self: *const Delegate, symbols: *SymbolsProvider, extension: *smithy.ServiceExtension) anyerror!void {
     try itg_auth.extendAuthSchemes(self, symbols, extension);
+    try itg_errors.extendCommonErrors(self, symbols, extension);
 }
 
 fn writeClientScriptHead(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
@@ -220,8 +222,9 @@ fn writeOperationFunc(
     try bld.errorDefers().body((bld.x.id(aws_cfg.output_arena).dot().call("deinit", &.{})));
 
     const result = try itg_proto.writeOperationResult(self.alloc(), symbols, bld, func, protocol);
-    switch ((func.output_type orelse func.errors_type) == null) {
-        true => try bld.trys().buildExpr(result).end(),
-        false => try bld.returns().buildExpr(result).end(),
+    if ((func.output_type orelse func.errors_type) == null) {
+        try bld.trys().buildExpr(result).end();
+    } else {
+        try bld.returns().buildExpr(result).end();
     }
 }

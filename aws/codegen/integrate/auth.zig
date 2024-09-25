@@ -10,11 +10,7 @@ const AuthId = trt_smithy.AuthId;
 const aws_cfg = @import("../config.zig");
 const trt_auth = @import("../traits/auth.zig");
 
-pub fn extendAuthSchemes(
-    _: *const Delegate,
-    symbols: *SymbolsProvider,
-    extension: *smithy.ServiceExtension,
-) anyerror!void {
+pub fn extendAuthSchemes(_: *const Delegate, symbols: *SymbolsProvider, extension: *smithy.ServiceExtension) !void {
     if (symbols.hasTrait(symbols.service_id, trt_auth.SigV4.id)) {
         try extension.appendAuthScheme(trt_auth.SigV4.auth_id);
     }

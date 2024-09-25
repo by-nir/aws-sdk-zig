@@ -134,8 +134,7 @@ fn listShapeErrors(
     defer members.deinit();
 
     for (shape_errors) |eid| {
-        const err = try symbols.resolveError(eid);
-        try members.append(err);
+        try members.append(try symbols.buildError(eid));
     }
 
     try members.appendSlice(symbols.service_errors);
@@ -350,7 +349,7 @@ test ClientOperation {
         var errors = std.ArrayList(SymbolsProvider.Error).init(tester.alloc());
 
         const service = (try symbols.getShape(symbols.service_id)).service;
-        for (service.errors) |eid| try errors.append(try symbols.resolveError(eid));
+        for (service.errors) |eid| try errors.append(try symbols.buildError(eid));
 
         symbols.service_errors = try errors.toOwnedSlice();
     }
@@ -381,7 +380,7 @@ test ClientOperation {
         \\
         \\    pub const ErrorKind = enum {
         \\        not_found,
-        \\        service_fail,
+        \\        service_error,
         \\
         \\        pub fn source(self: @This()) smithy.ErrorSource {
         \\            return switch (self) {
@@ -393,7 +392,7 @@ test ClientOperation {
         \\        pub fn httpStatus(self: @This()) std.http.Status {
         \\            const status: std.http.Status = switch (self) {
         \\                .not_found => .internal_server_error,
-        \\                .service_fail => .too_many_requests,
+        \\                .service_error => .too_many_requests,
         \\            };
         \\
         \\            return @enumFromInt(status);
@@ -401,7 +400,7 @@ test ClientOperation {
         \\
         \\        pub fn retryable(self: @This()) bool {
         \\            return switch (self) {
-        \\                .service_fail => true,
+        \\                .service_error => true,
         \\                else => false,
         \\            };
         \\        }
@@ -432,8 +431,8 @@ test ClientOperation {
         \\    "not_found",
         \\    .{},
         \\}, .{
-        \\    "ServiceFailError",
-        \\    "service_fail",
+        \\    "ServiceError",
+        \\    "service_error",
         \\    .{},
         \\} } };
     , ClientOperation, tester.pipeline, .{SmithyId.of("test.serve#MyOperation")});

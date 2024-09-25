@@ -212,7 +212,7 @@ fn setupService(model: *Model) !void {
     const Static = struct {
         const sd0 = SmithyId.of("test.serve#MyOperation");
         const sd1 = SmithyId.of("test.serve#Resource");
-        const sd2 = SmithyId.of("test#ServiceFailError");
+        const sd2 = SmithyId.of("test#ServiceError");
         const service = SmithyService{
             .version = "2017-02-11",
             .operations = &.{sd0},
@@ -314,11 +314,11 @@ fn setupService(model: *Model) !void {
         .{ .id = trt_refine.Error.id, .value = "server" },
     });
 
-    try model.names.put(test_alloc, SmithyId.of("test#ServiceFailError"), "ServiceFailError");
-    try model.shapes.put(test_alloc, SmithyId.of("test#ServiceFailError"), .{
+    try model.names.put(test_alloc, SmithyId.of("test#ServiceError"), "ServiceError");
+    try model.shapes.put(test_alloc, SmithyId.of("test#ServiceError"), .{
         .structure = &.{},
     });
-    try model.traits.put(test_alloc, SmithyId.of("test#ServiceFailError"), &.{
+    try model.traits.put(test_alloc, SmithyId.of("test#ServiceError"), &.{
         .{ .id = trt_refine.Error.id, .value = &Static.error_source },
         .{ .id = trt_behave.retryable_id, .value = null },
         .{ .id = trt_http.HttpError.id, .value = &Static.error_code },
