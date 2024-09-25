@@ -62,7 +62,7 @@ pub const pipeline_invoker = blk: {
     _ = builder.Override(smithy.PipelineServiceFilterHook, "AWS Service Filter", filterSourceModel, .{});
     _ = builder.Override(smithy.ServiceReadmeHook, "AWS Service Readme", writeReadmeFile, .{});
     _ = builder.Override(smithy.ServiceScriptHeadHook, "AWS Service Script Head", writeScriptHead, .{});
-    _ = builder.Override(smithy.ServiceAuthSchemesHook, "AWS Service Auth Schemes", itg_auth.extendAuthSchemes, .{
+    _ = builder.Override(smithy.ServiceExtensionHook, "AWS Service Extension", extendService, .{
         .injects = &.{SymbolsProvider},
     });
     _ = builder.Override(smithy.ClientScriptHeadHook, "AWS Client Script Head", writeClientScriptHead, .{});
@@ -107,6 +107,10 @@ fn writeReadmeFile(_: *const Delegate, bld: md.ContainerAuthor, m: smithy.Servic
 fn writeScriptHead(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
     try bld.constant(aws_cfg.scope_runtime).assign(bld.x.import("aws-runtime"));
     try bld.constant(aws_cfg.scope_private).assign(bld.x.id(aws_cfg.scope_runtime).dot().id("_private_"));
+}
+
+fn extendService(self: *const Delegate, symbols: *SymbolsProvider, extension: *smithy.ServiceExtension) anyerror!void {
+    try itg_auth.extendAuthSchemes(self, symbols, extension);
 }
 
 fn writeClientScriptHead(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {

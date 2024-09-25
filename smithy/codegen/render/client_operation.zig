@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const test_alloc = std.testing.allocator;
 const jobz = @import("jobz");
+const md = @import("razdaz").md;
 const zig = @import("razdaz").zig;
 const files_jobs = @import("razdaz/jobs").files;
 const shape = @import("shape.zig");
@@ -11,9 +12,7 @@ const SmithyId = @import("../model.zig").SmithyId;
 const IssuesBag = @import("../systems/issues.zig").IssuesBag;
 const SymbolsProvider = @import("../systems/SymbolsProvider.zig");
 const name_util = @import("../utils/names.zig");
-const trt_http = @import("../traits/http.zig");
 const trt_refine = @import("../traits/refine.zig");
-const trt_behave = @import("../traits/behavior.zig");
 const AuthId = @import("../traits/auth.zig").AuthId;
 const test_symbols = @import("../testing/symbols.zig");
 
@@ -63,15 +62,15 @@ fn clientOperationTask(
     }
 
     const operation = (try symbols.getShape(id)).operation;
-    const context = .{ .arena = self.alloc(), .op = operation, .symbols = symbols, .issues = issues };
+    const errors = try listShapeErrors(self.alloc(), symbols, operation.errors);
+
+    const context = .{ .arena = self.alloc(), .symbols = symbols, .issues = issues, .op = operation, .errors = errors };
     try bld.public().constant(try symbols.getShapeName(id, .pascal, .{})).assign(
         bld.x.@"struct"().bodyWith(context, struct {
             fn f(ctx: @TypeOf(context), b: *zig.ContainerBuild) !void {
-                const has_errors = ctx.symbols.service_errors.len + ctx.op.errors.len > 0;
-
                 try b.public().constant("Result").assign(blk: {
                     const payload = if (ctx.op.output != null) b.x.id("Output") else b.x.typeOf(void);
-                    if (has_errors) {
+                    if (ctx.errors.len > 0) {
                         break :blk b.x.raw(cfg.runtime_scope).dot().call("Result", &.{ payload, b.x.id("ErrorKind") });
                     } else {
                         break :blk payload;
@@ -93,7 +92,7 @@ fn clientOperationTask(
                     });
                 }
 
-                if (ctx.symbols.service_errors.len + ctx.op.errors.len > 0) {
+                if (ctx.errors.len > 0) {
                     try b.public().constant("Error").assign(b.x.raw(cfg.runtime_scope).dot().call("ResultError", &.{
                         b.x.id("ErrorKind"),
                     }));
@@ -101,8 +100,7 @@ fn clientOperationTask(
                     try b.public().constant("ErrorKind").assign(b.x.@"enum"().bodyWith(ErrorSetCtx{
                         .arena = ctx.arena,
                         .symbols = ctx.symbols,
-                        .shape_errors = ctx.op.errors,
-                        .common_errors = ctx.symbols.service_errors,
+                        .members = ctx.errors,
                     }, writeErrorSet));
                 }
             }
@@ -119,10 +117,29 @@ fn clientOperationTask(
         try bld.public().constant("serial_output_scheme").assign(scheme);
     }
 
-    if (symbols.service_errors.len + operation.errors.len > 0) {
-        const scheme = try serialErrorScheme(self, symbols, bld.x, operation.errors, symbols.service_errors);
+    if (errors.len > 0) {
+        const scheme = try serialErrorScheme(self, bld.x, errors);
         try bld.public().constant("serial_error_scheme").assign(scheme);
     }
+}
+
+fn listShapeErrors(
+    arena: Allocator,
+    symbols: *SymbolsProvider,
+    shape_errors: []const SmithyId,
+) ![]const SymbolsProvider.Error {
+    if (symbols.service_errors.len + shape_errors.len == 0) return &.{};
+
+    var members = std.ArrayList(SymbolsProvider.Error).init(arena);
+    defer members.deinit();
+
+    for (shape_errors) |eid| {
+        const err = try symbols.resolveError(eid);
+        try members.append(err);
+    }
+
+    try members.appendSlice(symbols.service_errors);
+    return members.toOwnedSlice();
 }
 
 fn serialShapeScheme(
@@ -190,18 +207,14 @@ fn serialShapeScheme(
 
 fn serialErrorScheme(
     self: *const jobz.Delegate,
-    symbols: *SymbolsProvider,
     exp: zig.ExprBuild,
-    common_errors: []const SmithyId,
-    shape_errors: []const SmithyId,
+    members: []const SymbolsProvider.Error,
 ) !zig.ExprBuild {
     var scheme = std.ArrayList(zig.ExprBuild).init(self.alloc());
-    for ([2][]const SmithyId{ shape_errors, common_errors }) |id_list| {
-        for (id_list) |id| {
-            const name_spec = exp.valueOf(try symbols.getShapeName(id, .pascal, .{}));
-            const name_field = exp.valueOf(try getErrorName(symbols, id));
-            try scheme.append(exp.structLiteral(null, &.{ name_spec, name_field, exp.structLiteral(null, &.{}) }));
-        }
+    for (members) |member| {
+        const name_api = exp.valueOf(member.name_api);
+        const name_field = exp.valueOf(member.name_field);
+        try scheme.append(exp.structLiteral(null, &.{ name_api, name_field, exp.structLiteral(null, &.{}) }));
     }
 
     return exp.structLiteral(null, &.{
@@ -213,97 +226,112 @@ fn serialErrorScheme(
 const ErrorSetCtx = struct {
     arena: Allocator,
     symbols: *SymbolsProvider,
-    common_errors: []const SmithyId,
-    shape_errors: []const SmithyId,
-};
-
-const ErrorSetMember = struct {
-    name: []const u8,
-    code: u10,
-    retryable: bool,
-    source: trt_refine.Error.Source,
+    members: []const SymbolsProvider.Error,
 };
 
 fn writeErrorSet(ctx: ErrorSetCtx, bld: *zig.ContainerBuild) !void {
-    var members = std.ArrayList(ErrorSetMember).init(ctx.arena);
-    defer members.deinit();
-
-    for (ctx.shape_errors) |m| try writeErrorSetMember(ctx.symbols, bld, &members, m);
-    for (ctx.common_errors) |m| try writeErrorSetMember(ctx.symbols, bld, &members, m);
+    for (ctx.members) |member| {
+        try writeErrorSetMember(ctx.arena, bld, member);
+    }
 
     try bld.public().function("source")
         .arg("self", bld.x.This())
         .returns(bld.x.raw(cfg.runtime_scope).dot().id("ErrorSource"))
-        .bodyWith(members.items, writeErrorSetSourceFn);
+        .bodyWith(ctx.members, writeErrorSetSourceFn);
 
     try bld.public().function("httpStatus")
         .arg("self", bld.x.This())
         .returns(bld.x.raw("std.http.Status"))
-        .bodyWith(members.items, writeErrorSetStatusFn);
+        .bodyWith(ctx.members, writeErrorSetStatusFn);
 
     try bld.public().function("retryable")
         .arg("self", bld.x.This())
         .returns(bld.x.typeOf(bool))
-        .bodyWith(members.items, writeErrorSetRetryFn);
+        .bodyWith(ctx.members, writeErrorSetRetryFn);
 }
 
-fn writeErrorSetMember(
-    symbols: *SymbolsProvider,
-    bld: *zig.ContainerBuild,
-    list: *std.ArrayList(ErrorSetMember),
-    member: SmithyId,
-) !void {
-    try shape.writeDocComment(symbols, bld, member, true);
-    const shape_name = try getErrorName(symbols, member);
-    try bld.field(shape_name).end();
-
-    const source = trt_refine.Error.get(symbols, member) orelse return error.MissingErrorTrait;
-    try list.append(.{
-        .name = shape_name,
-        .source = source,
-        .retryable = symbols.hasTrait(member, trt_behave.retryable_id),
-        .code = trt_http.HttpError.get(symbols, member) orelse if (source == .client) 400 else 500,
-    });
-}
-
-fn writeErrorSetSourceFn(members: []ErrorSetMember, bld: *zig.BlockBuild) !void {
-    try bld.returns().switchWith(bld.x.id("self"), members, struct {
-        fn f(ms: []ErrorSetMember, b: *zig.SwitchBuild) !void {
-            for (ms) |m| try b.branch().case(b.x.dot().id(m.name)).body(b.x.raw(switch (m.source) {
-                .client => ".client",
-                .server => ".server",
-            }));
-        }
-    }.f).end();
-}
-
-fn writeErrorSetStatusFn(members: []ErrorSetMember, bld: *zig.BlockBuild) !void {
-    try bld.constant("code").assign(bld.x.switchWith(bld.x.id("self"), members, struct {
-        fn f(ms: []ErrorSetMember, b: *zig.SwitchBuild) !void {
-            for (ms) |m| try b.branch().case(b.x.dot().id(m.name)).body(b.x.valueOf(m.code));
-        }
-    }.f));
-
-    try bld.returns().call("@enumFromInt", &.{bld.x.id("code")}).end();
-}
-
-fn writeErrorSetRetryFn(members: []ErrorSetMember, bld: *zig.BlockBuild) !void {
-    try bld.returns().switchWith(bld.x.id("self"), members, struct {
-        fn f(ms: []ErrorSetMember, b: *zig.SwitchBuild) !void {
-            for (ms) |m| try b.branch().case(b.x.dot().id(m.name)).body(b.x.valueOf(m.retryable));
-        }
-    }.f).end();
-}
-
-fn getErrorName(symbols: *SymbolsProvider, id: SmithyId) ![]const u8 {
-    var shape_name = try symbols.getShapeName(id, .snake, .{});
-    inline for (.{ "_error", "_exception" }) |suffix| {
-        if (std.ascii.endsWithIgnoreCase(shape_name, suffix)) {
-            shape_name = shape_name[0 .. shape_name.len - suffix.len];
-            break;
-        }
+fn writeErrorSetMember(arena: Allocator, bld: *zig.ContainerBuild, member: SymbolsProvider.Error) !void {
+    if (member.html_docs) |docs| {
+        try bld.commentMarkdownWith(.doc, md.html.CallbackContext{
+            .allocator = arena,
+            .html = docs,
+        }, md.html.callback);
     }
-    return shape_name;
+
+    try bld.field(member.name_field).end();
+}
+
+fn writeErrorSetSourceFn(members: []const SymbolsProvider.Error, bld: *zig.BlockBuild) !void {
+    var client_count: usize = 0;
+    for (members) |m| {
+        if (m.source == .client) client_count += 1;
+    }
+
+    if (client_count == 0) {
+        try bld.discard().id("self").end();
+        try bld.returns().valueOf(.server).end();
+    } else if (client_count == members.len) {
+        try bld.discard().id("self").end();
+        try bld.returns().valueOf(.client).end();
+    } else {
+        const context = .{ .errs = members, .client_count = client_count };
+        try bld.returns().switchWith(bld.x.id("self"), context, struct {
+            fn f(ctx: @TypeOf(context), b: *zig.SwitchBuild) !void {
+                const client_majority = ctx.client_count >= ctx.errs.len - ctx.client_count;
+                for (ctx.errs) |err| {
+                    if ((err.source == .client) == client_majority) continue;
+                    try b.branch().case(b.x.dot().id(err.name_field)).body(b.x.valueOf(err.source));
+                }
+
+                const value: trt_refine.ErrorSource = if (client_majority) .client else .server;
+                try b.@"else"().body(b.x.valueOf(value));
+            }
+        }.f).end();
+    }
+}
+
+fn writeErrorSetRetryFn(members: []const SymbolsProvider.Error, bld: *zig.BlockBuild) !void {
+    var true_count: usize = 0;
+    for (members) |m| {
+        if (m.retryable) true_count += 1;
+    }
+
+    if (true_count == 0) {
+        try bld.discard().id("self").end();
+        try bld.returns().valueOf(false).end();
+    } else if (true_count == members.len) {
+        try bld.discard().id("self").end();
+        try bld.returns().valueOf(true).end();
+    } else {
+        const context = .{ .errs = members, .true_count = true_count };
+        try bld.returns().switchWith(bld.x.id("self"), context, struct {
+            fn f(ctx: @TypeOf(context), b: *zig.SwitchBuild) !void {
+                const majority = ctx.true_count > ctx.errs.len - ctx.true_count;
+                for (ctx.errs) |err| {
+                    if (err.retryable == majority) continue;
+                    try b.branch().case(b.x.dot().id(err.name_field)).body(b.x.valueOf(err.retryable));
+                }
+
+                try b.@"else"().body(b.x.valueOf(majority));
+            }
+        }.f).end();
+    }
+}
+
+fn writeErrorSetStatusFn(members: []const SymbolsProvider.Error, bld: *zig.BlockBuild) !void {
+    try bld.constant("status").typing(bld.x.raw("std.http.Status")).assign(
+        bld.x.switchWith(bld.x.id("self"), members, struct {
+            fn f(errs: []const SymbolsProvider.Error, b: *zig.SwitchBuild) !void {
+                for (errs) |err| {
+                    try b.branch()
+                        .case(b.x.dot().id(err.name_field))
+                        .body(b.x.valueOf(err.http_status));
+                }
+            }
+        }.f),
+    );
+
+    try bld.returns().call("@enumFromInt", &.{bld.x.id("status")}).end();
 }
 
 test ClientOperation {
@@ -314,11 +342,19 @@ test ClientOperation {
     defer issues.deinit();
     _ = try tester.provideService(&issues, null);
 
-    var symbols = try test_symbols.setup(tester.alloc(), &.{ .service, .err });
+    var symbols = try test_symbols.setup(tester.alloc(), .service);
     defer symbols.deinit();
     _ = try tester.provideService(&symbols, null);
 
-    symbols.service_id = SmithyId.of("test.serve#Service");
+    {
+        var errors = std.ArrayList(SymbolsProvider.Error).init(tester.alloc());
+
+        const service = (try symbols.getShape(symbols.service_id)).service;
+        for (service.errors) |eid| try errors.append(try symbols.resolveError(eid));
+
+        symbols.service_errors = try errors.toOwnedSlice();
+    }
+
     try srvc.expectServiceScript(
         \\const SerialType = smithy.SerialType;
         \\
@@ -345,28 +381,28 @@ test ClientOperation {
         \\
         \\    pub const ErrorKind = enum {
         \\        not_found,
-        \\        service,
+        \\        service_fail,
         \\
         \\        pub fn source(self: @This()) smithy.ErrorSource {
         \\            return switch (self) {
         \\                .not_found => .server,
-        \\                .service => .client,
+        \\                else => .client,
         \\            };
         \\        }
         \\
         \\        pub fn httpStatus(self: @This()) std.http.Status {
-        \\            const code = switch (self) {
-        \\                .not_found => 500,
-        \\                .service => 429,
+        \\            const status: std.http.Status = switch (self) {
+        \\                .not_found => .internal_server_error,
+        \\                .service_fail => .too_many_requests,
         \\            };
         \\
-        \\            return @enumFromInt(code);
+        \\            return @enumFromInt(status);
         \\        }
         \\
         \\        pub fn retryable(self: @This()) bool {
         \\            return switch (self) {
-        \\                .not_found => false,
-        \\                .service => true,
+        \\                .service_fail => true,
+        \\                else => false,
         \\            };
         \\        }
         \\    };
@@ -392,12 +428,12 @@ test ClientOperation {
         \\}} };
         \\
         \\pub const serial_error_scheme = .{ SerialType.tagged_union, .{ .{
-        \\    "ServiceError",
-        \\    "service",
-        \\    .{},
-        \\}, .{
         \\    "NotFound",
         \\    "not_found",
+        \\    .{},
+        \\}, .{
+        \\    "ServiceFailError",
+        \\    "service_fail",
         \\    .{},
         \\} } };
     , ClientOperation, tester.pipeline, .{SmithyId.of("test.serve#MyOperation")});

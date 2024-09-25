@@ -5,7 +5,7 @@
 //! ├ data_types.zig
 //! ├ endpoint.zig
 //! ├ operation/
-//!   ├ my-op-2.zig
+//!   ├ my-op.zig
 //! ```
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -30,7 +30,20 @@ const AuthId = trt_auth.AuthId;
 
 pub const ScriptHeadHook = jobz.Task.Hook("Smithy Script Head", anyerror!void, &.{*zig.ContainerBuild});
 pub const ServiceReadmeHook = codegen_jobs.MarkdownDoc.Hook("Smithy Readme Codegen", &.{ServiceReadmeMetadata});
-pub const ServiceAuthSchemesHook = jobz.Task.Hook("Smithy Service Auth Schemes", anyerror!void, &.{*std.ArrayList(trt_auth.AuthId)});
+pub const ServiceExtensionHook = jobz.Task.Hook("Smithy Service Extension", anyerror!void, &.{*ServiceExtension});
+
+pub const ServiceExtension = struct {
+    auth_schemes: std.ArrayList(trt_auth.AuthId),
+    common_errors: std.ArrayList(SymbolsProvider.Error),
+
+    pub fn appendAuthScheme(self: *ServiceExtension, auth_id: AuthId) !void {
+        try self.auth_schemes.append(auth_id);
+    }
+
+    pub fn appendError(self: *ServiceExtension, err: SymbolsProvider.Error) !void {
+        try self.common_errors.append(err);
+    }
+};
 
 pub const ServiceReadmeMetadata = struct {
     /// `{[slug]s}` service SDK ID
@@ -51,7 +64,7 @@ fn serviceCodegenTask(self: *const jobz.Delegate, symbols: *SymbolsProvider) any
         std.log.warn("Skipped readme generation – missing `ServiceReadmeHook` overide.", .{});
     }
 
-    try detectAuthSchemes(self, symbols);
+    try extendServiceSchemes(self, symbols);
     try self.evaluate(files_jobs.WriteFile.Chain(clnt.ServiceClient, .sync), .{ "client.zig", .{} });
 
     if (symbols.hasTrait(symbols.service_id, trt_rules.EndpointRuleSet.id)) {
@@ -67,29 +80,39 @@ fn serviceCodegenTask(self: *const jobz.Delegate, symbols: *SymbolsProvider) any
     }
 }
 
-fn detectAuthSchemes(self: *const jobz.Delegate, symbols: *SymbolsProvider) !void {
-    const sid = symbols.service_id;
+fn extendServiceSchemes(self: *const jobz.Delegate, symbols: *SymbolsProvider) !void {
+    std.debug.assert(symbols.service_errors.len == 0);
     std.debug.assert(symbols.service_auth_schemes.len == 0);
 
-    var auth_schemes = std.ArrayList(AuthId).init(self.alloc());
+    const sid = symbols.service_id;
+    const service = (try symbols.getShape(sid)).service;
 
-    if (symbols.hasTrait(sid, trt_auth.http_basic_id)) try auth_schemes.append(.http_basic);
-    if (symbols.hasTrait(sid, trt_auth.http_bearer_id)) try auth_schemes.append(.http_bearer);
-    if (symbols.hasTrait(sid, trt_auth.http_digest_id)) try auth_schemes.append(.http_digest);
-    if (symbols.hasTrait(sid, trt_auth.HttpApiKey.id)) try auth_schemes.append(.http_api_key);
+    var extension = ServiceExtension{
+        .auth_schemes = std.ArrayList(AuthId).init(self.alloc()),
+        .common_errors = std.ArrayList(SymbolsProvider.Error).init(self.alloc()),
+    };
 
-    if (self.hasOverride(ServiceAuthSchemesHook)) {
-        try self.evaluate(ServiceAuthSchemesHook, .{&auth_schemes});
-    }
+    // Prefill common errors
+    for (service.errors) |eid| try extension.appendError(try symbols.resolveError(eid));
 
-    std.mem.sort(AuthId, auth_schemes.items, {}, struct {
+    // Prefill auth schemes
+    if (symbols.hasTrait(sid, trt_auth.http_basic_id)) try extension.appendAuthScheme(.http_basic);
+    if (symbols.hasTrait(sid, trt_auth.http_bearer_id)) try extension.appendAuthScheme(.http_bearer);
+    if (symbols.hasTrait(sid, trt_auth.http_digest_id)) try extension.appendAuthScheme(.http_digest);
+    if (symbols.hasTrait(sid, trt_auth.HttpApiKey.id)) try extension.appendAuthScheme(.http_api_key);
+
+    // Extend
+    if (self.hasOverride(ServiceExtensionHook)) try self.evaluate(ServiceExtensionHook, .{&extension});
+
+    // Sort auth schemes
+    std.mem.sort(AuthId, extension.auth_schemes.items, {}, struct {
         fn f(_: void, l: AuthId, r: AuthId) bool {
             return std.ascii.lessThanIgnoreCase(std.mem.asBytes(&l), std.mem.asBytes(&r));
         }
     }.f);
 
-    symbols.service_auth_schemes = try auth_schemes.toOwnedSlice();
-    errdefer symbols.service_auth_schemes = &.{};
+    symbols.service_errors = try extension.common_errors.toOwnedSlice();
+    symbols.service_auth_schemes = try extension.auth_schemes.toOwnedSlice();
 }
 
 const ServiceReadme = files_jobs.WriteFile.Task("Service Readme Codegen", serviceReadmeTask, .{

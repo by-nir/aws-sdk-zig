@@ -161,7 +161,7 @@ test ServiceClient {
     var tester = try jobz.PipelineTester.init(.{ .invoker = shape.TEST_INVOKER });
     defer tester.deinit();
 
-    var symbols = try test_symbols.setup(tester.alloc(), &.{.service});
+    var symbols = try test_symbols.setup(tester.alloc(), .service);
     defer symbols.deinit();
     _ = try tester.provideService(&symbols, null);
 
@@ -213,10 +213,9 @@ test ClientDataTypes {
     defer issues.deinit();
     _ = try tester.provideService(&issues, null);
 
-    var symbols = try test_symbols.setup(tester.alloc(), &.{ .service, .err });
+    var symbols = try test_symbols.setup(tester.alloc(), .service);
     defer symbols.deinit();
     _ = try tester.provideService(&symbols, null);
 
-    symbols.service_id = SmithyId.of("test.serve#Service");
     try srvc.expectServiceScript("pub const Foo = struct {};", ClientDataTypes, tester.pipeline, .{});
 }

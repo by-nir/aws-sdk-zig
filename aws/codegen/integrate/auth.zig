@@ -10,9 +10,18 @@ const AuthId = trt_smithy.AuthId;
 const aws_cfg = @import("../config.zig");
 const trt_auth = @import("../traits/auth.zig");
 
-pub fn extendAuthSchemes(_: *const Delegate, symbols: *SymbolsProvider, schemes: *std.ArrayList(AuthId)) anyerror!void {
-    if (symbols.hasTrait(symbols.service_id, trt_auth.SigV4.id)) try schemes.append(trt_auth.SigV4.auth_id);
-    if (symbols.hasTrait(symbols.service_id, trt_auth.SigV4A.id)) try schemes.append(trt_auth.SigV4A.auth_id);
+pub fn extendAuthSchemes(
+    _: *const Delegate,
+    symbols: *SymbolsProvider,
+    extension: *smithy.ServiceExtension,
+) anyerror!void {
+    if (symbols.hasTrait(symbols.service_id, trt_auth.SigV4.id)) {
+        try extension.appendAuthScheme(trt_auth.SigV4.auth_id);
+    }
+
+    if (symbols.hasTrait(symbols.service_id, trt_auth.SigV4A.id)) {
+        try extension.appendAuthScheme(trt_auth.SigV4A.auth_id);
+    }
 }
 
 const SignContext = struct {
@@ -21,7 +30,12 @@ const SignContext = struct {
     config_expr: ?zig.ExprBuild = null,
 };
 
-pub fn writeOperationAuth(_: Allocator, symbols: *SymbolsProvider, bld: *zig.BlockBuild, func: smithy.OperationFunc) !void {
+pub fn writeOperationAuth(
+    _: Allocator,
+    symbols: *SymbolsProvider,
+    bld: *zig.BlockBuild,
+    func: smithy.OperationFunc,
+) !void {
     std.debug.assert(func.auth_schemes.len > 0);
     if (symbols.hasTrait(func.id, trt_smithy.optional_auth_id)) {
         return error.OptionalAuthUnimplemented; // TODO

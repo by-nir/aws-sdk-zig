@@ -79,7 +79,7 @@ fn writeStrEnumShape(
 }
 
 test writeStrEnumShape {
-    try shapeTester(&.{.enums_str}, SmithyId.of("test#Enum"), .{},
+    try shapeTester(.enums_str, SmithyId.of("test#Enum"), .{},
         \\pub const Enum = union(enum) {
         \\    /// Used for backwards compatibility when adding new values.
         \\    UNKNOWN: []const u8,
@@ -125,7 +125,7 @@ fn writeTraitEnumShape(
 }
 
 test writeTraitEnumShape {
-    try shapeTester(&.{.enums_str}, SmithyId.of("test#EnumTrt"), .{},
+    try shapeTester(.enums_str, SmithyId.of("test#EnumTrt"), .{},
         \\pub const EnumTrt = union(enum) {
         \\    /// Used for backwards compatibility when adding new values.
         \\    UNKNOWN: []const u8,
@@ -261,7 +261,7 @@ fn writeIntEnumShape(
 }
 
 test writeIntEnumShape {
-    try shapeTester(&.{.enum_int}, SmithyId.of("test#IntEnum"), .{},
+    try shapeTester(.enum_int, SmithyId.of("test#IntEnum"), .{},
         \\/// An **integer-based** enumeration.
         \\pub const IntEnum = enum(i32) {
         \\    foo_bar = 8,
@@ -307,7 +307,7 @@ fn writeUnionShape(
 }
 
 test writeUnionShape {
-    try shapeTester(&.{.union_str}, SmithyId.of("test#Union"), .{},
+    try shapeTester(.union_str, SmithyId.of("test#Union"), .{},
         \\pub const Union = union(enum) {
         \\    foo,
         \\    bar: i32,
@@ -431,7 +431,7 @@ pub fn isStructMemberOptional(symbols: *SymbolsProvider, id: SmithyId, is_input:
 }
 
 test writeStructShape {
-    try shapeTester(&.{ .structure, .err }, SmithyId.of("test#Struct"), .{},
+    try shapeTester(.structure, SmithyId.of("test#Struct"), .{},
         \\pub const Struct = struct {
         \\    mixed: ?bool = null,
         \\    /// A **struct** member.
@@ -674,12 +674,12 @@ fn isAllocatedType(symbols: *const SymbolsProvider, id: SmithyId) !bool {
     }
 }
 
-pub fn shapeTester(parts: []const test_symbols.Part, id: SmithyId, options: ShapeOptions, expected: []const u8) !void {
+pub fn shapeTester(part: test_symbols.Part, id: SmithyId, options: ShapeOptions, expected: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const arena_alloc = arena.allocator();
     defer arena.deinit();
 
-    var symbols = try test_symbols.setup(arena_alloc, parts);
+    var symbols = try test_symbols.setup(arena_alloc, part);
     defer symbols.deinit();
 
     var buffer = std.ArrayList(u8).init(arena_alloc);

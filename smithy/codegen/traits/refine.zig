@@ -147,23 +147,23 @@ test "EnumValue" {
     try testing.expectEqualDeep(&EnumValue.Val{ .string = "foo" }, val_str);
 }
 
+pub const ErrorSource = enum { client, server };
+
 /// Indicates that a structure shape represents an error.
 ///
 /// [Smithy Spec](https://smithy.io/2.0/spec/type-refinement-traits.html#error-trait)
 pub const Error = struct {
     pub const id = SmithyId.of("smithy.api#error");
 
-    pub const Source = enum { client, server };
-
     pub fn parse(arena: Allocator, reader: *JsonReader) !*const anyopaque {
         const source = try reader.nextString();
-        const value = try arena.create(Source);
-        value.* = if (source[0] == 'c') Source.client else Source.server;
+        const value = try arena.create(ErrorSource);
+        value.* = if (source[0] == 'c') ErrorSource.client else ErrorSource.server;
         return value;
     }
 
-    pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?Source {
-        return symbols.getTrait(Source, shape_id, id);
+    pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?ErrorSource {
+        return symbols.getTrait(ErrorSource, shape_id, id);
     }
 };
 
@@ -173,18 +173,18 @@ test "Error" {
     defer arena.deinit();
 
     var reader = try JsonReader.initFixed(arena_alloc, "\"client\"");
-    const val_int: *const Error.Source = @alignCast(@ptrCast(Error.parse(arena_alloc, &reader) catch |e| {
+    const val_int: *const ErrorSource = @alignCast(@ptrCast(Error.parse(arena_alloc, &reader) catch |e| {
         reader.deinit();
         return e;
     }));
     reader.deinit();
-    try testing.expectEqualDeep(&Error.Source.client, val_int);
+    try testing.expectEqualDeep(&ErrorSource.client, val_int);
 
     reader = try JsonReader.initFixed(arena_alloc, "\"server\"");
-    const val_str: *const Error.Source = @alignCast(@ptrCast(Error.parse(arena_alloc, &reader) catch |e| {
+    const val_str: *const ErrorSource = @alignCast(@ptrCast(Error.parse(arena_alloc, &reader) catch |e| {
         reader.deinit();
         return e;
     }));
     reader.deinit();
-    try testing.expectEqualDeep(&Error.Source.server, val_str);
+    try testing.expectEqualDeep(&ErrorSource.server, val_str);
 }

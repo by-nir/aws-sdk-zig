@@ -33,13 +33,13 @@ pub const HttpError = struct {
     pub const id = SmithyId.of("smithy.api#httpError");
 
     pub fn parse(arena: Allocator, reader: *JsonReader) !*const anyopaque {
-        const value = try arena.create(u10);
-        value.* = @intCast(try reader.nextInteger());
+        const value = try arena.create(std.http.Status);
+        value.* = @enumFromInt(@as(u10, @intCast(try reader.nextInteger())));
         return value;
     }
 
-    pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?u10 {
-        return symbols.getTrait(u10, shape_id, id);
+    pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?std.http.Status {
+        return symbols.getTrait(std.http.Status, shape_id, id);
     }
 };
 
@@ -49,10 +49,10 @@ test "HttpError" {
     defer arena.deinit();
 
     var reader = try JsonReader.initFixed(allocator, "429");
-    const val_int: *const u10 = @alignCast(@ptrCast(HttpError.parse(allocator, &reader) catch |e| {
+    const val_int: *const std.http.Status = @alignCast(@ptrCast(HttpError.parse(allocator, &reader) catch |e| {
         reader.deinit();
         return e;
     }));
     reader.deinit();
-    try testing.expectEqualDeep(&@as(u10, 429), val_int);
+    try testing.expectEqualDeep(&std.http.Status.too_many_requests, val_int);
 }

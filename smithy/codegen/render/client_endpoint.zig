@@ -57,7 +57,7 @@ test ClientEndpoint {
     defer issues.deinit();
     _ = try tester.provideService(&issues, null);
 
-    var symbols = try test_symbols.setup(tester.alloc(), &.{.service});
+    var symbols = try test_symbols.setup(tester.alloc(), .service);
     defer symbols.deinit();
     _ = try tester.provideService(&symbols, null);
 

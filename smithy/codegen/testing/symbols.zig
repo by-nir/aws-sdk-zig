@@ -17,13 +17,13 @@ const trt_refine = @import("../traits/refine.zig");
 const trt_behave = @import("../traits/behavior.zig");
 const trt_constr = @import("../traits/constraint.zig");
 
-pub const Part = enum { unit, root_child, list, map, enums_str, enum_int, union_str, structure, err, service };
+pub const Part = enum { unit, root_child, list, map, enums_str, enum_int, union_str, structure, service };
 
-pub fn setup(arena: std.mem.Allocator, parts: []const Part) !SymbolsProvider {
+pub fn setup(arena: std.mem.Allocator, part: Part) !SymbolsProvider {
     var model = Model.init(test_alloc);
     errdefer model.deinit();
 
-    for (parts) |s| switch (s) {
+    switch (part) {
         .unit => try setupUnit(&model),
         .root_child => try setupRootAndChild(&model),
         .list => try setupList(&model),
@@ -32,9 +32,11 @@ pub fn setup(arena: std.mem.Allocator, parts: []const Part) !SymbolsProvider {
         .enum_int => try setupIntEnum(&model),
         .union_str => try setupUnion(&model),
         .structure => try setupStruct(&model),
-        .err => try setupError(&model),
-        .service => try setupService(&model),
-    };
+        .service => {
+            try setupService(&model);
+            model.service_id = SmithyId.of("test.serve#Service");
+        },
+    }
 
     return SymbolsProvider.consumeModel(arena, &model);
 }
@@ -206,25 +208,11 @@ fn setupStruct(model: *Model) !void {
     try model.shapes.put(test_alloc, SmithyId.of("test#Mixin$mixed"), .boolean);
 }
 
-const ERROR_CODE: u10 = 429;
-const ERROR_SOURCE = trt_refine.Error.Source.client;
-fn setupError(model: *Model) !void {
-    try model.names.put(test_alloc, SmithyId.of("test#ServiceError"), "ServiceError");
-    try model.shapes.put(test_alloc, SmithyId.of("test#ServiceError"), .{
-        .structure = &.{},
-    });
-    try model.traits.put(test_alloc, SmithyId.of("test#ServiceError"), &.{
-        .{ .id = trt_refine.Error.id, .value = &ERROR_SOURCE },
-        .{ .id = trt_behave.retryable_id, .value = null },
-        .{ .id = trt_http.HttpError.id, .value = &ERROR_CODE },
-    });
-}
-
 fn setupService(model: *Model) !void {
     const Static = struct {
         const sd0 = SmithyId.of("test.serve#MyOperation");
         const sd1 = SmithyId.of("test.serve#Resource");
-        const sd2 = SmithyId.of("test#ServiceError");
+        const sd2 = SmithyId.of("test#ServiceFailError");
         const service = SmithyService{
             .version = "2017-02-11",
             .operations = &.{sd0},
@@ -275,6 +263,8 @@ fn setupService(model: *Model) !void {
             },
             .{},
         };
+        const error_source = trt_refine.ErrorSource.client;
+        const error_code: std.http.Status = .too_many_requests;
     };
 
     model.service_id = SmithyId.of("test.serve#Service");
@@ -322,5 +312,15 @@ fn setupService(model: *Model) !void {
     });
     try model.traits.put(test_alloc, SmithyId.of("test.error#NotFound"), &.{
         .{ .id = trt_refine.Error.id, .value = "server" },
+    });
+
+    try model.names.put(test_alloc, SmithyId.of("test#ServiceFailError"), "ServiceFailError");
+    try model.shapes.put(test_alloc, SmithyId.of("test#ServiceFailError"), .{
+        .structure = &.{},
+    });
+    try model.traits.put(test_alloc, SmithyId.of("test#ServiceFailError"), &.{
+        .{ .id = trt_refine.Error.id, .value = &Static.error_source },
+        .{ .id = trt_behave.retryable_id, .value = null },
+        .{ .id = trt_http.HttpError.id, .value = &Static.error_code },
     });
 }
