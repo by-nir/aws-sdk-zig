@@ -216,7 +216,10 @@ fn serialShapeScheme(
                 exp.structLiteral(null, try schemes.toOwnedSlice()),
             });
         },
-        .document => @panic("Document shape scheme construction not implemented"), // TODO
+        .document => {
+            // AWS usage: controltower, identitystore, inspector-scan, bedrock-agent-runtime, marketplace-catalog
+            @panic("Document shape scheme construction not implemented");
+        },
         .unit, .operation, .resource, .service, .target => unreachable,
     }
 }

@@ -82,13 +82,20 @@ fn writeSchemeResolver(ctx: SignContext, bld: *zig.BlockBuild) !void {
         fn f(c: SignContext, b: *zig.SwitchBuild) !void {
             for (c.schems) |id| {
                 switch (id) {
+                    .http_bearer => {
+                        const case = b.x.raw(aws_cfg.scope_smithy).dot().call("AuthId.of", &.{b.x.valueOf("bearer")});
+                        try b.branch().case(case).body(b.x.block(writeBearer));
+                    },
                     trt_auth.SigV4.auth_id => {
                         var sign_ctx = c;
                         sign_ctx.config_expr = b.x.raw(aws_cfg.send_endpoint_param).dot().id("auth_schemes").valIndexer(b.x.id("i"));
                         const case = b.x.raw(aws_cfg.scope_smithy).dot().call("AuthId.of", &.{b.x.valueOf("sigv4")});
                         try b.branch().case(case).body(b.x.blockWith(sign_ctx, writeSigV4));
                     },
-                    else => return error.UnimplementedAuthScheme,
+                    else => {
+                        // .http_basic, .http_digest, .http_api_key
+                        return error.UnimplementedAuthScheme;
+                    },
                 }
             }
 
@@ -97,6 +104,21 @@ fn writeSchemeResolver(ctx: SignContext, bld: *zig.BlockBuild) !void {
     }.f)).end();
 
     try bld.returns().valueOf(error.UnresolvedAuthScheme).end();
+}
+
+fn writeBearer(bld: *zig.BlockBuild) !void {
+    try bld.constant("identity").assign(try resolveExpr(bld.x, "token"));
+
+    try bld.constant("auth_bearer").assign(bld.x.call("std.fmt.allocPrint", &.{
+        bld.x.raw("aws_cfg.scratch_alloc"),
+        bld.x.valueOf("Bearer {s}"),
+        bld.x.structLiteral(null, &.{bld.x.raw("identity")}),
+    }));
+
+    try bld.trys().id(aws_cfg.send_op_param).dot().call("request.headers.put", &.{
+        bld.x.valueOf("authorization"),
+        bld.x.id("auth_bearer"),
+    }).end();
 }
 
 fn writeSigV4(ctx: SignContext, bld: *zig.BlockBuild) !void {
@@ -113,14 +135,18 @@ fn writeSigV4(ctx: SignContext, bld: *zig.BlockBuild) !void {
         }),
     );
 
-    try bld.constant("identity").assign(
-        bld.x.trys().call("self.identity.resolve", &.{bld.x.dot().id("credentials")}),
-    );
+    try bld.constant("identity").assign(try resolveExpr(bld.x, "credentials"));
 
     try bld.trys().raw(aws_cfg.scope_auth).dot().call("signV4", &.{
         bld.x.addressOf().id("auth_buffer"),
         bld.x.id(aws_cfg.send_op_param),
         bld.x.id("scheme_config"),
-        bld.x.raw("identity.as(.credentials)"),
+        bld.x.id("identity"),
     }).end();
+}
+
+fn resolveExpr(exp: zig.ExprBuild, kind: []const u8) !zig.ExprBuild {
+    const kind_expr = exp.dot().id(kind);
+    const resolve = exp.trys().call("self.identity.resolve", &.{kind_expr});
+    return exp.group(resolve).dot().call("as", &.{kind_expr});
 }
