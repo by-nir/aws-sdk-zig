@@ -11,6 +11,7 @@ const ExprBuild = zig.ExprBuild;
 const BlockBuild = zig.BlockBuild;
 const ContainerBuild = zig.ContainerBuild;
 const Writer = @import("razdaz").CodegenWriter;
+const runtime_serial = @import("runtime").serial;
 const clnt = @import("client.zig");
 const mdl = @import("../model.zig");
 const SmithyId = mdl.SmithyId;
@@ -25,6 +26,7 @@ const JsonValue = @import("../utils/JsonReader.zig").Value;
 const trt_docs = @import("../traits/docs.zig");
 const trt_refine = @import("../traits/refine.zig");
 const trt_constr = @import("../traits/constraint.zig");
+const trt_protocol = @import("../traits/protocol.zig");
 const test_symbols = @import("../testing/symbols.zig");
 
 pub const ShapeOptions = struct {
@@ -390,44 +392,98 @@ fn writeStructShapeMember(
 ) !void {
     const shape_name = try symbols.getShapeName(id, .snake, .{});
     const is_optional = isStructMemberOptional(symbols, id, is_input);
+    const default_value: ?JsonValue = blk: {
+        if (trt_refine.Default.get(symbols, id)) |val| break :blk val;
+        break :blk switch (try symbols.getShape(id)) {
+            // A root shape may define a fallback default:
+            .target => |tid| trt_refine.Default.get(symbols, tid),
+            else => null,
+        };
+    };
 
     var type_expr = bld.x.raw(try typeName(symbols, id, scope));
     if (is_optional) type_expr = bld.x.typeOptional(type_expr);
 
     try writeDocComment(symbols, bld, id, true);
     const field = bld.field(shape_name).typing(type_expr);
-    const assign: ?ExprBuild = blk: {
-        if (is_optional) break :blk bld.x.valueOf(null);
-        if (trt_refine.Default.get(symbols, id)) |json| {
-            break :blk switch (try symbols.getShapeUnwrap(id)) {
-                .boolean => bld.x.valueOf(json.boolean),
-                .str_enum, .trt_enum, .string => bld.x.dot().raw(json.string),
-                .int_enum => bld.x.call("@enumFromInt", &.{bld.x.valueOf(json.integer)}),
-                .byte, .short, .integer, .long => bld.x.valueOf(json.integer),
-                .float, .double => bld.x.valueOf(json.float),
-                inline .blob, .map, .list, .timestamp, .document => |_, g| {
-                    // TODO
-                    std.log.warn("Unimplemented default value `{s}`", .{@tagName(g)});
-                    unreachable;
+    if (is_optional) {
+        // On the client, optional takes precedence over default
+        try field.assign(bld.x.valueOf(null));
+    } else if (default_value) |json| {
+        const expr = if (json == .null)
+            // A default of `null` on a struct members forces an optional, ignoring
+            // a global default value that may be defined for the shape.
+            bld.x.valueOf(null)
+        else switch (try symbols.getShapeUnwrap(id)) {
+            .boolean => bld.x.valueOf(json.boolean),
+            .byte, .short, .integer, .long => bld.x.valueOf(json.integer),
+            .float, .double => bld.x.valueOf(json.float),
+            .string => bld.x.valueOf(json.string),
+            .int_enum => bld.x.call("@enumFromInt", &.{bld.x.valueOf(json.integer)}),
+            .str_enum, .trt_enum => bld.x.dot().raw(try name_util.formatCase(symbols.arena, .snake, json.string)),
+            .map => blk: {
+                std.debug.assert(json.object.len == 0);
+                break :blk bld.x.raw(".{}");
+            },
+            .list => blk: {
+                std.debug.assert(json.array.len == 0);
+                break :blk bld.x.raw(".{}");
+            },
+            .blob => blk: {
+                const size = try std.base64.standard.Decoder.calcSizeForSlice(json.string);
+                const target = try symbols.arena.alloc(u8, size);
+                try std.base64.standard.Decoder.decode(target, json.string);
+                break :blk bld.x.valueOf(target);
+            },
+            .timestamp => blk: {
+                const format = trt_protocol.TimestampFormat.get(symbols, id) orelse symbols.service_timestamp_fmt;
+                const epoch_ms: i64 = switch (format) {
+                    .date_time => try runtime_serial.parseTimestamp(json.string),
+                    .http_date => try runtime_serial.parseHttpDate(json.string),
+                    .epoch_seconds => switch (json) {
+                        .integer => |sec| sec * std.time.ms_per_s,
+                        .float => |sec| @intFromFloat(sec * std.time.ms_per_s),
+                        .string => |s| str: {
+                            if (std.mem.indexOfScalar(u8, s, '.') != null) {
+                                const dbl = try std.fmt.parseFloat(f64, s);
+                                break :str @intFromFloat(dbl * std.time.ms_per_s);
+                            } else {
+                                const int = try std.fmt.parseInt(i64, s, 10);
+                                break :str int * std.time.ms_per_s;
+                            }
+                        },
+                        else => unreachable,
+                    },
+                };
+                break :blk bld.x.structLiteral(null, &.{
+                    bld.x.structAssign("epoch_ms", bld.x.valueOf(epoch_ms)),
+                });
+            },
+            .document => switch (json) {
+                .null => bld.x.valueOf(null),
+                inline .boolean, .integer, .float, .string => |val| bld.x.valueOf(val),
+                inline .array, .object => |val| blk: {
+                    std.debug.assert(val.len == 0);
+                    break :blk bld.x.raw(".{}");
                 },
-                else => unreachable,
-            };
-        }
-        break :blk null;
-    };
-    if (assign) |a| try field.assign(a) else try field.end();
+            },
+            else => unreachable,
+        };
+        try field.assign(expr);
+    } else {
+        try field.end();
+    }
 }
 
 /// https://smithy.io/2.0/spec/aggregate-types.html#structure-member-optionality
 pub fn isStructMemberOptional(symbols: *SymbolsProvider, id: SmithyId, is_input: bool) bool {
     if (is_input) return true;
-
     if (symbols.getTraits(id)) |bag| {
-        return bag.has(trt_refine.client_optional_id) or
-            !(bag.has(trt_refine.required_id) or bag.has(trt_refine.Default.id));
+        if (bag.has(trt_refine.client_optional_id)) return true;
+        return !(bag.has(trt_refine.required_id) or bag.has(trt_refine.Default.id));
+    } else {
+        return true;
     }
-
-    return true;
 }
 
 test writeStructShape {
@@ -531,9 +587,6 @@ pub fn listType(symbols: *const SymbolsProvider, shape_id: SmithyId) ListType {
 
 pub fn typeName(symbols: *SymbolsProvider, id: SmithyId, scoped: ?[]const u8) ![]const u8 {
     switch (id) {
-        .str_enum, .int_enum, .list, .map, .structure, .tagged_union, .operation, .resource, .service, .apply => unreachable,
-        .document => return error.UnexpectedDocumentShape, // A document’s consumer should parse it into a meaningful type manually
-        .unit => return "", // The union type generator assumes a unit is an empty string
         .boolean => return "bool",
         .byte => return "i8",
         .short => return "i16",
@@ -541,9 +594,12 @@ pub fn typeName(symbols: *SymbolsProvider, id: SmithyId, scoped: ?[]const u8) ![
         .long => return "i64",
         .float => return "f32",
         .double => return "f64",
-        .timestamp => return "u64",
         .string, .blob => return "[]const u8",
-        .big_integer, .big_decimal => return "[]const u8",
+        .timestamp => return cfg.runtime_scope ++ ".Timestamp",
+        .unit => return "", // The union type generator assumes a unit is an empty string
+        .document => return error.UnexpectedDocumentShape, // A document’s consumer should parse it into a meaningful type manually
+        .big_integer, .big_decimal => @panic("Unhandled type name of big number"),
+        .str_enum, .int_enum, .list, .map, .structure, .tagged_union, .operation, .resource, .service, .apply => unreachable,
         _ => |shape_id| {
             const shape = symbols.model_shapes.get(id) orelse return error.ShapeNotFound;
             switch (shape) {
@@ -640,11 +696,9 @@ test typeName {
     try testing.expectEqualStrings("i64", try typeName(&symbols, .long, null));
     try testing.expectEqualStrings("f32", try typeName(&symbols, .float, null));
     try testing.expectEqualStrings("f64", try typeName(&symbols, .double, null));
-    try testing.expectEqualStrings("u64", try typeName(&symbols, .timestamp, null));
     try testing.expectEqualStrings("[]const u8", try typeName(&symbols, .blob, null));
     try testing.expectEqualStrings("[]const u8", try typeName(&symbols, .string, null));
-    try testing.expectEqualStrings("[]const u8", try typeName(&symbols, .big_integer, null));
-    try testing.expectEqualStrings("[]const u8", try typeName(&symbols, .big_decimal, null));
+    try testing.expectEqualStrings("smithy.Timestamp", try typeName(&symbols, .timestamp, null));
 
     try testing.expectEqualStrings("Foo", try typeName(&symbols, foo_id, null));
     try testing.expectEqualStrings("types.Foo", try typeName(&symbols, foo_id, "types"));
@@ -665,8 +719,7 @@ fn isAllocatedType(symbols: *const SymbolsProvider, id: SmithyId) !bool {
             }
             return false;
         },
-        inline .big_integer, .big_decimal, .timestamp, .document => |_, g| {
-            // TODO
+        inline .big_integer, .big_decimal, .document => |_, g| {
             std.log.warn("Unimplemented shape allocated decider `{s}`", .{@tagName(g)});
             return false;
         },

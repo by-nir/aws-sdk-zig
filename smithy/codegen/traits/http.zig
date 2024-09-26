@@ -43,7 +43,7 @@ pub const HttpError = struct {
     }
 };
 
-test "HttpError" {
+test HttpError {
     var arena = std.heap.ArenaAllocator.init(test_alloc);
     const allocator = arena.allocator();
     defer arena.deinit();

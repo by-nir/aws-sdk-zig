@@ -76,7 +76,7 @@ fn AuthTrait(comptime trait_id: []const u8) type {
     };
 }
 
-test "AuthTrait" {
+test AuthTrait {
     var arena = std.heap.ArenaAllocator.init(test_alloc);
     const arena_alloc = arena.allocator();
     defer arena.deinit();

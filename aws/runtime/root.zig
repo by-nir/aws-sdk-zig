@@ -2,6 +2,7 @@ const smithy = @import("smithy/runtime");
 pub const Set = smithy.Set;
 pub const Map = smithy.Map;
 pub const Result = smithy.Result;
+pub const Timestamp = smithy.Timestamp;
 pub const ResultError = smithy.ResultError;
 pub const ErrorSource = smithy.ErrorSource;
 

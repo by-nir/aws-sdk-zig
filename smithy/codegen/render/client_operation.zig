@@ -13,8 +13,9 @@ const IssuesBag = @import("../systems/issues.zig").IssuesBag;
 const SymbolsProvider = @import("../systems/SymbolsProvider.zig");
 const name_util = @import("../utils/names.zig");
 const trt_refine = @import("../traits/refine.zig");
-const AuthId = @import("../traits/auth.zig").AuthId;
 const test_symbols = @import("../testing/symbols.zig");
+const trt_protocol = @import("../traits/protocol.zig");
+const AuthId = @import("../traits/auth.zig").AuthId;
 
 pub const OperationScriptHeadHook = jobz.Task.Hook(
     "Smithy Operation Script Head",
@@ -137,7 +138,15 @@ fn listShapeErrors(
         try members.append(try symbols.buildError(eid));
     }
 
-    try members.appendSlice(symbols.service_errors);
+    outer: for (symbols.service_errors) |srvc_err| {
+        for (members.items[0..shape_errors.len]) |op_err| {
+            if (std.mem.eql(u8, op_err.name_api, srvc_err.name_api)) continue :outer;
+            if (std.mem.eql(u8, op_err.name_field, srvc_err.name_field)) continue :outer;
+        }
+
+        try members.append(srvc_err);
+    }
+
     return members.toOwnedSlice();
 }
 
@@ -162,8 +171,16 @@ fn serialShapeScheme(
         .trt_enum,
         .big_integer,
         .big_decimal,
-        .timestamp,
         => |_, g| return exp.structLiteral(null, &.{exp.id("SerialType").valueOf(g)}),
+        .timestamp => {
+            const format = trt_protocol.TimestampFormat.get(symbols, id) orelse symbols.service_timestamp_fmt;
+            const literal = switch (format) {
+                .date_time => ".timestamp_date_time",
+                .http_date => ".timestamp_http_date",
+                .epoch_seconds => ".timestamp_epoch_seconds",
+            };
+            return exp.structLiteral(null, &.{exp.id("SerialType").raw(literal)});
+        },
         .list => |member| {
             const member_scheme = try serialShapeScheme(self, symbols, exp, member);
             return exp.structLiteral(null, switch (shape.listType(symbols, id)) {

@@ -125,7 +125,7 @@ pub const EnumValue = struct {
     }
 };
 
-test "EnumValue" {
+test EnumValue {
     var arena = std.heap.ArenaAllocator.init(test_alloc);
     const arena_alloc = arena.allocator();
     defer arena.deinit();
@@ -167,7 +167,7 @@ pub const Error = struct {
     }
 };
 
-test "Error" {
+test Error {
     var arena = std.heap.ArenaAllocator.init(test_alloc);
     const arena_alloc = arena.allocator();
     defer arena.deinit();

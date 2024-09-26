@@ -275,7 +275,7 @@ test "fnStringEquals" {
 fn fnIsValidHostLabel(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
     const subdomains = try gen.evalArg(x, args[1]);
-    return x.call(cfg.runtime_scope ++ ".isValidHostLabel", &.{
+    return x.call(cfg.runtime_scope ++ ".rules.isValidHostLabel", &.{
         x.fromExpr(value),
         x.fromExpr(subdomains),
     }).consume();
@@ -285,7 +285,7 @@ test "fnIsValidHostLabel" {
     try Function.expect(fnIsValidHostLabel, &.{
         .{ .string = "foo" },
         .{ .boolean = false },
-    }, cfg.runtime_scope ++ ".isValidHostLabel(\"foo\", false)");
+    }, cfg.runtime_scope ++ ".rules.isValidHostLabel(\"foo\", false)");
 }
 
 fn fnParseUrl(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
@@ -303,18 +303,18 @@ test "fnParseUrl" {
 fn fnUriEncode(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
     return x.trys()
-        .call(cfg.runtime_scope ++ ".uriEncode", &.{ x.id(cfg.scratch_alloc), x.fromExpr(value) })
+        .call(cfg.runtime_scope ++ ".rules.uriEncode", &.{ x.id(cfg.scratch_alloc), x.fromExpr(value) })
         .consume();
 }
 
 test "fnUriEncode" {
     try Function.expect(fnUriEncode, &.{
         .{ .string = "foo" },
-    }, "try " ++ cfg.runtime_scope ++ ".uriEncode(" ++ cfg.scratch_alloc ++ ", \"foo\")");
+    }, "try " ++ cfg.runtime_scope ++ ".rules.uriEncode(" ++ cfg.scratch_alloc ++ ", \"foo\")");
 }
 
 fn fnSubstring(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
-    return x.call(cfg.runtime_scope ++ ".substring", &.{
+    return x.call(cfg.runtime_scope ++ ".rules.substring", &.{
         x.fromExpr(try gen.evalArg(x, args[0])),
         x.fromExpr(try gen.evalArg(x, args[1])),
         x.fromExpr(try gen.evalArg(x, args[2])),
@@ -328,5 +328,5 @@ test "fnSubstring" {
         .{ .integer = 0 },
         .{ .integer = 2 },
         .{ .boolean = false },
-    }, cfg.runtime_scope ++ ".substring(\"foo\", 0, 2, false) catch null");
+    }, cfg.runtime_scope ++ ".rules.substring(\"foo\", 0, 2, false) catch null");
 }

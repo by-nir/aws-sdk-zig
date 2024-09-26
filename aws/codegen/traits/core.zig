@@ -90,7 +90,7 @@ pub const Service = struct {
     }
 };
 
-test "Service" {
+test Service {
     var arena = std.heap.ArenaAllocator.init(test_alloc);
     const arena_alloc = arena.allocator();
     defer arena.deinit();

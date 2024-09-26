@@ -5,6 +5,7 @@ const smithy = @import("smithy/codegen");
 const SymbolsProvider = smithy.SymbolsProvider;
 const aws_cfg = @import("../config.zig");
 const trt_proto = @import("../traits/protocols.zig");
+const TimestampFormat = smithy.traits.protocol.TimestampFormat.Value;
 
 pub const Protocol = enum {
     json_1_0,
@@ -83,6 +84,13 @@ fn resolveTransportPriority(transports: []const []const u8, default: Transport) 
 pub fn resolveHttpMethod(protocol: Protocol) std.http.Method {
     return switch (protocol) {
         .json_1_0, .json_1_1 => .POST,
+        else => unreachable,
+    };
+}
+
+pub fn resolveTimestampFormat(protocol: Protocol) TimestampFormat {
+    return switch (protocol) {
+        .json_1_0, .json_1_1 => .epoch_seconds,
         else => unreachable,
     };
 }

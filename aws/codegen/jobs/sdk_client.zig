@@ -111,6 +111,8 @@ fn writeScriptHead(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
 }
 
 fn extendService(self: *const Delegate, symbols: *SymbolsProvider, extension: *smithy.ServiceExtension) anyerror!void {
+    const protocol = try itg_proto.resolveServiceProtocol(symbols);
+    extension.timestamp_format = itg_proto.resolveTimestampFormat(protocol);
     try itg_auth.extendAuthSchemes(self, symbols, extension);
     try itg_errors.extendCommonErrors(self, symbols, extension);
 }

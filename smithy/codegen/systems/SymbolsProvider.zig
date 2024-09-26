@@ -14,6 +14,7 @@ const trt_http = @import("../traits/http.zig");
 const trt_docs = @import("../traits/docs.zig");
 const trt_refine = @import("../traits/refine.zig");
 const trt_behave = @import("../traits/behavior.zig");
+const TimestampFormat = @import("../traits/protocol.zig").TimestampFormat.Value;
 
 const Self = @This();
 
@@ -44,6 +45,7 @@ service_errors: []const Error = &.{},
 service_operations: []const SmithyId = &.{},
 service_data_shapes: []const SmithyId = &.{},
 service_auth_schemes: []const AuthId = &.{},
+service_timestamp_fmt: TimestampFormat = .epoch_seconds,
 
 pub fn consumeModel(arena: Allocator, model: *Model) !Self {
     var dupe_meta = try model.meta.clone(arena);
@@ -107,7 +109,7 @@ fn filterServiceShapes(
         try visited.put(gpa, id, {});
 
         switch (shapes.get(id).?) {
-            .boolean, .byte, .short, .integer, .long, .float, .double, .string, .blob => {},
+            .boolean, .byte, .short, .integer, .long, .float, .double, .string, .timestamp, .blob => {},
             .target => |tid| try shape_queue.writeItem(tid),
             .int_enum, .str_enum, .trt_enum => try data_shapes.append(id),
             .tagged_union => |fields| {
@@ -148,7 +150,7 @@ fn filterServiceShapes(
                 try shape_queue.write(srvc.resources);
             },
             else => |t| {
-                // TODO: unit, big_integer, big_decimal, timestamp, document,
+                // unit, big_integer, big_decimal, document
                 std.log.warn("Unimplemented shape filter `{s}`", .{@tagName(t)});
             },
         }

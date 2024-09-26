@@ -27,6 +27,7 @@ const trt_docs = @import("../traits/docs.zig");
 const trt_rules = @import("../traits/rules.zig");
 const trt_auth = @import("../traits/auth.zig");
 const AuthId = trt_auth.AuthId;
+const TimestampFormat = @import("../traits/protocol.zig").TimestampFormat.Value;
 
 pub const ScriptHeadHook = jobz.Task.Hook("Smithy Script Head", anyerror!void, &.{*zig.ContainerBuild});
 pub const ServiceReadmeHook = codegen_jobs.MarkdownDoc.Hook("Smithy Readme Codegen", &.{ServiceReadmeMetadata});
@@ -35,6 +36,7 @@ pub const ServiceExtensionHook = jobz.Task.Hook("Smithy Service Extension", anye
 pub const ServiceExtension = struct {
     auth_schemes: std.ArrayList(trt_auth.AuthId),
     common_errors: std.ArrayList(SymbolsProvider.Error),
+    timestamp_format: ?TimestampFormat = null,
 
     pub fn appendAuthScheme(self: *ServiceExtension, auth_id: AuthId) !void {
         try self.auth_schemes.append(auth_id);
@@ -113,6 +115,7 @@ fn extendServiceSchemes(self: *const jobz.Delegate, symbols: *SymbolsProvider) !
 
     symbols.service_errors = try extension.common_errors.toOwnedSlice();
     symbols.service_auth_schemes = try extension.auth_schemes.toOwnedSlice();
+    if (extension.timestamp_format) |fmt| symbols.service_timestamp_fmt = fmt;
 }
 
 const ServiceReadme = files_jobs.WriteFile.Task("Service Readme Codegen", serviceReadmeTask, .{

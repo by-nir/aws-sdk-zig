@@ -25,7 +25,7 @@ pub fn build(b: *std.Build) void {
     // Modules
     //
 
-    _ = b.addModule("runtime", .{
+    const runtime = b.addModule("runtime", .{
         .target = target,
         .optimize = optimize,
         .root_source_file = b.path("runtime/root.zig"),
@@ -39,6 +39,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "jobz", .module = jobz },
             .{ .name = "razdaz", .module = razdaz },
             .{ .name = "razdaz/jobs", .module = razdaz_jobs },
+            .{ .name = "runtime", .module = runtime },
         },
     });
 
@@ -70,6 +71,7 @@ pub fn build(b: *std.Build) void {
     test_codegen_exe.root_module.addImport("jobz", jobz);
     test_codegen_exe.root_module.addImport("razdaz", razdaz);
     test_codegen_exe.root_module.addImport("razdaz/jobs", razdaz_jobs);
+    test_codegen_exe.root_module.addImport("runtime", runtime);
     test_codegen_step.dependOn(&b.addRunArtifact(test_codegen_exe).step);
     test_all_step.dependOn(test_codegen_step);
     test_all_step.dependOn(&b.addInstallArtifact(test_codegen_exe, .{

@@ -125,7 +125,7 @@ pub const HttpApiKey = struct {
     }
 };
 
-test "HttpApiKey" {
+test HttpApiKey {
     var arena = std.heap.ArenaAllocator.init(test_alloc);
     const arena_alloc = arena.allocator();
     defer arena.deinit();
@@ -188,7 +188,7 @@ pub const Auth = struct {
     }
 };
 
-test "Auth" {
+test Auth {
     var arena = std.heap.ArenaAllocator.init(test_alloc);
     const arena_alloc = arena.allocator();
     defer arena.deinit();

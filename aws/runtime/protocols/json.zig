@@ -144,8 +144,23 @@ fn serializeValue(json: *JsonWriter, comptime scheme: anytype, value: anytype) !
             }
             try json.endObject();
         },
+        .timestamp_epoch_seconds => try json.write(value.asSecFloat()),
+        .timestamp_date_time => {
+            try json.beginWriteRaw();
+            try json.stream.writeByte('\"');
+            try smithy.serial.writeTimestamp(json.stream.any(), value.epoch_ms);
+            try json.stream.writeByte('\"');
+            json.endWriteRaw();
+        },
+        .timestamp_http_date => {
+            try json.beginWriteRaw();
+            try json.stream.writeByte('\"');
+            try smithy.serial.writeHttpDate(json.stream.any(), value.epoch_ms);
+            try json.stream.writeByte('\"');
+            json.endWriteRaw();
+        },
         inline else => |g| {
-            // TODO: timestamp, document, big_integer, big_decimal
+            // document, big_integer, big_decimal
             @compileError("Unimplemted serialization for type " ++ @tagName(g));
         },
     }
@@ -309,7 +324,6 @@ fn parseValue(scratch_alloc: Allocator, output_alloc: Allocator, json: *JsonRead
                 .allocate = .alloc_if_needed,
                 .max_value_len = std.json.default_max_value_len,
             });
-
             const size = try std.base64.standard.Decoder.calcSizeForSlice(str_value);
             const target = try output_alloc.alloc(u8, size);
             try std.base64.standard.Decoder.decode(target, str_value);
@@ -506,9 +520,41 @@ fn parseValue(scratch_alloc: Allocator, output_alloc: Allocator, json: *JsonRead
                 else => return error.UnexpectedToken,
             }
         },
+        .timestamp_date_time => {
+            const str_value = try std.json.innerParse([]const u8, scratch_alloc, json, .{
+                .allocate = .alloc_if_needed,
+                .max_value_len = std.json.default_max_value_len,
+            });
+            const epoch_ms = try smithy.serial.parseTimestamp(str_value);
+            value.* = .{ .epoch_ms = epoch_ms };
+        },
+        .timestamp_http_date => {
+            const str_value = try std.json.innerParse([]const u8, scratch_alloc, json, .{
+                .allocate = .alloc_if_needed,
+                .max_value_len = std.json.default_max_value_len,
+            });
+            const epoch_ms = try smithy.serial.parseHttpDate(str_value);
+            value.* = .{ .epoch_ms = epoch_ms };
+        },
+        .timestamp_epoch_seconds => {
+            switch (try json.nextAlloc(scratch_alloc, .alloc_if_needed)) {
+                .number, .allocated_number => |s| {
+                    if (std.mem.indexOfScalar(u8, s, '.') != null) {
+                        const dbl = try std.fmt.parseFloat(f64, s);
+                        const epoch_ms: i64 = @intFromFloat(dbl * std.time.ms_per_s);
+                        value.* = .{ .epoch_ms = epoch_ms };
+                    } else {
+                        const int = try std.fmt.parseInt(i64, s, 10);
+                        const epoch_ms = int * std.time.ms_per_s;
+                        value.* = .{ .epoch_ms = epoch_ms };
+                    }
+                },
+                else => unreachable,
+            }
+        },
         inline else => |g| {
-            // TODO: timestamp, document, big_integer, big_decimal
-            @compileError("Unimplemted serialization for type " ++ @tagName(g));
+            // document, big_integer, big_decimal
+            @compileError("Unimplemted parsing for type " ++ @tagName(g));
         },
     }
 }

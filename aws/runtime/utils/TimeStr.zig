@@ -1,3 +1,4 @@
+//! UTC time string.
 const std = @import("std");
 const testing = std.testing;
 

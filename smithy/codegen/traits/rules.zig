@@ -43,7 +43,7 @@ pub const EndpointRuleSet = struct {
     }
 };
 
-test "EndpointRuleSet" {
+test EndpointRuleSet {
     var arena = std.heap.ArenaAllocator.init(test_alloc);
     const arena_alloc = arena.allocator();
     defer arena.deinit();
@@ -88,7 +88,7 @@ pub const EndpointTests = struct {
     }
 };
 
-test "EndpointTests" {
+test EndpointTests {
     var arena = std.heap.ArenaAllocator.init(test_alloc);
     const arena_alloc = arena.allocator();
     defer arena.deinit();
