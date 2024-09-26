@@ -21,9 +21,10 @@ pub const HttpClient = http.SharedClient;
 
 const identity = @import("auth/identity.zig");
 pub const IdentityManager = identity.SharedManager;
-pub const StaticCredentials = identity.StaticCredsProvider;
-pub const EnvCredentials = identity.EnvironmentCredsProvider;
-pub const SharedFileCredentials = identity.FileCredsProvider;
+pub const StandardIdentity = identity.StandardCredsProvider;
+pub const StaticIdentity = identity.StaticCredsProvider;
+pub const EnvIdentity = identity.EnvironmentCredsProvider;
+pub const SharedFilesIdentity = identity.SharedFilesProvider;
 
 const auth_sign = @import("auth/sigv4.zig");
 const auth_schemes = @import("auth/schemes.zig");

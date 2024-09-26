@@ -15,6 +15,7 @@ pub const CREDS_SECRET_LEN = 40;
 
 pub const TEST_ID: []const u8 = "AKIAIOSFODNN7EXAMPLE";
 pub const TEST_SECRET: []const u8 = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+pub const TEST_TOKEN: []const u8 = "IQoJb3JpZ2luX2IQoJb3JpZ2luX2IQoJb3JpZ2luX2IQoJb3JpZ2luX2IQoJb3JpZVERYLONGSTRINGEXAMPLE";
 pub const TEST_CREDS = Credentials{
     .access_id = TEST_ID,
     .access_secret = TEST_SECRET,
@@ -27,9 +28,12 @@ pub const SharedManager = struct {
     manager: Manager = undefined,
     resolvers: []const IdentityResolver,
 
+    const standard_resolver = StandardCredsProvider{};
+    const standard_chain: []const IdentityResolver = &.{standard_resolver.identityResolver()};
+
     /// Use the standard identity resoulution chain.
     pub fn initStandard(allocator: Allocator) SharedManager {
-        return initChain(allocator, &.{});
+        return initChain(allocator, standard_chain);
     }
 
     /// Use a manual fallback chain of identity resolvers.
@@ -236,6 +240,90 @@ pub const IdentityResolver = struct {
     }
 };
 
+pub const StandardCredsProvider = struct {
+    pub fn identityResolver(self: *const StandardCredsProvider) IdentityResolver {
+        return .{
+            .ctx = self,
+            .vtable = &vtable,
+        };
+    }
+
+    const vtable = IdentityResolver.VTable{
+        .resolve = resolve,
+        .destroy = destroy,
+    };
+
+    fn ctxSelf(ctx: *const anyopaque) *const StandardCredsProvider {
+        return @ptrCast(@alignCast(ctx));
+    }
+
+    fn resolve(ctx: *const anyopaque, allocator: Allocator, kind: Identity.Kind) !?Identity {
+        if (kind != .credentials) return null;
+
+        const aws_env = try conf_env.loadEnvironment(allocator);
+        defer conf_env.releaseEnvironment();
+
+        var access_id: ?[]const u8 = aws_env.access_id;
+        var access_secret: ?[]const u8 = aws_env.access_secret;
+        var session_token: ?[]const u8 = aws_env.session_token;
+
+        var file0: ?conf_profile.AwsConfigFile = null;
+        defer if (file0) |f| f.deinit();
+
+        if (session_token == null or access_secret == null or access_id == null) blk: {
+            file0 = try conf_profile.readCredsFile(allocator, aws_env.credentials_file);
+            const cfg = file0.?.getProfile(aws_env.profile_name) orelse break :blk;
+            if (access_id == null) access_id = cfg.access_id;
+            if (access_secret == null) access_secret = cfg.access_secret;
+            if (session_token == null) session_token = cfg.session_token;
+        }
+
+        var file1: ?conf_profile.AwsConfigFile = null;
+        defer if (file1) |f| f.deinit();
+
+        if (session_token == null or access_secret == null or access_id == null) blk: {
+            file1 = try conf_profile.readCredsFile(allocator, aws_env.config_file);
+            const cfg = file1.?.getProfile(aws_env.profile_name) orelse break :blk;
+            if (access_id == null) access_id = cfg.access_id;
+            if (access_secret == null) access_secret = cfg.access_secret;
+            if (session_token == null) session_token = cfg.session_token;
+        }
+
+        if (access_id != null and access_secret != null) {
+            const creds_id = try allocator.dupe(u8, access_id.?);
+            errdefer allocator.free(creds_id);
+
+            const creds_secret = try allocator.dupe(u8, access_secret.?);
+            errdefer allocator.free(creds_secret);
+
+            const creds_token = if (session_token) |s| try allocator.dupe(u8, s) else null;
+            errdefer if (creds_token) |token| allocator.free(token);
+
+            const creds = try allocator.create(Credentials);
+            creds.* = .{
+                .access_id = creds_id,
+                .access_secret = creds_secret,
+                .session_token = creds_token,
+            };
+
+            return .{
+                .data = creds,
+                .kind = .credentials,
+                .expiration = null,
+                .resolver = ctxSelf(ctx).identityResolver(),
+            };
+        } else {
+            return null;
+        }
+    }
+
+    fn destroy(_: *const anyopaque, identity: Identity, allocator: Allocator) void {
+        const creds: *const Credentials = @ptrCast(@alignCast(identity.data));
+        creds.deinit(allocator);
+        allocator.destroy(creds);
+    }
+};
+
 pub const StaticCredsProvider = struct {
     creds: Credentials,
 
@@ -315,28 +403,18 @@ pub const EnvironmentCredsProvider = struct {
     }
 
     fn resolve(ctx: *const anyopaque, allocator: Allocator, kind: Identity.Kind) !?Identity {
-        const self = ctxSelf(ctx);
         if (kind != .credentials) return null;
 
         _ = try conf_env.loadEnvironment(allocator);
         defer conf_env.releaseEnvironment();
 
-        const access_id = blk: {
-            const val = conf_env.readValue(.access_id) orelse return null;
-            break :blk try allocator.dupe(u8, val);
-        };
+        const access_id = try allocator.dupe(u8, conf_env.readValue(.access_id) orelse return null);
         errdefer allocator.free(access_id);
 
-        const access_secret = blk: {
-            const val = conf_env.readValue(.access_secret) orelse return null;
-            break :blk try allocator.dupe(u8, val);
-        };
+        const access_secret = try allocator.dupe(u8, conf_env.readValue(.access_secret) orelse return null);
         errdefer allocator.free(access_secret);
 
-        const session_token = blk: {
-            const val = conf_env.readValue(.session_token) orelse break :blk null;
-            break :blk try allocator.dupe(u8, val);
-        };
+        const session_token = if (conf_env.readValue(.session_token)) |s| try allocator.dupe(u8, s) else null;
         errdefer if (session_token) |token| allocator.free(token);
 
         const creds = try allocator.create(Credentials);
@@ -350,7 +428,7 @@ pub const EnvironmentCredsProvider = struct {
             .data = creds,
             .kind = .credentials,
             .expiration = null,
-            .resolver = self.identityResolver(),
+            .resolver = ctxSelf(ctx).identityResolver(),
         };
     }
 
@@ -382,14 +460,15 @@ test EnvironmentCredsProvider {
     try testing.expectEqual(null, creds.session_token);
 }
 
-pub const FileCredsProvider = struct {
+pub const SharedFilesProvider = struct {
     /// The profile name to use, or `null` to use the _default_ profile.
     profile_name: ?[]const u8 = null,
-    /// Override the standard shared credentials file location.
+    /// Override the standard shared credentials and configuration files location.
+    /// The first path gets presedence over the second.
     /// Supports `~/` home directory expansion.
-    override_path: ?[]const u8 = null,
+    override_paths: ?[2][]const u8 = null,
 
-    pub fn identityResolver(self: *const FileCredsProvider) IdentityResolver {
+    pub fn identityResolver(self: *const SharedFilesProvider) IdentityResolver {
         return .{
             .ctx = self,
             .vtable = &vtable,
@@ -401,7 +480,7 @@ pub const FileCredsProvider = struct {
         .destroy = destroy,
     };
 
-    fn ctxSelf(ctx: *const anyopaque) *const FileCredsProvider {
+    fn ctxSelf(ctx: *const anyopaque) *const SharedFilesProvider {
         return @ptrCast(@alignCast(ctx));
     }
 
@@ -409,19 +488,56 @@ pub const FileCredsProvider = struct {
         const self = ctxSelf(ctx);
         if (kind != .credentials) return null;
 
-        var file = try conf_profile.readCredsFile(allocator, self.override_path);
-        defer file.deinit();
+        var access_id: ?[]const u8 = null;
+        var access_secret: ?[]const u8 = null;
+        var session_token: ?[]const u8 = null;
 
-        const creds = (try file.getCredsAlloc(allocator, self.profile_name)) orelse return null;
-        const dupe = try allocator.create(Credentials);
-        dupe.* = creds;
+        const file0 = try conf_profile.readCredsFile(allocator, if (self.override_paths) |p| p[0] else null);
+        defer file0.deinit();
 
-        return .{
-            .data = dupe,
-            .kind = .credentials,
-            .expiration = null,
-            .resolver = self.identityResolver(),
-        };
+        if (file0.getProfile(self.profile_name)) |cfg| {
+            access_id = cfg.access_id;
+            access_secret = cfg.access_secret;
+            session_token = cfg.session_token;
+        }
+
+        var file1: ?conf_profile.AwsConfigFile = null;
+        defer if (file1) |f| f.deinit();
+
+        if (session_token == null or access_secret == null or access_id == null) blk: {
+            file1 = try conf_profile.readCredsFile(allocator, if (self.override_paths) |p| p[1] else null);
+            const cfg = file1.?.getProfile(self.profile_name) orelse break :blk;
+            if (access_id == null) access_id = cfg.access_id;
+            if (access_secret == null) access_secret = cfg.access_secret;
+            if (session_token == null) session_token = cfg.session_token;
+        }
+
+        if (access_id != null and session_token != null) {
+            const creds_id = try allocator.dupe(u8, access_id.?);
+            errdefer allocator.free(creds_id);
+
+            const creds_secret = try allocator.dupe(u8, access_secret.?);
+            errdefer allocator.free(creds_secret);
+
+            const creds_token = if (session_token) |s| try allocator.dupe(u8, s) else null;
+            errdefer if (creds_token) |token| allocator.free(token);
+
+            const creds = try allocator.create(Credentials);
+            creds.* = .{
+                .access_id = creds_id,
+                .access_secret = creds_secret,
+                .session_token = creds_token,
+            };
+
+            return .{
+                .data = creds,
+                .kind = .credentials,
+                .expiration = null,
+                .resolver = self.identityResolver(),
+            };
+        } else {
+            return null;
+        }
     }
 
     fn destroy(_: *const anyopaque, identity: Identity, allocator: Allocator) void {
@@ -431,10 +547,14 @@ pub const FileCredsProvider = struct {
     }
 };
 
-test FileCredsProvider {
-    var path_buff: [256]u8 = undefined;
-    const static: FileCredsProvider = .{
-        .override_path = try std.fs.cwd().realpath("runtime/testing/aws_credentials", &path_buff),
+test SharedFilesProvider {
+    var buff_1: [128]u8 = undefined;
+    var buff_2: [128]u8 = undefined;
+    const static: SharedFilesProvider = .{
+        .override_paths = .{
+            try std.fs.cwd().realpath("runtime/testing/aws_credentials", &buff_1),
+            try std.fs.cwd().realpath("runtime/testing/aws_config", &buff_2),
+        },
     };
     const static_resolver = static.identityResolver();
 
@@ -446,5 +566,5 @@ test FileCredsProvider {
     const creds = identity.as(.credentials);
     try testing.expectEqualStrings(TEST_ID, creds.access_id);
     try testing.expectEqualStrings(TEST_SECRET, creds.access_secret);
-    try testing.expectEqual(null, creds.session_token);
+    try testing.expectEqualStrings(TEST_TOKEN, creds.session_token.?);
 }

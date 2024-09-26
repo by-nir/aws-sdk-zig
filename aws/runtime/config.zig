@@ -20,6 +20,14 @@ pub const SharedConfig = struct {
     http_provider: Resource(http.SharedClient),
     identity_manager: Resource(identity.SharedManager),
 
+    fn Resource(comptime T: type) type {
+        return union(enum) {
+            none,
+            managed: T,
+            unmanaged: *T,
+        };
+    }
+
     pub fn build(allocator: Allocator) Builder {
         return .{ .allocator = allocator };
     }
@@ -54,14 +62,6 @@ pub const SharedConfig = struct {
             .managed => return self.identity_manager.managed.retain(),
             .unmanaged => return self.identity_manager.unmanaged.retain(),
         }
-    }
-
-    fn Resource(comptime T: type) type {
-        return union(enum) {
-            none,
-            managed: T,
-            unmanaged: *T,
-        };
     }
 
     /// [AWS Spec](https://docs.aws.amazon.com/sdkref/latest/guide/settings-reference.html)

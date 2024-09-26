@@ -13,14 +13,14 @@ const fs = @import("../utils/fs.zig");
 
 const log = std.log.scoped(.aws_sdk);
 
-/// If `path` is empty will use the defaule credentials file.
-pub fn readCredsFile(allocator: Allocator, override_path: ?[]const u8) !AwsCredsFile {
+/// If `path` is empty will use the default credentials file.
+pub fn readCredsFile(allocator: Allocator, override_path: ?[]const u8) !AwsConfigFile {
     var buffer: [4096]u8 = undefined;
     const source = try readFile(&buffer, override_path, "~/.aws/credentials", "%USERPROFILE%\\.aws\\credentials");
-    return parseCredsIni(allocator, source);
+    return parseConfigIni(allocator, source);
 }
 
-/// If `path` is empty will use the defaule configuration file.
+/// If `path` is empty will use the default configuration file.
 pub fn readConfigFile(allocator: Allocator, override_path: ?[]const u8) !AwsConfigFile {
     var buffer: [4096]u8 = undefined;
     const source = try readFile(&buffer, override_path, "~/.aws/config", "%USERPROFILE%\\.aws\\config");
@@ -60,132 +60,6 @@ fn readFile(
 
     const max_size = fixed.buffer.len - fixed.end_index;
     return file.readToEndAllocOptions(fixed_alloc, max_size, max_size, @alignOf(u8), null);
-}
-
-pub const AwsCredsFile = struct {
-    allocator: Allocator,
-    creds: std.StringHashMapUnmanaged(Credentials),
-
-    pub fn deinit(self: *AwsCredsFile) void {
-        var it = self.creds.valueIterator();
-        while (it.next()) |creds| creds.deinit(self.allocator);
-        self.creds.deinit(self.allocator);
-    }
-
-    /// Leave `name` empty to use the default profile.
-    pub fn getCreds(self: AwsCredsFile, name: ?[]const u8) ?Credentials {
-        return self.creds.get(name orelse "default");
-    }
-
-    /// Allocates the string values.
-    /// Leave `name` empty to use the default profile.
-    pub fn getCredsAlloc(self: AwsCredsFile, allocator: Allocator, name: ?[]const u8) !?Credentials {
-        const creds = self.creds.get(name orelse "default") orelse return null;
-        return try creds.clone(allocator);
-    }
-};
-
-fn parseCredsIni(allocator: Allocator, source: []const u8) !AwsCredsFile {
-    var partial: PartialCreds = .{};
-    var map: std.StringHashMapUnmanaged(Credentials) = .{};
-
-    errdefer {
-        var it = map.valueIterator();
-        while (it.next()) |creds| creds.deinit(allocator);
-        map.deinit(allocator);
-        partial.deinit(allocator);
-    }
-
-    var fragments = IniFragmenter.init(source);
-    while (fragments.next()) |fragment| {
-        switch (fragment) {
-            inline .section, .section_default => |s, g| {
-                if (!partial.isEmpty()) {
-                    const name, const creds = try partial.consume();
-                    try map.put(allocator, name, creds);
-                }
-
-                partial.name = if (g == .section) s else null;
-            },
-            .setting => |entry| {
-                if (mem.eql(u8, "aws_access_key_id", entry.key)) {
-                    partial.access_id = try allocator.dupe(u8, entry.value);
-                } else if (mem.eql(u8, "aws_secret_access_key", entry.key)) {
-                    partial.access_secret = try allocator.dupe(u8, entry.value);
-                } else if (mem.eql(u8, "aws_session_token", entry.key)) {
-                    partial.session_token = try allocator.dupe(u8, entry.value);
-                } else {
-                    return error.InvalidCredsFileSetting;
-                }
-            },
-            else => return error.InvalidCredsFileSetting,
-        }
-    } else if (!partial.isEmpty()) {
-        const name, const creds = try partial.consume();
-        try map.put(allocator, name, creds);
-    }
-
-    return .{
-        .allocator = allocator,
-        .creds = map.move(),
-    };
-}
-
-const PartialCreds = struct {
-    name: ?[]const u8 = null,
-    access_id: ?[]const u8 = null,
-    access_secret: ?[]const u8 = null,
-    session_token: ?[]const u8 = null,
-
-    pub fn deinit(self: PartialCreds, allocator: Allocator) void {
-        if (self.name) |s| allocator.free(s);
-        if (self.access_id) |s| allocator.free(s);
-        if (self.access_secret) |s| allocator.free(s);
-        if (self.session_token) |s| allocator.free(s);
-    }
-
-    pub fn isEmpty(self: PartialCreds) bool {
-        return self.name == null and
-            self.access_id == null and
-            self.access_secret == null and
-            self.session_token == null;
-    }
-
-    pub fn consume(self: *PartialCreds) !struct { []const u8, Credentials } {
-        const creds = Credentials{
-            .access_id = self.access_id orelse return error.IncompleteCredsFile,
-            .access_secret = self.access_secret orelse return error.IncompleteCredsFile,
-            .session_token = self.session_token,
-        };
-
-        defer self.* = .{};
-        return .{ self.name orelse "default", creds };
-    }
-};
-
-test parseCredsIni {
-    const settings =
-        \\aws_access_key_id=AKIAIOSFODNN7EXAMPLE
-        \\aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
-    ;
-    const source = "[default]\n" ++ settings ++ "\n\n# Comment\n[foo]\n" ++ settings ++
-        "\naws_session_token=IQoJb3JpZ2luX2IQoJb3JpZ2luX2IQoJb3JpZ2luX2IQoJb3JpZ2luX2IQoJb3JpZVERYLONGSTRINGEXAMPLE";
-
-    var config = try parseCredsIni(test_alloc, source);
-    defer config.deinit();
-
-    try testing.expectEqual(null, config.getCreds(""));
-
-    try testing.expectEqualDeep(Credentials{
-        .access_id = "AKIAIOSFODNN7EXAMPLE",
-        .access_secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-    }, config.getCreds(null).?);
-
-    try testing.expectEqualDeep(Credentials{
-        .access_id = "AKIAIOSFODNN7EXAMPLE",
-        .access_secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-        .session_token = "IQoJb3JpZ2luX2IQoJb3JpZ2luX2IQoJb3JpZ2luX2IQoJb3JpZ2luX2IQoJb3JpZVERYLONGSTRINGEXAMPLE",
-    }, config.getCreds("foo").?);
 }
 
 pub const AwsConfigFile = struct {

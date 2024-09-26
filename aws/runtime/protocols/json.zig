@@ -304,7 +304,13 @@ test sanitizeErrorCode {
     try testing.expectEqualStrings("FooError", sanitizeErrorCode("aws.protocoltests.restjson#FooError:http://internal.amazon.com/coral/com.amazon.coral.validate/").?);
 }
 
-fn parseValue(scratch_alloc: Allocator, output_alloc: Allocator, json: *JsonReader, comptime scheme: anytype, value: anytype) !void {
+fn parseValue(
+    scratch_alloc: Allocator,
+    output_alloc: Allocator,
+    json: *JsonReader,
+    comptime scheme: anytype,
+    value: anytype,
+) !void {
     switch (@as(smithy.SerialType, scheme[0])) {
         .boolean => value.* = try std.json.innerParse(bool, scratch_alloc, json, .{}),
         .byte => value.* = try std.json.innerParse(i8, scratch_alloc, json, .{}),
