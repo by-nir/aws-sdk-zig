@@ -26,8 +26,8 @@ pub fn operationRequest(
     input: anytype,
 ) !void {
     const req = &op.request;
-    try req.headers.put(op.allocator, "x-amz-target", target);
-    try req.headers.put(op.allocator, "content-type", switch (flavor) {
+    try req.putHeader(op.allocator, "x-amz-target", target);
+    try req.putHeader(op.allocator, "content-type", switch (flavor) {
         .aws_1_0 => "application/x-amz-json-1.0",
         .aws_1_1 => "application/x-amz-json-1.1",
     });

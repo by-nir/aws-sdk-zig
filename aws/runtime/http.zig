@@ -4,13 +4,11 @@ const Allocator = mem.Allocator;
 const HttpClient = std.http.Client;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const hashing = @import("utils/hashing.zig");
 const TimeStr = @import("utils/TimeStr.zig");
 const escapeUri = @import("utils/url.zig").escapeUri;
 const SharedResource = @import("utils/SharedResource.zig");
 
 const log = std.log.scoped(.aws_sdk);
-const StringArrayMap = std.StringArrayHashMapUnmanaged([]const u8);
 
 /// Provides a shared HTTP client for multiple SDK clients.
 pub const SharedClient = struct {
@@ -55,6 +53,7 @@ pub const MAX_HEADERS_COUNT = 32;
 pub const QueryBuffer = [2 * 1024]u8;
 pub const HeadersRawBuffer = [4 * 1024]u8;
 pub const HeadersPairsBuffer = [MAX_HEADERS_COUNT]std.http.Header;
+pub const PropertiesMap = std.StringArrayHashMapUnmanaged([]const u8);
 
 pub const Client = struct {
     http: HttpClient,
@@ -133,9 +132,9 @@ pub const Operation = struct {
             .method = method,
         };
 
-        try request.headers.put(allocator, "x-amz-date", self.time.timestamp());
-        try request.headers.put(allocator, "host", try endpoint.host.?.toRawMaybeAlloc(undefined));
-        if (trace_id) |tid| try request.headers.put(allocator, "x-amzn-trace-id", tid);
+        try request.putHeader(allocator, "x-amz-date", self.time.timestamp());
+        try request.putHeader(allocator, "host", try endpoint.host.?.toRawMaybeAlloc(undefined));
+        if (trace_id) |tid| try request.putHeader(allocator, "x-amzn-trace-id", tid);
 
         self.request = request;
         return self;
@@ -155,8 +154,8 @@ pub const Response = struct {
 pub const Request = struct {
     endpoint: std.Uri,
     method: std.http.Method,
-    query: StringArrayMap = .{},
-    headers: StringArrayMap = .{},
+    query: PropertiesMap = .{},
+    headers: PropertiesMap = .{},
     payload: ?[]const u8 = null,
 
     const MANAGED_HEADERS = std.StaticStringMap([]const u8).initComptime(.{
@@ -168,7 +167,15 @@ pub const Request = struct {
         .{ "connection", "connection" },
     });
 
-    pub fn stringifyQuery(self: Request, out_buffer: *QueryBuffer) ![]const u8 {
+    pub fn putQuery(self: *Request, allocator: Allocator, key: []const u8, value: []const u8) !void {
+        try self.query.put(allocator, key, value);
+    }
+
+    pub fn putHeader(self: *Request, allocator: Allocator, key: []const u8, value: []const u8) !void {
+        try self.headers.put(allocator, key, value);
+    }
+
+    pub fn stringifyQuery(self: *Request, out_buffer: *QueryBuffer) ![]const u8 {
         var scratch_buff: HeadersRawBuffer = undefined;
         var scratch_fixed = std.heap.FixedBufferAllocator.init(&scratch_buff);
         const scratch_alloc = scratch_fixed.allocator();
@@ -181,7 +188,7 @@ pub const Request = struct {
             const value_fmt = try escapeUri(scratch_alloc, kv.value_ptr.*);
             kvs[count] = .{ .name = name_fmt, .value = value_fmt };
         }
-        std.mem.sort(std.http.Header, kvs[0..count], {}, sortHeaderName);
+        mem.sort(std.http.Header, kvs[0..count], {}, sortHeaderName);
 
         var out_stream = std.io.fixedBufferStream(out_buffer);
         const out_writer = out_stream.writer();
@@ -193,7 +200,7 @@ pub const Request = struct {
         return out_stream.getWritten();
     }
 
-    pub fn stringifyHeaders(self: Request, out_buffer: *HeadersRawBuffer) ![]const u8 {
+    pub fn stringifyHeaders(self: *Request, out_buffer: *HeadersRawBuffer) ![]const u8 {
         var scratch_buff: HeadersRawBuffer = undefined;
         var scratch_fixed = std.heap.FixedBufferAllocator.init(&scratch_buff);
         const scratch_alloc = scratch_fixed.allocator();
@@ -206,7 +213,7 @@ pub const Request = struct {
             const value_fmt = mem.trim(u8, kv.value_ptr.*, &std.ascii.whitespace);
             kvs[count] = .{ .name = name_fmt, .value = value_fmt };
         }
-        std.mem.sort(std.http.Header, kvs[0..count], {}, sortHeaderName);
+        mem.sort(std.http.Header, kvs[0..count], {}, sortHeaderName);
 
         var out_stream = std.io.fixedBufferStream(out_buffer);
         const out_writer = out_stream.writer();
@@ -216,7 +223,7 @@ pub const Request = struct {
         return out_stream.getWritten();
     }
 
-    pub fn stringifyHeadNames(self: Request, out_buffer: *QueryBuffer) ![]const u8 {
+    pub fn stringifyHeadNames(self: *Request, out_buffer: *QueryBuffer) ![]const u8 {
         var scratch_buff: QueryBuffer = undefined;
         var scratch_fixed = std.heap.FixedBufferAllocator.init(&scratch_buff);
         const scratch_alloc = scratch_fixed.allocator();
@@ -226,7 +233,7 @@ pub const Request = struct {
         for (self.headers.keys(), 0..) |name, i| {
             names[i] = try std.ascii.allocLowerString(scratch_alloc, name);
         }
-        std.mem.sort([]const u8, names[0..count], {}, sortString);
+        mem.sort([]const u8, names[0..count], {}, sortString);
 
         var out_stream = std.io.fixedBufferStream(out_buffer);
         const out_writer = out_stream.writer();
@@ -237,11 +244,11 @@ pub const Request = struct {
         return out_stream.getWritten();
     }
 
-    pub fn hashPayload(self: Request, out_buffer: *hashing.HashStr) void {
-        hashing.hashString(out_buffer, self.payload);
-    }
-
-    pub fn splitHeaders(self: Request, buffer: *HeadersPairsBuffer, managed: *HttpClient.Request.Headers) ![]const std.http.Header {
+    fn splitHeaders(
+        self: Request,
+        buffer: *HeadersPairsBuffer,
+        managed: *HttpClient.Request.Headers,
+    ) ![]const std.http.Header {
         var len: usize = 0;
         var it = self.headers.iterator();
         while (it.next()) |kv| {
@@ -264,14 +271,6 @@ pub const Request = struct {
         return buffer[0..len];
     }
 };
-
-fn sortString(_: void, l: []const u8, r: []const u8) bool {
-    return std.ascii.lessThanIgnoreCase(l, r);
-}
-
-fn sortHeaderName(_: void, lhs: std.http.Header, rhs: std.http.Header) bool {
-    return std.ascii.lessThanIgnoreCase(lhs.name, rhs.name);
-}
 
 test "Request.stringifyQuery" {
     var arena = std.heap.ArenaAllocator.init(test_alloc);
@@ -306,15 +305,12 @@ test "Request.stringifyHeadNames" {
     try testing.expectEqualStrings("host;x-amz-date", names);
 }
 
-test "Request.hashPayload" {
-    var arena = std.heap.ArenaAllocator.init(test_alloc);
-    defer arena.deinit();
+fn sortString(_: void, l: []const u8, r: []const u8) bool {
+    return std.ascii.lessThanIgnoreCase(l, r);
+}
 
-    var request = try testRequest(arena.allocator());
-
-    var hash: hashing.HashStr = undefined;
-    request.hashPayload(&hash);
-    try testing.expectEqualStrings("269dce1a5bb90188b2d9cf542a7c30e410c7d8251e34a97bfea56062df51ae23", &hash);
+fn sortHeaderName(_: void, lhs: std.http.Header, rhs: std.http.Header) bool {
+    return std.ascii.lessThanIgnoreCase(lhs.name, rhs.name);
 }
 
 fn testRequest(allocator: Allocator) !Request {
@@ -324,11 +320,11 @@ fn testRequest(allocator: Allocator) !Request {
         .payload = "foo-bar-baz",
     };
 
-    try request.headers.put(allocator, "Host", "s3.amazonaws.com");
-    try request.headers.put(allocator, "X-amz-date", "20130708T220855Z");
+    try request.putHeader(allocator, "Host", "s3.amazonaws.com");
+    try request.putHeader(allocator, "X-amZ-dAte", "20130708T220855Z");
 
-    try request.query.put(allocator, "foo", "%bar");
-    try request.query.put(allocator, "baz", "$qux");
+    try request.putQuery(allocator, "foo", "%bar");
+    try request.putQuery(allocator, "baz", "$qux");
 
     return request;
 }

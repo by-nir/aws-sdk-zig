@@ -1,12 +1,13 @@
 //! https://github.com/awslabs/aws-c-auth
 const std = @import("std");
 const mem = std.mem;
+const testing = std.testing;
 const smithy = @import("smithy/runtime");
 const sig = @import("sigv4.zig");
 const http = @import("../http.zig");
-const Credentials = @import("identity.zig").Credentials;
-const Region = @import("../infra/region.gen.zig").Region;
 const hashing = @import("../utils/hashing.zig");
+const Region = @import("../infra/region.gen.zig").Region;
+const Credentials = @import("identity.zig").Credentials;
 
 const log = std.log.scoped(.aws_sdk);
 
@@ -47,7 +48,13 @@ pub const SigV4Scheme = struct {
 };
 
 // TODO: SigV4Scheme.disable_double_encoding, SigV4Scheme.disable_normalize_path
-pub fn signV4(buffer: *sig.SignBuffer, op: *http.Operation, scheme: SigV4Scheme, creds: Credentials) !void {
+pub fn signV4(
+    buffer: *sig.SignBuffer,
+    op: *http.Operation,
+    scheme: SigV4Scheme,
+    creds: Credentials,
+    skip_payload: bool,
+) !void {
     const req = &op.request;
     const path = if (req.endpoint.path.isEmpty()) "/" else req.endpoint.path.raw;
 
@@ -61,7 +68,7 @@ pub fn signV4(buffer: *sig.SignBuffer, op: *http.Operation, scheme: SigV4Scheme,
     const query = try req.stringifyQuery(&query_buff);
 
     var payload_hash: hashing.HashStr = undefined;
-    req.hashPayload(&payload_hash);
+    hashing.hashString(&payload_hash, if (skip_payload) "UNSIGNED-PAYLOAD" else req.payload);
 
     const target = sig.Target{
         .service = scheme.signing_name,
@@ -78,7 +85,11 @@ pub fn signV4(buffer: *sig.SignBuffer, op: *http.Operation, scheme: SigV4Scheme,
     };
 
     const signature = try sig.signV4(buffer, creds, op.time, target, content);
-    try req.headers.put(op.allocator, "authorization", signature);
+    try req.putHeader(op.allocator, "authorization", signature);
+
+    if (creds.session_token) |token| {
+        try req.putHeader(op.allocator, "x-amz-security-token", token);
+    }
 }
 
 pub const SigV4AScheme = struct {

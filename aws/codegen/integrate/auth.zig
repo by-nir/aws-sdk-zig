@@ -21,8 +21,9 @@ pub fn extendAuthSchemes(_: *const Delegate, symbols: *SymbolsProvider, extensio
 }
 
 const SignContext = struct {
+    op_id: SmithyId,
     symbols: *SymbolsProvider,
-    schems: []const AuthId,
+    schemes: []const AuthId,
     config_expr: ?zig.ExprBuild = null,
 };
 
@@ -46,8 +47,9 @@ pub fn writeOperationAuth(
     };
 
     const context = SignContext{
+        .op_id = func.id,
         .symbols = symbols,
-        .schems = func.auth_schemes,
+        .schemes = func.auth_schemes,
     };
     try bld.@"if"(bld.x.raw(aws_cfg.send_endpoint_param ++ ".auth_schemes.len > 0"))
         .body(bld.x.blockWith(context, writeSchemeResolver))
@@ -80,7 +82,7 @@ fn writeSchemeResolver(ctx: SignContext, bld: *zig.BlockBuild) !void {
         .iter(bld.x.valFrom(bld.x.valueOf(0)), "i")
         .body(bld.x.switchWith(bld.x.raw("scheme.id"), ctx, struct {
         fn f(c: SignContext, b: *zig.SwitchBuild) !void {
-            for (c.schems) |id| {
+            for (c.schemes) |id| {
                 switch (id) {
                     .http_bearer => {
                         const case = b.x.raw(aws_cfg.scope_smithy).dot().call("AuthId.of", &.{b.x.valueOf("bearer")});
@@ -115,7 +117,7 @@ fn writeBearer(bld: *zig.BlockBuild) !void {
         bld.x.structLiteral(null, &.{bld.x.raw("identity")}),
     }));
 
-    try bld.trys().id(aws_cfg.send_op_param).dot().call("request.headers.put", &.{
+    try bld.trys().id(aws_cfg.send_op_param).dot().call("request.putHeader", &.{
         bld.x.valueOf("authorization"),
         bld.x.id("auth_bearer"),
     }).end();
@@ -135,6 +137,7 @@ fn writeSigV4(ctx: SignContext, bld: *zig.BlockBuild) !void {
         }),
     );
 
+    const unsigned_payload = ctx.symbols.hasTrait(ctx.op_id, trt_auth.unsigned_payload_id);
     try bld.constant("identity").assign(try resolveExpr(bld.x, "credentials"));
 
     try bld.trys().raw(aws_cfg.scope_auth).dot().call("signV4", &.{
@@ -142,6 +145,7 @@ fn writeSigV4(ctx: SignContext, bld: *zig.BlockBuild) !void {
         bld.x.id(aws_cfg.send_op_param),
         bld.x.id("scheme_config"),
         bld.x.id("identity"),
+        bld.x.valueOf(unsigned_payload),
     }).end();
 }
 
