@@ -367,7 +367,7 @@ fn writeStructShape(
 
             if (ctx.options.behavior == .input) {
                 try b.public().function("validate")
-                    .arg("self", b.x.This()).returns(b.x.typeOf(bool))
+                    .arg("self", b.x.This()).returns(b.x.raw("!void"))
                     .bodyWith(ctx, writeInputValidate);
             }
         }
@@ -491,7 +491,6 @@ fn writeStructShape(
             }
 
             if (is_static) try b.discard().id("self").end();
-            try b.returns().valueOf(true).end();
         }
 
         fn validationBody(ctx: ValidateContext, b: *BlockBuild) !void {
@@ -499,7 +498,7 @@ fn writeStructShape(
                 b.x.valueOf(ctx.format),
                 b.x.structLiteral(null, ctx.args),
             }).end();
-            try b.returns().valueOf(false).end();
+            try b.returns().valueOf(error.InvalidOperationInput).end();
         }
     };
 

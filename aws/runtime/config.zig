@@ -5,20 +5,21 @@ const http = @import("http.zig");
 const identity = @import("auth/identity.zig");
 const Region = @import("infra/region.gen.zig").Region;
 
-const ConfigOptions = struct {
-    region: ?Region = null,
-    app_id: ?[]const u8 = null,
-    endpoint_url: ?[]const u8 = null,
-    use_fips: ?bool = null,
-    use_dual_stack: ?bool = null,
-};
-
 /// Configuraion options and resources that may be shared across multiple clients.
 pub const SharedConfig = struct {
     allocator: Allocator,
-    options: ConfigOptions,
+    options: Options,
     http_provider: Resource(http.SharedClient),
     identity_manager: Resource(identity.SharedManager),
+
+    const Options = struct {
+        region: ?Region = null,
+        app_id: ?[]const u8 = null,
+        endpoint_url: ?[]const u8 = null,
+        use_fips: ?bool = null,
+        use_dual_stack: ?bool = null,
+        input_validation: ?bool = null,
+    };
 
     fn Resource(comptime T: type) type {
         return union(enum) {
@@ -67,7 +68,7 @@ pub const SharedConfig = struct {
     /// [AWS Spec](https://docs.aws.amazon.com/sdkref/latest/guide/settings-reference.html)
     pub const Builder = struct {
         allocator: Allocator,
-        options: ConfigOptions = .{},
+        options: Options = .{},
         shared_http: ?*http.SharedClient = null,
         shared_identity: ?*identity.SharedManager = null,
 
@@ -109,7 +110,15 @@ pub const SharedConfig = struct {
         /// [AWS Spec](https://docs.aws.amazon.com/sdkref/latest/guide/feature-endpoints.html)
         pub fn useDualStack(self: Builder, value: bool) Builder {
             var dupe = self;
-            dupe.options.use_dual_stacks = value;
+            dupe.options.use_dual_stack = value;
+            return dupe;
+        }
+
+        /// When true, performs client-side validation of input parameters before sending the request.
+        /// [AWS Spec](https://docs.aws.amazon.com/sdkref/latest/guide/feature-gen-config.html)
+        pub fn inputValidation(self: Builder, value: bool) Builder {
+            var dupe = self;
+            dupe.options.input_validation = value;
             return dupe;
         }
 
@@ -166,6 +175,9 @@ pub const Config = struct {
     /// If no dual-stack endpoint can be determined, dispatching the request will return an error.
     /// [AWS Spec](https://docs.aws.amazon.com/sdkref/latest/guide/feature-endpoints.html)
     use_dual_stack: ?bool = null,
+    /// When true, performs client-side validation of input parameters before sending the request.
+    /// [AWS Spec](https://docs.aws.amazon.com/sdkref/latest/guide/feature-gen-config.html)
+    input_validation: ?bool = null,
 };
 
 pub const ClientConfig = struct {
@@ -176,6 +188,7 @@ pub const ClientConfig = struct {
     endpoint_url: ?[]const u8,
     use_fips: ?bool,
     use_dual_stack: ?bool,
+    input_validation: bool,
 
     pub fn resolveFrom(cfg: Config) !ClientConfig {
         const http_client = try resolveHttp(cfg);
@@ -186,10 +199,10 @@ pub const ClientConfig = struct {
 
         const region =
             cfg.region orelse
-            resolveOption(cfg, Region, "region") orelse
+            resolveOption(cfg, ?Region, "region", null) orelse
             return error.ConfigMissingRegion;
 
-        const app_id = resolveOption(cfg, []const u8, "app_id");
+        const app_id = resolveOption(cfg, ?[]const u8, "app_id", null);
         if (app_id) |id| try validateAppId(id);
 
         return .{
@@ -197,16 +210,17 @@ pub const ClientConfig = struct {
             .identity_manager = identity_manager,
             .region = region,
             .app_id = app_id,
-            .endpoint_url = resolveOption(cfg, []const u8, "endpoint_url"),
-            .use_fips = resolveOption(cfg, bool, "use_fips"),
-            .use_dual_stack = resolveOption(cfg, bool, "use_dual_stack"),
+            .endpoint_url = resolveOption(cfg, ?[]const u8, "endpoint_url", null),
+            .use_fips = resolveOption(cfg, ?bool, "use_fips", null),
+            .use_dual_stack = resolveOption(cfg, ?bool, "use_dual_stack", null),
+            .input_validation = resolveOption(cfg, bool, "input_validation", true),
         };
     }
 
-    fn resolveOption(cfg: Config, comptime T: type, comptime field_name: []const u8) ?T {
+    fn resolveOption(cfg: Config, comptime T: type, comptime field_name: []const u8, default: T) T {
         if (@field(cfg, field_name)) |v| return v;
         if (cfg.shared) |shared| if (@field(shared.options, field_name)) |v| return v;
-        return null;
+        return default;
     }
 
     fn resolveHttp(cfg: Config) !*http.Client {

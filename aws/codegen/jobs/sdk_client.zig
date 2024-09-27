@@ -188,6 +188,12 @@ fn writeOperationFunc(
     bld: *zig.BlockBuild,
     func: smithy.OperationFunc,
 ) anyerror!void {
+    if (func.input_type != null) {
+        try bld.@"if"(bld.x.raw("self.config_sdk.input_validation"))
+            .body(bld.x.trys().id(aws_cfg.send_input_param).dot().call("validate", &.{}))
+            .end();
+    }
+
     try bld.variable("scratch_arena").assign(
         bld.x.call("std.heap.ArenaAllocator.init", &.{bld.x.id(aws_cfg.alloc_param)}),
     );

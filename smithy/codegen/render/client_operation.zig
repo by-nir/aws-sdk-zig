@@ -387,7 +387,7 @@ test ClientOperation {
         \\        foo: srvc_types.Foo,
         \\        bar: ?[]const u8 = null,
         \\
-        \\        pub fn validate(self: @This()) bool {
+        \\        pub fn validate(self: @This()) !void {
         \\            if (self.bar) |t| if (try std.unicode.utf8CountCodepoints(t) > 128) {
         \\                std.log.scoped(.Service).err("Field `{s}.{s}` length is more than {d}", .{
         \\                    @typeName(@This()),
@@ -395,10 +395,8 @@ test ClientOperation {
         \\                    128,
         \\                });
         \\
-        \\                return false;
+        \\                return error.InvalidOperationInput;
         \\            };
-        \\
-        \\            return true;
         \\        }
         \\    };
         \\
