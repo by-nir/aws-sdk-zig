@@ -379,10 +379,11 @@ fn writeStructShape(
         }
 
         fn writeInputValidate(ctx: @TypeOf(context), b: *BlockBuild) !void {
-            const op_name = b.x.raw("@typeName(@This())");
+            const op_name = b.x.valueOf(try ctx.symbols.getShapeName(ctx.id, .pascal, .{}));
             const log_scope = b.x.dot().raw(try ctx.symbols.getShapeName(ctx.symbols.service_id, .pascal, .{}));
+            const runtime_exp = b.x.trys().raw(cfg.runtime_scope).dot().id("validate").dot();
 
-            var is_noop = true;
+            var noop_operation = true;
             for (ctx.members) |mid| {
                 const field_name = try ctx.symbols.getShapeName(mid, .snake, .{});
                 const field_exp = b.x.valueOf(field_name);
@@ -390,19 +391,17 @@ fn writeStructShape(
                 const is_optional = isStructMemberOptional(ctx.symbols, mid, ctx.is_input);
                 const subject = if (is_optional) b.x.id("t") else b.x.id("self").dot().id(field_name);
 
+                var validations_count: usize = 0;
                 const target = switch (try ctx.symbols.getShape(mid)) {
                     .target => |tid| tid,
                     else => null,
                 };
 
-                var func_name: []const u8 = undefined;
-                var func_args: []const zig.ExprBuild = undefined;
-
-                if (trt_constr.Range.get(ctx.symbols, mid) orelse
+                const range = if (trt_constr.Range.get(ctx.symbols, mid) orelse
                     if (target) |tid| trt_constr.Range.get(ctx.symbols, tid) else null) |range|
-                {
-                    func_name = "valueRange";
-                    func_args = &.{
+                blk: {
+                    validations_count += 1;
+                    const validation = runtime_exp.call("valueRange", &.{
                         log_scope,
                         op_name,
                         field_exp,
@@ -410,10 +409,20 @@ fn writeStructShape(
                         b.x.valueOf(range.min),
                         b.x.valueOf(range.max),
                         subject,
-                    };
-                } else if (trt_constr.Length.get(ctx.symbols, mid) orelse
+                    });
+
+                    if (is_optional) {
+                        break :blk try validation.consume();
+                    } else {
+                        try b.buildExpr(validation).end();
+                        break :blk null;
+                    }
+                } else null;
+
+                const length = if (trt_constr.Length.get(ctx.symbols, mid) orelse
                     if (target) |tid| trt_constr.Length.get(ctx.symbols, tid) else null) |length|
-                {
+                blk: {
+                    validations_count += 1;
                     const len_subject = switch (try ctx.symbols.getShapeUnwrap(mid)) {
                         .list, .map => subject.dot().call("count", &.{}),
                         .blob => subject.dot().id("len"),
@@ -421,33 +430,62 @@ fn writeStructShape(
                         else => unreachable,
                     };
 
-                    func_name = "stringLength";
-                    func_args = &.{
+                    const validation = runtime_exp.call("stringLength", &.{
                         log_scope,
                         op_name,
                         field_exp,
                         b.x.valueOf(length.min),
                         b.x.valueOf(length.max),
                         len_subject,
-                    };
-                } else {
-                    continue;
-                }
+                    });
 
-                is_noop = false;
-                const validation = b.x.trys().raw(cfg.runtime_scope).dot()
-                    .id("validate").dot().call(func_name, func_args);
+                    if (is_optional) {
+                        break :blk try validation.consume();
+                    } else {
+                        try b.buildExpr(validation).end();
+                        break :blk null;
+                    }
+                } else null;
 
+                const pattern = if (trt_constr.Pattern.get(ctx.symbols, mid) orelse
+                    if (target) |tid| trt_constr.Pattern.get(ctx.symbols, tid) else null) |pattern|
+                blk: {
+                    validations_count += 1;
+                    const args = &.{ log_scope, op_name, field_exp, b.x.valueOf(pattern), subject };
+                    const validation = runtime_exp.call("stringPattern", args);
+
+                    if (is_optional) {
+                        break :blk try validation.consume();
+                    } else {
+                        try b.buildExpr(validation).end();
+                        break :blk null;
+                    }
+                } else null;
+
+                if (validations_count == 0) continue;
+
+                noop_operation = false;
                 if (is_optional) {
-                    try b.@"if"(b.x.id("self").dot().id(field_name))
-                        .capture("t").body(validation)
-                        .end();
-                } else {
-                    try b.buildExpr(validation).end();
+                    const cond = b.x.id("self").dot().id(field_name);
+                    const body = switch (validations_count) {
+                        1 => b.x.fromExpr(range orelse length orelse pattern.?),
+                        else => b.x.blockWith(
+                            @as([]const ?zig.Expr, &.{ range, length, pattern }),
+                            writeOptionalValidations,
+                        ),
+                    };
+                    try b.@"if"(cond).capture("t").body(body).end();
                 }
             }
 
-            if (is_noop) try b.discard().id("self").end();
+            if (noop_operation) try b.discard().id("self").end();
+        }
+
+        fn writeOptionalValidations(validations: []const ?zig.Expr, b: *BlockBuild) !void {
+            for (validations) |v| {
+                const validation = v orelse continue;
+                try b.fromExpr(validation).end();
+            }
         }
     };
 

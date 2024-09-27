@@ -21,6 +21,11 @@ pub fn build(b: *std.Build) void {
     const razdaz = rzdz.module("razdaz");
     const razdaz_jobs = rzdz.module("jobs");
 
+    const mvzr = b.dependency("mvzr", .{
+        .target = target,
+        .optimize = optimize,
+    }).module("mvzr");
+
     //
     // Modules
     //
@@ -29,6 +34,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .root_source_file = b.path("runtime/root.zig"),
+        .imports = &.{
+            .{ .name = "mvzr", .module = mvzr },
+        },
     });
 
     _ = b.addModule("codegen", .{
@@ -55,6 +63,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .root_source_file = b.path("runtime/root.zig"),
     });
+    test_runtime_exe.root_module.addImport("mvzr", mvzr);
     test_runtime_step.dependOn(&b.addRunArtifact(test_runtime_exe).step);
     test_all_step.dependOn(test_runtime_step);
     test_all_step.dependOn(&b.addInstallArtifact(test_runtime_exe, .{

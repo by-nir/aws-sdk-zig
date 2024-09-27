@@ -9,15 +9,16 @@ const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const SmithyId = @import("../model.zig").SmithyId;
-const SymbolsProvider = @import("../systems/SymbolsProvider.zig");
-const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
 const JsonReader = @import("../utils/JsonReader.zig");
+const trt = @import("../systems/traits.zig");
+const StringTrait = trt.StringTrait;
+const TraitsRegistry = trt.TraitsRegistry;
+const SymbolsProvider = @import("../systems/SymbolsProvider.zig");
 
-// TODO: Remainig traits
 pub const registry: TraitsRegistry = &.{
     .{ id_ref_id, null },
     .{ Length.id, Length.parse },
-    // smithy.api#pattern
+    .{ Pattern.id, Pattern.parse },
     .{ private_id, null },
     .{ Range.id, Range.parse },
     .{ unique_items_id, null },
@@ -38,6 +39,11 @@ pub const private_id = SmithyId.of("smithy.api#private");
 ///
 /// [Smithy Spec](https://smithy.io/2.0/spec/constraint-traits.html#uniqueitems-trait)
 pub const unique_items_id = SmithyId.of("smithy.api#uniqueItems");
+
+/// Restricts string shape values to a specified regular expression.
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/constraint-traits.html#pattern-trait)
+pub const Pattern = StringTrait("smithy.api#pattern");
 
 /// Constrains a shape to minimum and maximum number of elements or size.
 ///

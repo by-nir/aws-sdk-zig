@@ -388,7 +388,7 @@ test ClientOperation {
         \\        bar: ?[]const u8 = null,
         \\
         \\        pub fn validate(self: @This()) !void {
-        \\            if (self.bar) |t| try smithy.validate.stringLength(.Service, @typeName(@This()), "bar", null, 128, t);
+        \\            if (self.bar) |t| try smithy.validate.stringLength(.Service, "MyOperationInput", "bar", null, 128, t);
         \\        }
         \\    };
         \\

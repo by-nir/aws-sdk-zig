@@ -1,7 +1,8 @@
 const std = @import("std");
+const mvzr = @import("mvzr");
 
-pub const Error = error{InvalidOperationInput};
 const base_format = "Field `{s}.{s}` ";
+pub const Error = error{InvalidOperationInput};
 
 pub fn valueRange(
     comptime service: @Type(.enum_literal),
@@ -95,4 +96,20 @@ pub fn stringLength(
         log.err(base_format ++ "length is more than {d} characters", .{ operation, field, d });
         return Error.InvalidOperationInput;
     };
+}
+
+pub fn stringPattern(
+    comptime service: @Type(.enum_literal),
+    operation: []const u8,
+    field: []const u8,
+    comptime pattern: []const u8,
+    s: []const u8,
+) !void {
+    const log = std.log.scoped(service);
+    const regex = comptime mvzr.compile(pattern) orelse unreachable;
+    if (!regex.isMatch(s)) {
+        @branchHint(.unlikely);
+        log.err(base_format ++ "does not match pattern \"{s}\"", .{ operation, field, pattern });
+        return Error.InvalidOperationInput;
+    }
 }
