@@ -128,24 +128,21 @@ pub fn nextNumber(self: *Self) !Number {
 /// Get the next token, assuming it’s an integer value.
 pub fn nextInteger(self: *Self) !i64 {
     const token = try self.next();
-    return switch (token) {
-        .number, .allocated_number => |bytes| if (isIntegerFormat(bytes))
-            std.fmt.parseInt(i64, bytes, 10)
-        else
-            error.UnexpectedSyntax,
+    switch (token) {
+        .number, .allocated_number => |bytes| {
+            if (!isIntegerFormat(bytes)) return error.UnexpectedSyntax;
+            return std.fmt.parseInt(i64, bytes, 10);
+        },
         .partial_number => unreachable, // Not used by `json.Reader`
-        else => error.UnexpectedSyntax,
-    };
+        else => return error.UnexpectedSyntax,
+    }
 }
 
 /// Get the next token, assuming it’s a float value.
 pub fn nextFloat(self: *Self) !f64 {
     const token = try self.next();
     return switch (token) {
-        .number, .allocated_number => |bytes| if (!isIntegerFormat(bytes))
-            std.fmt.parseFloat(f64, bytes)
-        else
-            error.UnexpectedSyntax,
+        .number, .allocated_number => |bytes| std.fmt.parseFloat(f64, bytes),
         .partial_number => unreachable, // Not used by `json.Reader`
         else => error.UnexpectedSyntax,
     };

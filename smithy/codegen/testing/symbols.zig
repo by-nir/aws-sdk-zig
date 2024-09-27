@@ -296,7 +296,10 @@ fn setupService(model: *Model) !void {
     });
 
     try model.names.put(test_alloc, SmithyId.of("test.serve#MyOperationInput$Bar"), "Bar");
-    try model.shapes.put(test_alloc, SmithyId.of("test.serve#MyOperationInput$Bar"), .boolean);
+    try model.shapes.put(test_alloc, SmithyId.of("test.serve#MyOperationInput$Bar"), .string);
+    try model.traits.put(test_alloc, SmithyId.of("test.serve#MyOperationInput$Bar"), &.{
+        .{ .id = trt_constr.Length.id, .value = &trt_constr.Length.Val{ .max = 128 } },
+    });
 
     try model.names.put(test_alloc, SmithyId.of("test.serve#MyOperationOutput"), "MyOperationOutput");
     try model.shapes.put(test_alloc, SmithyId.of("test.serve#MyOperationOutput"), .{

@@ -34,8 +34,10 @@ pub const ShapeOptions = struct {
     identifier: ?[]const u8 = null,
     /// Use the specified scope when referencing named shapes.
     scope: ?[]const u8 = null,
-    /// Special output struct
-    is_output: bool = false,
+    /// Special struct behavior
+    behavior: StructBehavior = .none,
+
+    pub const StructBehavior = enum { none, input, output };
 };
 
 pub fn writeShapeDecleration(
@@ -325,23 +327,48 @@ fn writeStructShape(
     members: []const SmithyId,
     options: ShapeOptions,
 ) !void {
+    var is_allocated = false;
+    for (members) |mid| {
+        if (!try isAllocatedType(symbols, mid)) continue;
+        is_allocated = true;
+        break;
+    }
+
+    var flat_members = try std.ArrayList(SmithyId).initCapacity(symbols.arena, members.len);
+    flat_members.appendSliceAssumeCapacity(members);
+
     const is_input = symbols.hasTrait(id, trt_refine.input_id);
-    const context = .{ .symbols = symbols, .id = id, .members = members, .is_input = is_input, .options = options };
+    {
+        const is_alloc = try flattenStructShapeMembers(symbols, bld, &flat_members, is_input, id);
+        is_allocated = is_allocated or is_alloc;
+    }
+
+    const context = .{
+        .id = id,
+        .symbols = symbols,
+        .options = options,
+        .is_input = is_input,
+        .is_allocated = is_allocated,
+        .members = flat_members.items,
+    };
 
     const Closures = struct {
         fn writeContainer(ctx: @TypeOf(context), b: *ContainerBuild) !void {
-            var allocated = false;
-
-            if (try writeStructShapeMixin(ctx.symbols, b, ctx.is_input, ctx.id, ctx.options.scope)) allocated = true;
-
-            for (ctx.members) |m| {
-                try writeStructShapeMember(ctx.symbols, b, ctx.is_input, m, ctx.options.scope);
-                if (try isAllocatedType(ctx.symbols, m)) allocated = true;
+            for (ctx.members) |mid| {
+                try writeStructShapeMember(ctx.symbols, b, ctx.is_input, mid, ctx.options.scope);
             }
 
-            if (ctx.options.is_output and allocated) {
+            if (ctx.options.behavior == .output and ctx.is_allocated) {
                 try b.field("arena").typing(b.x.raw("?std.heap.ArenaAllocator")).assign(b.x.valueOf(null));
-                try b.public().function("deinit").arg("self", b.x.This()).body(writeOutputDeinit);
+                try b.public().function("deinit")
+                    .arg("self", b.x.This())
+                    .body(writeOutputDeinit);
+            }
+
+            if (ctx.options.behavior == .input) {
+                try b.public().function("validate")
+                    .arg("self", b.x.This()).returns(b.x.typeOf(bool))
+                    .bodyWith(ctx, writeInputValidate);
             }
         }
 
@@ -349,6 +376,130 @@ fn writeStructShape(
             try b.@"if"(b.x.id("self").dot().id("arena"))
                 .capture("arena").body(b.x.call("arena.deinit", &.{}))
                 .end();
+        }
+
+        const ValidateContext = struct {
+            log_scope: zig.ExprBuild,
+            format: []const u8,
+            args: []const zig.ExprBuild,
+        };
+
+        fn writeInputValidate(ctx: @TypeOf(context), b: *BlockBuild) !void {
+            const op_name = b.x.raw("@typeName(@This())");
+            const log_scope = b.x.call("std.log.scoped", &.{
+                b.x.dot().raw(try ctx.symbols.getShapeName(ctx.symbols.service_id, .pascal, .{})),
+            });
+
+            var condition: zig.ExprBuild = undefined;
+            var format: []const u8 = undefined;
+            var args: []const zig.ExprBuild = undefined;
+            const base_format = "Field `{s}.{s}` ";
+
+            var is_static = true;
+            for (ctx.members) |mid| {
+                const field_name = try ctx.symbols.getShapeName(mid, .snake, .{});
+                const field_name_exp = b.x.valueOf(field_name);
+                const is_optional = isStructMemberOptional(ctx.symbols, mid, ctx.is_input);
+                const subject = if (is_optional) b.x.id("t") else b.x.id("self").dot().id(field_name);
+                const target = switch (try ctx.symbols.getShape(mid)) {
+                    .target => |tid| tid,
+                    else => null,
+                };
+
+                var skip_option_capture = false;
+                if (trt_constr.Range.get(ctx.symbols, mid) orelse
+                    if (target) |tid| trt_constr.Range.get(ctx.symbols, tid) else null) |range|
+                {
+                    if (range.max != null and range.min != null) {
+                        condition = b.x.buildExpr(subject).op(.lt).valueOf(range.min.?)
+                            .op(.@"or").buildExpr(subject).op(.gt).valueOf(range.max.?);
+                        format = base_format ++ "value is out of bounds [{d}, {d}] (inclusive)";
+                        args = &.{ op_name, field_name_exp, b.x.valueOf(range.min.?), b.x.valueOf(range.max.?) };
+                    } else if (range.max) |max| {
+                        condition = b.x.buildExpr(subject).op(.gt).valueOf(max);
+                        format = base_format ++ "value is more than {d}";
+                        args = &.{ op_name, field_name_exp, b.x.valueOf(max) };
+                    } else if (range.min) |min| {
+                        condition = b.x.buildExpr(subject).op(.lt).valueOf(min);
+                        format = base_format ++ "value is less than {d}";
+                        args = &.{ op_name, field_name_exp, b.x.valueOf(min) };
+                    }
+                } else if (trt_constr.Length.get(ctx.symbols, mid) orelse
+                    if (target) |tid| trt_constr.Length.get(ctx.symbols, tid) else null) |length|
+                {
+                    const full_range = length.max != null and length.min != null;
+
+                    const len_subj = switch (try ctx.symbols.getShapeUnwrap(mid)) {
+                        .list, .map => subject.dot().call("count", &.{}),
+                        .blob => subject.dot().id("len"),
+                        .string => blk: {
+                            const body = b.x.trys().call("std.unicode.utf8CountCodepoints", &.{subject});
+                            if (!full_range) break :blk body;
+
+                            const len_body = if (is_optional)
+                                b.x.@"if"(b.x.id("self").dot().id(field_name))
+                                    .capture("t").body(body)
+                                    .@"else"().body(b.x.valueOf(0)).end()
+                            else
+                                body;
+
+                            skip_option_capture = is_optional;
+                            const len_name = try ctx.symbols.getShapeName(mid, .snake, .{ .suffix = "_len" });
+                            try b.constant(len_name).assign(len_body);
+                            break :blk b.x.id(len_name);
+                        },
+                        inline else => |_, g| {
+                            std.debug.panic("Unsupported shape type: {}", .{g});
+                            unreachable;
+                        },
+                    };
+
+                    if (full_range) {
+                        condition = b.x.buildExpr(len_subj).op(.lt).valueOf(length.min.?)
+                            .op(.@"or").buildExpr(len_subj).op(.gt).valueOf(length.max.?);
+                        format = base_format ++ "length is out of bounds [{d}, {d}] (inclusive)";
+                        args = &.{ op_name, field_name_exp, b.x.valueOf(length.min.?), b.x.valueOf(length.max.?) };
+                    } else if (length.max) |max| {
+                        condition = b.x.buildExpr(len_subj).op(.gt).valueOf(max);
+                        format = base_format ++ "length is more than {d}";
+                        args = &.{ op_name, field_name_exp, b.x.valueOf(max) };
+                    } else if (length.min) |min| {
+                        condition = b.x.buildExpr(len_subj).op(.lt).valueOf(min);
+                        format = base_format ++ "length is less than {d}";
+                        args = &.{ op_name, field_name_exp, b.x.valueOf(min) };
+                    }
+                } else {
+                    continue;
+                }
+
+                is_static = false;
+                const validation = b.x.@"if"(condition).body(b.x.blockWith(ValidateContext{
+                    .log_scope = log_scope,
+                    .format = format,
+                    .args = args,
+                }, validationBody)).end();
+                if (is_optional) {
+                    const optn_subj = b.x.id("self").dot().id(field_name);
+                    if (skip_option_capture) {
+                        try b.@"if"(optn_subj.op(.not_eql).valueOf(null)).body(validation).end();
+                    } else if (is_optional) {
+                        try b.@"if"(optn_subj).capture("t").body(validation).end();
+                    }
+                } else {
+                    try b.buildExpr(validation).end();
+                }
+            }
+
+            if (is_static) try b.discard().id("self").end();
+            try b.returns().valueOf(true).end();
+        }
+
+        fn validationBody(ctx: ValidateContext, b: *BlockBuild) !void {
+            try b.buildExpr(ctx.log_scope).dot().call("err", &.{
+                b.x.valueOf(ctx.format),
+                b.x.structLiteral(null, ctx.args),
+            }).end();
+            try b.returns().valueOf(false).end();
         }
     };
 
@@ -360,23 +511,23 @@ fn writeStructShape(
     );
 }
 
-fn writeStructShapeMixin(
+fn flattenStructShapeMembers(
     symbols: *SymbolsProvider,
     bld: *ContainerBuild,
+    list: *std.ArrayList(SmithyId),
     is_input: bool,
     id: SmithyId,
-    scope: ?[]const u8,
 ) !bool {
     var allocated = false;
-
     const mixins = symbols.getMixins(id) orelse return false;
-    for (mixins) |mix_id| {
-        if (try writeStructShapeMixin(symbols, bld, is_input, mix_id, scope)) allocated = true;
+    for (mixins) |mixin| {
+        const is_alloc = try flattenStructShapeMembers(symbols, bld, list, is_input, mixin);
+        allocated = is_alloc;
 
-        const mixin = (try symbols.getShape(mix_id)).structure;
-        for (mixin) |m| {
-            try writeStructShapeMember(symbols, bld, is_input, m, scope);
-            if (try isAllocatedType(symbols, m)) allocated = true;
+        const members = (try symbols.getShape(mixin)).structure;
+        for (members) |mid| {
+            try list.append(mid);
+            if (!allocated and try isAllocatedType(symbols, mid)) allocated = true;
         }
     }
 
@@ -489,11 +640,11 @@ pub fn isStructMemberOptional(symbols: *SymbolsProvider, id: SmithyId, is_input:
 test writeStructShape {
     try shapeTester(.structure, SmithyId.of("test#Struct"), .{},
         \\pub const Struct = struct {
-        \\    mixed: ?bool = null,
         \\    /// A **struct** member.
         \\    foo_bar: []const u8,
         \\    /// An **integer-based** enumeration.
         \\    baz_qux: IntEnum = @enumFromInt(8),
+        \\    mixed: ?bool = null,
         \\};
     );
 }

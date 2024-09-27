@@ -16,10 +16,10 @@ const JsonReader = @import("../utils/JsonReader.zig");
 // TODO: Remainig traits
 pub const registry: TraitsRegistry = &.{
     .{ id_ref_id, null },
-    // smithy.api#length
+    .{ Length.id, Length.parse },
     // smithy.api#pattern
     .{ private_id, null },
-    // smithy.api#range
+    .{ Range.id, Range.parse },
     .{ unique_items_id, null },
     .{ Enum.id, Enum.parse },
 };
@@ -38,6 +38,126 @@ pub const private_id = SmithyId.of("smithy.api#private");
 ///
 /// [Smithy Spec](https://smithy.io/2.0/spec/constraint-traits.html#uniqueitems-trait)
 pub const unique_items_id = SmithyId.of("smithy.api#uniqueItems");
+
+/// Constrains a shape to minimum and maximum number of elements or size.
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/constraint-traits.html#length-trait)
+pub const Length = struct {
+    pub const id = SmithyId.of("smithy.api#length");
+
+    pub const Val = struct {
+        min: ?u64 = null,
+        max: ?u64 = null,
+    };
+
+    pub fn parse(arena: Allocator, reader: *JsonReader) !*const anyopaque {
+        var val = Val{};
+        try reader.nextObjectBegin();
+        while (try reader.peek() != .object_end) {
+            const prop = try reader.nextString();
+            if (mem.eql(u8, "min", prop)) {
+                val.min = @intCast(try reader.nextInteger());
+            } else if (mem.eql(u8, "max", prop)) {
+                val.max = @intCast(try reader.nextInteger());
+            } else {
+                std.log.warn("Unknown length trait property `{s}`", .{prop});
+                try reader.skipValueOrScope();
+            }
+        }
+        try reader.nextObjectEnd();
+
+        const value = try arena.create(Val);
+        value.* = val;
+        return value;
+    }
+
+    pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?Val {
+        const val = symbols.getTrait(Val, shape_id, id) orelse return null;
+        return val.*;
+    }
+};
+
+test Length {
+    var arena = std.heap.ArenaAllocator.init(test_alloc);
+    const arena_alloc = arena.allocator();
+    defer arena.deinit();
+
+    var reader = try JsonReader.initFixed(arena_alloc, "{ \"max\": 108 }");
+    const val_int: *const Length.Val = @alignCast(@ptrCast(Length.parse(arena_alloc, &reader) catch |e| {
+        reader.deinit();
+        return e;
+    }));
+    reader.deinit();
+    try testing.expectEqualDeep(&Length.Val{ .max = 108 }, val_int);
+
+    reader = try JsonReader.initFixed(arena_alloc, "{ \"min\": 8, \"max\": 108 }");
+    const val_str: *const Length.Val = @alignCast(@ptrCast(Length.parse(arena_alloc, &reader) catch |e| {
+        reader.deinit();
+        return e;
+    }));
+    reader.deinit();
+    try testing.expectEqualDeep(&Length.Val{ .min = 8, .max = 108 }, val_str);
+}
+
+/// Restricts allowed values of number shapes within an acceptable lower and upper bound.
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/constraint-traits.html#range-trait)
+pub const Range = struct {
+    pub const id = SmithyId.of("smithy.api#range");
+
+    pub const Val = struct {
+        min: ?f64 = null,
+        max: ?f64 = null,
+    };
+
+    pub fn parse(arena: Allocator, reader: *JsonReader) !*const anyopaque {
+        var val = Val{};
+        try reader.nextObjectBegin();
+        while (try reader.peek() != .object_end) {
+            const prop = try reader.nextString();
+            if (mem.eql(u8, "min", prop)) {
+                val.min = try reader.nextFloat();
+            } else if (mem.eql(u8, "max", prop)) {
+                val.max = try reader.nextFloat();
+            } else {
+                std.log.warn("Unknown length trait property `{s}`", .{prop});
+                try reader.skipValueOrScope();
+            }
+        }
+        try reader.nextObjectEnd();
+
+        const value = try arena.create(Val);
+        value.* = val;
+        return value;
+    }
+
+    pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?Val {
+        const val = symbols.getTrait(Val, shape_id, id) orelse return null;
+        return val.*;
+    }
+};
+
+test Range {
+    var arena = std.heap.ArenaAllocator.init(test_alloc);
+    const arena_alloc = arena.allocator();
+    defer arena.deinit();
+
+    var reader = try JsonReader.initFixed(arena_alloc, "{ \"max\": 108 }");
+    const val_int: *const Range.Val = @alignCast(@ptrCast(Range.parse(arena_alloc, &reader) catch |e| {
+        reader.deinit();
+        return e;
+    }));
+    reader.deinit();
+    try testing.expectEqualDeep(&Range.Val{ .max = 108 }, val_int);
+
+    reader = try JsonReader.initFixed(arena_alloc, "{ \"min\": 8.01, \"max\": 108 }");
+    const val_str: *const Range.Val = @alignCast(@ptrCast(Range.parse(arena_alloc, &reader) catch |e| {
+        reader.deinit();
+        return e;
+    }));
+    reader.deinit();
+    try testing.expectEqualDeep(&Range.Val{ .min = 8.01, .max = 108 }, val_str);
+}
 
 /// **[DEPRECATED]**
 /// Constrains the acceptable values of a string to a fixed set.

@@ -82,6 +82,7 @@ fn clientOperationTask(
                     try shape.writeShapeDecleration(ctx.arena, ctx.symbols, b, in_id, .{
                         .identifier = "Input",
                         .scope = cfg.types_scope,
+                        .behavior = .input,
                     });
                 }
 
@@ -89,7 +90,7 @@ fn clientOperationTask(
                     try shape.writeShapeDecleration(ctx.arena, ctx.symbols, b, out_id, .{
                         .identifier = "Output",
                         .scope = cfg.types_scope,
-                        .is_output = true,
+                        .behavior = .output,
                     });
                 }
 
@@ -384,7 +385,21 @@ test ClientOperation {
         \\
         \\    pub const Input = struct {
         \\        foo: srvc_types.Foo,
-        \\        bar: ?bool = null,
+        \\        bar: ?[]const u8 = null,
+        \\
+        \\        pub fn validate(self: @This()) bool {
+        \\            if (self.bar) |t| if (try std.unicode.utf8CountCodepoints(t) > 128) {
+        \\                std.log.scoped(.Service).err("Field `{s}.{s}` length is more than {d}", .{
+        \\                    @typeName(@This()),
+        \\                    "bar",
+        \\                    128,
+        \\                });
+        \\
+        \\                return false;
+        \\            };
+        \\
+        \\            return true;
+        \\        }
         \\    };
         \\
         \\    pub const Output = struct {
@@ -436,7 +451,7 @@ test ClientOperation {
         \\    "Bar",
         \\    "bar",
         \\    false,
-        \\    .{SerialType.boolean},
+        \\    .{SerialType.string},
         \\} } };
         \\
         \\pub const serial_output_scheme = .{ SerialType.structure, .{.{
