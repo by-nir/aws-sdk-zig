@@ -388,15 +388,7 @@ test ClientOperation {
         \\        bar: ?[]const u8 = null,
         \\
         \\        pub fn validate(self: @This()) !void {
-        \\            if (self.bar) |t| if (try std.unicode.utf8CountCodepoints(t) > 128) {
-        \\                std.log.scoped(.Service).err("Field `{s}.{s}` length is more than {d}", .{
-        \\                    @typeName(@This()),
-        \\                    "bar",
-        \\                    128,
-        \\                });
-        \\
-        \\                return error.InvalidOperationInput;
-        \\            };
+        \\            if (self.bar) |t| try smithy.validate.stringLength(.Service, @typeName(@This()), "bar", null, 128, t);
         \\        }
         \\    };
         \\

@@ -378,127 +378,76 @@ fn writeStructShape(
                 .end();
         }
 
-        const ValidateContext = struct {
-            log_scope: zig.ExprBuild,
-            format: []const u8,
-            args: []const zig.ExprBuild,
-        };
-
         fn writeInputValidate(ctx: @TypeOf(context), b: *BlockBuild) !void {
             const op_name = b.x.raw("@typeName(@This())");
-            const log_scope = b.x.call("std.log.scoped", &.{
-                b.x.dot().raw(try ctx.symbols.getShapeName(ctx.symbols.service_id, .pascal, .{})),
-            });
+            const log_scope = b.x.dot().raw(try ctx.symbols.getShapeName(ctx.symbols.service_id, .pascal, .{}));
 
-            var condition: zig.ExprBuild = undefined;
-            var format: []const u8 = undefined;
-            var args: []const zig.ExprBuild = undefined;
-            const base_format = "Field `{s}.{s}` ";
-
-            var is_static = true;
+            var is_noop = true;
             for (ctx.members) |mid| {
                 const field_name = try ctx.symbols.getShapeName(mid, .snake, .{});
-                const field_name_exp = b.x.valueOf(field_name);
+                const field_exp = b.x.valueOf(field_name);
+
                 const is_optional = isStructMemberOptional(ctx.symbols, mid, ctx.is_input);
                 const subject = if (is_optional) b.x.id("t") else b.x.id("self").dot().id(field_name);
+
                 const target = switch (try ctx.symbols.getShape(mid)) {
                     .target => |tid| tid,
                     else => null,
                 };
 
-                var skip_option_capture = false;
+                var func_name: []const u8 = undefined;
+                var func_args: []const zig.ExprBuild = undefined;
+
                 if (trt_constr.Range.get(ctx.symbols, mid) orelse
                     if (target) |tid| trt_constr.Range.get(ctx.symbols, tid) else null) |range|
                 {
-                    if (range.max != null and range.min != null) {
-                        condition = b.x.buildExpr(subject).op(.lt).valueOf(range.min.?)
-                            .op(.@"or").buildExpr(subject).op(.gt).valueOf(range.max.?);
-                        format = base_format ++ "value is out of bounds [{d}, {d}] (inclusive)";
-                        args = &.{ op_name, field_name_exp, b.x.valueOf(range.min.?), b.x.valueOf(range.max.?) };
-                    } else if (range.max) |max| {
-                        condition = b.x.buildExpr(subject).op(.gt).valueOf(max);
-                        format = base_format ++ "value is more than {d}";
-                        args = &.{ op_name, field_name_exp, b.x.valueOf(max) };
-                    } else if (range.min) |min| {
-                        condition = b.x.buildExpr(subject).op(.lt).valueOf(min);
-                        format = base_format ++ "value is less than {d}";
-                        args = &.{ op_name, field_name_exp, b.x.valueOf(min) };
-                    }
+                    func_name = "valueRange";
+                    func_args = &.{
+                        log_scope,
+                        op_name,
+                        field_exp,
+                        b.x.raw(try typeName(ctx.symbols, mid, ctx.options.scope)),
+                        b.x.valueOf(range.min),
+                        b.x.valueOf(range.max),
+                        subject,
+                    };
                 } else if (trt_constr.Length.get(ctx.symbols, mid) orelse
                     if (target) |tid| trt_constr.Length.get(ctx.symbols, tid) else null) |length|
                 {
-                    const full_range = length.max != null and length.min != null;
-
-                    const len_subj = switch (try ctx.symbols.getShapeUnwrap(mid)) {
+                    const len_subject = switch (try ctx.symbols.getShapeUnwrap(mid)) {
                         .list, .map => subject.dot().call("count", &.{}),
                         .blob => subject.dot().id("len"),
-                        .string => blk: {
-                            const body = b.x.trys().call("std.unicode.utf8CountCodepoints", &.{subject});
-                            if (!full_range) break :blk body;
-
-                            const len_body = if (is_optional)
-                                b.x.@"if"(b.x.id("self").dot().id(field_name))
-                                    .capture("t").body(body)
-                                    .@"else"().body(b.x.valueOf(0)).end()
-                            else
-                                body;
-
-                            skip_option_capture = is_optional;
-                            const len_name = try ctx.symbols.getShapeName(mid, .snake, .{ .suffix = "_len" });
-                            try b.constant(len_name).assign(len_body);
-                            break :blk b.x.id(len_name);
-                        },
-                        inline else => |_, g| {
-                            std.debug.panic("Unsupported shape type: {}", .{g});
-                            unreachable;
-                        },
+                        .string => subject,
+                        else => unreachable,
                     };
 
-                    if (full_range) {
-                        condition = b.x.buildExpr(len_subj).op(.lt).valueOf(length.min.?)
-                            .op(.@"or").buildExpr(len_subj).op(.gt).valueOf(length.max.?);
-                        format = base_format ++ "length is out of bounds [{d}, {d}] (inclusive)";
-                        args = &.{ op_name, field_name_exp, b.x.valueOf(length.min.?), b.x.valueOf(length.max.?) };
-                    } else if (length.max) |max| {
-                        condition = b.x.buildExpr(len_subj).op(.gt).valueOf(max);
-                        format = base_format ++ "length is more than {d}";
-                        args = &.{ op_name, field_name_exp, b.x.valueOf(max) };
-                    } else if (length.min) |min| {
-                        condition = b.x.buildExpr(len_subj).op(.lt).valueOf(min);
-                        format = base_format ++ "length is less than {d}";
-                        args = &.{ op_name, field_name_exp, b.x.valueOf(min) };
-                    }
+                    func_name = "stringLength";
+                    func_args = &.{
+                        log_scope,
+                        op_name,
+                        field_exp,
+                        b.x.valueOf(length.min),
+                        b.x.valueOf(length.max),
+                        len_subject,
+                    };
                 } else {
                     continue;
                 }
 
-                is_static = false;
-                const validation = b.x.@"if"(condition).body(b.x.blockWith(ValidateContext{
-                    .log_scope = log_scope,
-                    .format = format,
-                    .args = args,
-                }, validationBody)).end();
+                is_noop = false;
+                const validation = b.x.trys().raw(cfg.runtime_scope).dot()
+                    .id("validate").dot().call(func_name, func_args);
+
                 if (is_optional) {
-                    const optn_subj = b.x.id("self").dot().id(field_name);
-                    if (skip_option_capture) {
-                        try b.@"if"(optn_subj.op(.not_eql).valueOf(null)).body(validation).end();
-                    } else if (is_optional) {
-                        try b.@"if"(optn_subj).capture("t").body(validation).end();
-                    }
+                    try b.@"if"(b.x.id("self").dot().id(field_name))
+                        .capture("t").body(validation)
+                        .end();
                 } else {
                     try b.buildExpr(validation).end();
                 }
             }
 
-            if (is_static) try b.discard().id("self").end();
-        }
-
-        fn validationBody(ctx: ValidateContext, b: *BlockBuild) !void {
-            try b.buildExpr(ctx.log_scope).dot().call("err", &.{
-                b.x.valueOf(ctx.format),
-                b.x.structLiteral(null, ctx.args),
-            }).end();
-            try b.returns().valueOf(error.InvalidOperationInput).end();
+            if (is_noop) try b.discard().id("self").end();
         }
     };
 

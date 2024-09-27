@@ -24,6 +24,8 @@ pub const Document = document.Document;
 pub const serial = @import("operation/serial.zig");
 pub const SerialType = serial.SerialType;
 
+pub const validate = @import("operation/validate.zig");
+
 test {
     _ = result;
     _ = collection;
@@ -32,4 +34,5 @@ test {
     _ = request;
     _ = rules;
     _ = serial;
+    _ = validate;
 }
