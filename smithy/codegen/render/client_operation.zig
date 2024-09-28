@@ -8,14 +8,16 @@ const files_jobs = @import("razdaz/jobs").files;
 const shape = @import("shape.zig");
 const srvc = @import("service.zig");
 const cfg = @import("../config.zig");
-const SmithyId = @import("../model.zig").SmithyId;
+const mdl = @import("../model.zig");
+const SmithyId = mdl.SmithyId;
+const SmithyOperation = mdl.SmithyOperation;
 const IssuesBag = @import("../systems/issues.zig").IssuesBag;
 const SymbolsProvider = @import("../systems/SymbolsProvider.zig");
 const name_util = @import("../utils/names.zig");
 const trt_refine = @import("../traits/refine.zig");
 const test_symbols = @import("../testing/symbols.zig");
 const trt_protocol = @import("../traits/protocol.zig");
-const AuthId = @import("../traits/auth.zig").AuthId;
+const trt_auth = @import("../traits/auth.zig");
 
 pub const OperationScriptHeadHook = jobz.Task.Hook(
     "Smithy Operation Script Head",
@@ -43,12 +45,11 @@ fn clientOperationsDirTask(self: *const jobz.Delegate, symbols: *SymbolsProvider
 }
 
 const ClientOperation = srvc.ScriptCodegen.Task("Smithy Codegen Client Operation", clientOperationTask, .{
-    .injects = &.{ SymbolsProvider, IssuesBag },
+    .injects = &.{SymbolsProvider},
 });
 fn clientOperationTask(
     self: *const jobz.Delegate,
     symbols: *SymbolsProvider,
-    issues: *IssuesBag,
     bld: *zig.ContainerBuild,
     id: SmithyId,
 ) anyerror!void {
@@ -58,6 +59,12 @@ fn clientOperationTask(
         try bld.constant(cfg.types_scope).assign(bld.x.import("../" ++ cfg.types_filename));
     }
 
+    if (symbols.service_operations.len > 0) {
+        try bld.constant(cfg.service_client_type).assign(
+            bld.x.import("../" ++ cfg.service_client_filename).dot().id(cfg.service_client_type),
+        );
+    }
+
     if (self.hasOverride(OperationScriptHeadHook)) {
         try self.evaluate(OperationScriptHeadHook, .{ bld, id });
     }
@@ -65,10 +72,27 @@ fn clientOperationTask(
     const operation = (try symbols.getShape(id)).operation;
     const errors = try listShapeErrors(self.alloc(), symbols, operation.errors);
 
-    const context = .{ .arena = self.alloc(), .symbols = symbols, .issues = issues, .op = operation, .errors = errors };
-    try bld.public().constant(try symbols.getShapeName(id, .pascal, .{})).assign(
+    const op_name = try symbols.getShapeName(id, .pascal, .{});
+    const context = .{ .arena = self.alloc(), .symbols = symbols, .id = id, .name = op_name, .op = operation, .errors = errors };
+    try bld.public().constant(op_name).assign(
         bld.x.@"struct"().bodyWith(context, struct {
             fn f(ctx: @TypeOf(context), b: *zig.ContainerBuild) !void {
+                try b.field(cfg.alloc_param).typing(b.x.id("Allocator")).end();
+                try b.field("client").typing(b.x.typePointer(false, b.x.raw(cfg.service_client_type))).end();
+                if (ctx.op.input != null) try b.field("input").typing(b.x.id("Input")).end();
+
+                const send_ctx = SendFuncContext{
+                    .arena = ctx.arena,
+                    .id = ctx.id,
+                    .name = ctx.name,
+                    .symbols = ctx.symbols,
+                    .operation = ctx.op,
+                };
+                try b.public().function("send")
+                    .arg("self", b.x.This())
+                    .returns(b.x.typeError(null, b.x.id("Result")))
+                    .bodyWith(send_ctx, sendFunc);
+
                 try b.public().constant("Result").assign(blk: {
                     const payload = if (ctx.op.output != null) b.x.id("Output") else b.x.typeOf(void);
                     if (ctx.errors.len > 0) {
@@ -123,6 +147,52 @@ fn clientOperationTask(
         const scheme = try serialErrorScheme(self, bld.x, errors);
         try bld.public().constant("serial_error_scheme").assign(scheme);
     }
+}
+
+const SendFuncContext = struct {
+    arena: Allocator,
+    id: SmithyId,
+    name: []const u8,
+    symbols: *SymbolsProvider,
+    operation: *const SmithyOperation,
+};
+
+fn sendFunc(ctx: SendFuncContext, bld: *zig.BlockBuild) !void {
+    const op = ctx.operation;
+    const symbols = ctx.symbols;
+
+    const has_errors = op.errors.len + symbols.service_errors.len > 0;
+    const auth_optional = symbols.hasTrait(ctx.id, trt_auth.optional_auth_id);
+    const auth_schemes = trt_auth.Auth.get(symbols, ctx.id) orelse
+        trt_auth.Auth.get(symbols, symbols.service_id) orelse
+        symbols.service_auth_schemes;
+
+    var auth_exprs = try std.ArrayList(zig.ExprBuild).initCapacity(ctx.arena, auth_schemes.len);
+    for (auth_schemes) |aid| {
+        const string = bld.x.valueOf(try ctx.arena.dupe(u8, aid.toString()));
+        auth_exprs.appendAssumeCapacity(
+            bld.x.id(cfg.runtime_scope).dot().id("AuthId").dot().call("of", &.{string}),
+        );
+    }
+
+    try bld.returns().raw("self.client").dot().call("_sendSync", &.{
+        bld.x.raw("self.allocator"),
+        bld.x.structLiteral(null, &.{
+            bld.x.structAssign("name", bld.x.valueOf(ctx.name)),
+            bld.x.structAssign("Input", if (op.input) |_| bld.x.id("Input") else bld.x.typeOf(void)),
+            bld.x.structAssign("Output", if (op.output) |_| bld.x.id("Output") else bld.x.typeOf(void)),
+            bld.x.structAssign("Errors", if (has_errors) bld.x.id("ErrorKind") else bld.x.typeOf(void)),
+            bld.x.structAssign("Result", bld.x.id("Result")),
+            bld.x.structAssign("auth_optional", bld.x.valueOf(auth_optional)),
+            bld.x.structAssign("auth_schemes", bld.x.addressOf().structLiteral(null, auth_exprs.items)),
+        }),
+        bld.x.structLiteral(null, &.{
+            bld.x.structAssign("input", if (op.input) |_| bld.x.id("serial_input_scheme") else bld.x.raw(".{}")),
+            bld.x.structAssign("output", if (op.output) |_| bld.x.id("serial_output_scheme") else bld.x.raw(".{}")),
+            bld.x.structAssign("errors", if (has_errors) bld.x.id("serial_error_scheme") else bld.x.raw(".{}")),
+        }),
+        if (op.input) |_| bld.x.raw("self.input") else bld.x.valueOf({}),
+    }).end();
 }
 
 fn listShapeErrors(
@@ -380,7 +450,29 @@ test ClientOperation {
         \\
         \\const srvc_types = @import("../data_types.zig");
         \\
+        \\const Client = @import("../client.zig").Client;
+        \\
         \\pub const MyOperation = struct {
+        \\    allocator: Allocator,
+        \\    client: *const Client,
+        \\    input: Input,
+        \\
+        \\    pub fn send(self: @This()) !Result {
+        \\        return self.client._sendSync(self.allocator, .{
+        \\            .name = "MyOperation",
+        \\            .Input = Input,
+        \\            .Output = Output,
+        \\            .Errors = ErrorKind,
+        \\            .Result = Result,
+        \\            .auth_optional = false,
+        \\            .auth_schemes = &.{},
+        \\        }, .{
+        \\            .input = serial_input_scheme,
+        \\            .output = serial_output_scheme,
+        \\            .errors = serial_error_scheme,
+        \\        }, self.input);
+        \\    }
+        \\
         \\    pub const Result = smithy.Result(Output, ErrorKind);
         \\
         \\    pub const Input = struct {

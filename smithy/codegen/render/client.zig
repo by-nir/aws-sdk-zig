@@ -13,26 +13,12 @@ const SmithyService = mdl.SmithyService;
 const IssuesBag = @import("../systems/issues.zig").IssuesBag;
 const RulesEngine = @import("../systems/rules.zig").RulesEngine;
 const SymbolsProvider = @import("../systems/SymbolsProvider.zig");
-const trt_auth = @import("../traits/auth.zig");
 const trt_rules = @import("../traits/rules.zig");
 const test_symbols = @import("../testing/symbols.zig");
 
 pub const ClientScriptHeadHook = jobz.Task.Hook("Smithy Client Script Head", anyerror!void, &.{*zig.ContainerBuild});
 pub const ClientShapeHeadHook = jobz.Task.Hook("Smithy Client Shape Head", anyerror!void, &.{ *zig.ContainerBuild, *const SmithyService });
-pub const ClientOperationFuncHook = jobz.Task.Hook("Smithy Client Operation Func", anyerror!void, &.{ *zig.BlockBuild, OperationFunc });
-
-pub const OperationFunc = struct {
-    id: SmithyId,
-    input_type: ?[]const u8,
-    output_type: ?[]const u8,
-    errors_type: ?[]const u8,
-    return_type: []const u8,
-    auth_optional: bool,
-    auth_schemes: []const trt_auth.AuthId,
-    serial_input: ?[]const u8,
-    serial_output: ?[]const u8,
-    serial_error: ?[]const u8,
-};
+pub const ClientSendSyncFuncHook = jobz.Task.Hook("Smithy Client Send Sync Func", anyerror!void, &.{*zig.BlockBuild});
 
 pub const ServiceClient = srvc.ScriptCodegen.Task("Smithy Service Client Codegen", serviceClientTask, .{
     .injects = &.{SymbolsProvider},
@@ -49,6 +35,20 @@ fn serviceClientTask(self: *const jobz.Delegate, symbols: *SymbolsProvider, bld:
     if (self.hasOverride(ClientScriptHeadHook)) {
         try self.evaluate(ClientScriptHeadHook, .{bld});
     }
+
+    try bld.constant("OperationMeta").assign(bld.x.@"struct"().body(struct {
+        fn f(b: *zig.ContainerBuild) !void {
+            try b.field("name").typing(b.x.typeOf([]const u8)).end();
+            try b.field("Input").typing(b.x.typeOf(type)).end();
+            try b.field("Output").typing(b.x.typeOf(type)).end();
+            try b.field("Errors").typing(b.x.typeOf(type)).end();
+            try b.field("Result").typing(b.x.typeOf(type)).end();
+            try b.field("auth_optional").typing(b.x.typeOf(bool)).end();
+            try b.field("auth_schemes").typing(
+                b.x.typeSlice(false, b.x.raw(cfg.runtime_scope).dot().id("AuthId")),
+            ).end();
+        }
+    }.f));
 
     try self.evaluate(WriteClientStruct, .{ bld, sid });
 
@@ -95,66 +95,67 @@ fn writeClientStruct(
                     try ctx.self.evaluate(ClientShapeHeadHook, .{ b, ctx.service });
                 }
 
-                for (ctx.ops) |op_id| {
-                    try writeOperationFunc(ctx.self, ctx.symbols, b, op_id);
-                }
+                for (ctx.ops) |op_id| try writeOperationFunc(ctx.symbols, b, op_id);
+
+                try b.public().function("_sendSync")
+                    .arg("self", b.x.id(cfg.service_client_type))
+                    .arg("allocator", b.x.id("Allocator"))
+                    .arg("comptime meta", b.x.id("OperationMeta"))
+                    .arg("comptime serial", null)
+                    .arg("input", b.x.raw("meta.Input"))
+                    .returns(b.x.typeError(null, b.x.raw("meta.Result")))
+                    .bodyWith(SendSyncContext{
+                    .self = ctx.self,
+                    .symbols = ctx.symbols,
+                }, writeSendSyncFunc);
             }
         }.f),
     );
 }
 
-fn writeOperationFunc(self: *const jobz.Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild, id: SmithyId) !void {
+const SendSyncContext = struct {
+    self: *const jobz.Delegate,
+    symbols: *SymbolsProvider,
+};
+
+fn writeSendSyncFunc(ctx: SendSyncContext, bld: *zig.BlockBuild) !void {
+    try ctx.self.evaluate(ClientSendSyncFuncHook, .{bld});
+}
+
+fn writeOperationFunc(symbols: *SymbolsProvider, bld: *zig.ContainerBuild, id: SmithyId) !void {
     const operation = (try symbols.getShape(id)).operation;
-
-    const input_type, const input_serial = if (operation.input != null) .{
-        try symbols.getShapeName(id, .pascal, .{ .suffix = ".Input" }),
-        try symbols.getShapeName(id, .snake, .{ .suffix = "_op.serial_input_scheme" }),
-    } else .{ null, null };
-
-    const output_type, const output_serial = if (operation.output != null) .{
-        try symbols.getShapeName(id, .pascal, .{ .suffix = ".Output" }),
-        try symbols.getShapeName(id, .snake, .{ .suffix = "_op.serial_output_scheme" }),
-    } else .{ null, null };
-
-    const error_type, const error_serial = if (operation.errors.len + symbols.service_errors.len > 0) .{
-        try symbols.getShapeName(id, .pascal, .{ .suffix = ".ErrorKind" }),
-        try symbols.getShapeName(id, .snake, .{ .suffix = "_op.serial_error_scheme" }),
-    } else .{ null, null };
-
-    const return_type = try symbols.getShapeName(id, .pascal, .{
-        .prefix = "!",
-        .suffix = ".Result",
-    });
-
-    const auth_optional = symbols.hasTrait(id, trt_auth.optional_auth_id);
-    const auth_schemes = trt_auth.Auth.get(symbols, id) orelse
-        trt_auth.Auth.get(symbols, symbols.service_id) orelse
-        symbols.service_auth_schemes;
-
-    const op_shape = OperationFunc{
-        .id = id,
-        .input_type = input_type,
-        .output_type = output_type,
-        .errors_type = error_type,
-        .return_type = return_type,
-        .auth_optional = auth_optional,
-        .auth_schemes = auth_schemes,
-        .serial_input = input_serial,
-        .serial_output = output_serial,
-        .serial_error = error_serial,
-    };
+    const return_type = try symbols.getShapeName(id, .pascal, .{});
+    const input_type = if (operation.input != null)
+        try symbols.getShapeName(id, .pascal, .{ .suffix = ".Input" })
+    else
+        null;
 
     const op_name = try symbols.getShapeName(id, .camel, .{});
-    const context = .{ .self = self, .symbols = symbols, .shape = op_shape };
-    const func1 = bld.public().function(op_name)
-        .arg("self", bld.x.id(cfg.service_client_type))
+    const func = bld.public().function(op_name)
+        .arg("self", bld.x.typePointer(false, bld.x.id(cfg.service_client_type)))
         .arg(cfg.alloc_param, bld.x.raw("Allocator"));
-    const func2 = if (input_type) |input| func1.arg("input", bld.x.raw(input)) else func1;
-    try func2.returns(bld.x.raw(return_type)).bodyWith(context, struct {
-        fn f(ctx: @TypeOf(context), b: *zig.BlockBuild) !void {
-            try ctx.self.evaluate(ClientOperationFuncHook, .{ b, ctx.shape });
-        }
-    }.f);
+
+    if (input_type) |input| {
+        try func.arg("input", bld.x.raw(input))
+            .returns(bld.x.raw(return_type)).body(struct {
+            fn f(b: *zig.BlockBuild) !void {
+                try b.returns().structLiteral(null, &.{
+                    b.x.structAssign("allocator", b.x.id("allocator")),
+                    b.x.structAssign("client", b.x.id("self")),
+                    b.x.structAssign("input", b.x.id("input")),
+                }).end();
+            }
+        }.f);
+    } else {
+        try func.returns(bld.x.raw(return_type)).body(struct {
+            fn f(b: *zig.BlockBuild) !void {
+                try b.returns().structLiteral(null, &.{
+                    b.x.structAssign("allocator", b.x.id("allocator")),
+                    b.x.structAssign("client", b.x.id("self")),
+                }).end();
+            }
+        }.f);
+    }
 }
 
 test ServiceClient {
@@ -173,9 +174,27 @@ test ServiceClient {
     try srvc.expectServiceScript(
         \\const srvc_endpoint = @import("endpoint.zig");
         \\
+        \\const OperationMeta = struct {
+        \\    name: []const u8,
+        \\    Input: type,
+        \\    Output: type,
+        \\    Errors: type,
+        \\    Result: type,
+        \\    auth_optional: bool,
+        \\    auth_schemes: []const smithy.AuthId,
+        \\};
+        \\
         \\/// Some _service_...
         \\pub const Client = struct {
-        \\    pub fn myOperation(self: Client, allocator: Allocator, input: MyOperation.Input) !MyOperation.Result {
+        \\    pub fn myOperation(self: *const Client, allocator: Allocator, input: MyOperation.Input) MyOperation {
+        \\        return .{
+        \\            .allocator = allocator,
+        \\            .client = self,
+        \\            .input = input,
+        \\        };
+        \\    }
+        \\
+        \\    pub fn _sendSync(self: Client, allocator: Allocator, comptime meta: OperationMeta, comptime serial: anytype, input: meta.Input) !meta.Result {
         \\        return undefined;
         \\    }
         \\};

@@ -67,7 +67,7 @@ fn serviceCodegenTask(self: *const jobz.Delegate, symbols: *SymbolsProvider) any
     }
 
     try extendServiceSchemes(self, symbols);
-    try self.evaluate(files_jobs.WriteFile.Chain(clnt.ServiceClient, .sync), .{ "client.zig", .{} });
+    try self.evaluate(files_jobs.WriteFile.Chain(clnt.ServiceClient, .sync), .{ cfg.service_client_filename, .{} });
 
     if (symbols.hasTrait(symbols.service_id, trt_rules.EndpointRuleSet.id)) {
         try self.evaluate(files_jobs.WriteFile.Chain(ClientEndpoint, .sync), .{ cfg.endpoint_filename, .{} });

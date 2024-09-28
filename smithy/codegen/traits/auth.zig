@@ -22,7 +22,7 @@ pub const registry: TraitsRegistry = &.{
 };
 
 pub const AuthId = enum(u64) {
-    none = 0,
+    none = parse("00000000"),
     http_basic = parse("smithy.api#httpBasicAuth"),
     http_bearer = parse("smithy.api#httpBearerAuth"),
     http_api_key = parse("smithy.api#httpApiKeyAuth"),
@@ -34,18 +34,24 @@ pub const AuthId = enum(u64) {
     }
 
     fn parse(s: []const u8) u64 {
-        var x: u64 = 0;
+        var bytes: [8]u8 = "00000000".*;
         const trim = if (std.mem.indexOfScalar(u8, s, '#')) |i| s[i + 1 .. s.len] else s;
-        const len = @min(trim.len, @sizeOf(@TypeOf(x)));
-        @memcpy(std.mem.asBytes(&x)[0..len], trim[0..len]);
-        return x;
+        const len = @min(8, trim.len);
+        @memcpy(bytes[0..len], trim[0..len]);
+        return std.mem.bytesToValue(u64, &bytes);
+    }
+
+    pub fn toString(self: *const AuthId) []const u8 {
+        const str = std.mem.asBytes(self);
+        return std.mem.sliceTo(str, '0');
     }
 };
 
 test "AuthId" {
     try testing.expectEqual(AuthId.http_basic, AuthId.of("httpBasicAuth"));
     try testing.expectEqual(AuthId.http_basic, AuthId.of("smithy.api#httpBasicAuth"));
-    try testing.expectEqual(@as(AuthId, @enumFromInt(7303014)), AuthId.of("foo"));
+    try testing.expectEqual(AuthId.of("foo00000"), AuthId.of("foo"));
+    try testing.expectEqualStrings("foo", AuthId.of("foo").toString());
 }
 
 /// Indicates that a service supports HTTP Basic Authentication as defined in

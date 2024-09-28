@@ -9,7 +9,7 @@
 > This project is in early development, DO NOT USE IN PRODUCTION!
 >
 > Support for the remaining services and features will be added as the project
-> matures and stabilize. Till then, **breaking changes are imminent!**.
+> matures and stabilize. **Breaking changes are imminent!**
 
 _Pure Zig implementation,_ from code generation to runtime SDKs.
 Building upon the language’s strong foundation, this project provides a

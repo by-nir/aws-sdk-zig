@@ -451,7 +451,7 @@ fn writeStructShape(
                     if (target) |tid| trt_constr.Pattern.get(ctx.symbols, tid) else null) |pattern|
                 blk: {
                     validations_count += 1;
-                    const args = &.{ log_scope, op_name, field_exp, b.x.valueOf(pattern), subject };
+                    const args = &.{ log_scope, op_name, field_exp, b.x.valueEscape(pattern), subject };
                     const validation = runtime_exp.call("stringPattern", args);
 
                     if (is_optional) {
@@ -900,8 +900,8 @@ pub fn shapeTester(part: test_symbols.Part, id: SmithyId, options: ShapeOptions,
 pub const TEST_INVOKER = blk: {
     var builder = jobz.InvokerBuilder{};
 
-    _ = builder.Override(clnt.ClientOperationFuncHook, "Test Operation Func", struct {
-        fn f(_: *const Delegate, bld: *BlockBuild, _: clnt.OperationFunc) anyerror!void {
+    _ = builder.Override(clnt.ClientSendSyncFuncHook, "Test Send Sync Func", struct {
+        fn f(_: *const Delegate, bld: *BlockBuild) anyerror!void {
             try bld.returns().raw("undefined").end();
         }
     }.f, .{});

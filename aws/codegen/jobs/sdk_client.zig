@@ -70,7 +70,7 @@ pub const pipeline_invoker = blk: {
     _ = builder.Override(smithy.ClientShapeHeadHook, "AWS Client Shape Head", writeClientShapeHead, .{
         .injects = &.{SymbolsProvider},
     });
-    _ = builder.Override(smithy.ClientOperationFuncHook, "AWS Client Operation Func", writeOperationFunc, .{
+    _ = builder.Override(smithy.ClientSendSyncFuncHook, "AWS Client Send Sync Func", writeSendSyncFunc, .{
         .injects = &.{SymbolsProvider},
     });
     _ = builder.Override(
@@ -173,8 +173,8 @@ fn writeServiceDeinit(bld: *zig.BlockBuild) anyerror!void {
 /// ### Operation Memory Management
 ///
 /// The user provides an allocator (assummed GPA), we use it to init two arenas:
-/// 1. Scratch arena for the lifetime of **processing** the request
-/// 2. Output arena for the output/error payload – user ownes the returned memory
+/// 1. Scratch arena for the lifetime of **processing** the request.
+/// 2. Output arena for the output/error payload – user ownes the returned memory.
 ///
 /// The `ClientOperation` is created using the scratch arena.
 /// Components who participate in the processing of the request can allocate
@@ -182,17 +182,13 @@ fn writeServiceDeinit(bld: *zig.BlockBuild) anyerror!void {
 ///
 /// The protocol implementations can use both the scratch and the output arenas.
 /// They are also responsible for passing the output arena alongside the result.
-fn writeOperationFunc(
-    self: *const Delegate,
-    symbols: *SymbolsProvider,
-    bld: *zig.BlockBuild,
-    func: smithy.OperationFunc,
-) anyerror!void {
-    if (func.input_type != null) {
-        try bld.@"if"(bld.x.raw("self.config_sdk.input_validation"))
-            .body(bld.x.trys().id(aws_cfg.send_input_param).dot().call("validate", &.{}))
-            .end();
-    }
+fn writeSendSyncFunc(self: *const Delegate, symbols: *SymbolsProvider, bld: *zig.BlockBuild) anyerror!void {
+    try bld.@"if"(
+        bld.x.id(aws_cfg.send_meta_param).dot().id("Input").op(.eql).typeOf(void)
+            .op(.@"and").raw("self.config_sdk.input_validation"),
+    ).body(
+        bld.x.trys().id(aws_cfg.send_input_param).dot().call("validate", &.{}),
+    ).end();
 
     try bld.variable("scratch_arena").assign(
         bld.x.call("std.heap.ArenaAllocator.init", &.{bld.x.id(aws_cfg.alloc_param)}),
@@ -220,8 +216,8 @@ fn writeOperationFunc(
         },
     ));
 
-    try itg_proto.writeOperationRequest(self.alloc(), symbols, bld, func, protocol);
-    if (func.auth_schemes.len > 0) try itg_auth.writeOperationAuth(self.alloc(), symbols, bld, func);
+    try itg_proto.writeOperationRequest(self.alloc(), symbols, bld, protocol);
+    try itg_auth.writeOperationAuth(self.alloc(), symbols, bld);
     try bld.trys().call("self.http.sendSync", &.{bld.x.id(aws_cfg.send_op_param)}).end();
 
     try bld.variable(aws_cfg.output_arena).assign(
@@ -229,10 +225,6 @@ fn writeOperationFunc(
     );
     try bld.errorDefers().body((bld.x.id(aws_cfg.output_arena).dot().call("deinit", &.{})));
 
-    const result = try itg_proto.writeOperationResult(self.alloc(), symbols, bld, func, protocol);
-    if ((func.output_type orelse func.errors_type) == null) {
-        try bld.trys().buildExpr(result).end();
-    } else {
-        try bld.returns().buildExpr(result).end();
-    }
+    const result = try itg_proto.writeOperationResult(self.alloc(), symbols, bld, protocol);
+    try bld.returns().buildExpr(result).end();
 }

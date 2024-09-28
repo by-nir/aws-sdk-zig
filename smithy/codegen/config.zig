@@ -7,6 +7,9 @@ pub const scratch_alloc = "scratch_alloc";
 /// Service client type name
 pub const service_client_type = "Client";
 
+/// Service client filename
+pub const service_client_filename = "client.zig";
+
 /// Runtime public scope
 pub const runtime_scope = "smithy";
 

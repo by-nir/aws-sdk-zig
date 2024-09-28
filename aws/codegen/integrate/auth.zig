@@ -20,53 +20,6 @@ pub fn extendAuthSchemes(_: *const Delegate, symbols: *SymbolsProvider, extensio
     }
 }
 
-const SignContext = struct {
-    op_id: SmithyId,
-    symbols: *SymbolsProvider,
-    schemes: []const AuthId,
-    config_expr: ?zig.ExprBuild = null,
-};
-
-pub fn writeOperationAuth(
-    _: Allocator,
-    symbols: *SymbolsProvider,
-    bld: *zig.BlockBuild,
-    func: smithy.OperationFunc,
-) !void {
-    std.debug.assert(func.auth_schemes.len > 0);
-    if (symbols.hasTrait(func.id, trt_smithy.optional_auth_id)) {
-        return error.OptionalAuthUnimplemented; // TODO
-    }
-
-    pre_pass: for (func.auth_schemes) |id| switch (id) {
-        trt_auth.SigV4.auth_id, trt_auth.SigV4A.auth_id => {
-            try writeSignBuffer(bld);
-            break :pre_pass;
-        },
-        else => {},
-    };
-
-    const context = SignContext{
-        .op_id = func.id,
-        .symbols = symbols,
-        .schemes = func.auth_schemes,
-    };
-    try bld.@"if"(bld.x.raw(aws_cfg.send_endpoint_param ++ ".auth_schemes.len > 0"))
-        .body(bld.x.blockWith(context, writeSchemeResolver))
-        .@"else"().body(
-        switch (func.auth_schemes[0]) {
-            trt_auth.SigV4.auth_id => bld.x.blockWith(context, writeSigV4),
-            else => return error.UnimplementedAuthScheme,
-        },
-    ).end();
-}
-
-fn writeSignBuffer(bld: *zig.BlockBuild) !void {
-    try bld.variable("auth_buffer")
-        .typing(bld.x.id(aws_cfg.scope_private).dot().id("SignBuffer"))
-        .assign(bld.x.raw("undefined"));
-}
-
 /// https://smithy.io/2.0/aws/rules-engine/auth-schemes.html
 ///
 /// If an authSchemes property is present on an Endpoint object, clients MUST resolve
@@ -76,36 +29,65 @@ fn writeSignBuffer(bld: *zig.BlockBuild) !void {
 /// 2. If the name property in a configuration object contains a supported authentication scheme, resolve this scheme.
 /// 3. If the name is unknown or unsupported, ignore it and continue iterating.
 /// 4. If the list has been fully iterated and no scheme has been resolved, clients MUST return an error.
-fn writeSchemeResolver(ctx: SignContext, bld: *zig.BlockBuild) !void {
-    try bld.@"for"()
-        .iter(bld.x.raw(aws_cfg.send_endpoint_param ++ ".auth_schemes"), "scheme")
-        .iter(bld.x.valFrom(bld.x.valueOf(0)), "i")
-        .body(bld.x.switchWith(bld.x.raw("scheme.id"), ctx, struct {
-        fn f(c: SignContext, b: *zig.SwitchBuild) !void {
-            for (c.schemes) |id| {
-                switch (id) {
-                    .http_bearer => {
-                        const case = b.x.raw(aws_cfg.scope_smithy).dot().call("AuthId.of", &.{b.x.valueOf("bearer")});
-                        try b.branch().case(case).body(b.x.block(writeBearer));
-                    },
-                    trt_auth.SigV4.auth_id => {
-                        var sign_ctx = c;
-                        sign_ctx.config_expr = b.x.raw(aws_cfg.send_endpoint_param).dot().id("auth_schemes").valIndexer(b.x.id("i"));
-                        const case = b.x.raw(aws_cfg.scope_smithy).dot().call("AuthId.of", &.{b.x.valueOf("sigv4")});
-                        try b.branch().case(case).body(b.x.blockWith(sign_ctx, writeSigV4));
-                    },
+pub fn writeOperationAuth(_: Allocator, symbols: *SymbolsProvider, bld: *zig.BlockBuild) !void {
+    // TODO
+    try bld.@"if"(bld.x.id(aws_cfg.send_meta_param).dot().id("auth_optional"))
+        .body(bld.call("@panic", &.{bld.x.valueOf("optional auth not implemented")}))
+        .end();
+
+    const meta_schemes = bld.x.id(aws_cfg.send_meta_param).dot().id("auth_schemes");
+    const endpoint_schemes = bld.x.id(aws_cfg.send_endpoint_param).dot().id("auth_schemes");
+    try bld.constant("auth_schemes").typing(
+        bld.x.typeSlice(false, bld.x.id(aws_cfg.scope_smithy).dot().id("AuthScheme")),
+    ).assign(
+        bld.x.@"if"(meta_schemes.dot().id("len").op(.eql).valueOf(0)).body(bld.x.raw("&.{}"))
+            .elseIf(endpoint_schemes.dot().id("len").op(.gt).valueOf(0)).body(endpoint_schemes)
+            .@"else"().body(
+            bld.x.addressOf().structLiteral(null, &.{
+                bld.x.structLiteral(null, &.{bld.x.structAssign("id", meta_schemes.valIndexer(bld.x.valueOf(0)))}),
+            }),
+        ).end(),
+    );
+
+    try bld.@"for"().iter(bld.x.id("auth_schemes"), "scheme").body(
+        bld.x.switchWith(bld.x.raw("scheme.id"), symbols, writeAuthSwitch),
+    ).end();
+}
+
+fn writeAuthSwitch(symbols: *SymbolsProvider, bld: *zig.SwitchBuild) !void {
+    for (symbols.service_auth_schemes) |aid| {
+        const str = bld.x.valueOf(try symbols.arena.dupe(u8, aid.toString()));
+        const id_expr = bld.x.id(aws_cfg.scope_smithy).dot().id("AuthId").dot().call("of", &.{str});
+        const context = .{ .symbols = symbols, .auth_id = aid, .id_expr = id_expr };
+        try bld.branch().case(id_expr).body(bld.x.blockWith(context, struct {
+            fn f(ctx: @TypeOf(context), b: *zig.BlockBuild) !void {
+                try b.@"if"(
+                    b.x.compTime().call("std.mem.indexOfScalar", &.{
+                        b.x.id(aws_cfg.scope_smithy).dot().id("AuthId"),
+                        b.x.id(aws_cfg.send_meta_param).dot().id("auth_schemes"),
+                        ctx.id_expr,
+                    }).op(.eql).valueOf(null),
+                ).body(
+                    b.x.continues(null),
+                ).end();
+
+                switch (ctx.auth_id) {
+                    .http_bearer => try writeBearer(b),
+                    trt_auth.SigV4.auth_id => try writeSigV4(ctx.symbols, b),
                     else => {
                         // .http_basic, .http_digest, .http_api_key
                         return error.UnimplementedAuthScheme;
                     },
                 }
+
+                try b.breaks(null).end();
             }
+        }.f));
+    }
 
-            try b.@"else"().body(b.x.valueOf({}));
-        }
-    }.f)).end();
-
-    try bld.returns().valueOf(error.UnresolvedAuthScheme).end();
+    try bld.@"else"().body(
+        bld.x.call("@panic", &.{bld.x.valueOf("unimplemented auth scheme")}),
+    );
 }
 
 fn writeBearer(bld: *zig.BlockBuild) !void {
@@ -123,8 +105,8 @@ fn writeBearer(bld: *zig.BlockBuild) !void {
     }).end();
 }
 
-fn writeSigV4(ctx: SignContext, bld: *zig.BlockBuild) !void {
-    const sign_name = if (trt_auth.SigV4.get(ctx.symbols, ctx.symbols.service_id)) |trait|
+fn writeSigV4(symbols: *SymbolsProvider, bld: *zig.BlockBuild) !void {
+    const sign_name = if (trt_auth.SigV4.get(symbols, symbols.service_id)) |trait|
         bld.x.valueOf(trait.name)
     else
         bld.x.id("service_code");
@@ -133,19 +115,22 @@ fn writeSigV4(ctx: SignContext, bld: *zig.BlockBuild) !void {
         bld.x.raw(aws_cfg.scope_auth).dot().call("SigV4Scheme.evaluate", &.{
             sign_name,
             bld.x.raw("self.config_sdk.region.toString()"),
-            ctx.config_expr orelse bld.x.valueOf(null),
+            bld.x.id("scheme"),
         }),
     );
 
-    const unsigned_payload = ctx.symbols.hasTrait(ctx.op_id, trt_auth.unsigned_payload_id);
     try bld.constant("identity").assign(try resolveExpr(bld.x, "credentials"));
+    try bld.constant("auth_buffer").assign(bld.x.trys().call(
+        aws_cfg.scratch_alloc ++ ".create",
+        &.{bld.x.id(aws_cfg.scope_private).dot().id("SignBuffer")},
+    ));
 
     try bld.trys().raw(aws_cfg.scope_auth).dot().call("signV4", &.{
-        bld.x.addressOf().id("auth_buffer"),
+        bld.x.id("auth_buffer"),
         bld.x.id(aws_cfg.send_op_param),
         bld.x.id("scheme_config"),
         bld.x.id("identity"),
-        bld.x.valueOf(unsigned_payload),
+        bld.x.valueOf(false),
     }).end();
 }
 

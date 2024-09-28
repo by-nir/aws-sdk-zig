@@ -32,7 +32,7 @@ pub const Endpoint = struct {
 
 pub const AuthScheme = struct {
     id: AuthId,
-    properties: []const Document.KV,
+    properties: []const Document.KV = &.{},
 
     pub fn deinit(self: AuthScheme, allocator: Allocator) void {
         for (self.properties) |property| property.deinit(allocator);
@@ -41,7 +41,7 @@ pub const AuthScheme = struct {
 };
 
 pub const AuthId = enum(u64) {
-    none = 0,
+    none = std.mem.bytesToValue(u64, "00000000"),
     _,
 
     pub fn of(name: []const u8) AuthId {

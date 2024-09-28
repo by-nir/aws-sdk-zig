@@ -464,7 +464,11 @@ pub const Function = struct {
         }
 
         pub fn write(self: Arg, writer: *Writer) !void {
-            const name = std.zig.fmtId(self.name);
+            const name = if (std.mem.startsWith(u8, self.name, "comptime ")) blk: {
+                try writer.appendString("comptime ");
+                break :blk std.zig.fmtId(self.name[9..self.name.len]);
+            } else std.zig.fmtId(self.name);
+
             if (self.type) |t| {
                 try writer.appendFmt("{_}: {}", .{ name, t });
             } else {

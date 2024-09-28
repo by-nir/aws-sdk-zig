@@ -98,6 +98,7 @@ const ExprType = union(enum) {
     array: *const Array,
     slice: struct { mutable: bool, type: *const Expr },
     pointer: struct { mutable: bool, type: *const Expr },
+    err_union: struct { err: ?*const Expr, payload: *const Expr },
     val_index: *const Expr,
     val_from: *const Expr,
     val_range: *const [2]Expr,
@@ -113,6 +114,14 @@ const ExprType = union(enum) {
             inline .slice, .pointer => |t| {
                 t.type.deinit(allocator);
                 allocator.destroy(t.type);
+            },
+            .err_union => |t| {
+                if (t.err) |e| {
+                    e.deinit(allocator);
+                    allocator.destroy(e);
+                }
+                t.payload.deinit(allocator);
+                allocator.destroy(t.payload);
             },
             .array => |t| {
                 t.len.deinit(allocator);
@@ -151,6 +160,10 @@ const ExprType = union(enum) {
                 else
                     try writer.appendFmt("const {}", .{t.type});
             },
+            .err_union => |t| {
+                if (t.err) |e| try writer.appendValue(e);
+                try writer.appendFmt("!{}", .{t.payload});
+            },
         }
     }
 };
@@ -165,6 +178,7 @@ const ExprValue = union(enum) {
     uint: u64,
     float: f64,
     string: []const u8,
+    string_escape: []const u8,
     group: *const Expr,
     @"error": []const u8,
     @"enum": []const u8,
@@ -196,7 +210,8 @@ const ExprValue = union(enum) {
             .void => try writer.appendString("{}"),
             inline .undefined, .null, .false, .true => |_, t| try writer.appendString(@tagName(t)),
             inline .int, .uint, .float => |t| try writer.appendFmt("{d}", .{t}),
-            .string => |s| try writer.appendFmt("\"{}\"", .{std.zig.fmtEscapes(s)}),
+            .string => |s| try writer.appendFmt("\"{s}\"", .{s}),
+            .string_escape => |s| try writer.appendFmt("\"{}\"", .{std.zig.fmtEscapes(s)}),
             .group => |t| try writer.appendFmt("({})", .{t}),
             .@"error" => |s| try writer.appendFmt("error.{s}", .{s}),
             .@"enum" => |s| try writer.appendFmt(".{s}", .{s}),
@@ -514,6 +529,20 @@ pub const ExprBuild = struct {
         } } });
     }
 
+    pub fn typeError(self: *const ExprBuild, errset: ?ExprBuild, payload: ExprBuild) ExprBuild {
+        const dupe_errset = if (errset) |e| self.dupeExpr(e) catch |err| {
+            return self.append(err);
+        } else null;
+        const dupe_payload = self.dupeExpr(payload) catch |err| {
+            if (dupe_errset) |e| e.deinit(payload.allocator);
+            return self.append(err);
+        };
+        return self.append(.{ .type = .{ .err_union = .{
+            .err = dupe_errset,
+            .payload = dupe_payload,
+        } } });
+    }
+
     pub fn This(self: *const ExprBuild) ExprBuild {
         return self.append(.{ .type = .This });
     }
@@ -526,11 +555,17 @@ pub const ExprBuild = struct {
         try ExprBuild.init(test_alloc).typeSlice(false, _raw("foo")).expect("[]const foo");
         try ExprBuild.init(test_alloc).typePointer(true, _raw("foo")).expect("*foo");
         try ExprBuild.init(test_alloc).typePointer(false, _raw("foo")).expect("*const foo");
+        try ExprBuild.init(test_alloc).typePointer(null, _raw("foo")).expect("!foo");
+        try ExprBuild.init(test_alloc).typePointer(_raw("boom"), _raw("foo")).expect("boom!foo");
         try ExprBuild.init(test_alloc).This().expect("@This()");
     }
 
     pub fn valueOf(self: *const ExprBuild, v: anytype) ExprBuild {
         return self.append(.{ .value = ExprValue.of(v) });
+    }
+
+    pub fn valueEscape(self: *const ExprBuild, s: []const u8) ExprBuild {
+        return self.append(.{ .value = ExprValue{ .string_escape = s } });
     }
 
     test "valueOf" {
@@ -553,6 +588,8 @@ pub const ExprBuild = struct {
         try ExprBuild.init(test_alloc).valueOf(@as(?u8, 108)).expect("108");
         try ExprBuild.init(test_alloc).valueOf(@as(?u8, null)).expect("null");
         try ExprBuild.init(test_alloc).valueOf("foo").expect("\"foo\"");
+        try ExprBuild.init(test_alloc).valueOf("\\S").expect("\"\\S\"");
+        try ExprBuild.init(test_alloc).valueEscape("\\S").expect("\"\\\\S\"");
     }
 
     pub fn group(self: *const ExprBuild, expr: ExprBuild) ExprBuild {
@@ -641,8 +678,8 @@ pub const ExprBuild = struct {
     }
 
     /// `[<some_value>]`
-    pub fn valIndexer(self: *const ExprBuild, i: ExprBuild) ExprBuild {
-        const dupe = self.dupeExpr(i) catch |err| return self.append(err);
+    pub fn valIndexer(self: *const ExprBuild, expr: ExprBuild) ExprBuild {
+        const dupe = self.dupeExpr(expr) catch |err| return self.append(err);
         return self.append(.{ .type = .{ .val_index = dupe } });
     }
 
