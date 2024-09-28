@@ -4,6 +4,7 @@ const Delegate = jobz.Delegate;
 const md = @import("razdaz").md;
 const zig = @import("razdaz").zig;
 const smithy = @import("smithy/codegen");
+const SmithyId = smithy.SmithyId;
 const SmithyPipeline = smithy.PipelineTask;
 const SmithyService = smithy.SmithyService;
 const SmithyOptions = smithy.PipelineOptions;
@@ -13,6 +14,7 @@ const itg_auth = @import("../integrate/auth.zig");
 const itg_rules = @import("../integrate/rules.zig");
 const itg_errors = @import("../integrate/errors.zig");
 const itg_proto = @import("../integrate/protocols.zig");
+const trt_auth = @import("../traits/auth.zig");
 const aws_traits = @import("../traits.zig").aws_traits;
 const ServiceTrait = @import("../traits/core.zig").Service;
 
@@ -71,6 +73,9 @@ pub const pipeline_invoker = blk: {
         .injects = &.{SymbolsProvider},
     });
     _ = builder.Override(smithy.ClientSendSyncFuncHook, "AWS Client Send Sync Func", writeSendSyncFunc, .{
+        .injects = &.{SymbolsProvider},
+    });
+    _ = builder.Override(smithy.OperationMetaHook, "AWS Operation Meta", extendOperationMeta, .{
         .injects = &.{SymbolsProvider},
     });
     _ = builder.Override(
@@ -168,6 +173,17 @@ fn writeServiceInit(bld: *zig.BlockBuild) anyerror!void {
 fn writeServiceDeinit(bld: *zig.BlockBuild) anyerror!void {
     try bld.raw("self.http.deinit()");
     try bld.raw("self.identity.deinit()");
+}
+
+fn extendOperationMeta(
+    _: *const Delegate,
+    symbols: *SymbolsProvider,
+    meta: *std.ArrayList(zig.ExprBuild),
+    exp: zig.ExprBuild,
+    id: SmithyId,
+) anyerror!void {
+    const unsigned_payload = symbols.hasTrait(id, trt_auth.unsigned_payload_id);
+    try meta.append(exp.structAssign("auth_skip_payload", exp.valueOf(unsigned_payload)));
 }
 
 /// ### Operation Memory Management

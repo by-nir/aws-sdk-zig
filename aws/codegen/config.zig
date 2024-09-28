@@ -45,8 +45,5 @@ pub const send_input_param = "input";
 /// Meta parameter identifier
 pub const send_meta_param = "meta";
 
-/// serial parameter identifier
-pub const send_serial_param = "serial";
-
 /// Endpoint parameter identifier
 pub const send_endpoint_param = "endpoint";

@@ -14,16 +14,13 @@ const SmithyOperation = mdl.SmithyOperation;
 const IssuesBag = @import("../systems/issues.zig").IssuesBag;
 const SymbolsProvider = @import("../systems/SymbolsProvider.zig");
 const name_util = @import("../utils/names.zig");
-const trt_refine = @import("../traits/refine.zig");
-const test_symbols = @import("../testing/symbols.zig");
-const trt_protocol = @import("../traits/protocol.zig");
 const trt_auth = @import("../traits/auth.zig");
+const trt_refine = @import("../traits/refine.zig");
+const trt_protocol = @import("../traits/protocol.zig");
+const test_symbols = @import("../testing/symbols.zig");
 
-pub const OperationScriptHeadHook = jobz.Task.Hook(
-    "Smithy Operation Script Head",
-    anyerror!void,
-    &.{ *zig.ContainerBuild, SmithyId },
-);
+pub const OperationScriptHeadHook = jobz.Task.Hook("Smithy Operation Script Head", anyerror!void, &.{ *zig.ContainerBuild, SmithyId });
+pub const OperationMetaHook = jobz.Task.Hook("Smithy Operation Meta", anyerror!void, &.{ *std.ArrayList(zig.ExprBuild), zig.ExprBuild, SmithyId });
 
 pub fn operationFilename(symbols: *SymbolsProvider, id: SmithyId, comptime nested: bool) ![]const u8 {
     return try symbols.getShapeName(id, .snake, .{
@@ -69,29 +66,52 @@ fn clientOperationTask(
         try self.evaluate(OperationScriptHeadHook, .{ bld, id });
     }
 
-    const operation = (try symbols.getShape(id)).operation;
-    const errors = try listShapeErrors(self.alloc(), symbols, operation.errors);
+    const op = (try symbols.getShape(id)).operation;
+    const errors = try listShapeErrors(self.alloc(), symbols, op.errors);
 
     const op_name = try symbols.getShapeName(id, .pascal, .{});
-    const context = .{ .arena = self.alloc(), .symbols = symbols, .id = id, .name = op_name, .op = operation, .errors = errors };
+    const context = .{ .self = self, .symbols = symbols, .id = id, .name = op_name, .op = op, .errors = errors };
     try bld.public().constant(op_name).assign(
         bld.x.@"struct"().bodyWith(context, struct {
             fn f(ctx: @TypeOf(context), b: *zig.ContainerBuild) !void {
+                const arena = ctx.self.alloc();
                 try b.field(cfg.alloc_param).typing(b.x.id("Allocator")).end();
                 try b.field("client").typing(b.x.typePointer(false, b.x.raw(cfg.service_client_type))).end();
                 if (ctx.op.input != null) try b.field("input").typing(b.x.id("Input")).end();
 
-                const send_ctx = SendFuncContext{
-                    .arena = ctx.arena,
-                    .id = ctx.id,
-                    .name = ctx.name,
-                    .symbols = ctx.symbols,
-                    .operation = ctx.op,
-                };
                 try b.public().function("send")
                     .arg("self", b.x.This())
                     .returns(b.x.typeError(null, b.x.id("Result")))
-                    .bodyWith(send_ctx, sendFunc);
+                    .bodyWith(ctx.op.input != null, sendFunc);
+
+                const auth_optional = ctx.symbols.hasTrait(ctx.id, trt_auth.optional_auth_id);
+                const auth_schemes = trt_auth.Auth.get(ctx.symbols, ctx.id) orelse
+                    trt_auth.Auth.get(ctx.symbols, ctx.symbols.service_id) orelse
+                    ctx.symbols.service_auth_schemes;
+
+                var auth_exprs = try std.ArrayList(zig.ExprBuild).initCapacity(arena, auth_schemes.len);
+                for (auth_schemes) |aid| {
+                    const string = b.x.valueOf(try arena.dupe(u8, aid.toString()));
+                    auth_exprs.appendAssumeCapacity(
+                        b.x.id(cfg.runtime_scope).dot().id("AuthId").dot().call("of", &.{string}),
+                    );
+                }
+
+                var meta = try std.ArrayList(zig.ExprBuild).initCapacity(arena, 10);
+                meta.appendAssumeCapacity(b.x.structAssign("name", b.x.valueOf(ctx.name)));
+                meta.appendAssumeCapacity(b.x.structAssign("Input", if (ctx.op.input) |_| b.x.id("Input") else b.x.typeOf(void)));
+                meta.appendAssumeCapacity(b.x.structAssign("Output", if (ctx.op.output) |_| b.x.id("Output") else b.x.typeOf(void)));
+                meta.appendAssumeCapacity(b.x.structAssign("Errors", if (ctx.errors.len > 0) b.x.id("ErrorKind") else b.x.typeOf(void)));
+                meta.appendAssumeCapacity(b.x.structAssign("Result", b.x.id("Result")));
+                meta.appendAssumeCapacity(b.x.structAssign("serial_input", if (ctx.op.input) |_| b.x.id("scheme_input") else b.x.raw(".{}")));
+                meta.appendAssumeCapacity(b.x.structAssign("serial_output", if (ctx.op.output) |_| b.x.id("scheme_output") else b.x.raw(".{}")));
+                meta.appendAssumeCapacity(b.x.structAssign("serial_errors", if (ctx.errors.len > 0) b.x.id("scheme_errors") else b.x.raw(".{}")));
+                meta.appendAssumeCapacity(b.x.structAssign("auth_optional", b.x.valueOf(auth_optional)));
+                meta.appendAssumeCapacity(b.x.structAssign("auth_schemes", b.x.addressOf().structLiteral(null, auth_exprs.items)));
+                if (ctx.self.hasOverride(OperationMetaHook)) {
+                    try ctx.self.evaluate(OperationMetaHook, .{ &meta, b.x, ctx.id });
+                }
+                try b.constant("operation_meta").assign(b.x.structLiteral(null, meta.items));
 
                 try b.public().constant("Result").assign(blk: {
                     const payload = if (ctx.op.output != null) b.x.id("Output") else b.x.typeOf(void);
@@ -103,7 +123,7 @@ fn clientOperationTask(
                 });
 
                 if (ctx.op.input) |in_id| {
-                    try shape.writeShapeDecleration(ctx.arena, ctx.symbols, b, in_id, .{
+                    try shape.writeShapeDecleration(arena, ctx.symbols, b, in_id, .{
                         .identifier = "Input",
                         .scope = cfg.types_scope,
                         .behavior = .input,
@@ -111,7 +131,7 @@ fn clientOperationTask(
                 }
 
                 if (ctx.op.output) |out_id| {
-                    try shape.writeShapeDecleration(ctx.arena, ctx.symbols, b, out_id, .{
+                    try shape.writeShapeDecleration(arena, ctx.symbols, b, out_id, .{
                         .identifier = "Output",
                         .scope = cfg.types_scope,
                         .behavior = .output,
@@ -124,7 +144,7 @@ fn clientOperationTask(
                     }));
 
                     try b.public().constant("ErrorKind").assign(b.x.@"enum"().bodyWith(ErrorSetCtx{
-                        .arena = ctx.arena,
+                        .arena = arena,
                         .symbols = ctx.symbols,
                         .members = ctx.errors,
                     }, writeErrorSet));
@@ -133,65 +153,27 @@ fn clientOperationTask(
         }.f),
     );
 
-    if (operation.input) |in_id| {
+    if (op.input) |in_id| {
         const scheme = try serialShapeScheme(self, symbols, bld.x, in_id);
-        try bld.public().constant("serial_input_scheme").assign(scheme);
+        try bld.constant("scheme_input").assign(scheme);
     }
 
-    if (operation.output) |out_id| {
+    if (op.output) |out_id| {
         const scheme = try serialShapeScheme(self, symbols, bld.x, out_id);
-        try bld.public().constant("serial_output_scheme").assign(scheme);
+        try bld.constant("scheme_output").assign(scheme);
     }
 
     if (errors.len > 0) {
         const scheme = try serialErrorScheme(self, bld.x, errors);
-        try bld.public().constant("serial_error_scheme").assign(scheme);
+        try bld.constant("scheme_errors").assign(scheme);
     }
 }
 
-const SendFuncContext = struct {
-    arena: Allocator,
-    id: SmithyId,
-    name: []const u8,
-    symbols: *SymbolsProvider,
-    operation: *const SmithyOperation,
-};
-
-fn sendFunc(ctx: SendFuncContext, bld: *zig.BlockBuild) !void {
-    const op = ctx.operation;
-    const symbols = ctx.symbols;
-
-    const has_errors = op.errors.len + symbols.service_errors.len > 0;
-    const auth_optional = symbols.hasTrait(ctx.id, trt_auth.optional_auth_id);
-    const auth_schemes = trt_auth.Auth.get(symbols, ctx.id) orelse
-        trt_auth.Auth.get(symbols, symbols.service_id) orelse
-        symbols.service_auth_schemes;
-
-    var auth_exprs = try std.ArrayList(zig.ExprBuild).initCapacity(ctx.arena, auth_schemes.len);
-    for (auth_schemes) |aid| {
-        const string = bld.x.valueOf(try ctx.arena.dupe(u8, aid.toString()));
-        auth_exprs.appendAssumeCapacity(
-            bld.x.id(cfg.runtime_scope).dot().id("AuthId").dot().call("of", &.{string}),
-        );
-    }
-
+fn sendFunc(has_input: bool, bld: *zig.BlockBuild) !void {
     try bld.returns().raw("self.client").dot().call("_sendSync", &.{
         bld.x.raw("self.allocator"),
-        bld.x.structLiteral(null, &.{
-            bld.x.structAssign("name", bld.x.valueOf(ctx.name)),
-            bld.x.structAssign("Input", if (op.input) |_| bld.x.id("Input") else bld.x.typeOf(void)),
-            bld.x.structAssign("Output", if (op.output) |_| bld.x.id("Output") else bld.x.typeOf(void)),
-            bld.x.structAssign("Errors", if (has_errors) bld.x.id("ErrorKind") else bld.x.typeOf(void)),
-            bld.x.structAssign("Result", bld.x.id("Result")),
-            bld.x.structAssign("auth_optional", bld.x.valueOf(auth_optional)),
-            bld.x.structAssign("auth_schemes", bld.x.addressOf().structLiteral(null, auth_exprs.items)),
-        }),
-        bld.x.structLiteral(null, &.{
-            bld.x.structAssign("input", if (op.input) |_| bld.x.id("serial_input_scheme") else bld.x.raw(".{}")),
-            bld.x.structAssign("output", if (op.output) |_| bld.x.id("serial_output_scheme") else bld.x.raw(".{}")),
-            bld.x.structAssign("errors", if (has_errors) bld.x.id("serial_error_scheme") else bld.x.raw(".{}")),
-        }),
-        if (op.input) |_| bld.x.raw("self.input") else bld.x.valueOf({}),
+        bld.x.id("operation_meta"),
+        if (has_input) bld.x.raw("self.input") else bld.x.valueOf({}),
     }).end();
 }
 
@@ -458,20 +440,21 @@ test ClientOperation {
         \\    input: Input,
         \\
         \\    pub fn send(self: @This()) !Result {
-        \\        return self.client._sendSync(self.allocator, .{
-        \\            .name = "MyOperation",
-        \\            .Input = Input,
-        \\            .Output = Output,
-        \\            .Errors = ErrorKind,
-        \\            .Result = Result,
-        \\            .auth_optional = false,
-        \\            .auth_schemes = &.{},
-        \\        }, .{
-        \\            .input = serial_input_scheme,
-        \\            .output = serial_output_scheme,
-        \\            .errors = serial_error_scheme,
-        \\        }, self.input);
+        \\        return self.client._sendSync(self.allocator, operation_meta, self.input);
         \\    }
+        \\
+        \\    const operation_meta = .{
+        \\        .name = "MyOperation",
+        \\        .Input = Input,
+        \\        .Output = Output,
+        \\        .Errors = ErrorKind,
+        \\        .Result = Result,
+        \\        .serial_input = scheme_input,
+        \\        .serial_output = scheme_output,
+        \\        .serial_errors = scheme_errors,
+        \\        .auth_optional = false,
+        \\        .auth_schemes = &.{},
+        \\    };
         \\
         \\    pub const Result = smithy.Result(Output, ErrorKind);
         \\
@@ -524,7 +507,7 @@ test ClientOperation {
         \\    };
         \\};
         \\
-        \\pub const serial_input_scheme = .{ SerialType.structure, .{ .{
+        \\const scheme_input = .{ SerialType.structure, .{ .{
         \\    "Foo",
         \\    "foo",
         \\    true,
@@ -536,14 +519,14 @@ test ClientOperation {
         \\    .{SerialType.string},
         \\} } };
         \\
-        \\pub const serial_output_scheme = .{ SerialType.structure, .{.{
+        \\const scheme_output = .{ SerialType.structure, .{.{
         \\    "Qux",
         \\    "qux",
         \\    false,
         \\    .{SerialType.string},
         \\}} };
         \\
-        \\pub const serial_error_scheme = .{ SerialType.tagged_union, .{ .{
+        \\const scheme_errors = .{ SerialType.tagged_union, .{ .{
         \\    "NotFound",
         \\    "not_found",
         \\    .{},

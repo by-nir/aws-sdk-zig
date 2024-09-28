@@ -10,10 +10,10 @@ const cfg = @import("../config.zig");
 const mdl = @import("../model.zig");
 const SmithyId = mdl.SmithyId;
 const SmithyService = mdl.SmithyService;
+const trt_rules = @import("../traits/rules.zig");
 const IssuesBag = @import("../systems/issues.zig").IssuesBag;
 const RulesEngine = @import("../systems/rules.zig").RulesEngine;
 const SymbolsProvider = @import("../systems/SymbolsProvider.zig");
-const trt_rules = @import("../traits/rules.zig");
 const test_symbols = @import("../testing/symbols.zig");
 
 pub const ClientScriptHeadHook = jobz.Task.Hook("Smithy Client Script Head", anyerror!void, &.{*zig.ContainerBuild});
@@ -35,20 +35,6 @@ fn serviceClientTask(self: *const jobz.Delegate, symbols: *SymbolsProvider, bld:
     if (self.hasOverride(ClientScriptHeadHook)) {
         try self.evaluate(ClientScriptHeadHook, .{bld});
     }
-
-    try bld.constant("OperationMeta").assign(bld.x.@"struct"().body(struct {
-        fn f(b: *zig.ContainerBuild) !void {
-            try b.field("name").typing(b.x.typeOf([]const u8)).end();
-            try b.field("Input").typing(b.x.typeOf(type)).end();
-            try b.field("Output").typing(b.x.typeOf(type)).end();
-            try b.field("Errors").typing(b.x.typeOf(type)).end();
-            try b.field("Result").typing(b.x.typeOf(type)).end();
-            try b.field("auth_optional").typing(b.x.typeOf(bool)).end();
-            try b.field("auth_schemes").typing(
-                b.x.typeSlice(false, b.x.raw(cfg.runtime_scope).dot().id("AuthId")),
-            ).end();
-        }
-    }.f));
 
     try self.evaluate(WriteClientStruct, .{ bld, sid });
 
@@ -100,8 +86,7 @@ fn writeClientStruct(
                 try b.public().function("_sendSync")
                     .arg("self", b.x.id(cfg.service_client_type))
                     .arg("allocator", b.x.id("Allocator"))
-                    .arg("comptime meta", b.x.id("OperationMeta"))
-                    .arg("comptime serial", null)
+                    .arg("comptime meta", null)
                     .arg("input", b.x.raw("meta.Input"))
                     .returns(b.x.typeError(null, b.x.raw("meta.Result")))
                     .bodyWith(SendSyncContext{
@@ -174,16 +159,6 @@ test ServiceClient {
     try srvc.expectServiceScript(
         \\const srvc_endpoint = @import("endpoint.zig");
         \\
-        \\const OperationMeta = struct {
-        \\    name: []const u8,
-        \\    Input: type,
-        \\    Output: type,
-        \\    Errors: type,
-        \\    Result: type,
-        \\    auth_optional: bool,
-        \\    auth_schemes: []const smithy.AuthId,
-        \\};
-        \\
         \\/// Some _service_...
         \\pub const Client = struct {
         \\    pub fn myOperation(self: *const Client, allocator: Allocator, input: MyOperation.Input) MyOperation {
@@ -194,7 +169,7 @@ test ServiceClient {
         \\        };
         \\    }
         \\
-        \\    pub fn _sendSync(self: Client, allocator: Allocator, comptime meta: OperationMeta, comptime serial: anytype, input: meta.Input) !meta.Result {
+        \\    pub fn _sendSync(self: Client, allocator: Allocator, comptime meta: anytype, input: meta.Input) !meta.Result {
         \\        return undefined;
         \\    }
         \\};

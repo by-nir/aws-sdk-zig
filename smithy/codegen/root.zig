@@ -38,6 +38,7 @@ const gen_endpoint = @import("render/client_endpoint.zig");
 pub const EndpointScriptHeadHook = gen_endpoint.EndpointScriptHeadHook;
 const gen_operation = @import("render/client_operation.zig");
 pub const OperationScriptHeadHook = gen_operation.OperationScriptHeadHook;
+pub const OperationMetaHook = gen_operation.OperationMetaHook;
 
 // Systems
 const isu = @import("systems/issues.zig");

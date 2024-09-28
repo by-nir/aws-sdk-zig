@@ -3,10 +3,8 @@ const Allocator = std.mem.Allocator;
 const zig = @import("razdaz").zig;
 const Delegate = @import("jobz").Delegate;
 const smithy = @import("smithy/codegen");
-const SmithyId = smithy.SmithyId;
+const AuthId = smithy.traits.auth.AuthId;
 const SymbolsProvider = smithy.SymbolsProvider;
-const trt_smithy = smithy.traits.auth;
-const AuthId = trt_smithy.AuthId;
 const aws_cfg = @import("../config.zig");
 const trt_auth = @import("../traits/auth.zig");
 
@@ -111,6 +109,11 @@ fn writeSigV4(symbols: *SymbolsProvider, bld: *zig.BlockBuild) !void {
     else
         bld.x.id("service_code");
 
+    try bld.constant("auth_buffer").assign(bld.x.trys().call(
+        aws_cfg.scratch_alloc ++ ".create",
+        &.{bld.x.id(aws_cfg.scope_private).dot().id("SignBuffer")},
+    ));
+
     try bld.constant("scheme_config").assign(
         bld.x.raw(aws_cfg.scope_auth).dot().call("SigV4Scheme.evaluate", &.{
             sign_name,
@@ -120,17 +123,13 @@ fn writeSigV4(symbols: *SymbolsProvider, bld: *zig.BlockBuild) !void {
     );
 
     try bld.constant("identity").assign(try resolveExpr(bld.x, "credentials"));
-    try bld.constant("auth_buffer").assign(bld.x.trys().call(
-        aws_cfg.scratch_alloc ++ ".create",
-        &.{bld.x.id(aws_cfg.scope_private).dot().id("SignBuffer")},
-    ));
 
     try bld.trys().raw(aws_cfg.scope_auth).dot().call("signV4", &.{
         bld.x.id("auth_buffer"),
         bld.x.id(aws_cfg.send_op_param),
         bld.x.id("scheme_config"),
         bld.x.id("identity"),
-        bld.x.valueOf(false),
+        bld.x.id(aws_cfg.send_meta_param).dot().id("auth_skip_payload"),
     }).end();
 }
 

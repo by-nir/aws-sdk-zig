@@ -128,7 +128,7 @@ fn writeAwsJsonRequest(comptime flavor: u8, symbols: *SymbolsProvider, bld: *zig
             else => unreachable,
         }),
         target,
-        bld.x.id(aws_cfg.send_serial_param).dot().id("input"),
+        bld.x.id(aws_cfg.send_meta_param).dot().id("serial_input"),
         bld.x.id(aws_cfg.send_op_param),
         bld.x.id(aws_cfg.send_input_param),
     }).end();
@@ -142,9 +142,9 @@ fn writeAwsJsonResult(comptime flavor: u8, exp: zig.ExprBuild) !zig.ExprBuild {
             else => unreachable,
         }),
         exp.id(aws_cfg.send_meta_param).dot().id("Output"),
-        exp.id(aws_cfg.send_serial_param).dot().id("output"),
+        exp.id(aws_cfg.send_meta_param).dot().id("serial_output"),
         exp.id(aws_cfg.send_meta_param).dot().id("Errors"),
-        exp.id(aws_cfg.send_serial_param).dot().id("errors"),
+        exp.id(aws_cfg.send_meta_param).dot().id("serial_errors"),
         exp.addressOf().id(aws_cfg.output_arena),
         exp.id(aws_cfg.send_op_param),
     });
