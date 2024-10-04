@@ -54,33 +54,31 @@ pub fn writeOperationAuth(_: Allocator, symbols: *SymbolsProvider, bld: *zig.Blo
 
 fn writeAuthSwitch(symbols: *SymbolsProvider, bld: *zig.SwitchBuild) !void {
     for (symbols.service_auth_schemes) |aid| {
+        const context = .{ .symbols = symbols, .auth_id = aid };
         const str = bld.x.valueOf(try symbols.arena.dupe(u8, aid.toString()));
-        const id_expr = bld.x.id(aws_cfg.scope_smithy).dot().id("AuthId").dot().call("of", &.{str});
-        const context = .{ .symbols = symbols, .auth_id = aid, .id_expr = id_expr };
-        try bld.branch().case(id_expr).body(bld.x.blockWith(context, struct {
-            fn f(ctx: @TypeOf(context), b: *zig.BlockBuild) !void {
-                try b.@"if"(
-                    b.x.compTime().call("std.mem.indexOfScalar", &.{
-                        b.x.id(aws_cfg.scope_smithy).dot().id("AuthId"),
-                        b.x.id(aws_cfg.send_meta_param).dot().id("auth_schemes"),
-                        ctx.id_expr,
-                    }).op(.eql).valueOf(null),
-                ).body(
-                    b.x.continues(null),
-                ).end();
+        const case = bld.x.id(aws_cfg.scope_smithy).dot().id("AuthId").dot().call("of", &.{str});
+        try bld.inlined().branch().case(case).capture("id").body(
+            bld.x.@"if"(bld.x.compTime().call("std.mem.indexOfScalar", &.{
+                bld.x.id(aws_cfg.scope_smithy).dot().id("AuthId"),
+                bld.x.id(aws_cfg.send_meta_param).dot().id("auth_schemes"),
+                bld.x.id("id"),
+            })).capture("_").body(
+                bld.x.blockWith(context, struct {
+                    fn f(ctx: @TypeOf(context), b: *zig.BlockBuild) !void {
+                        switch (ctx.auth_id) {
+                            .http_bearer => try writeBearer(b),
+                            trt_auth.SigV4.auth_id => try writeSigV4(ctx.symbols, b),
+                            else => {
+                                // .http_basic, .http_digest, .http_api_key
+                                return error.UnimplementedAuthScheme;
+                            },
+                        }
 
-                switch (ctx.auth_id) {
-                    .http_bearer => try writeBearer(b),
-                    trt_auth.SigV4.auth_id => try writeSigV4(ctx.symbols, b),
-                    else => {
-                        // .http_basic, .http_digest, .http_api_key
-                        return error.UnimplementedAuthScheme;
-                    },
-                }
-
-                try b.breaks(null).end();
-            }
-        }.f));
+                        try b.breaks(null).end();
+                    }
+                }.f),
+            ).end(),
+        );
     }
 
     try bld.@"else"().body(

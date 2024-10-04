@@ -69,9 +69,7 @@ pub const pipeline_invoker = blk: {
         .injects = &.{SymbolsProvider},
     });
     _ = builder.Override(smithy.ClientScriptHeadHook, "AWS Client Script Head", writeClientScriptHead, .{});
-    _ = builder.Override(smithy.ClientShapeHeadHook, "AWS Client Shape Head", writeClientShapeHead, .{
-        .injects = &.{SymbolsProvider},
-    });
+    _ = builder.Override(smithy.ClientShapeHeadHook, "AWS Client Shape Head", writeClientShapeHead, .{});
     _ = builder.Override(smithy.ClientSendSyncFuncHook, "AWS Client Send Sync Func", writeSendSyncFunc, .{
         .injects = &.{SymbolsProvider},
     });
@@ -127,18 +125,7 @@ fn writeClientScriptHead(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!
     try bld.constant(aws_cfg.scope_protocol).assign(bld.x.id(aws_cfg.scope_private).dot().id("protocol"));
 }
 
-fn writeClientShapeHead(
-    _: *const Delegate,
-    symbols: *SymbolsProvider,
-    bld: *zig.ContainerBuild,
-    shape: *const SmithyService,
-) anyerror!void {
-    const service = ServiceTrait.get(symbols, symbols.service_id) orelse return error.MissingServiceTrait;
-    try bld.constant("service_code").assign(bld.x.valueOf(service.endpoint_prefix orelse return error.MissingServiceCode));
-    try bld.constant("service_version").assign(bld.x.valueOf(shape.version orelse return error.MissingServiceApiVersion));
-    try bld.constant("service_arn").typing(bld.x.typeOf(?[]const u8)).assign(bld.x.valueOf(service.arn_namespace orelse null));
-    try bld.constant("service_cloudtrail").typing(bld.x.typeOf(?[]const u8)).assign(bld.x.valueOf(service.cloud_trail_source orelse null));
-
+fn writeClientShapeHead(_: *const Delegate, bld: *zig.ContainerBuild, _: *const SmithyService) anyerror!void {
     try bld.field("config_sdk").typing(bld.x.id(aws_cfg.scope_private).dot().id("ClientConfig")).end();
     try bld.field("config_endpoint").typing(bld.x.raw(aws_cfg.endpoint_scope ++ ".EndpointConfig")).end();
     try bld.field("http").typing(bld.x.typePointer(true, bld.x.id(aws_cfg.scope_private).dot().id("HttpClient"))).end();

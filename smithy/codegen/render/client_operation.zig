@@ -1,5 +1,6 @@
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const mem = std.mem;
+const Allocator = mem.Allocator;
 const test_alloc = std.testing.allocator;
 const jobz = @import("jobz");
 const md = @import("razdaz").md;
@@ -17,6 +18,7 @@ const name_util = @import("../utils/names.zig");
 const trt_auth = @import("../traits/auth.zig");
 const trt_refine = @import("../traits/refine.zig");
 const trt_protocol = @import("../traits/protocol.zig");
+const trt_behavior = @import("../traits/behavior.zig");
 const test_symbols = @import("../testing/symbols.zig");
 
 pub const OperationScriptHeadHook = jobz.Task.Hook("Smithy Operation Script Head", anyerror!void, &.{ *zig.ContainerBuild, SmithyId });
@@ -69,25 +71,53 @@ fn clientOperationTask(
     const op = (try symbols.getShape(id)).operation;
     const errors = try listShapeErrors(self.alloc(), symbols, op.errors);
 
+    try shape.writeDocComment(symbols, bld, id, false);
+
     const op_name = try symbols.getShapeName(id, .pascal, .{});
     const context = .{ .self = self, .symbols = symbols, .id = id, .name = op_name, .op = op, .errors = errors };
     try bld.public().constant(op_name).assign(
         bld.x.@"struct"().bodyWith(context, struct {
             fn f(ctx: @TypeOf(context), b: *zig.ContainerBuild) !void {
+                const syb = ctx.symbols;
                 const arena = ctx.self.alloc();
                 try b.field(cfg.alloc_param).typing(b.x.id("Allocator")).end();
                 try b.field("client").typing(b.x.typePointer(false, b.x.raw(cfg.service_client_type))).end();
                 if (ctx.op.input != null) try b.field("input").typing(b.x.id("Input")).end();
 
-                try b.public().function("send")
-                    .arg("self", b.x.This())
-                    .returns(b.x.typeError(null, b.x.id("Result")))
-                    .bodyWith(ctx.op.input != null, sendFunc);
+                if (trt_behavior.Paginated.get(syb, ctx.id)) |pg| {
+                    var paginated = pg;
+                    if (paginated.isPartial()) {
+                        const service = trt_behavior.Paginated.get(syb, syb.service_id) orelse return error.ServiceMissingPagintedFallback;
+                        if (pg.input_token == null) paginated.input_token = service.input_token orelse return error.IncompletePaginated;
+                        if (pg.output_token == null) paginated.output_token = service.output_token orelse return error.IncompletePaginated;
+                        if (pg.items == null) paginated.items = service.items orelse return error.IncompletePaginated;
+                        if (pg.page_size == null) paginated.page_size = service.page_size;
+                    }
 
-                const auth_optional = ctx.symbols.hasTrait(ctx.id, trt_auth.optional_auth_id);
-                const auth_schemes = trt_auth.Auth.get(ctx.symbols, ctx.id) orelse
-                    trt_auth.Auth.get(ctx.symbols, ctx.symbols.service_id) orelse
-                    ctx.symbols.service_auth_schemes;
+                    const page_ctx = PageContext{
+                        .arena = arena,
+                        .symbols = syb,
+                        .has_input = ctx.op.input != null,
+                        .paginated = paginated,
+                    };
+
+                    try b.field("pages_complete").typing(b.x.typeOf(bool)).assign(b.x.valueOf(false));
+
+                    try b.public().function("nextPage")
+                        .arg("self", b.x.typePointer(true, b.x.id(ctx.name)))
+                        .returns(b.x.typeError(null, b.x.typeOptional(b.x.id("Result"))))
+                        .bodyWith(page_ctx, writeNextPageFunc);
+                } else {
+                    try b.public().function("send")
+                        .arg("self", b.x.This())
+                        .returns(b.x.typeError(null, b.x.id("Result")))
+                        .bodyWith(ctx.op.input != null, writeSendFunc);
+                }
+
+                const auth_optional = syb.hasTrait(ctx.id, trt_auth.optional_auth_id);
+                const auth_schemes = trt_auth.Auth.get(syb, ctx.id) orelse
+                    trt_auth.Auth.get(syb, syb.service_id) orelse
+                    syb.service_auth_schemes;
 
                 var auth_exprs = try std.ArrayList(zig.ExprBuild).initCapacity(arena, auth_schemes.len);
                 for (auth_schemes) |aid| {
@@ -123,7 +153,7 @@ fn clientOperationTask(
                 });
 
                 if (ctx.op.input) |in_id| {
-                    try shape.writeShapeDecleration(arena, ctx.symbols, b, in_id, .{
+                    try shape.writeShapeDecleration(arena, syb, b, in_id, .{
                         .identifier = "Input",
                         .scope = cfg.types_scope,
                         .behavior = .input,
@@ -131,7 +161,7 @@ fn clientOperationTask(
                 }
 
                 if (ctx.op.output) |out_id| {
-                    try shape.writeShapeDecleration(arena, ctx.symbols, b, out_id, .{
+                    try shape.writeShapeDecleration(arena, syb, b, out_id, .{
                         .identifier = "Output",
                         .scope = cfg.types_scope,
                         .behavior = .output,
@@ -145,7 +175,7 @@ fn clientOperationTask(
 
                     try b.public().constant("ErrorKind").assign(b.x.@"enum"().bodyWith(ErrorSetCtx{
                         .arena = arena,
-                        .symbols = ctx.symbols,
+                        .symbols = syb,
                         .members = ctx.errors,
                     }, writeErrorSet));
                 }
@@ -169,12 +199,81 @@ fn clientOperationTask(
     }
 }
 
-fn sendFunc(has_input: bool, bld: *zig.BlockBuild) !void {
-    try bld.returns().raw("self.client").dot().call("_sendSync", &.{
-        bld.x.raw("self.allocator"),
-        bld.x.id("operation_meta"),
-        if (has_input) bld.x.raw("self.input") else bld.x.valueOf({}),
-    }).end();
+fn writeSendFunc(has_input: bool, bld: *zig.BlockBuild) !void {
+    try bld.returns().fromExpr(try buildSendOperation(has_input, bld.x)).end();
+}
+
+fn buildSendOperation(has_input: bool, expr: zig.ExprBuild) !zig.Expr {
+    return expr.raw("self.client").dot().call("_sendSync", &.{
+        expr.raw("self.allocator"),
+        expr.id("operation_meta"),
+        if (has_input) expr.raw("self.input") else expr.valueOf({}),
+    }).consume();
+}
+
+const PageContext = struct {
+    arena: Allocator,
+    has_input: bool,
+    symbols: *SymbolsProvider,
+    paginated: trt_behavior.Paginated.Val,
+};
+
+fn writeNextPageFunc(ctx: PageContext, bld: *zig.BlockBuild) !void {
+    try bld.@"if"(bld.x.raw("self.pages_complete"))
+        .body(bld.x.returns().valueOf(null))
+        .end();
+
+    try bld.constant("response").assign(
+        bld.x.trys().fromExpr(try buildSendOperation(ctx.has_input, bld.x)),
+    );
+
+    try bld.@"if"(bld.x.id("response").op(.eql).valueOf(.ok)).body(bld.x.blockWith(ctx, struct {
+        fn f(c: PageContext, b: *zig.BlockBuild) !void {
+            const input_token, const output_token = try buildPageTokens(c.arena, c.paginated);
+            try b.@"if"(b.x.raw("response.ok").dot().raw(output_token)).capture("token")
+                .body(b.x.raw("self.input.").raw(input_token).assign().id("token"))
+                .@"else"().body(b.x.raw("self.pages_complete").assign().valueOf(true))
+                .end();
+        }
+    }.f)).end();
+
+    try bld.returns().id("response").end();
+}
+
+fn buildPageTokens(arena: Allocator, paginated: trt_behavior.Paginated.Val) !struct { []const u8, []const u8 } {
+    return .{
+        try pathStringExpr(arena, paginated.input_token.?),
+        try pathStringExpr(arena, paginated.output_token.?),
+    };
+}
+
+fn pathStringExpr(arena: Allocator, path: []const u8) ![]const u8 {
+    var buffer = std.ArrayList(u8).init(arena);
+    errdefer buffer.deinit();
+
+    var pos: usize = 0;
+    while (pos < path.len) {
+        const i = mem.indexOfAnyPos(u8, path, pos, ".[") orelse path.len;
+
+        const field = try name_util.formatCase(arena, .snake, path[pos..i]);
+        try buffer.appendSlice(field);
+        if (i == path.len) break;
+
+        switch (path[i]) {
+            '.' => {
+                try buffer.append('.');
+                pos = i + 1;
+            },
+            '[' => {
+                const end = mem.indexOfScalarPos(u8, path, i + 2, ']').?;
+                try buffer.appendSlice(path[i .. end + 1]);
+                break; // Indexer may only be the last part of the path.
+            },
+            else => unreachable,
+        }
+    }
+
+    return try buffer.toOwnedSlice();
 }
 
 fn listShapeErrors(
@@ -193,8 +292,8 @@ fn listShapeErrors(
 
     outer: for (symbols.service_errors) |srvc_err| {
         for (members.items[0..shape_errors.len]) |op_err| {
-            if (std.mem.eql(u8, op_err.name_api, srvc_err.name_api)) continue :outer;
-            if (std.mem.eql(u8, op_err.name_field, srvc_err.name_field)) continue :outer;
+            if (mem.eql(u8, op_err.name_api, srvc_err.name_api)) continue :outer;
+            if (mem.eql(u8, op_err.name_field, srvc_err.name_field)) continue :outer;
         }
 
         try members.append(srvc_err);
