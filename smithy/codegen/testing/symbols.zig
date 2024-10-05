@@ -89,7 +89,11 @@ fn setupMap(model: *Model) !void {
     });
 }
 
-const ENUM_TRT: trt_constr.Enum.Sentinel = &.{ .{ .value = "FOO_BAR" }, .{ .value = "baz$qux", .name = "BAZ_QUX" } };
+const ENUM_TRT: []const trt_constr.Enum.Member = &.{
+    .{ .value = "FOO_BAR" },
+    .{ .value = "baz$qux", .name = "BAZ_QUX" },
+    .{ .value = "" },
+};
 const en1 = SmithyId.of("test#Enum$BAZ_QUX");
 const ENUM_STR = &.{ SmithyId.of("test#Enum$FOO_BAR"), en1 };
 fn setupEnums(model: *Model) !void {
@@ -110,7 +114,7 @@ fn setupEnums(model: *Model) !void {
     try model.shapes.put(test_alloc, SmithyId.of("test#EnumTrt"), .trt_enum);
     try model.traits.put(test_alloc, SmithyId.of("test#EnumTrt"), &.{.{
         .id = trt_constr.Enum.id,
-        .value = ENUM_TRT,
+        .value = ENUM_TRT.ptr,
     }});
 }
 

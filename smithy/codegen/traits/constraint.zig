@@ -173,7 +173,6 @@ test Range {
 pub const Enum = struct {
     pub const id = SmithyId.of("smithy.api#enum");
 
-    pub const Sentinel = [*:Member.empty]const Member;
     pub const Member = struct {
         /// Defines the enum value that is sent over the wire.
         value: []const u8,
@@ -211,7 +210,8 @@ pub const Enum = struct {
             try list.append(member);
         }
 
-        const slice = try list.toOwnedSliceSentinel(Member.empty);
+        try list.append(Member.empty);
+        const slice = try list.toOwnedSlice();
         return slice.ptr;
     }
 
@@ -245,7 +245,7 @@ pub const Enum = struct {
     }
 
     fn cast(ptr: *const anyopaque) []const Member {
-        const pairs: Sentinel = @alignCast(@ptrCast(ptr));
+        const pairs: [*]const Member = @alignCast(@ptrCast(ptr));
         var i: usize = 0;
         while (true) : (i += 1) {
             const pair = pairs[i];

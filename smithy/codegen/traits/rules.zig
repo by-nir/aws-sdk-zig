@@ -78,7 +78,7 @@ pub const EndpointTests = struct {
     }
 
     fn cast(ptr: *const anyopaque) ?[]const rls.TestCase {
-        const items: [*:.{}]const rls.TestCase = @alignCast(@ptrCast(ptr));
+        const items: [*]const rls.TestCase = @ptrCast(@alignCast(ptr));
         var i: usize = 0;
         while (true) : (i += 1) {
             const item = items[i];

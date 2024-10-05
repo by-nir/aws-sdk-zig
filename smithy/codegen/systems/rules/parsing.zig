@@ -511,7 +511,7 @@ test "parseRuleSet" {
     }, value);
 }
 
-pub fn parseTests(arena: Allocator, reader: *JsonReader) ![:.{}]const mdl.TestCase {
+pub fn parseTests(arena: Allocator, reader: *JsonReader) ![]const mdl.TestCase {
     var cases = std.ArrayList(mdl.TestCase).init(arena);
 
     try reader.nextObjectBegin();
@@ -532,7 +532,8 @@ pub fn parseTests(arena: Allocator, reader: *JsonReader) ![:.{}]const mdl.TestCa
     }
     try reader.nextObjectEnd();
 
-    return cases.toOwnedSliceSentinel(mdl.TestCase{});
+    try cases.append(.{});
+    return cases.toOwnedSlice();
 }
 
 fn parseTestCase(arena: Allocator, reader: *JsonReader) !mdl.TestCase {
@@ -651,5 +652,6 @@ test "parseTests" {
             .expect = .{ .err = "Boom!" },
             .params = &.{},
         },
+        .{},
     }, value);
 }
