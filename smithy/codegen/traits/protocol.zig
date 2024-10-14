@@ -6,23 +6,36 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const mdl = @import("../model.zig");
-const SmithyId = mdl.SmithyId;
+const SmithyId = @import("../model.zig").SmithyId;
+const trt = @import("../systems/traits.zig");
+const StringTrait = trt.StringTrait;
+const TraitsRegistry = trt.TraitsRegistry;
 const SymbolsProvider = @import("../systems/SymbolsProvider.zig");
-const TraitsRegistry = @import("../systems/traits.zig").TraitsRegistry;
 const JsonReader = @import("../utils/JsonReader.zig");
 
 // TODO: Remainig traits
 pub const registry: TraitsRegistry = &.{
     // smithy.api#protocolDefinition
-    // smithy.api#jsonName
-    // smithy.api#mediaType
+    .{ JsonName.id, JsonName.parse },
+    .{ MediaType.id, MediaType.parse },
     .{ TimestampFormat.id, TimestampFormat.parse },
     // smithy.api#xmlAttribute
     // smithy.api#xmlFlattened
     // smithy.api#xmlName
     // smithy.api#xmlNamespace
 };
+
+/// Allows a serialized object property name in a JSON document to differ from a
+/// structure or union member name used in the model.
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/protocol-traits.html#jsonname-trait)
+pub const JsonName = StringTrait("smithy.api#jsonName");
+
+/// Describes the contents of a blob or string shape using a design-time media
+/// type as defined by [RFC 6838](https://datatracker.ietf.org/doc/html/rfc6838.html).
+///
+/// [Smithy Spec](https://smithy.io/2.0/spec/protocol-traits.html#mediatype-trait)
+pub const MediaType = StringTrait("smithy.api#mediaType");
 
 /// Defines an optional custom timestamp serialization format.
 ///

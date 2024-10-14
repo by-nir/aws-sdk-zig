@@ -29,6 +29,9 @@ pub const SharedFilesIdentity = identity.SharedFilesProvider;
 const auth_sign = @import("auth/sigv4.zig");
 const auth_schemes = @import("auth/schemes.zig");
 
+const protocol_http = @import("protocols/http.zig");
+const protocol_json = @import("protocols/json.zig");
+
 pub const _private_ = struct {
     pub const ClientConfig = conf.ClientConfig;
     pub const ClientRequest = http.Request;
@@ -43,11 +46,10 @@ pub const _private_ = struct {
     pub const SignBuffer = auth_sign.SignBuffer;
     pub const auth = auth_schemes;
     pub const protocol = struct {
+        pub const http = protocol_http;
         pub const json = protocol_json;
     };
 };
-
-const protocol_json = @import("protocols/json.zig");
 
 test {
     _ = @import("utils/url.zig");
@@ -64,6 +66,7 @@ test {
     _ = identity;
     _ = auth_schemes;
     _ = @import("auth/sigv4.zig");
+    _ = protocol_http;
     _ = protocol_json;
     _ = http;
     _ = conf;

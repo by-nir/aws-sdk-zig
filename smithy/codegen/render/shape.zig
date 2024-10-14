@@ -26,8 +26,8 @@ const JsonValue = @import("../utils/JsonReader.zig").Value;
 const trt_docs = @import("../traits/docs.zig");
 const trt_refine = @import("../traits/refine.zig");
 const trt_constr = @import("../traits/constraint.zig");
-const trt_protocol = @import("../traits/protocol.zig");
 const test_symbols = @import("../testing/symbols.zig");
+const TimestampFormat = @import("../traits/protocol.zig").TimestampFormat;
 
 pub const ShapeOptions = struct {
     /// Override the struct’s identifier.
@@ -165,7 +165,7 @@ const StrEnumMember = struct {
     pub fn asLiteralExpr(self: StrEnumMember, bld: *ContainerBuild) ExprBuild {
         return bld.x.structLiteral(
             null,
-            &.{ bld.x.valueOf(self.value), bld.x.dot().raw(self.field) },
+            &.{ bld.x.valueOf(self.value), bld.x.dot().id(self.field) },
         );
     }
 };
@@ -225,7 +225,7 @@ fn writeEnumShape(
         fn toStringSwitch(ctx: @TypeOf(context), b: *zig.SwitchBuild) !void {
             try b.branch().case(b.x.valueOf(.UNKNOWN)).capture("s").body(b.x.raw("s"));
             for (ctx.members) |m| {
-                try b.branch().case(b.x.dot().raw(m.field)).body(b.x.valueOf(m.value));
+                try b.branch().case(b.x.dot().id(m.field)).body(b.x.valueOf(m.value));
             }
         }
     };
@@ -573,7 +573,11 @@ fn writeStructShapeMember(
                 break :blk bld.x.valueOf(target);
             },
             .timestamp => blk: {
-                const format = trt_protocol.TimestampFormat.get(symbols, id) orelse symbols.service_timestamp_fmt;
+                const format = TimestampFormat.get(symbols, id) orelse switch (try symbols.getShape(id)) {
+                    .target => |d| TimestampFormat.get(symbols, d) orelse symbols.service_timestamp_fmt,
+                    else => symbols.service_timestamp_fmt,
+                };
+
                 const epoch_ms: i64 = switch (format) {
                     .date_time => try runtime_serial.parseTimestamp(json.string),
                     .http_date => try runtime_serial.parseHttpDate(json.string),
@@ -715,11 +719,11 @@ test writeDocument {
     );
 }
 
-pub const ListType = enum { standard, sparse, set };
+pub const ListType = enum { dense, sparse, set };
 pub fn listType(symbols: *const SymbolsProvider, shape_id: SmithyId) ListType {
     if (symbols.hasTrait(shape_id, trt_constr.unique_items_id)) return ListType.set;
     if (symbols.hasTrait(shape_id, trt_refine.sparse_id)) return ListType.sparse;
-    return ListType.standard;
+    return ListType.dense;
 }
 
 pub fn typeName(symbols: *SymbolsProvider, id: SmithyId, scoped: ?[]const u8) ![]const u8 {
@@ -762,7 +766,7 @@ pub fn typeName(symbols: *SymbolsProvider, id: SmithyId, scoped: ?[]const u8) ![
                 .list => |target| {
                     const target_type = try typeName(symbols, target, scoped);
                     return switch (listType(symbols, shape_id)) {
-                        .standard => std.fmt.allocPrint(symbols.arena, "[]const {s}", .{target_type}),
+                        .dense => std.fmt.allocPrint(symbols.arena, "[]const {s}", .{target_type}),
                         .sparse => std.fmt.allocPrint(symbols.arena, "[]const ?{s}", .{target_type}),
                         .set => std.fmt.allocPrint(symbols.arena, cfg.runtime_scope ++ ".Set({s})", .{target_type}),
                     };

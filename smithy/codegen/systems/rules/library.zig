@@ -303,14 +303,14 @@ test "fnParseUrl" {
 fn fnUriEncode(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const value = try gen.evalArg(x, args[0]);
     return x.trys()
-        .call(cfg.runtime_scope ++ ".rules.uriEncode", &.{ x.id(cfg.scratch_alloc), x.fromExpr(value) })
+        .call(cfg.runtime_scope ++ ".serial.uriEncode", &.{ x.id(cfg.scratch_alloc), x.fromExpr(value) })
         .consume();
 }
 
 test "fnUriEncode" {
     try Function.expect(fnUriEncode, &.{
         .{ .string = "foo" },
-    }, "try " ++ cfg.runtime_scope ++ ".rules.uriEncode(" ++ cfg.scratch_alloc ++ ", \"foo\")");
+    }, "try " ++ cfg.runtime_scope ++ ".serial.uriEncode(" ++ cfg.scratch_alloc ++ ", \"foo\")");
 }
 
 fn fnSubstring(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {

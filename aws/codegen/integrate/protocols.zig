@@ -22,6 +22,7 @@ pub fn resolveServiceProtocol(symbols: *SymbolsProvider) !Protocol {
         switch (trait.id) {
             trt_proto.AwsJson10.id => return .json_1_0,
             trt_proto.AwsJson11.id => return .json_1_1,
+            trt_proto.RestJson1.id => return .rest_json_1,
             else => {},
         }
     }
@@ -59,6 +60,10 @@ pub fn resolveServiceTransport(symbols: *SymbolsProvider, protocol: Protocol) !S
                 const value = trt_proto.AwsJson11.get(symbols, symbols.service_id).?;
                 break :blk .{ value.http orelse &.{}, value.event_stream_http orelse &.{} };
             },
+            .rest_json_1 => {
+                const value = trt_proto.RestJson1.get(symbols, symbols.service_id).?;
+                break :blk .{ value.http orelse &.{}, value.event_stream_http orelse &.{} };
+            },
             else => return error.UnimplementedServiceProtocol,
         }
     };
@@ -81,71 +86,196 @@ fn resolveTransportPriority(transports: []const []const u8, default: Transport) 
     return error.UnsupportedTransports;
 }
 
-pub fn resolveHttpMethod(protocol: Protocol) std.http.Method {
+pub fn resolveDefaultHttpMethod(protocol: Protocol) std.http.Method {
     return switch (protocol) {
         .json_1_0, .json_1_1 => .POST,
+        .rest_json_1 => undefined,
         else => unreachable,
     };
 }
 
 pub fn resolveTimestampFormat(protocol: Protocol) TimestampFormat {
     return switch (protocol) {
-        .json_1_0, .json_1_1 => .epoch_seconds,
+        .json_1_0, .json_1_1, .rest_json_1 => .epoch_seconds,
         else => unreachable,
     };
 }
 
 pub fn writeOperationRequest(_: Allocator, symbols: *SymbolsProvider, bld: *zig.BlockBuild, protocol: Protocol) !void {
     switch (protocol) {
-        .json_1_0 => try writeAwsJsonRequest(10, symbols, bld),
-        .json_1_1 => try writeAwsJsonRequest(11, symbols, bld),
+        .json_1_0, .json_1_1 => try writeAwsJsonRequest(protocol, symbols, bld),
+        .rest_json_1 => {
+            try writeHttpRequest(bld);
+            try writeRestJsonRequest(bld);
+        },
         else => return error.UnimplementedProtocol,
     }
 }
 
-pub fn writeOperationResult(
-    _: Allocator,
-    _: *SymbolsProvider,
-    bld: *zig.BlockBuild,
-    protocol: Protocol,
-) !zig.ExprBuild {
-    return switch (protocol) {
-        .json_1_0 => try writeAwsJsonResult(10, bld.x),
-        .json_1_1 => try writeAwsJsonResult(11, bld.x),
-        else => error.UnimplementedProtocol,
-    };
+fn writeHttpRequest(bld: *zig.BlockBuild) !void {
+    const scheme_exp = bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_input");
+    try bld.constant("meta_scheme").assign(scheme_exp.valIndexer(bld.x.valueOf(0)));
+    try bld.constant("members_scheme").assign(scheme_exp.valIndexer(bld.x.valueOf(2)));
+
+    try bld.constant("uri_path").assign(bld.x.@"if"(
+        bld.x.raw("@hasField(@TypeOf(meta_scheme), \"labels\")"),
+    ).body(bld.x.trys().id(aws_cfg.scope_protocol).dot().call("http.uriMetaLabels", &.{
+        bld.x.id(aws_cfg.send_op_param).dot().id("allocator"),
+        bld.x.id("meta_scheme").id("labels"),
+        bld.x.id("members_scheme"),
+        bld.x.id(aws_cfg.send_meta_param).dot().id("http_uri"),
+        bld.x.id(aws_cfg.send_input_param),
+    })).@"else"().body(
+        bld.x.id(aws_cfg.send_meta_param).dot().id("http_uri"),
+    ).end());
+
+    try bld.id(aws_cfg.send_op_param).raw(".request.endpoint.path").assign().structLiteral(null, &.{
+        bld.x.structAssign("raw", bld.x.id("uri_path")),
+    }).end();
+
+    try bld.@"if"(
+        bld.x.raw("@hasField(@TypeOf(meta_scheme), \"params\")"),
+    ).body(bld.x.trys().id(aws_cfg.scope_protocol).dot().call("http.writeMetaParams", &.{
+        bld.x.id(aws_cfg.send_op_param).dot().id("allocator"),
+        bld.x.id("meta_scheme").dot().id("params"),
+        bld.x.id("members_scheme"),
+        bld.x.id(aws_cfg.send_input_param),
+        bld.x.addressOf().id(aws_cfg.send_op_param).dot().id("request"),
+    })).end();
 }
 
-fn writeAwsJsonRequest(comptime flavor: u8, symbols: *SymbolsProvider, bld: *zig.BlockBuild) !void {
+fn writeAwsJsonRequest(protocol: Protocol, symbols: *SymbolsProvider, bld: *zig.BlockBuild) !void {
     const target = bld.x.valueOf(
         try symbols.getShapeName(symbols.service_id, .pascal, .{ .suffix = "." }),
     ).op(.@"++").id(aws_cfg.send_meta_param).dot().id("name");
 
-    try bld.trys().id(aws_cfg.scope_protocol).dot().call("json.operationRequest", &.{
-        bld.x.valueOf(switch (flavor) {
-            10 => .aws_1_0,
-            11 => .aws_1_1,
+    try bld.trys().id(aws_cfg.send_op_param).dot().id("request").dot().call("putHeader", &.{
+        bld.x.id(aws_cfg.scratch_alloc),
+        bld.x.valueOf("x-amz-target"),
+        target,
+    }).end();
+
+    const scheme_exp = bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_input");
+    try bld.trys().id(aws_cfg.scope_protocol).dot().call("json.requestShape", &.{
+        bld.x.id(aws_cfg.send_op_param).dot().id("allocator"),
+        scheme_exp.valIndexer(bld.x.valueOf(2)),
+        scheme_exp.valIndexer(bld.x.valueOf(1)),
+        bld.x.valueOf(switch (protocol) {
+            .json_1_0 => "application/x-amz-json-1.0",
+            .json_1_1 => "application/x-amz-json-1.1",
             else => unreachable,
         }),
-        target,
-        bld.x.id(aws_cfg.send_meta_param).dot().id("serial_input"),
-        bld.x.id(aws_cfg.send_op_param),
+        bld.x.addressOf().id(aws_cfg.send_op_param).dot().id("request"),
         bld.x.id(aws_cfg.send_input_param),
     }).end();
 }
 
-fn writeAwsJsonResult(comptime flavor: u8, exp: zig.ExprBuild) !zig.ExprBuild {
-    return exp.id(aws_cfg.scope_protocol).dot().call("json.operationResponse", &.{
-        exp.valueOf(switch (flavor) {
-            10 => .aws_1_0,
-            11 => .aws_1_1,
-            else => unreachable,
+fn writeRestJsonRequest(bld: *zig.BlockBuild) !void {
+    try bld.@"if"(
+        bld.x.raw("@hasField(@TypeOf(meta_scheme), \"payload\")"),
+    ).body(bld.x.block(struct {
+        fn f(b: *zig.BlockBuild) !void {
+            try b.constant("member_scheme").assign(b.x.id("members_scheme").valIndexer(
+                b.x.id("meta_scheme").dot().id("payload").valIndexer(b.x.valueOf(1)),
+            ));
+
+            try b.trys().id(aws_cfg.scope_protocol).dot().call("json.requestPayload", &.{
+                b.x.id(aws_cfg.send_op_param).dot().id("allocator"),
+                b.x.id("meta_scheme").dot().id("payload"),
+                b.x.id("member_scheme"),
+                b.x.addressOf().id(aws_cfg.send_op_param).dot().id("request"),
+                b.x.call("@field", &.{
+                    b.x.id(aws_cfg.send_input_param),
+                    b.x.id("member_scheme").valIndexer(b.x.valueOf(1)),
+                }),
+            }).end();
+        }
+    }.f)).@"else"().body(
+        bld.x.trys().id(aws_cfg.scope_protocol).dot().call("json.requestShape", &.{
+            bld.x.id(aws_cfg.send_op_param).dot().id("allocator"),
+            bld.x.id("members_scheme"),
+            bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_input").valIndexer(bld.x.valueOf(1)),
+            bld.x.valueOf("application/json"),
+            bld.x.addressOf().id(aws_cfg.send_op_param).dot().id("request"),
+            bld.x.id(aws_cfg.send_input_param),
         }),
-        exp.id(aws_cfg.send_meta_param).dot().id("Output"),
-        exp.id(aws_cfg.send_meta_param).dot().id("serial_output"),
-        exp.id(aws_cfg.send_meta_param).dot().id("Errors"),
-        exp.id(aws_cfg.send_meta_param).dot().id("serial_errors"),
-        exp.addressOf().id(aws_cfg.output_arena),
-        exp.id(aws_cfg.send_op_param),
-    });
+    ).end();
+}
+
+pub fn writeOperationResponse(bld: *zig.BlockBuild, protocol: Protocol) !void {
+    try bld.constant("response").assign(
+        bld.x.id(aws_cfg.send_op_param).dot().id("response").orElse().returns().valueOf(error.MissingResponse),
+    );
+
+    try bld.switchWith(bld.x.raw("response.status.class()"), protocol, struct {
+        fn f(p: Protocol, b: *zig.SwitchBuild) !void {
+            try b.branch().case(b.x.valueOf(.success)).body(
+                b.x.blockWith(p, writeResponseSuccess),
+            );
+            try b.branch().case(b.x.valueOf(.client_error)).case(b.x.valueOf(.server_error)).body(
+                b.x.blockWith(p, writeResponseFail),
+            );
+            try b.@"else"().body(b.x.returns().valueOf(error.UnexpectedResponseStatus));
+        }
+    }.f);
+}
+
+fn writeResponseSuccess(protocol: Protocol, bld: *zig.BlockBuild) !void {
+    try bld.variable("output").assign(bld.x.call("std.mem.zeroInit", &.{
+        bld.x.id(aws_cfg.send_meta_param).dot().id("Output"),
+        bld.x.structLiteral(null, &.{}),
+    }));
+
+    switch (protocol) {
+        .rest_json_1 => {
+            try bld.trys().id(aws_cfg.scope_protocol).dot().call("http.parseMeta", &.{
+                bld.x.id(aws_cfg.output_arena).dot().call("allocator", &.{}),
+                bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_output").valIndexer(bld.x.valueOf(0)),
+                bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_output").valIndexer(bld.x.valueOf(2)),
+                bld.x.id("response"),
+                bld.x.addressOf().id("output"),
+            }).end();
+        },
+        else => {},
+    }
+
+    switch (protocol) {
+        .json_1_0, .json_1_1, .rest_json_1 => {
+            try bld.trys().id(aws_cfg.scope_protocol).dot().call("json.responseOutput", &.{
+                bld.x.id(aws_cfg.scratch_alloc),
+                bld.x.id(aws_cfg.output_arena).dot().call("allocator", &.{}),
+                bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_output"),
+                bld.x.id("response").dot().id("body"),
+                bld.x.addressOf().id("output"),
+            }).end();
+        },
+        else => return error.UnimplementedProtocol,
+    }
+
+    try bld.@"if"(
+        bld.x.id(aws_cfg.output_arena).dot().call("queryCapacity", &.{}).op(.gt).valueOf(0),
+    ).body(
+        bld.x.id("output").dot().id("arena").assign().id(aws_cfg.output_arena),
+    ).end();
+
+    try bld.returns().structLiteral(null, &.{
+        bld.x.structAssign("ok", bld.x.id("output")),
+    }).end();
+}
+
+fn writeResponseFail(protocol: Protocol, bld: *zig.BlockBuild) !void {
+    const err_exp = switch (protocol) {
+        .json_1_0, .json_1_1, .rest_json_1 => bld.x.trys().id(aws_cfg.scope_protocol).dot().call("json.responseError", &.{
+            bld.x.id(aws_cfg.scratch_alloc),
+            bld.x.addressOf().id(aws_cfg.output_arena),
+            bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_errors"),
+            bld.x.id(aws_cfg.send_meta_param).dot().id("Errors"),
+            bld.x.id("response"),
+        }),
+        else => return error.UnimplementedProtocol,
+    };
+
+    try bld.returns().structLiteral(null, &.{
+        bld.x.structAssign("fail", err_exp),
+    }).end();
 }

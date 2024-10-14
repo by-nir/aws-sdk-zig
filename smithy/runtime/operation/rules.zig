@@ -1,8 +1,7 @@
 const std = @import("std");
+const fmt = std.fmt;
 const mem = std.mem;
 const Allocator = mem.Allocator;
-const fmt = std.fmt;
-const ascii = std.ascii;
 const testing = std.testing;
 const test_alloc = std.testing.allocator;
 
@@ -145,42 +144,6 @@ test "RulesUrl" {
     }, "https://[fe80::1]");
 }
 
-pub fn uriEncode(allocator: Allocator, value: []const u8) ![]const u8 {
-    const encoder = UriEncoder{ .raw = value };
-    return fmt.allocPrint(allocator, "{}", .{encoder});
-}
-
-test "uriEncode" {
-    const escaped = try uriEncode(test_alloc, ":/?#[]@!$&'()*+,;=%");
-    defer test_alloc.free(escaped);
-    try testing.expectEqualStrings("%3A%2F%3F%23%5B%5D%40%21%24%26%27%28%29%2A%2B%2C%3B%3D%25", escaped);
-}
-
-// https://github.com/smithy-lang/smithy-rs/blob/main/rust-runtime/aws-smithy-http/src/urlencode.rs
-const UriEncoder = struct {
-    raw: []const u8,
-
-    pub fn format(self: UriEncoder, comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
-        var start: usize = 0;
-        for (self.raw, 0..) |char, index| {
-            if (isValidUrlChar(char)) continue;
-            try writer.print("{s}%{X:0>2}", .{ self.raw[start..index], char });
-            start = index + 1;
-        }
-        try writer.writeAll(self.raw[start..]);
-    }
-
-    fn isValidUrlChar(char: u8) bool {
-        return switch (char) {
-            // zig fmt: off
-            ' ', '/', ':', ',', '?', '#', '[', ']', '{', '}', '|', '@', '!', '$', '&',
-            '\'', '(', ')', '*', '+', ';', '=', '%', '<', '>', '"', '^', '`', '\\' => false,
-            // zig fmt: on
-            else => !ascii.isControl(char),
-        };
-    }
-};
-
 // https://github.com/smithy-lang/smithy-rs/blob/main/rust-runtime/inlineable/src/endpoint_lib/host.rs
 pub fn isValidHostLabel(label: []const u8, allow_dots: bool) bool {
     if (allow_dots) {
@@ -192,7 +155,7 @@ pub fn isValidHostLabel(label: []const u8, allow_dots: bool) bool {
         if (label.len == 0 or label.len > 63) return false;
         if (label[0] == '-') return false;
         for (label) |char| {
-            if (!ascii.isAlphanumeric(char) and char != '-') return false;
+            if (!std.ascii.isAlphanumeric(char) and char != '-') return false;
         }
     }
     return true;
@@ -220,7 +183,7 @@ test "isValidHostLabel" {
 pub fn substring(value: []const u8, start: usize, end: usize, reverse: bool) ![]const u8 {
     if (start >= end) return error.InvalidRange;
     if (end > value.len) return error.RangeOutOfBounds;
-    for (value) |c| if (!ascii.isASCII(c)) return error.InvalidAscii;
+    for (value) |c| if (!std.ascii.isASCII(c)) return error.InvalidAscii;
 
     return if (reverse)
         value[value.len - end .. value.len - start]

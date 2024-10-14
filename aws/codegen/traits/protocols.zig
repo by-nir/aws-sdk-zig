@@ -22,21 +22,28 @@ pub const traits: TraitsRegistry = &.{
     // aws.protocols#ec2Query
     // aws.protocols#ec2QueryName
     // aws.protocols#httpChecksum
-    // aws.protocols#restJson1
+    .{ RestJson1.id, RestJson1.parse },
     // aws.protocols#restXml
 };
 
 /// This specification defines the AWS JSON 1.0 protocol.
 ///
 /// [Smithy Spec](https://smithy.io/2.0/aws/protocols/aws-json-1_0-protocol.html)
-pub const AwsJson10 = AwsJsonTrait("aws.protocols#awsJson1_0");
+pub const AwsJson10 = JsonTrait("aws.protocols#awsJson1_0");
 
 /// This specification defines the AWS JSON 1.1 protocol.
 ///
 /// [Smithy Spec](https://smithy.io/2.0/aws/protocols/aws-json-1_1-protocol.html)
-pub const AwsJson11 = AwsJsonTrait("aws.protocols#awsJson1_1");
+pub const AwsJson11 = JsonTrait("aws.protocols#awsJson1_1");
 
-fn AwsJsonTrait(comptime trait_id: []const u8) type {
+/// This specification defines the AWS restJson1 protocol. This protocol is used
+/// to expose services that serialize payloads as JSON and utilize features of
+/// HTTP like configurable HTTP methods, URIs, and status codes.
+///
+/// [Smithy Spec](https://smithy.io/2.0/aws/protocols/aws-restjson1-protocol.html)
+pub const RestJson1 = JsonTrait("aws.protocols#restJson1");
+
+fn JsonTrait(comptime trait_id: []const u8) type {
     return struct {
         pub const id = SmithyId.of(trait_id);
         pub const auth_id = smithy.traits.auth.AuthId.of(trait_id);
@@ -91,7 +98,7 @@ fn parseStringList(arena: Allocator, reader: *JsonReader) ![]const []const u8 {
     return list.toOwnedSlice();
 }
 
-test AwsJsonTrait {
+test JsonTrait {
     var arena = std.heap.ArenaAllocator.init(test_alloc);
     const arena_alloc = arena.allocator();
     defer arena.deinit();
@@ -104,7 +111,7 @@ test AwsJsonTrait {
     );
     errdefer reader.deinit();
 
-    const TestJson = AwsJsonTrait("smithy.api#testJson");
+    const TestJson = JsonTrait("smithy.api#testJson");
     const json: *const TestJson.Value = @ptrCast(@alignCast(try TestJson.parse(arena_alloc, &reader)));
     reader.deinit();
     try testing.expectEqualDeep(&TestJson.Value{

@@ -7,17 +7,15 @@ const md = @import("razdaz").md;
 const zig = @import("razdaz").zig;
 const files_jobs = @import("razdaz/jobs").files;
 const shape = @import("shape.zig");
+const schm = @import("scheme.zig");
 const srvc = @import("service.zig");
 const cfg = @import("../config.zig");
-const mdl = @import("../model.zig");
-const SmithyId = mdl.SmithyId;
-const SmithyOperation = mdl.SmithyOperation;
+const SmithyId = @import("../model.zig").SmithyId;
 const IssuesBag = @import("../systems/issues.zig").IssuesBag;
 const SymbolsProvider = @import("../systems/SymbolsProvider.zig");
 const name_util = @import("../utils/names.zig");
 const trt_auth = @import("../traits/auth.zig");
 const trt_refine = @import("../traits/refine.zig");
-const trt_protocol = @import("../traits/protocol.zig");
 const trt_behavior = @import("../traits/behavior.zig");
 const test_symbols = @import("../testing/symbols.zig");
 
@@ -52,6 +50,7 @@ fn clientOperationTask(
     bld: *zig.ContainerBuild,
     id: SmithyId,
 ) anyerror!void {
+    const arena = self.alloc();
     try bld.constant("SerialType").assign(bld.x.id(cfg.runtime_scope).dot().id("SerialType"));
 
     if (symbols.service_operations.len > 0) {
@@ -69,7 +68,7 @@ fn clientOperationTask(
     }
 
     const op = (try symbols.getShape(id)).operation;
-    const errors = try listShapeErrors(self.alloc(), symbols, op.errors);
+    const errors = try listShapeErrors(arena, symbols, op.errors);
 
     try shape.writeDocComment(symbols, bld, id, false);
 
@@ -79,23 +78,22 @@ fn clientOperationTask(
         bld.x.@"struct"().bodyWith(context, struct {
             fn f(ctx: @TypeOf(context), b: *zig.ContainerBuild) !void {
                 const syb = ctx.symbols;
-                const arena = ctx.self.alloc();
+                const alloc = ctx.self.alloc();
                 try b.field(cfg.alloc_param).typing(b.x.id("Allocator")).end();
                 try b.field("client").typing(b.x.typePointer(false, b.x.raw(cfg.service_client_type))).end();
                 if (ctx.op.input != null) try b.field("input").typing(b.x.id("Input")).end();
 
                 if (trt_behavior.Paginated.get(syb, ctx.id)) |pg| {
                     var paginated = pg;
-                    if (paginated.isPartial()) {
-                        const service = trt_behavior.Paginated.get(syb, syb.service_id) orelse return error.ServiceMissingPagintedFallback;
+                    if (paginated.isPartial()) if (trt_behavior.Paginated.get(syb, syb.service_id)) |service| {
+                        if (pg.page_size == null) paginated.page_size = service.page_size;
+                        if (pg.items == null) paginated.items = service.items orelse return error.IncompletePaginated;
                         if (pg.input_token == null) paginated.input_token = service.input_token orelse return error.IncompletePaginated;
                         if (pg.output_token == null) paginated.output_token = service.output_token orelse return error.IncompletePaginated;
-                        if (pg.items == null) paginated.items = service.items orelse return error.IncompletePaginated;
-                        if (pg.page_size == null) paginated.page_size = service.page_size;
-                    }
+                    };
 
                     const page_ctx = PageContext{
-                        .arena = arena,
+                        .arena = alloc,
                         .symbols = syb,
                         .has_input = ctx.op.input != null,
                         .paginated = paginated,
@@ -119,23 +117,23 @@ fn clientOperationTask(
                     trt_auth.Auth.get(syb, syb.service_id) orelse
                     syb.service_auth_schemes;
 
-                var auth_exprs = try std.ArrayList(zig.ExprBuild).initCapacity(arena, auth_schemes.len);
+                var auth_exprs = try std.ArrayList(zig.ExprBuild).initCapacity(alloc, auth_schemes.len);
                 for (auth_schemes) |aid| {
-                    const string = b.x.valueOf(try arena.dupe(u8, aid.toString()));
+                    const string = b.x.valueOf(try alloc.dupe(u8, aid.toString()));
                     auth_exprs.appendAssumeCapacity(
                         b.x.id(cfg.runtime_scope).dot().id("AuthId").dot().call("of", &.{string}),
                     );
                 }
 
-                var meta = try std.ArrayList(zig.ExprBuild).initCapacity(arena, 10);
+                var meta = try std.ArrayList(zig.ExprBuild).initCapacity(alloc, 10);
                 meta.appendAssumeCapacity(b.x.structAssign("name", b.x.valueOf(ctx.name)));
                 meta.appendAssumeCapacity(b.x.structAssign("Input", if (ctx.op.input) |_| b.x.id("Input") else b.x.typeOf(void)));
                 meta.appendAssumeCapacity(b.x.structAssign("Output", if (ctx.op.output) |_| b.x.id("Output") else b.x.typeOf(void)));
                 meta.appendAssumeCapacity(b.x.structAssign("Errors", if (ctx.errors.len > 0) b.x.id("ErrorKind") else b.x.typeOf(void)));
                 meta.appendAssumeCapacity(b.x.structAssign("Result", b.x.id("Result")));
-                meta.appendAssumeCapacity(b.x.structAssign("serial_input", if (ctx.op.input) |_| b.x.id("scheme_input") else b.x.raw(".{}")));
-                meta.appendAssumeCapacity(b.x.structAssign("serial_output", if (ctx.op.output) |_| b.x.id("scheme_output") else b.x.raw(".{}")));
-                meta.appendAssumeCapacity(b.x.structAssign("serial_errors", if (ctx.errors.len > 0) b.x.id("scheme_errors") else b.x.raw(".{}")));
+                meta.appendAssumeCapacity(b.x.structAssign("scheme_input", if (ctx.op.input) |_| b.x.id("scheme_input") else b.x.raw(".{}")));
+                meta.appendAssumeCapacity(b.x.structAssign("scheme_output", if (ctx.op.output) |_| b.x.id("scheme_output") else b.x.raw(".{}")));
+                meta.appendAssumeCapacity(b.x.structAssign("scheme_errors", if (ctx.errors.len > 0) b.x.id("scheme_errors") else b.x.raw(".{}")));
                 meta.appendAssumeCapacity(b.x.structAssign("auth_optional", b.x.valueOf(auth_optional)));
                 meta.appendAssumeCapacity(b.x.structAssign("auth_schemes", b.x.addressOf().structLiteral(null, auth_exprs.items)));
                 if (ctx.self.hasOverride(OperationMetaHook)) {
@@ -153,7 +151,7 @@ fn clientOperationTask(
                 });
 
                 if (ctx.op.input) |in_id| {
-                    try shape.writeShapeDecleration(arena, syb, b, in_id, .{
+                    try shape.writeShapeDecleration(alloc, syb, b, in_id, .{
                         .identifier = "Input",
                         .scope = cfg.types_scope,
                         .behavior = .input,
@@ -161,7 +159,7 @@ fn clientOperationTask(
                 }
 
                 if (ctx.op.output) |out_id| {
-                    try shape.writeShapeDecleration(arena, syb, b, out_id, .{
+                    try shape.writeShapeDecleration(alloc, syb, b, out_id, .{
                         .identifier = "Output",
                         .scope = cfg.types_scope,
                         .behavior = .output,
@@ -174,7 +172,7 @@ fn clientOperationTask(
                     }));
 
                     try b.public().constant("ErrorKind").assign(b.x.@"enum"().bodyWith(ErrorSetCtx{
-                        .arena = arena,
+                        .arena = alloc,
                         .symbols = syb,
                         .members = ctx.errors,
                     }, writeErrorSet));
@@ -184,17 +182,17 @@ fn clientOperationTask(
     );
 
     if (op.input) |in_id| {
-        const scheme = try serialShapeScheme(self, symbols, bld.x, in_id);
+        const scheme = try schm.operationTransportScheme(arena, symbols, bld.x, in_id);
         try bld.constant("scheme_input").assign(scheme);
     }
 
     if (op.output) |out_id| {
-        const scheme = try serialShapeScheme(self, symbols, bld.x, out_id);
+        const scheme = try schm.operationTransportScheme(arena, symbols, bld.x, out_id);
         try bld.constant("scheme_output").assign(scheme);
     }
 
     if (errors.len > 0) {
-        const scheme = try serialErrorScheme(self, bld.x, errors);
+        const scheme = try schm.operationErrorScheme(arena, bld.x, errors);
         try bld.constant("scheme_errors").assign(scheme);
     }
 }
@@ -300,98 +298,6 @@ fn listShapeErrors(
     }
 
     return members.toOwnedSlice();
-}
-
-fn serialShapeScheme(
-    self: *const jobz.Delegate,
-    symbols: *SymbolsProvider,
-    exp: zig.ExprBuild,
-    id: SmithyId,
-) !zig.ExprBuild {
-    switch (try symbols.getShapeUnwrap(id)) {
-        inline .boolean,
-        .byte,
-        .short,
-        .integer,
-        .long,
-        .float,
-        .double,
-        .blob,
-        .string,
-        .int_enum,
-        .str_enum,
-        .trt_enum,
-        .big_integer,
-        .big_decimal,
-        => |_, g| return exp.structLiteral(null, &.{exp.id("SerialType").valueOf(g)}),
-        .timestamp => {
-            const format = trt_protocol.TimestampFormat.get(symbols, id) orelse symbols.service_timestamp_fmt;
-            const literal = switch (format) {
-                .date_time => ".timestamp_date_time",
-                .http_date => ".timestamp_http_date",
-                .epoch_seconds => ".timestamp_epoch_seconds",
-            };
-            return exp.structLiteral(null, &.{exp.id("SerialType").raw(literal)});
-        },
-        .list => |member| {
-            const member_scheme = try serialShapeScheme(self, symbols, exp, member);
-            return exp.structLiteral(null, switch (shape.listType(symbols, id)) {
-                .standard => &.{ exp.id("SerialType").valueOf(.list), exp.valueOf(true), member_scheme },
-                .sparse => &.{ exp.id("SerialType").valueOf(.list), exp.valueOf(false), member_scheme },
-                .set => &.{ exp.id("SerialType").valueOf(.set), member_scheme },
-            });
-        },
-        .map => |members| {
-            const required = exp.valueOf(!symbols.hasTrait(id, trt_refine.sparse_id));
-            const key_scheme = try serialShapeScheme(self, symbols, exp, members[0]);
-            const val_scheme = try serialShapeScheme(self, symbols, exp, members[1]);
-            return exp.structLiteral(null, &.{ exp.id("SerialType").valueOf(.map), required, key_scheme, val_scheme });
-        },
-        inline .structure, .tagged_union => |members, g| {
-            var schemes = std.ArrayList(zig.ExprBuild).init(self.alloc());
-            const is_input = symbols.hasTrait(id, trt_refine.input_id);
-
-            for (members) |member| {
-                const name_spec = exp.valueOf(try symbols.getShapeName(member, .pascal, .{}));
-                const name_field = exp.valueOf(try symbols.getShapeName(member, .snake, .{}));
-                const member_scheme = try serialShapeScheme(self, symbols, exp, member);
-                if (g == .structure) {
-                    const is_required = exp.valueOf(!shape.isStructMemberOptional(symbols, member, is_input));
-                    try schemes.append(exp.structLiteral(null, &.{ name_spec, name_field, is_required, member_scheme }));
-                } else {
-                    try schemes.append(exp.structLiteral(null, &.{ name_spec, name_field, member_scheme }));
-                }
-            }
-
-            return exp.structLiteral(null, &.{
-                exp.id("SerialType").valueOf(g),
-                exp.structLiteral(null, try schemes.toOwnedSlice()),
-            });
-        },
-        .document => {
-            // AWS usage: controltower, identitystore, inspector-scan, bedrock-agent-runtime, marketplace-catalog
-            @panic("Document shape scheme construction not implemented");
-        },
-        .unit, .operation, .resource, .service, .target => unreachable,
-    }
-}
-
-fn serialErrorScheme(
-    self: *const jobz.Delegate,
-    exp: zig.ExprBuild,
-    members: []const SymbolsProvider.Error,
-) !zig.ExprBuild {
-    var scheme = std.ArrayList(zig.ExprBuild).init(self.alloc());
-    for (members) |member| {
-        const name_api = exp.valueOf(member.name_api);
-        const name_field = exp.valueOf(member.name_field);
-        try scheme.append(exp.structLiteral(null, &.{ name_api, name_field, exp.structLiteral(null, &.{}) }));
-    }
-
-    return exp.structLiteral(null, &.{
-        exp.id("SerialType").valueOf(.tagged_union),
-        exp.structLiteral(null, try scheme.toOwnedSlice()),
-    });
 }
 
 const ErrorSetCtx = struct {
@@ -548,9 +454,9 @@ test ClientOperation {
         \\        .Output = Output,
         \\        .Errors = ErrorKind,
         \\        .Result = Result,
-        \\        .serial_input = scheme_input,
-        \\        .serial_output = scheme_output,
-        \\        .serial_errors = scheme_errors,
+        \\        .scheme_input = scheme_input,
+        \\        .scheme_output = scheme_output,
+        \\        .scheme_errors = scheme_errors,
         \\        .auth_optional = false,
         \\        .auth_schemes = &.{},
         \\    };
@@ -606,24 +512,32 @@ test ClientOperation {
         \\    };
         \\};
         \\
-        \\const scheme_input = .{ SerialType.structure, .{ .{
-        \\    "Foo",
-        \\    "foo",
-        \\    true,
-        \\    .{ SerialType.structure, .{} },
-        \\}, .{
-        \\    "Bar",
-        \\    "bar",
-        \\    false,
-        \\    .{SerialType.string},
-        \\} } };
+        \\const scheme_input = .{
+        \\    .{},
+        \\    .{ 0, 1 },
+        \\    .{ .{
+        \\        "Foo",
+        \\        "foo",
+        \\        true,
+        \\        .{ SerialType.structure, .{} },
+        \\    }, .{
+        \\        "Bar",
+        \\        "bar",
+        \\        false,
+        \\        .{SerialType.string},
+        \\    } },
+        \\};
         \\
-        \\const scheme_output = .{ SerialType.structure, .{.{
-        \\    "Qux",
-        \\    "qux",
-        \\    false,
-        \\    .{SerialType.string},
-        \\}} };
+        \\const scheme_output = .{
+        \\    .{},
+        \\    .{0},
+        \\    .{.{
+        \\        "Qux",
+        \\        "qux",
+        \\        false,
+        \\        .{SerialType.string},
+        \\    }},
+        \\};
         \\
         \\const scheme_errors = .{ SerialType.tagged_union, .{ .{
         \\    "NotFound",

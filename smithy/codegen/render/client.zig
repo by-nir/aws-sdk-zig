@@ -25,10 +25,10 @@ pub const ServiceClient = srvc.ScriptCodegen.Task("Smithy Service Client Codegen
 });
 fn serviceClientTask(self: *const jobz.Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild) anyerror!void {
     const sid = symbols.service_id;
-    var testables = std.ArrayList([]const u8).init(self.alloc());
+    var testables = std.ArrayList(zig.ExprBuild).init(self.alloc());
 
     if (symbols.hasTrait(sid, trt_rules.EndpointRuleSet.id)) {
-        try testables.append(cfg.endpoint_scope);
+        try testables.append(bld.x.raw(cfg.endpoint_scope));
         try bld.constant(cfg.endpoint_scope).assign(bld.x.import(cfg.endpoint_filename));
     }
 
@@ -39,24 +39,22 @@ fn serviceClientTask(self: *const jobz.Delegate, symbols: *SymbolsProvider, bld:
     try self.evaluate(WriteClientStruct, .{ bld, sid });
 
     if (symbols.service_data_shapes.len > 0) {
-        try bld.public().using(bld.x.import(cfg.types_filename));
-        try testables.append("@import(\"" ++ cfg.types_filename ++ "\")");
+        const imports = bld.x.import(cfg.types_filename);
+        try bld.public().using(imports);
+        try testables.append(imports);
     }
 
     for (symbols.service_operations) |oid| {
-        const field_name = try symbols.getShapeName(oid, .snake, .{ .suffix = "_op" });
-        try testables.append(field_name);
-
-        const filename = try oper.operationFilename(symbols, oid, false);
-        try bld.constant(field_name).assign(bld.x.import(filename));
+        const imports = bld.x.import(try oper.operationFilename(symbols, oid, false));
+        try testables.append(imports);
 
         const type_name = try symbols.getShapeName(oid, .pascal, .{});
-        try bld.public().constant(type_name).assign(bld.x.id(field_name).dot().id(type_name));
+        try bld.public().constant(type_name).assign(imports.dot().id(type_name));
     }
 
     try bld.testBlockWith(null, testables.items, struct {
-        fn f(ctx: []const []const u8, b: *zig.BlockBuild) !void {
-            for (ctx) |testable| try b.discard().raw(testable).end();
+        fn f(ctx: []const zig.ExprBuild, b: *zig.BlockBuild) !void {
+            for (ctx) |testable| try b.discard().buildExpr(testable).end();
         }
     }.f);
 }
@@ -176,16 +174,14 @@ test ServiceClient {
         \\
         \\pub usingnamespace @import("data_types.zig");
         \\
-        \\const my_operation_op = @import("operation/my_operation.zig");
-        \\
-        \\pub const MyOperation = my_operation_op.MyOperation;
+        \\pub const MyOperation = @import("operation/my_operation.zig").MyOperation;
         \\
         \\test {
         \\    _ = srvc_endpoint;
         \\
         \\    _ = @import("data_types.zig");
         \\
-        \\    _ = my_operation_op;
+        \\    _ = @import("operation/my_operation.zig");
         \\}
     , ServiceClient, tester.pipeline, .{});
 }

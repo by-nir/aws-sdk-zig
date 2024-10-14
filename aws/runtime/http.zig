@@ -53,7 +53,11 @@ pub const MAX_HEADERS_COUNT = 32;
 pub const QueryBuffer = [2 * 1024]u8;
 pub const HeadersRawBuffer = [4 * 1024]u8;
 pub const HeadersPairsBuffer = [MAX_HEADERS_COUNT]std.http.Header;
-pub const PropertiesMap = std.StringArrayHashMapUnmanaged([]const u8);
+pub const PropertiesMap = std.StringArrayHashMapUnmanaged(Property);
+pub const Property = union(enum) {
+    single: []const u8,
+    many: []const []const u8,
+};
 
 pub const Client = struct {
     http: HttpClient,
@@ -167,12 +171,28 @@ pub const Request = struct {
         .{ "connection", "connection" },
     });
 
+    pub fn hasQuery(self: *Request, key: []const u8) bool {
+        try self.query.contains(key);
+    }
+
     pub fn putQuery(self: *Request, allocator: Allocator, key: []const u8, value: []const u8) !void {
-        try self.query.put(allocator, key, value);
+        try self.query.put(allocator, key, .{ .single = value });
+    }
+
+    pub fn putQueryMany(self: *Request, allocator: Allocator, key: []const u8, value: []const []const u8) !void {
+        try self.query.put(allocator, key, .{ .many = value });
+    }
+
+    pub fn hasHeader(self: *Request, key: []const u8) bool {
+        try self.headers.contains(key);
     }
 
     pub fn putHeader(self: *Request, allocator: Allocator, key: []const u8, value: []const u8) !void {
-        try self.headers.put(allocator, key, value);
+        try self.headers.put(allocator, key, .{ .single = value });
+    }
+
+    pub fn putHeaderMany(self: *Request, allocator: Allocator, key: []const u8, value: []const []const u8) !void {
+        try self.headers.put(allocator, key, .{ .many = value });
     }
 
     pub fn stringifyQuery(self: *Request, out_buffer: *QueryBuffer) ![]const u8 {
@@ -183,10 +203,22 @@ pub const Request = struct {
         var count: usize = 0;
         var kvs: HeadersPairsBuffer = undefined;
         var it = self.query.iterator();
-        while (it.next()) |kv| : (count += 1) {
+        while (it.next()) |kv| {
             const name_fmt = try escapeUri(scratch_alloc, kv.key_ptr.*);
-            const value_fmt = try escapeUri(scratch_alloc, kv.value_ptr.*);
-            kvs[count] = .{ .name = name_fmt, .value = value_fmt };
+            switch (kv.value_ptr.*) {
+                .single => |s| {
+                    const value_fmt = try escapeUri(scratch_alloc, s);
+                    kvs[count] = .{ .name = name_fmt, .value = value_fmt };
+                    count += 1;
+                },
+                .many => |strings| {
+                    for (strings) |s| {
+                        const value_fmt = try escapeUri(scratch_alloc, s);
+                        kvs[count] = .{ .name = name_fmt, .value = value_fmt };
+                        count += 1;
+                    }
+                },
+            }
         }
         mem.sort(std.http.Header, kvs[0..count], {}, sortHeaderName);
 
@@ -208,10 +240,22 @@ pub const Request = struct {
         var count: usize = 0;
         var kvs: HeadersPairsBuffer = undefined;
         var it = self.headers.iterator();
-        while (it.next()) |kv| : (count += 1) {
+        while (it.next()) |kv| {
             const name_fmt = try std.ascii.allocLowerString(scratch_alloc, kv.key_ptr.*);
-            const value_fmt = mem.trim(u8, kv.value_ptr.*, &std.ascii.whitespace);
-            kvs[count] = .{ .name = name_fmt, .value = value_fmt };
+            switch (kv.value_ptr.*) {
+                .single => |s| {
+                    const value_fmt = mem.trim(u8, s, &std.ascii.whitespace);
+                    kvs[count] = .{ .name = name_fmt, .value = value_fmt };
+                    count += 1;
+                },
+                .many => |strings| {
+                    for (strings) |s| {
+                        const value_fmt = mem.trim(u8, s, &std.ascii.whitespace);
+                        kvs[count] = .{ .name = name_fmt, .value = value_fmt };
+                        count += 1;
+                    }
+                },
+            }
         }
         mem.sort(std.http.Header, kvs[0..count], {}, sortHeaderName);
 
@@ -258,13 +302,19 @@ pub const Request = struct {
                 mngd: inline for (comptime MANAGED_HEADERS.keys()) |key| {
                     const field = comptime MANAGED_HEADERS.get(key).?;
                     if (mem.eql(u8, key, name)) {
-                        @field(managed, field) = .{ .override = value };
+                        @field(managed, field) = .{ .override = value.single };
                         break :mngd;
                     }
                 }
-            } else {
-                buffer[len] = .{ .name = name, .value = value };
-                len += 1;
+            } else switch (value) {
+                .single => {
+                    buffer[len] = .{ .name = name, .value = value.single };
+                    len += 1;
+                },
+                .many => for (value.many) |v| {
+                    buffer[len] = .{ .name = name, .value = v };
+                    len += 1;
+                },
             }
         }
 
@@ -280,7 +330,7 @@ test "Request.stringifyQuery" {
 
     var buffer: QueryBuffer = undefined;
     const query = try request.stringifyQuery(&buffer);
-    try testing.expectEqualStrings("baz=%24qux&foo=%25bar", query);
+    try testing.expectEqualStrings("Baz=%24qux&foo=%25bar", query);
 }
 
 test "Request.stringifyHeaders" {
@@ -324,7 +374,7 @@ fn testRequest(allocator: Allocator) !Request {
     try request.putHeader(allocator, "X-amZ-dAte", "20130708T220855Z");
 
     try request.putQuery(allocator, "foo", "%bar");
-    try request.putQuery(allocator, "baz", "$qux");
+    try request.putQuery(allocator, "Baz", "$qux");
 
     return request;
 }

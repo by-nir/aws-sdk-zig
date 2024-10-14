@@ -9,6 +9,7 @@ const SmithyPipeline = smithy.PipelineTask;
 const SmithyService = smithy.SmithyService;
 const SmithyOptions = smithy.PipelineOptions;
 const SymbolsProvider = smithy.SymbolsProvider;
+const trt_http = smithy.traits.http;
 const aws_cfg = @import("../config.zig");
 const itg_auth = @import("../integrate/auth.zig");
 const itg_rules = @import("../integrate/rules.zig");
@@ -171,6 +172,12 @@ fn extendOperationMeta(
 ) anyerror!void {
     const unsigned_payload = symbols.hasTrait(id, trt_auth.unsigned_payload_id);
     try meta.append(exp.structAssign("auth_skip_payload", exp.valueOf(unsigned_payload)));
+
+    // TODO: trt_http.http_checksum_required_id
+    if (trt_http.Http.get(symbols, id)) |http| {
+        try meta.append(exp.structAssign("http_uri", exp.valueOf(http.uri)));
+        try meta.append(exp.structAssign("http_method", exp.valueOf(http.method)));
+    }
 }
 
 /// ### Operation Memory Management
@@ -208,16 +215,20 @@ fn writeSendSyncFunc(self: *const Delegate, symbols: *SymbolsProvider, bld: *zig
     const transport = try itg_proto.resolveServiceTransport(symbols, protocol);
     _ = transport;
 
-    try bld.constant(aws_cfg.send_op_param).assign(bld.x.trys().id(aws_cfg.scope_private).dot().call(
-        "ClientOperation.new",
-        &.{
+    const http_method = switch (protocol) {
+        .rest_json_1 => bld.x.id(aws_cfg.send_meta_param).dot().id("http_method"),
+        else => bld.x.valueOf(itg_proto.resolveDefaultHttpMethod(protocol)),
+    };
+
+    try bld.constant(aws_cfg.send_op_param).assign(
+        bld.x.trys().id(aws_cfg.scope_private).dot().call("ClientOperation.new", &.{
             bld.x.id(aws_cfg.scratch_alloc),
-            bld.x.valueOf(itg_proto.resolveHttpMethod(protocol)),
+            http_method,
             bld.x.raw("std.Uri.parse(endpoint.url) catch unreachable"),
             bld.x.raw("self.config_sdk.app_id"),
             bld.x.valueOf(null), // TODO: trace_id
-        },
-    ));
+        }),
+    );
 
     try itg_proto.writeOperationRequest(self.alloc(), symbols, bld, protocol);
     try itg_auth.writeOperationAuth(self.alloc(), symbols, bld);
@@ -228,6 +239,5 @@ fn writeSendSyncFunc(self: *const Delegate, symbols: *SymbolsProvider, bld: *zig
     );
     try bld.errorDefers().body((bld.x.id(aws_cfg.output_arena).dot().call("deinit", &.{})));
 
-    const result = try itg_proto.writeOperationResult(self.alloc(), symbols, bld, protocol);
-    try bld.returns().buildExpr(result).end();
+    try itg_proto.writeOperationResponse(bld, protocol);
 }

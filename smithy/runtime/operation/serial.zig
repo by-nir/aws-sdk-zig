@@ -1,8 +1,10 @@
 const std = @import("std");
 const fmt = std.fmt;
-const stime = std.time;
 const mem = std.mem;
+const Allocator = mem.Allocator;
+const stime = std.time;
 const testing = std.testing;
+const test_alloc = testing.allocator;
 
 pub const SerialType = enum {
     boolean,
@@ -14,21 +16,82 @@ pub const SerialType = enum {
     double,
     blob,
     string,
-    int_enum,
-    str_enum,
-    trt_enum,
-    big_integer,
-    big_decimal,
     timestamp_date_time,
     timestamp_http_date,
     timestamp_epoch_seconds,
-    list,
-    set,
+    big_integer,
+    big_decimal,
     map,
-    document,
-    structure,
+    set,
+    list_dense,
+    list_sparse,
+    int_enum,
+    str_enum,
+    trt_enum,
     tagged_union,
+    structure,
+    document,
 };
+
+pub const MetaLabel = enum {
+    path_shape,
+};
+
+pub const MetaParam = enum {
+    header_map,
+    header_shape,
+    header_base64,
+    query_map,
+    query_shape,
+};
+
+pub const MetaPayload = enum {
+    media,
+    shape,
+};
+
+pub const MetaTransport = enum {
+    status_code,
+};
+
+pub fn uriEncode(allocator: Allocator, value: []const u8) ![]const u8 {
+    const encoder = UriEncoder(false){ .raw = value };
+    return fmt.allocPrint(allocator, "{}", .{encoder});
+}
+
+test uriEncode {
+    const escaped = try uriEncode(test_alloc, ":/?#[]@!$&'()*+,;=%");
+    defer test_alloc.free(escaped);
+    try testing.expectEqualStrings("%3A%2F%3F%23%5B%5D%40%21%24%26%27%28%29%2A%2B%2C%3B%3D%25", escaped);
+}
+
+// https://github.com/smithy-lang/smithy-rs/blob/main/rust-runtime/aws-smithy-http/src/urlencode.rs
+pub fn UriEncoder(comptime greedy: bool) type {
+    return struct {
+        raw: []const u8,
+
+        pub fn format(self: @This(), comptime _: []const u8, _: fmt.FormatOptions, writer: anytype) !void {
+            var start: usize = 0;
+            for (self.raw, 0..) |char, index| {
+                if (isValidUrlChar(char)) continue;
+                try writer.print("{s}%{X:0>2}", .{ self.raw[start..index], char });
+                start = index + 1;
+            }
+            try writer.writeAll(self.raw[start..]);
+        }
+
+        fn isValidUrlChar(char: u8) bool {
+            return switch (char) {
+                '/' => greedy,
+                // zig fmt: off
+                ' ', ':', ',', '?', '#', '[', ']', '{', '}', '|', '@', '!', '$', '&',
+                '\'', '(', ')', '*', '+', ';', '=', '%', '<', '>', '"', '^', '`', '\\' => false,
+                // zig fmt: on
+                else => !std.ascii.isControl(char),
+            };
+        }
+    };
+}
 
 /// Timestamp as defined by the date-time production in RFC 3339 (section 5.6),
 /// with optional millisecond precision but no UTC offset.
@@ -38,7 +101,7 @@ pub const SerialType = enum {
 /// 1985-04-12T23:20:50.520Z
 /// ```
 pub fn parseTimestamp(s: []const u8) !i64 {
-    var parts = Parts{};
+    var parts = TimeParts{};
 
     const date = s[0..mem.indexOfAny(u8, s, "Tt").?];
     {
@@ -72,7 +135,7 @@ test parseTimestamp {
 }
 
 pub fn writeTimestamp(writer: std.io.AnyWriter, epoch_ms: i64) !void {
-    const t = Parts.fromEpochMs(epoch_ms);
+    const t = TimeParts.fromEpochMs(epoch_ms);
     const format = "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}";
     if (t.millisecond > 0) {
         const args = .{ t.year, t.month, t.day, t.hour, t.minute, t.second, t.millisecond };
@@ -130,7 +193,7 @@ pub fn parseHttpDate(s: []const u8) !i64 {
         else => unreachable,
     };
 
-    const parts = Parts{
+    const parts = TimeParts{
         .year = try fmt.parseUnsigned(u13, s[12..16], 10),
         .month = month,
         .day = try fmt.parseUnsigned(u5, s[5..7], 10),
@@ -150,7 +213,7 @@ pub fn writeHttpDate(writer: std.io.AnyWriter, epoch_ms: i64) !void {
     const weekdays = [7][]const u8{ "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
     const months = [12][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
 
-    const t = Parts.fromEpochMs(epoch_ms);
+    const t = TimeParts.fromEpochMs(epoch_ms);
     const month = months[t.month - 1];
     const weekday = weekdays[t.toWeekdayIndex()];
     try writer.print(
@@ -171,7 +234,7 @@ test writeHttpDate {
     try testing.expectEqualStrings("Sun, 06 Nov 1994 08:49:37 GMT", stream.getWritten());
 }
 
-const Parts = struct {
+const TimeParts = struct {
     year: u13 = 0,
     /// Month of the year (1-12)
     month: u4 = 0,
@@ -184,7 +247,7 @@ const Parts = struct {
     millisecond: u10 = 0,
 
     /// Only valid for dates after 1970-01-01.
-    pub fn fromEpochMs(epoch_ms: i64) Parts {
+    pub fn fromEpochMs(epoch_ms: i64) TimeParts {
         std.debug.assert(epoch_ms >= 0);
         const round = @divTrunc(epoch_ms, stime.ms_per_s);
         const epoch = stime.epoch.EpochSeconds{ .secs = @intCast(round) };
@@ -192,7 +255,7 @@ const Parts = struct {
         const epoch_month = epoch_year.calculateMonthDay();
         const epoch_secs = epoch.getDaySeconds();
 
-        return Parts{
+        return TimeParts{
             .year = @intCast(epoch_year.year),
             .month = epoch_month.month.numeric(),
             .day = epoch_month.day_index + 1,
@@ -204,8 +267,7 @@ const Parts = struct {
     }
 
     /// Computes **ms** since the UNIX epoch.
-    pub fn toEpochMs(self: Parts) i64 {
-
+    pub fn toEpochMs(self: TimeParts) i64 {
         // Convert days to seconds
         var total_seconds: i64 = self.countDays() * stime.s_per_day;
 
@@ -218,7 +280,7 @@ const Parts = struct {
         return (total_seconds * stime.ms_per_s) + self.millisecond;
     }
 
-    fn countDays(self: Parts) i64 {
+    fn countDays(self: TimeParts) i64 {
         var total_days: i64 = 0;
 
         // Previous years
@@ -248,15 +310,15 @@ const Parts = struct {
         return days[calender_month - 1];
     }
 
-    pub fn toWeekdayIndex(self: Parts) u3 {
+    pub fn toWeekdayIndex(self: TimeParts) u3 {
         const days = self.countDays();
         const index = @mod(days + 4, 7); // 1970-01-01 was a Thursday
         return @intCast(index);
     }
 };
 
-test Parts {
-    try testing.expectEqual(Parts{
+test TimeParts {
+    try testing.expectEqual(TimeParts{
         .year = 1985,
         .month = 4,
         .day = 12,
@@ -264,9 +326,9 @@ test Parts {
         .minute = 20,
         .second = 50,
         .millisecond = 520,
-    }, Parts.fromEpochMs(482196050520));
+    }, TimeParts.fromEpochMs(482196050520));
 
-    var parts = Parts{
+    var parts = TimeParts{
         .year = 1985,
         .month = 4,
         .day = 12,
@@ -278,7 +340,7 @@ test Parts {
     try testing.expectEqual(482196050520, parts.toEpochMs());
     try testing.expectEqual(5, parts.toWeekdayIndex());
 
-    parts = Parts{
+    parts = TimeParts{
         .year = 1920,
         .month = 4,
         .day = 12,
@@ -289,4 +351,12 @@ test Parts {
     };
     try testing.expectEqual(-1569026349480, parts.toEpochMs());
     try testing.expectEqual(1, parts.toWeekdayIndex());
+}
+
+pub fn findMemberIndex(comptime members: anytype, key: []const u8) ?usize {
+    inline for (members, 0..) |member, i| {
+        const api_name: []const u8 = member[0];
+        if (mem.eql(u8, api_name, key)) return i;
+    }
+    return null;
 }
