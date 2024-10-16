@@ -85,6 +85,7 @@ pub const Http = struct {
 
     pub fn parse(arena: Allocator, reader: *JsonReader) !*const anyopaque {
         var val = Val{};
+
         var required: usize = 2;
         try reader.nextObjectBegin();
         while (try reader.peek() != .object_end) {
@@ -98,7 +99,7 @@ pub const Http = struct {
             } else if (mem.eql(u8, "code", prop)) {
                 val.code = @enumFromInt(@as(u10, @intCast(try reader.nextInteger())));
             } else {
-                std.log.warn("Unknown length trait property `{s}`", .{prop});
+                std.log.warn("Unknown http trait property `{s}`", .{prop});
                 try reader.skipValueOrScope();
             }
         }
