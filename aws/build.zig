@@ -9,10 +9,11 @@ pub fn build(b: *std.Build) void {
     // Dependencies
     //
 
-    const jobz = b.dependency("jobz", .{
+    const bitz = b.dependency("bitz", .{
         .target = target,
         .optimize = optimize,
-    }).module("jobz");
+    });
+    const jobz = bitz.module("jobz");
 
     const rzdz = b.dependency("razdaz", .{
         .target = target,
@@ -64,20 +65,27 @@ pub fn build(b: *std.Build) void {
 
     const test_all_step = b.step("test", "Run all unit tests");
 
+    // Runtime
+
     const test_runtime_step = b.step("test:runtime", "Run SDK runtime unit tests");
     test_all_step.dependOn(test_runtime_step);
 
-    const test_runtime_mdl = b.addTest(.{
+    const test_runtime_exe = b.addTest(.{
         .target = target,
         .optimize = optimize,
         .root_source_file = b.path("runtime/root.zig"),
     });
-    test_runtime_mdl.root_module.addImport("smithy/runtime", smithy_runtime);
-    test_runtime_step.dependOn(&b.addRunArtifact(test_runtime_mdl).step);
-    test_all_step.dependOn(&b.addInstallArtifact(test_runtime_mdl, .{
-        .dest_dir = .{ .override = .{ .custom = "test" } },
+    test_runtime_step.dependOn(&b.addRunArtifact(test_runtime_exe).step);
+    test_runtime_exe.root_module.addImport("srlz", srlz);
+    test_runtime_exe.root_module.addImport("smithy/runtime", smithy_runtime);
+
+    const debug_runtime_step = b.step("lldb:runtime", "Install runtime LLDB binary");
+    debug_runtime_step.dependOn(&b.addInstallArtifact(test_runtime_exe, .{
+        .dest_dir = .{ .override = .{ .custom = "lldb" } },
         .dest_sub_path = "runtime",
     }).step);
+
+    // Codgen
 
     const test_codegen_step = b.step("test:codegen", "Run codegen unit tests");
     test_all_step.dependOn(test_codegen_step);
@@ -87,13 +95,15 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .root_source_file = b.path("codegen/main.zig"),
     });
+    test_codegen_step.dependOn(&b.addRunArtifact(test_codegen_exe).step);
     test_codegen_exe.root_module.addImport("jobz", jobz);
     test_codegen_exe.root_module.addImport("razdaz", razdaz);
     test_codegen_exe.root_module.addImport("razdaz/jobs", razdaz_jobs);
     test_codegen_exe.root_module.addImport("smithy/codegen", smithy_codegen);
-    test_codegen_step.dependOn(&b.addRunArtifact(test_codegen_exe).step);
-    test_all_step.dependOn(&b.addInstallArtifact(test_codegen_exe, .{
-        .dest_dir = .{ .override = .{ .custom = "test" } },
+
+    const debug_codegen_step = b.step("lldb:codegen", "Install codegen LLDB binary");
+    debug_codegen_step.dependOn(&b.addInstallArtifact(test_codegen_exe, .{
+        .dest_dir = .{ .override = .{ .custom = "lldb" } },
         .dest_sub_path = "codegen",
     }).step);
 }

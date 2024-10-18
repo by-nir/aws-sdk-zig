@@ -4,7 +4,7 @@
     .minimum_zig_version = "0.14.0",
 
     .dependencies = .{
-        .jobz = .{ .path = "../_jobz" },
+        .bitz = .{ .path = "../_bitz" },
         .razdaz = .{ .path = "../_razdaz" },
         .mvzr = .{
             .url = "https://github.com/mnemnion/mvzr/archive/refs/tags/v0.2.2.tar.gz",
@@ -15,7 +15,8 @@
     .paths = .{
         "build.zig",
         "build.zig.zon",
-        "src",
+        "codegen",
+        "runtime",
         "LICENSE",
         "README.md",
     },

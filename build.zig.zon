@@ -4,12 +4,8 @@
     .minimum_zig_version = "0.14.0",
 
     .dependencies = .{
-        .smithy = .{
-            .path = "smithy",
-        },
-        .aws = .{
-            .path = "aws",
-        },
+        .smithy = .{ .path = "smithy" },
+        .aws = .{ .path = "aws" },
         .@"aws-models" = .{
             .url = "git+https://github.com/by-nir/aws-models.git#1b147145c53dab1e7910c6de81a3749e6e71457b",
             .hash = "12209766b332481318f5afa9c2df3c798117913e8551055b98d9806e18c117e63b4f",
@@ -19,8 +15,10 @@
     .paths = .{
         "build.zig",
         "build.zig.zon",
+        "build.codegen.zig",
         "aws",
         "sdk",
+        "smithy",
         "LICENSE",
         "README.md",
     },

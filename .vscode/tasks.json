@@ -2,102 +2,67 @@
   "version": "2.0.0",
   "tasks": [
     //
-    // Jarz
+    // Bitz
     //
 
     {
       "type": "shell",
-      "label": "jarz:test",
+      "label": "bitz:test",
       "command": "zig",
-      "args": ["build", "test"],
+      "args": ["build", "test${input:bitzModule}"],
       "options": {
-        "cwd": "${workspaceRoot}/_jarz"
+        "cwd": "${workspaceRoot}/_bitz"
       },
       "presentation": {
         "echo": true,
-        "reveal": "always",
         "focus": true,
+        "clear": false,
         "panel": "shared",
-        "showReuseMessage": false,
-        "clear": false
+        "reveal": "always",
+        "showReuseMessage": false
       },
-      "problemMatcher": [],
       "group": {
         "kind": "test",
         "isDefault": false
       }
     },
 
-    // Install unit tests for debugging
+    // LLDB
+
     {
+      "hide": true,
       "type": "shell",
-      "label": "jarz:build-tests",
+      "label": "bitz:lldb:jarz",
       "command": "zig",
-      "args": ["build", "install", "test"],
+      "args": ["build", "lldb:jarz"],
       "options": {
-        "cwd": "${workspaceRoot}/_jarz"
+        "cwd": "${workspaceRoot}/_bitz"
       },
       "presentation": {
-        "echo": true,
-        "reveal": "silent",
+        "close": true,
+        "echo": false,
         "focus": false,
+        "reveal": "never",
         "panel": "shared",
         "showReuseMessage": false
-      },
-      "problemMatcher": [],
-      "group": {
-        "kind": "build",
-        "isDefault": "false"
       }
     },
-
-    //
-    // Jobz
-    //
-
     {
+      "hide": true,
       "type": "shell",
-      "label": "jobz:test",
+      "label": "bitz:lldb:jobz",
       "command": "zig",
-      "args": ["build", "test"],
+      "args": ["build", "lldb:jobz"],
       "options": {
-        "cwd": "${workspaceRoot}/_jobz"
+        "cwd": "${workspaceRoot}/_bitz"
       },
       "presentation": {
-        "echo": true,
-        "reveal": "always",
-        "focus": true,
-        "panel": "shared",
-        "showReuseMessage": false,
-        "clear": false
-      },
-      "problemMatcher": [],
-      "group": {
-        "kind": "test",
-        "isDefault": false
-      }
-    },
-
-    // Install unit tests for debugging
-    {
-      "type": "shell",
-      "label": "jobz:build-tests",
-      "command": "zig",
-      "args": ["build", "install", "test"],
-      "options": {
-        "cwd": "${workspaceRoot}/_jobz"
-      },
-      "presentation": {
-        "echo": true,
-        "reveal": "silent",
+        "close": true,
+        "echo": false,
         "focus": false,
+        "reveal": "never",
         "panel": "shared",
         "showReuseMessage": false
-      },
-      "problemMatcher": [],
-      "group": {
-        "kind": "build",
-        "isDefault": "false"
       }
     },
 
@@ -127,13 +92,11 @@
         "isDefault": false
       }
     },
-
-    // Install unit tests for debugging
     {
       "type": "shell",
-      "label": "razdaz:build-tests",
+      "label": "razdaz:lldb",
       "command": "zig",
-      "args": ["build", "install", "test"],
+      "args": ["build", "lldb"],
       "options": {
         "cwd": "${workspaceRoot}/_razdaz"
       },
@@ -156,79 +119,61 @@
     //
 
     {
+      "type": "shell",
       "label": "smithy:test",
-      "dependsOrder": "sequence",
-      "dependsOn": ["smithy:test:runtime", "smithy:test:codegen"],
-      "group": {
-        "kind": "test",
-        "isDefault": true
-      }
-    },
-    {
-      "type": "shell",
-      "label": "smithy:test:runtime",
       "command": "zig",
-      "args": ["build", "test:runtime"],
+      "args": ["build", "test${input:runtimeOrCodegenModule}"],
       "options": {
         "cwd": "${workspaceRoot}/smithy"
       },
       "presentation": {
         "echo": true,
-        "reveal": "always",
         "focus": true,
+        "clear": false,
         "panel": "shared",
-        "showReuseMessage": false,
-        "clear": false
-      },
-      "problemMatcher": [],
-      "group": {
-        "kind": "test",
-        "isDefault": false
-      }
-    },
-    {
-      "type": "shell",
-      "label": "smithy:test:codegen",
-      "command": "zig",
-      "args": ["build", "test:codegen"],
-      "options": {
-        "cwd": "${workspaceRoot}/smithy"
-      },
-      "presentation": {
-        "echo": true,
         "reveal": "always",
-        "focus": true,
-        "panel": "shared",
-        "showReuseMessage": false,
-        "clear": false
+        "showReuseMessage": false
       },
-      "problemMatcher": [],
       "group": {
         "kind": "test",
         "isDefault": false
       }
     },
 
-    // Install unit tests for debugging
+    // LLDB
+
     {
       "type": "shell",
-      "label": "smithy:build-tests",
+      "label": "smithy:lldb:runtime",
       "command": "zig",
-      "args": ["build", "install", "test"],
+      "args": ["build", "lldb:runtime"],
       "options": {
         "cwd": "${workspaceRoot}/smithy"
       },
       "presentation": {
-        "echo": true,
-        "reveal": "silent",
+        "close": true,
+        "echo": false,
         "focus": false,
+        "reveal": "never",
         "panel": "shared",
         "showReuseMessage": false
+      }
+    },
+    {
+      "type": "shell",
+      "label": "smithy:lldb:codegen",
+      "command": "zig",
+      "args": ["build", "lldb:codegen"],
+      "options": {
+        "cwd": "${workspaceRoot}/smithy"
       },
-      "problemMatcher": [],
-      "group": {
-        "kind": "build",
-        "isDefault": "false"
+      "presentation": {
+        "close": true,
+        "echo": false,
+        "focus": false,
+        "reveal": "never",
+        "panel": "shared",
+        "showReuseMessage": false
       }
     },
 
@@ -237,80 +182,86 @@
     //
 
     {
+      "type": "shell",
       "label": "aws:test",
-      "dependsOrder": "sequence",
-      "dependsOn": ["aws:test:runtime", "aws:test:codegen"],
-      "group": {
-        "kind": "test",
-        "isDefault": true
-      }
-    },
-    {
-      "type": "shell",
-      "label": "aws:test:runtime",
       "command": "zig",
-      "args": ["build", "test:runtime"],
+      "args": ["build", "test${input:runtimeOrCodegenModule}"],
       "options": {
         "cwd": "${workspaceRoot}/aws"
       },
       "presentation": {
         "echo": true,
-        "reveal": "always",
         "focus": true,
+        "clear": false,
         "panel": "shared",
-        "showReuseMessage": false,
-        "clear": false
-      },
-      "problemMatcher": [],
-      "group": {
-        "kind": "test",
-        "isDefault": false
-      }
-    },
-    {
-      "type": "shell",
-      "label": "aws:test:codegen",
-      "command": "zig",
-      "args": ["build", "test:codegen"],
-      "options": {
-        "cwd": "${workspaceRoot}/aws"
-      },
-      "presentation": {
-        "echo": true,
         "reveal": "always",
-        "focus": true,
-        "panel": "shared",
-        "showReuseMessage": false,
-        "clear": false
+        "showReuseMessage": false
       },
-      "problemMatcher": [],
       "group": {
         "kind": "test",
         "isDefault": false
       }
     },
 
-    // Install unit tests for debugging
+    // LLDB
+
     {
       "type": "shell",
-      "label": "aws:build-tests",
+      "label": "aws:lldb:runtime",
       "command": "zig",
-      "args": ["build", "install", "test"],
+      "args": ["build", "lldb:runtime"],
       "options": {
         "cwd": "${workspaceRoot}/aws"
       },
       "presentation": {
-        "echo": true,
-        "reveal": "silent",
+        "close": true,
+        "echo": false,
         "focus": false,
+        "reveal": "never",
         "panel": "shared",
         "showReuseMessage": false
-      },
-      "problemMatcher": [],
-      "group": {
-        "kind": "build",
-        "isDefault": "false"
       }
+    },
+    {
+      "type": "shell",
+      "label": "aws:lldb:codegen",
+      "command": "zig",
+      "args": ["build", "lldb:codegen"],
+      "options": {
+        "cwd": "${workspaceRoot}/aws"
+      },
+      "presentation": {
+        "close": true,
+        "echo": false,
+        "focus": false,
+        "reveal": "never",
+        "panel": "shared",
+        "showReuseMessage": false
+      }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "bitzModule",
+      "type": "pickString",
+      "description": "module to evaluate",
+      "default": "all",
+      "options": [
+        { "label": "all", "value": "" },
+        { "label": "jarz", "value": ":jarz" },
+        { "label": "jobz", "value": ":jobz" }
+      ]
+    },
+    {
+      "id": "runtimeOrCodegenModule",
+      "type": "pickString",
+      "description": "module to evaluate",
+      "default": "all",
+      "options": [
+        { "label": "all", "value": "" },
+        { "label": "codegen", "value": ":codegen" },
+        { "label": "runtime", "value": ":runtime" }
+      ]
     }
   ]
 }

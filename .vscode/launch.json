@@ -2,67 +2,52 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Jarz",
+      "name": "bitz",
       "type": "lldb",
       "request": "launch",
-      "program": "${workspaceFolder}/_jarz/zig-out/bin/test",
-      "args": [],
-      "cwd": "${workspaceFolder}/_jarz",
-      "preLaunchTask": "jarz:build-tests"
-    },
-    {
-      "name": "Jobz",
-      "type": "lldb",
-      "request": "launch",
-      "program": "${workspaceFolder}/_jobz/zig-out/bin/test",
-      "args": [],
-      "cwd": "${workspaceFolder}/_jobz",
-      "preLaunchTask": "jobz:build-tests"
+      "cwd": "${workspaceFolder}/_bitz",
+      "program": "${workspaceFolder}/_bitz/zig-out/lldb/${input:bitzModule}",
+      "preLaunchTask": "bitz:lldb:${input:bitzModule}"
     },
     {
       "name": "RazDaz",
       "type": "lldb",
       "request": "launch",
-      "program": "${workspaceFolder}/_razdaz/zig-out/bin/test",
+      "program": "${workspaceFolder}/_razdaz/zig-out/bin/lldb",
       "args": [],
       "cwd": "${workspaceFolder}/_razdaz",
-      "preLaunchTask": "razdaz:build-tests"
+      "preLaunchTask": "razdaz:lldb"
     },
     {
-      "name": "Smithy: Codegen",
+      "name": "Smithy",
       "type": "lldb",
       "request": "launch",
-      "program": "${workspaceFolder}/smithy/zig-out/test/codegen",
-      "args": [],
       "cwd": "${workspaceFolder}/smithy",
-      "preLaunchTask": "smithy:build-tests"
+      "program": "${workspaceFolder}/smithy/zig-out/lldb/${input:runtimeOrCodegenModule}",
+      "preLaunchTask": "smithy:lldb:${input:runtimeOrCodegenModule}"
     },
     {
-      "name": "Smithy: Runtime",
+      "name": "AWS",
       "type": "lldb",
       "request": "launch",
-      "program": "${workspaceFolder}/smithy/zig-out/test/runtime",
-      "args": [],
-      "cwd": "${workspaceFolder}/smithy",
-      "preLaunchTask": "smithy:build-tests"
-    },
-    {
-      "name": "AWS: Codegen",
-      "type": "lldb",
-      "request": "launch",
-      "program": "${workspaceFolder}/aws/zig-out/test/codegen",
-      "args": [],
       "cwd": "${workspaceFolder}/aws",
-      "preLaunchTask": "aws:build-tests"
+      "program": "${workspaceFolder}/aws/zig-out/lldb/${input:runtimeOrCodegenModule}",
+      "preLaunchTask": "aws:lldb:${input:runtimeOrCodegenModule}"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "bitzModule",
+      "type": "pickString",
+      "description": "bitz module name",
+      "options": ["jarz", "jobz"]
     },
     {
-      "name": "AWS: Runtime",
-      "type": "lldb",
-      "request": "launch",
-      "program": "${workspaceFolder}/aws/zig-out/test/runtime",
-      "args": [],
-      "cwd": "${workspaceFolder}/aws",
-      "preLaunchTask": "aws:build-tests"
+      "id": "runtimeOrCodegenModule",
+      "type": "pickString",
+      "description": "module to evaluate",
+      "default": "all",
+      "options": ["codegen", "runtime"]
     }
   ]
 }
@@ -71,10 +56,10 @@
 //   "name": "Smithy: Codegen",
 //   "type": "cppdbg",
 //   "request": "launch",
-//   "program": "${workspaceFolder}/smithy/zig-out/test/codegen",
+//   "program": "${workspaceFolder}/smithy/zig-out/lldb/codegen",
 //   "args": [],
 //   "stopAtEntry": false,
 //   "cwd": "${workspaceFolder}/smithy",
 //   "osx": { "MIMode": "lldb" },
-//   "preLaunchTask": "smithy:build-tests"
+//   "preLaunchTask": "smithy:lldb"
 // },

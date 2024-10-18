@@ -4,7 +4,7 @@
     .minimum_zig_version = "0.14.0",
 
     .dependencies = .{
-        .jobz = .{ .path = "../_jobz" },
+        .bitz = .{ .path = "../_bitz" },
         .razdaz = .{ .path = "../_razdaz" },
         .smithy = .{ .path = "../smithy" },
     },
@@ -12,8 +12,8 @@
     .paths = .{
         "build.zig",
         "build.zig.zon",
-        "client",
-        "types",
+        "codegen",
+        "runtime",
         "LICENSE",
         "README.md",
     },

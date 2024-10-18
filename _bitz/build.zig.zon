@@ -1,5 +1,5 @@
 .{
-    .name = "jobz",
+    .name = "bitz",
     .version = "0.0.0",
     .minimum_zig_version = "0.14.0",
 
@@ -8,7 +8,9 @@
     .paths = .{
         "build.zig",
         "build.zig.zon",
-        "src",
+        "jarz",
+        "jobz",
+        "srlz",
         "LICENSE",
         "README.md",
     },

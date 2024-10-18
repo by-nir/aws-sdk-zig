@@ -4,8 +4,7 @@
     .minimum_zig_version = "0.14.0",
 
     .dependencies = .{
-        .jarz = .{ .path = "../_jarz" },
-        .jobz = .{ .path = "../_jobz" },
+        .bitz = .{ .path = "../_bitz" },
     },
 
     .paths = .{

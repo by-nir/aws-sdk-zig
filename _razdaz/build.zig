@@ -9,15 +9,12 @@ pub fn build(b: *std.Build) void {
     // Dependencies
     //
 
-    const jarz = b.dependency("jarz", .{
+    const bitz = b.dependency("bitz", .{
         .target = target,
         .optimize = optimize,
-    }).module("jarz");
-
-    const jobz = b.dependency("jobz", .{
-        .target = target,
-        .optimize = optimize,
-    }).module("jobz");
+    });
+    const jarz = bitz.module("jarz");
+    const jobz = bitz.module("jobz");
 
     //
     // Modules
@@ -53,11 +50,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .root_source_file = b.path("src/root.zig"),
     });
-    test_core_exe.root_module.addImport("jarz", jarz);
     test_step.dependOn(&b.addRunArtifact(test_core_exe).step);
-    test_step.dependOn(&b.addInstallArtifact(test_core_exe, .{
+    test_core_exe.root_module.addImport("jarz", jarz);
+
+    const debug_step = b.step("lldb", "Install LLDB binary");
+    debug_step.dependOn(&b.addInstallArtifact(test_core_exe, .{
         .dest_dir = .default,
-        .dest_sub_path = "test",
+        .dest_sub_path = "lldb",
     }).step);
 
     const test_jobs_exe = b.addTest(.{
@@ -65,7 +64,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .root_source_file = b.path("jobs/root.zig"),
     });
+    test_step.dependOn(&b.addRunArtifact(test_jobs_exe).step);
     test_jobs_exe.root_module.addImport("razdaz", core);
     test_jobs_exe.root_module.addImport("jobz", jobz);
-    test_step.dependOn(&b.addRunArtifact(test_jobs_exe).step);
 }

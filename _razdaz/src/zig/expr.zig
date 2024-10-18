@@ -555,8 +555,8 @@ pub const ExprBuild = struct {
         try ExprBuild.init(test_alloc).typeSlice(false, _raw("foo")).expect("[]const foo");
         try ExprBuild.init(test_alloc).typePointer(true, _raw("foo")).expect("*foo");
         try ExprBuild.init(test_alloc).typePointer(false, _raw("foo")).expect("*const foo");
-        try ExprBuild.init(test_alloc).typePointer(null, _raw("foo")).expect("!foo");
-        try ExprBuild.init(test_alloc).typePointer(_raw("boom"), _raw("foo")).expect("boom!foo");
+        try ExprBuild.init(test_alloc).typeError(null, _raw("foo")).expect("!foo");
+        try ExprBuild.init(test_alloc).typeError(_raw("boom"), _raw("foo")).expect("boom!foo");
         try ExprBuild.init(test_alloc).This().expect("@This()");
     }
 
