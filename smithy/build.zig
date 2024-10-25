@@ -14,12 +14,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     }).module("jobz");
 
-    const rzdz = b.dependency("razdaz", .{
+    const cdmd = b.dependency("codmod", .{
         .target = target,
         .optimize = optimize,
     });
-    const razdaz = rzdz.module("razdaz");
-    const razdaz_jobs = rzdz.module("jobs");
+    const codmod = cdmd.module("codmod");
+    const codmod_jobs = cdmd.module("jobs");
 
     const mvzr = b.dependency("mvzr", .{
         .target = target,
@@ -45,8 +45,8 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("codegen/root.zig"),
         .imports = &.{
             .{ .name = "jobz", .module = jobz },
-            .{ .name = "razdaz", .module = razdaz },
-            .{ .name = "razdaz/jobs", .module = razdaz_jobs },
+            .{ .name = "codmod", .module = codmod },
+            .{ .name = "codmod/jobs", .module = codmod_jobs },
             .{ .name = "runtime", .module = runtime },
         },
     });
@@ -87,8 +87,8 @@ pub fn build(b: *std.Build) void {
     });
     test_codegen_step.dependOn(&b.addRunArtifact(test_codegen_exe).step);
     test_codegen_exe.root_module.addImport("jobz", jobz);
-    test_codegen_exe.root_module.addImport("razdaz", razdaz);
-    test_codegen_exe.root_module.addImport("razdaz/jobs", razdaz_jobs);
+    test_codegen_exe.root_module.addImport("codmod", codmod);
+    test_codegen_exe.root_module.addImport("codmod/jobs", codmod_jobs);
     test_codegen_exe.root_module.addImport("runtime", runtime);
 
     const debug_codegen_step = b.step("lldb:codegen", "Install codegen LLDB binary");

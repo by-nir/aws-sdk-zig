@@ -2,8 +2,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const jobz = @import("jobz");
 const Delegate = jobz.Delegate;
-const zig = @import("razdaz").zig;
-const codegen_jobs = @import("razdaz/jobs").codegen;
+const zig = @import("codmod").zig;
+const codegen_jobs = @import("codmod/jobs").codegen;
 const name_util = @import("smithy/codegen").name_util;
 
 pub const RegionDef = struct {

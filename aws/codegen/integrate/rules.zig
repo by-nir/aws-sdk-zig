@@ -1,5 +1,5 @@
 const jobz = @import("jobz");
-const zig = @import("razdaz").zig;
+const zig = @import("codmod").zig;
 const Expr = zig.Expr;
 const ExprBuild = zig.ExprBuild;
 const smithy = @import("smithy/codegen");

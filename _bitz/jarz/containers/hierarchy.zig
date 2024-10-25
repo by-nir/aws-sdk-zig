@@ -8,7 +8,7 @@ const cols = @import("columns.zig");
 const iter = @import("../interface/iterate.zig");
 const common = @import("../interface/common.zig");
 
-pub const HieararchyOptions = struct {
+pub const HierarchyOptions = struct {
     Indexer: type = common.DefaultIndexer,
     Tag: type = void,
     Payload: type = void,
@@ -24,7 +24,7 @@ pub fn HierarchyHooks(comptime Indexer: type) type {
     };
 }
 
-fn HierarchyNode(options: HieararchyOptions) type {
+fn HierarchyNode(options: HierarchyOptions) type {
     const Handle = common.Handle(options.Indexer);
     return struct {
         tag: options.Tag,
@@ -34,7 +34,7 @@ fn HierarchyNode(options: HieararchyOptions) type {
     };
 }
 
-pub fn Hierarchy(options: HieararchyOptions) type {
+pub fn Hierarchy(options: HierarchyOptions) type {
     const Idx = options.Indexer;
     const Node = HierarchyNode(options);
 
@@ -152,7 +152,7 @@ test "Hierarchy" {
     try expectTags(u8, tree.view(), Tree.Handle.of(2), &.{ 21, 22 });
 }
 
-pub fn MutableHierarchy(options: HieararchyOptions, hooks: HierarchyHooks(options.Indexer)) type {
+pub fn MutableHierarchy(options: HierarchyOptions, hooks: HierarchyHooks(options.Indexer)) type {
     const Tag = options.Tag;
     const Payload = options.Payload;
     const has_hooks = hooks.onDropNode != null;
@@ -516,7 +516,7 @@ test "MutableHierarchy: hooks" {
     try testing.expectEqual(node2, Test.nodes[1]);
 }
 
-pub fn HierarchyViewer(comptime options: HieararchyOptions) type {
+pub fn HierarchyViewer(comptime options: HierarchyOptions) type {
     const Handle = common.Handle(options.Indexer);
     const Iterator = iter.Iterator(Handle, .{});
 

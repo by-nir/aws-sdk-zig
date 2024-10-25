@@ -3,16 +3,16 @@ const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = testing.allocator;
-const razdaz = @import("jarz");
+const jarz = @import("jarz");
 const srl = @import("serialize.zig");
 
 const Indexer = u32;
 pub const ROOT = NodeHandle.of(0);
 pub const PayloadHandle = srl.SerialHandle;
-pub const NodeHandle = razdaz.Handle(Indexer);
-pub const Iterator = razdaz.Iterator(NodeHandle, .{});
+pub const NodeHandle = jarz.Handle(Indexer);
+pub const Iterator = jarz.Iterator(NodeHandle, .{});
 
-fn optnsFor(comptime Tag: type) razdaz.HieararchyOptions {
+fn optnsFor(comptime Tag: type) jarz.HierarchyOptions {
     return .{
         .Tag = Tag,
         .Indexer = Indexer,
@@ -27,7 +27,7 @@ pub fn SourceTree(comptime Tag: type) type {
         pub const Viewer = SourceViewer(Tag);
 
         payload: srl.SerialViewer,
-        hierarchy: razdaz.Hierarchy(optnsFor(Tag)),
+        hierarchy: jarz.Hierarchy(optnsFor(Tag)),
 
         pub fn deinit(self: Self, allocator: Allocator) void {
             self.hierarchy.deinit(allocator);
@@ -44,7 +44,7 @@ pub fn SourceTree(comptime Tag: type) type {
 }
 
 pub fn MutableSourceTree(comptime Tag: type) type {
-    const Hierarchy = razdaz.MutableHierarchy(optnsFor(Tag), .{});
+    const Hierarchy = jarz.MutableHierarchy(optnsFor(Tag), .{});
 
     return struct {
         const Self = @This();
@@ -76,7 +76,7 @@ pub fn MutableSourceTree(comptime Tag: type) type {
         /// The caller owns the returned memory. Clears the mutable tree.
         pub fn toReadOnly(self: *Self, immut_alloc: Allocator) !SourceTree(Tag) {
             var payload: MutablePayload = .{};
-            var hierarchy = razdaz.Hierarchy(optnsFor(Tag)).author(immut_alloc);
+            var hierarchy = jarz.Hierarchy(optnsFor(Tag)).author(immut_alloc);
             errdefer hierarchy.deinit();
 
             const hier_view = self.hierarchy.view();
@@ -106,7 +106,7 @@ pub fn MutableSourceTree(comptime Tag: type) type {
             self: *const Self,
             immut_alloc: Allocator,
             hier_view: Hierarchy.Viewer,
-            hier_author: *razdaz.Hierarchy(optnsFor(Tag)).Author,
+            hier_author: *jarz.Hierarchy(optnsFor(Tag)).Author,
             payload: *MutablePayload,
             parent: NodeHandle,
             node: NodeHandle,
@@ -197,7 +197,7 @@ pub fn SourceViewer(comptime Tag: type) type {
         const Self = @This();
 
         serial: srl.SerialViewer,
-        hierarchy: razdaz.HierarchyViewer(optnsFor(Tag)),
+        hierarchy: jarz.HierarchyViewer(optnsFor(Tag)),
 
         pub fn tag(self: Self, node: NodeHandle) Tag {
             return self.hierarchy.tag(node);

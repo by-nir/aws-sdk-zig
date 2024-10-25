@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
     // Modules
     //
 
-    const core = b.addModule("razdaz", .{
+    const core = b.addModule("codmod", .{
         .target = target,
         .optimize = optimize,
         .root_source_file = b.path("src/root.zig"),
@@ -34,7 +34,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .root_source_file = b.path("jobs/root.zig"),
         .imports = &.{
-            .{ .name = "razdaz", .module = core },
+            .{ .name = "codmod", .module = core },
             .{ .name = "jobz", .module = jobz },
         },
     });
@@ -65,6 +65,6 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("jobs/root.zig"),
     });
     test_step.dependOn(&b.addRunArtifact(test_jobs_exe).step);
-    test_jobs_exe.root_module.addImport("razdaz", core);
+    test_jobs_exe.root_module.addImport("codmod", core);
     test_jobs_exe.root_module.addImport("jobz", jobz);
 }

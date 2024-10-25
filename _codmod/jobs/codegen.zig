@@ -6,10 +6,9 @@ const Task = jobz.Task;
 const Delegate = jobz.Delegate;
 const AbstractTask = jobz.AbstractTask;
 const AbstractEval = jobz.AbstractEval;
-const razdaz = @import("razdaz");
-const md = razdaz.md;
-const zig = razdaz.zig;
-const Writer = razdaz.CodegenWriter;
+const md = @import("codmod").md;
+const zig = @import("codmod").zig;
+const Writer = @import("codmod").CodegenWriter;
 
 const MD_HEAD = @embedFile("template/head.md.template");
 const ZIG_HEAD = @embedFile("template/head.zig.template");

@@ -67,16 +67,16 @@
     },
 
     //
-    // RazDaz
+    // CodMod
     //
 
     {
       "type": "shell",
-      "label": "razdaz:test",
+      "label": "codmod:test",
       "command": "zig",
       "args": ["build", "test"],
       "options": {
-        "cwd": "${workspaceRoot}/_razdaz"
+        "cwd": "${workspaceRoot}/_codmod"
       },
       "presentation": {
         "echo": true,
@@ -94,11 +94,11 @@
     },
     {
       "type": "shell",
-      "label": "razdaz:lldb",
+      "label": "codmod:lldb",
       "command": "zig",
       "args": ["build", "lldb"],
       "options": {
-        "cwd": "${workspaceRoot}/_razdaz"
+        "cwd": "${workspaceRoot}/_codmod"
       },
       "presentation": {
         "echo": true,

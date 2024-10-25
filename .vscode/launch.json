@@ -10,13 +10,13 @@
       "preLaunchTask": "bitz:lldb:${input:bitzModule}"
     },
     {
-      "name": "RazDaz",
+      "name": "CodMod",
       "type": "lldb",
       "request": "launch",
-      "program": "${workspaceFolder}/_razdaz/zig-out/bin/lldb",
+      "program": "${workspaceFolder}/_codmod/zig-out/bin/lldb",
       "args": [],
-      "cwd": "${workspaceFolder}/_razdaz",
-      "preLaunchTask": "razdaz:lldb"
+      "cwd": "${workspaceFolder}/_codmod",
+      "preLaunchTask": "codmod:lldb"
     },
     {
       "name": "Smithy",

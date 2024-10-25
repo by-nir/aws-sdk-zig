@@ -24,7 +24,7 @@ const hierarchy = @import("containers/hierarchy.zig");
 pub const Hierarchy = hierarchy.Hierarchy;
 pub const HierarchyHooks = hierarchy.HierarchyHooks;
 pub const HierarchyViewer = hierarchy.HierarchyViewer;
-pub const HieararchyOptions = hierarchy.HieararchyOptions;
+pub const HierarchyOptions = hierarchy.HierarchyOptions;
 pub const MutableHierarchy = hierarchy.MutableHierarchy;
 
 test {

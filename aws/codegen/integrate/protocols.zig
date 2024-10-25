@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const zig = @import("razdaz").zig;
+const zig = @import("codmod").zig;
 const smithy = @import("smithy/codegen");
 const SymbolsProvider = smithy.SymbolsProvider;
 const aws_cfg = @import("../config.zig");

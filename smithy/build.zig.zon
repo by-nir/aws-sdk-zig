@@ -5,7 +5,7 @@
 
     .dependencies = .{
         .bitz = .{ .path = "../_bitz" },
-        .razdaz = .{ .path = "../_razdaz" },
+        .codmod = .{ .path = "../_codmod" },
         .mvzr = .{
             .url = "https://github.com/mnemnion/mvzr/archive/refs/tags/v0.2.2.tar.gz",
             .hash = "12207d2c8c583108fec606c6855d4b681e120af4b2a1948afd9aa18976bdf70335dc",

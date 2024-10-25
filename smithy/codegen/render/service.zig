@@ -11,11 +11,11 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const test_alloc = std.testing.allocator;
 const jobz = @import("jobz");
-const razdaz = @import("razdaz");
-const md = razdaz.md;
-const zig = razdaz.zig;
-const files_jobs = @import("razdaz/jobs").files;
-const codegen_jobs = @import("razdaz/jobs").codegen;
+const codmod = @import("codmod");
+const md = codmod.md;
+const zig = codmod.zig;
+const files_jobs = @import("codmod/jobs").files;
+const codegen_jobs = @import("codmod/jobs").codegen;
 const clnt = @import("client.zig");
 const ClientEndpoint = @import("client_endpoint.zig").ClientEndpoint;
 const ClientOperationsDir = @import("client_operation.zig").ClientOperationsDir;
@@ -146,7 +146,7 @@ fn serviceReadmeWriteIntro(allocator: Allocator, source: []const u8) ![]const u8
     var str = std.ArrayList(u8).init(allocator);
     errdefer str.deinit();
 
-    var wrt = razdaz.CodegenWriter.init(allocator, str.writer().any());
+    var wrt = codmod.CodegenWriter.init(allocator, str.writer().any());
     defer wrt.deinit();
 
     try markdown.write(&wrt);
