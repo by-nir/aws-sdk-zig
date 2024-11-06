@@ -634,13 +634,13 @@ pub const Function = struct {
 test "Function" {
     const Test = utils.TestVal(Function);
     var tester = Test{ .expected = 
-    \\fn foo(bar: Bar, baz: anytype) callconv(.C) Qux {
+    \\fn foo(bar: Bar, baz: anytype) callconv(.naked) Qux {
     \\    defer foo;
     \\}
     };
     try Function.build(test_alloc, Test.callback, &tester, "foo")
         .arg("bar", _xpr("Bar")).arg("baz", null)
-        .callConv(.C)
+        .callConv(std.builtin.CallingConvention.naked)
         .returns(_xpr("Qux")).body(struct {
         fn f(b: *scope.BlockBuild) !void {
             try b.defers(b.x.raw("foo"));

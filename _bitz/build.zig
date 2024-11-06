@@ -21,12 +21,6 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("jobz/root.zig"),
     });
 
-    _ = b.addModule("srlz", .{
-        .target = target,
-        .optimize = optimize,
-        .root_source_file = b.path("srlz/root.zig"),
-    });
-
     //
     // Tests
     //
