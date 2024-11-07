@@ -3,13 +3,13 @@ const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const test_alloc = testing.allocator;
 const read = @import("read.zig");
-const TestingReader = read.TestingReader;
-const combine = @import("combine.zig");
-const Operator = combine.Operator;
-const BuildOp = combine.TestOperator;
-const lib = @import("consume.zig");
+const lib = @import("evaluate.zig");
 const Consumer = lib.Consumer;
 const EvalState = lib.EvalState;
+const Operator = @import("combine.zig").Operator;
+const BuildOp = @import("testing.zig").TestingOperator;
+const TestingDecoder = @import("testing.zig").TestingDecoder;
+
 pub const AllocatePref = lib.ConsumeBehavior.Allocate;
 
 pub fn Value(comptime T: type) type {
@@ -51,7 +51,7 @@ pub fn decodeReader(
 }
 
 /// Reader type is either `SliceDecoder` or any `GenericDecoder`.
-fn Decoder(comptime Reader: type) type {
+pub fn Decoder(comptime Reader: type) type {
     return struct {
         reader: Reader,
         allocator: Allocator,
@@ -250,46 +250,3 @@ test "take" {
     try tester.expectReaderError(tester.take(.avoid, BuildOp.matchSingle(.ok)));
     try tester.expectCursor(6);
 }
-
-/// Utility for testing decoders.
-pub const TestingDecoder = struct {
-    decoder: Decoder(TestingReader) = .{
-        .reader = .{},
-        .allocator = test_alloc,
-    },
-
-    pub fn reset(self: *TestingDecoder, options: TestingReader.ResetOptions) void {
-        self.decoder.reader.reset(options);
-    }
-
-    pub fn skip(self: *TestingDecoder, operator: BuildOp) !void {
-        return self.decoder.skip(operator.build());
-    }
-
-    pub fn peek(
-        self: *TestingDecoder,
-        operator: BuildOp,
-    ) !Decoder(TestingReader).Peek(operator.build().Output()) {
-        return self.decoder.peek(operator.build());
-    }
-
-    pub fn take(
-        self: *TestingDecoder,
-        comptime allocate: AllocatePref,
-        operator: BuildOp,
-    ) !Value(operator.build().Output()) {
-        return self.decoder.take(allocate, operator.build());
-    }
-
-    pub fn expectCursor(self: *TestingDecoder, expected: usize) !void {
-        try self.decoder.reader.expectCursor(expected);
-    }
-
-    pub fn expectReaderError(_: *TestingDecoder, error_union: anytype) !void {
-        try testing.expectError(error.EndOfStream, error_union);
-    }
-
-    pub fn expectFailedOperation(_: *TestingDecoder, error_union: anytype) !void {
-        try testing.expectError(error.FailedOperation, error_union);
-    }
-};

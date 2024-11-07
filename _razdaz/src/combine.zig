@@ -1,6 +1,4 @@
 const std = @import("std");
-const assert = std.debug.assert;
-const testing = std.testing;
 
 pub const OperatorDefine = struct {
     filter: ?Filter = null,
@@ -18,6 +16,16 @@ pub const Operator = struct {
         dynamic,
         bound: usize,
         exact: usize,
+
+        pub const one = SizeHint{ .exact = 1 };
+
+        pub fn max(n: usize) SizeHint {
+            return .{ .bound = n };
+        }
+
+        pub fn count(n: usize) SizeHint {
+            return .{ .exact = n };
+        }
     };
 
     pub fn define(comptime matchFn: anytype, scratch_hint: SizeHint, options: OperatorDefine) Operator {
@@ -176,152 +184,3 @@ fn fnMeta(comptime func: anytype) std.builtin.Type.Fn {
     }
     @compileError("expected a function");
 }
-
-pub const TestOperator = struct {
-    matcher: Matcher,
-    filter: ?Filter = null,
-    resolver: ?Resolver = null,
-
-    pub fn matchSingle(comptime verdict: SingleVerdict) TestOperator {
-        const func = struct {
-            fn f(c: u8) bool {
-                return switch (verdict) {
-                    .ok => true,
-                    .fail => false,
-                    .fail_value => |v| c != v,
-                    .fail_unless => |v| c == v,
-                };
-            }
-        }.f;
-
-        return .{ .matcher = Matcher.define(func) };
-    }
-
-    pub fn matchSequence(comptime verdict: SequenceVerdict, comptime trigger: SequenceTrigger) TestOperator {
-        if (verdict == .next) @compileError("verdict `.next` is not allowed");
-
-        const func = struct {
-            fn f(pos: usize, c: u8) SequenceVerdict {
-                return if (trigger.invoke(pos, c)) verdict else .next;
-            }
-        }.f;
-
-        return .{ .matcher = Matcher.define(func) };
-    }
-
-    pub fn filterSingle(
-        comptime self: *const TestOperator,
-        comptime behavior: Filter.Behavior,
-        comptime verdict: SingleVerdict,
-        comptime action: ResolveAction,
-    ) TestOperator {
-        var b = self.*;
-        b.filter = .{
-            .behavior = behavior,
-            .operator = TestOperator.matchSingle(verdict).resolve(action).build(),
-        };
-        return b;
-    }
-
-    pub fn filterSequence(
-        comptime self: *const TestOperator,
-        comptime behavior: Filter.Behavior,
-        comptime verdict: SequenceVerdict,
-        comptime trigger: SequenceTrigger,
-        comptime action: ResolveAction,
-    ) TestOperator {
-        var b = self.*;
-        b.filter = .{
-            .behavior = behavior,
-            .operator = TestOperator.matchSequence(verdict, trigger).resolve(action).build(),
-        };
-        return b;
-    }
-
-    pub fn resolve(comptime self: *const TestOperator, comptime action: ResolveAction) TestOperator {
-        const In = switch (self.matcher.capacity) {
-            .single => u8,
-            .sequence => []const u8,
-        };
-
-        const Out = switch (action) {
-            .fail, .passthrough => In,
-            .constant_char => u8,
-            .constant_slice => []const u8,
-            .count_items => switch (self.match.capacity) {
-                .single => unreachable,
-                .sequence => usize,
-            },
-        };
-
-        const func = struct {
-            fn f(input: In) ?Out {
-                return switch (action) {
-                    .fail => null,
-                    .passthrough => input,
-                    inline .constant_char, .constant_slice => |v| v,
-                    .count_items => switch (self.match.capacity) {
-                        .single => unreachable,
-                        .sequence => input.len,
-                    },
-                };
-            }
-        }.f;
-
-        var b = self.*;
-        b.resolver = Resolver.define(func);
-        return b;
-    }
-
-    pub fn build(comptime self: TestOperator) Operator {
-        return .{
-            .match = self.matcher,
-            .filter = self.filter,
-            .resolve = self.resolver,
-            .scratch_hint = .dynamic,
-        };
-    }
-
-    pub const SingleVerdict = union(enum) {
-        ok,
-        fail,
-        fail_value: u8,
-        fail_unless: u8,
-    };
-
-    pub const SequenceVerdict = Matcher.Verdict;
-
-    pub const SequenceTrigger = union(enum) {
-        position: usize,
-        value: u8,
-        unless: u8,
-
-        pub fn invoke(self: SequenceTrigger, pos: usize, value: u8) bool {
-            return switch (self) {
-                .position => |n| n == pos,
-                .value => |c| c == value,
-                .unless => |c| c != value,
-            };
-        }
-
-        pub fn at(pos: usize) SequenceTrigger {
-            return .{ .position = pos };
-        }
-
-        pub fn eql(value: u8) SequenceTrigger {
-            return .{ .value = value };
-        }
-
-        pub fn not(value: u8) SequenceTrigger {
-            return .{ .unless = value };
-        }
-    };
-
-    pub const ResolveAction = union(enum) {
-        fail,
-        passthrough,
-        constant_char: u8,
-        constant_slice: []const u8,
-        count_items,
-    };
-};

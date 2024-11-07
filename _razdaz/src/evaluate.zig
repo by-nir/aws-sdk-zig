@@ -3,8 +3,8 @@ const testing = std.testing;
 const test_alloc = testing.allocator;
 const Allocator = std.mem.Allocator;
 const combine = @import("combine.zig");
-const BuildOp = combine.TestOperator;
 const SizeHint = combine.Operator.SizeHint;
+const BuildOp = @import("testing.zig").TestingOperator;
 const TestingReader = @import("read.zig").TestingReader;
 
 pub const ConsumeBehavior = enum {
@@ -94,7 +94,7 @@ pub fn EvalState(comptime T: type) type {
             };
         }
 
-        fn deinit(self: Self, allocator: Allocator) void {
+        pub fn deinit(self: Self, allocator: Allocator) void {
             if (comptime !is_ptr) return;
             if (self.owned) switch (@typeInfo(T).pointer.size) {
                 .One => allocator.destroy(self.value),
@@ -552,7 +552,7 @@ test "Scratch: exact" {
 }
 
 test "Scratch: bound" {
-    var scratch = Scratch(u8, .{ .bound = 6 }){};
+    var scratch = Scratch(u8, .max(6)){};
     try scratch.appendItem(undefined, 0, 'a');
     try scratch.appendSlice(undefined, 1, "bc");
 
@@ -829,7 +829,7 @@ fn TestingConsumer(comptime op: BuildOp) type {
             switch (@TypeOf(expected, actual)) {
                 u8 => try testing.expectEqualStrings(&.{expected}, &.{actual}),
                 []const u8 => try testing.expectEqualStrings(expected, actual),
-                else => try testing.expectEqual(expected, actual),
+                else => try testing.expectEqualDeep(expected, actual),
             }
         }
     };
