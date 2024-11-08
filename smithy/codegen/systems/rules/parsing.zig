@@ -229,7 +229,7 @@ fn parseFuncOrRef(arena: Allocator, reader: *JsonReader) anyerror!FuncOrRef {
     while (try reader.peek() != .object_end) {
         const prop = try reader.nextString();
         if (mem.eql(u8, prop, "ref")) {
-            const value = .{ .reference = try reader.nextStringAlloc(arena) };
+            const value = FuncOrRef{ .reference = try reader.nextStringAlloc(arena) };
             try reader.nextObjectEnd();
             return value;
         } else if (mem.eql(u8, prop, "fn")) {

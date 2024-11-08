@@ -457,13 +457,13 @@ pub const InvokeTraceRecorder = struct {
     }
 
     fn didInvoke(ctx: *anyopaque, method: InvokeMethod, task: ComptimeTag, _: u64) void {
-        const record = .{ .method = method, .task = task };
+        const record = InvokeRecord{ .method = method, .task = task };
         const self: *InvokeTraceRecorder = @ptrCast(@alignCast(ctx));
         self.invoke_records.append(self.allocator, record) catch @panic("OOM");
     }
 
     fn didCallback(ctx: *anyopaque, callback: ComptimeTag, context: *const anyopaque, _: u64) void {
-        const record = .{ .callback = callback, .context = context };
+        const record = CallbackRecord{ .callback = callback, .context = context };
         const self: *InvokeTraceRecorder = @ptrCast(@alignCast(ctx));
         self.callback_records.append(self.allocator, record) catch @panic("OOM");
     }
