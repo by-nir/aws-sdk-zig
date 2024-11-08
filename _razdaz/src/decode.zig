@@ -3,14 +3,14 @@ const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const test_alloc = testing.allocator;
 const read = @import("read.zig");
-const lib = @import("evaluate.zig");
-const Consumer = lib.Consumer;
-const EvalState = lib.EvalState;
+const evl = @import("evaluate.zig");
+const Consumer = evl.Consumer;
+const EvalState = evl.EvalState;
 const Operator = @import("combine.zig").Operator;
 const BuildOp = @import("testing.zig").TestingOperator;
 const TestingDecoder = @import("testing.zig").TestingDecoder;
 
-pub const AllocatePref = lib.ConsumeBehavior.Allocate;
+pub const AllocatePref = evl.ConsumeBehavior.Allocate;
 
 pub fn Value(comptime T: type) type {
     return union(enum) {
@@ -88,7 +88,7 @@ pub fn Decoder(comptime Reader: type) type {
             switch (output) {
                 .discard => unreachable,
                 .ok => |state| {
-                    if (@TypeOf(state.owned) == bool and state.owned)
+                    if (state.isOwned())
                         return .{ .owned = state.value }
                     else
                         return .{ .view = state.value };
@@ -121,7 +121,6 @@ pub fn Decoder(comptime Reader: type) type {
         }
 
         pub fn Peek(comptime T: type) type {
-            const is_pointer = @typeInfo(T) == .pointer;
             return struct {
                 decoder: *Self,
                 state: EvalState(T),
@@ -150,7 +149,7 @@ pub fn Decoder(comptime Reader: type) type {
 
                 /// Deallocates the value without advancing the reader.
                 pub fn deinit(self: @This()) void {
-                    if (!is_pointer or !self.state.owned) return;
+                    if (!self.state.isOwned()) return;
                     const allocator = self.decoder.allocator;
                     switch (@typeInfo(T).pointer.size) {
                         .One => allocator.destroy(self.state.value),

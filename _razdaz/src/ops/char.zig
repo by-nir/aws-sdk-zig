@@ -13,7 +13,7 @@ pub fn matchChar(comptime char: u8) Operator {
         fn f(c: u8) bool {
             return c == char;
         }
-    }.f, .one, .{});
+    }.f, .{});
 }
 
 test matchChar {
@@ -27,20 +27,21 @@ pub fn unlessChar(comptime char: u8) Operator {
         fn f(c: u8) bool {
             return c != char;
         }
-    }.f, .one, .{});
+    }.f, .{});
 }
 
 test unlessChar {
     try testing.expectEvaluate(unlessChar('x'), "a", 'a', 1);
     try testing.expectFail(unlessChar('a'), "a");
 }
+
 /// Match any of the specified ASCII characters.
 pub fn matchAnyChar(comptime chars: []const u8) Operator {
     return Operator.define(struct {
         fn f(c: u8) bool {
             return isAnyChar(chars, c);
         }
-    }.f, .one, .{});
+    }.f, .{});
 }
 
 test matchAnyChar {
@@ -56,7 +57,7 @@ pub fn unlessAnyChar(comptime chars: []const u8) Operator {
         fn f(c: u8) bool {
             return !isAnyChar(chars, c);
         }
-    }.f, .one, .{});
+    }.f, .{});
 }
 
 test unlessAnyChar {
@@ -71,20 +72,23 @@ fn isAnyChar(comptime chars: []const u8, c: u8) bool {
         2 => return c == chars[0] or c == chars[1],
         else => {
             const flags = comptime charFlags(chars);
-            const mask: u256 = @as(u256, 1) << c;
+            const mask = @as(u128, 1) << @intCast(c);
             return (mask & flags) != 0;
         },
     }
 }
 
-fn charFlags(chars: []const u8) u256 {
-    var flags: u256 = 0;
-    for (chars) |c| flags |= 1 << c;
+fn charFlags(chars: []const u8) u128 {
+    var flags: u128 = 0;
+    for (chars) |c| {
+        if (!ascii.isAscii(c)) @compileError(std.fmt.comptimePrint("fond non-ASCII character 0x{X}", .{c}));
+        flags |= 1 << c;
+    }
     return flags;
 }
 
 /// Match any whitespace character.
-pub const matchWhitespace = Operator.define(ascii.isWhitespace, .one, .{});
+pub const matchWhitespace = Operator.define(ascii.isWhitespace, .{});
 
 test matchWhitespace {
     try testing.expectEvaluate(matchWhitespace, " ", ' ', 1);
@@ -95,7 +99,7 @@ test matchWhitespace {
 }
 
 /// Match any alphabetic ASCII character.
-pub const matchAlphabet = Operator.define(ascii.isAlphabetic, .one, .{});
+pub const matchAlphabet = Operator.define(ascii.isAlphabetic, .{});
 
 test matchAlphabet {
     try testing.expectEvaluate(matchAlphabet, "x", 'x', 1);
@@ -105,7 +109,7 @@ test matchAlphabet {
 }
 
 /// Match any alphabetic or digit ASCII character.
-pub const matchAlphanum = Operator.define(ascii.isAlphanumeric, .one, .{});
+pub const matchAlphanum = Operator.define(ascii.isAlphanumeric, .{});
 
 test matchAlphanum {
     try testing.expectEvaluate(matchAlphabet, "x", 'x', 1);
@@ -115,7 +119,7 @@ test matchAlphanum {
 }
 
 /// Match any digit ASCII character.
-pub const matchDigit = Operator.define(ascii.isDigit, .one, .{});
+pub const matchDigit = Operator.define(ascii.isDigit, .{});
 
 test matchDigit {
     try testing.expectEvaluate(matchDigit, "8", '8', 1);
@@ -124,7 +128,7 @@ test matchDigit {
 }
 
 /// Match any hexadecimal ASCII character. Case-insensitive.
-pub const matchHex = Operator.define(ascii.isHex, .one, .{});
+pub const matchHex = Operator.define(ascii.isHex, .{});
 
 test matchHex {
     try testing.expectEvaluate(matchHex, "8", '8', 1);
@@ -135,7 +139,7 @@ test matchHex {
 }
 
 /// Match any lowercase alphabetic ASCII character.
-pub const matchLower = Operator.define(ascii.isLower, .one, .{});
+pub const matchLower = Operator.define(ascii.isLower, .{});
 
 test matchLower {
     try testing.expectEvaluate(matchLower, "x", 'x', 1);
@@ -145,7 +149,7 @@ test matchLower {
 }
 
 /// Match any uppercase alphabetic ASCII character.
-pub const matchUpper = Operator.define(ascii.isUpper, .one, .{});
+pub const matchUpper = Operator.define(ascii.isUpper, .{});
 
 test matchUpper {
     try testing.expectEvaluate(matchUpper, "X", 'X', 1);
@@ -155,7 +159,7 @@ test matchUpper {
 }
 
 /// Match any ASCII control character.
-pub const matchControl = Operator.define(ascii.isControl, .one, .{});
+pub const matchControl = Operator.define(ascii.isControl, .{});
 
 test matchControl {
     try testing.expectEvaluate(matchControl, "\n", '\n', 1);
@@ -165,7 +169,7 @@ test matchControl {
 }
 
 /// Match any ASCII character.
-pub const matchAscii = Operator.define(ascii.isAscii, .one, .{});
+pub const matchAscii = Operator.define(ascii.isAscii, .{});
 
 test matchAscii {
     try testing.expectEvaluate(matchAscii, "\x7F", '\x7F', 1);
@@ -173,12 +177,13 @@ test matchAscii {
 }
 
 /// Decode an escaped character.
-pub const decodeEscape = Operator.define(decodeEscapeMatch, .max(4), .{
-    .resolve = Resolver.define(decodeEscapeResolve),
+pub const decodeEscape = Operator.define(decodeEscapeMatch, .{
+    .scratch_hint = .max(4),
+    .resolve = Resolver.define(.fail, decodeEscapeResolve),
 });
 
-fn decodeEscapeMatch(pos: usize, c: u8) MatchVerdict {
-    switch (pos) {
+fn decodeEscapeMatch(i: usize, c: u8) MatchVerdict {
+    switch (i) {
         0 => return if (c == '\\') .next else .invalid,
         1 => return switch (c) {
             '\\', '\'', '\"', 'n', 'r', 't', 'b', 'f', 'v' => .done_include,
@@ -186,7 +191,7 @@ fn decodeEscapeMatch(pos: usize, c: u8) MatchVerdict {
             else => .invalid,
         },
         2, 3 => return switch (c) {
-            '0'...'9', 'a'...'f', 'A'...'F' => if (pos == 2) .next else .done_include,
+            '0'...'9', 'a'...'f', 'A'...'F' => if (i == 2) .next else .done_include,
             else => .invalid,
         },
         else => return .done_exclude,
@@ -230,8 +235,8 @@ test decodeEscape {
 }
 
 /// Encode an escaped character.
-pub const encodeEscape = Operator.define(encodeEscapeMatch, .one, .{
-    .resolve = Resolver.define(encodeEscapeResolve),
+pub const encodeEscape = Operator.define(encodeEscapeMatch, .{
+    .resolve = Resolver.define(.fail, encodeEscapeResolve),
 });
 
 fn encodeEscapeMatch(c: u8) bool {

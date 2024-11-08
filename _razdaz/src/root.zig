@@ -15,6 +15,7 @@ pub const ReaderDecoder = decoder.ReaderDecoder;
 const combine = @import("combine.zig");
 pub const Filter = combine.Filter;
 pub const Matcher = combine.Matcher;
+pub const SizeHint = combine.SizeHint;
 pub const Resolver = combine.Resolver;
 pub const Operator = combine.Operator;
 pub const OperatorDefine = combine.OperatorDefine;

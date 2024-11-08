@@ -3,7 +3,6 @@ const testing = std.testing;
 const test_alloc = testing.allocator;
 const Allocator = std.mem.Allocator;
 const combine = @import("combine.zig");
-const SizeHint = combine.Operator.SizeHint;
 const BuildOp = @import("testing.zig").TestingOperator;
 const TestingReader = @import("read.zig").TestingReader;
 
@@ -71,13 +70,13 @@ pub const ConsumeBehavior = enum {
 };
 
 pub fn EvalState(comptime T: type) type {
-    const is_ptr = @typeInfo(T) == .pointer;
     return struct {
         value: T,
         used: usize,
-        owned: if (is_ptr) bool else void = if (is_ptr) false else {},
+        owned: if (can_own) bool else void = if (can_own) false else {},
 
         const Self = @This();
+        pub const can_own = @typeInfo(T) == .pointer;
 
         fn fromView(value: T, used: usize) Self {
             return .{
@@ -94,9 +93,12 @@ pub fn EvalState(comptime T: type) type {
             };
         }
 
+        pub inline fn isOwned(self: Self) bool {
+            return (comptime can_own) and self.owned;
+        }
+
         pub fn deinit(self: Self, allocator: Allocator) void {
-            if (comptime !is_ptr) return;
-            if (self.owned) switch (@typeInfo(T).pointer.size) {
+            if (self.isOwned()) switch (@typeInfo(T).pointer.size) {
                 .One => allocator.destroy(self.value),
                 .Slice => allocator.free(self.value),
                 else => @compileError("unsupported pointer size"),
@@ -185,7 +187,7 @@ pub fn Consumer(comptime operator: combine.Operator) type {
             skip: behavior.Skip(),
         ) !?EvalState([]const match.Input) {
             const provider = provide(source);
-            var sequencer = Sequencer(match.Input, operator.scratch_hint, behavior.canTake()).init(allocator, skip);
+            var sequencer = Sequencer(match.Input, match.capacity.sequence, behavior.canTake()).init(allocator, skip);
             errdefer sequencer.deinit();
 
             while (true) switch (try sequencer.cycle(provider, behavior, operator.filter)) {
@@ -280,7 +282,7 @@ pub fn Consumer(comptime operator: combine.Operator) type {
         }
 
         fn passthroughOutput(allocator: Allocator, comptime behavior: ConsumeBehavior, state: OutputState) !Self {
-            if ((comptime behavior.allocate() == .always and @TypeOf(state.owned) == bool) and !state.owned) {
+            if ((comptime behavior.allocate() == .always and OutputState.can_own) and !state.owned) {
                 return .{ .ok = try cloneResolved(allocator, state.value, state.used) };
             } else {
                 return .{ .ok = state };
@@ -333,7 +335,7 @@ pub fn Consumer(comptime operator: combine.Operator) type {
     };
 }
 
-fn Sequencer(comptime T: type, comptime scratch_hint: SizeHint, comptime can_take: bool) type {
+fn Sequencer(comptime T: type, comptime scratch_hint: combine.SizeHint, comptime can_take: bool) type {
     const Skip = if (can_take) u0 else usize;
     return struct {
         allocator: Allocator,
@@ -481,7 +483,7 @@ fn Provider(comptime Source: type, comptime In: type, comptime Out: type) type {
     };
 }
 
-fn Scratch(comptime T: type, comptime size_hint: SizeHint) type {
+fn Scratch(comptime T: type, comptime size_hint: combine.SizeHint) type {
     const Buffer = switch (size_hint) {
         .dynamic => std.ArrayListUnmanaged(T),
         .bound => |max| std.BoundedArray(T, max),
@@ -585,20 +587,20 @@ test "Consumer: match single" {
 
 test "Consumer: match sequence" {
     var reader = TestingReader{ .buffer = "abcd" };
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .position = 1 }))
+    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }))
         .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSequence(.done_exclude, .{ .position = 2 }))
+    try TestingConsumer(BuildOp.matchSequence(.done_exclude, .{ .index = 2 }))
         .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSequence(.invalid, .{ .position = 2 }))
+    try TestingConsumer(BuildOp.matchSequence(.invalid, .{ .index = 2 }))
         .expectFail().evaluate(&reader, .{ .view = 1 });
 
-    // Exclude when i == 0
-    try TestingConsumer(BuildOp.matchSequence(.done_exclude, .{ .position = 0 }))
+    // Fail when exclude at i == 0
+    try TestingConsumer(BuildOp.matchSequence(.done_exclude, .{ .index = 0 }))
         .expectFail().evaluate(&reader, .{ .view = 1 });
 
     // Propogate reader failure
     reader.reset(.{ .fail = .{ .cursor = 0 } });
-    try TestingConsumer(BuildOp.matchSequence(.done_exclude, .{ .position = 2 }))
+    try TestingConsumer(BuildOp.matchSequence(.done_exclude, .{ .index = 2 }))
         .expectReaderError().evaluate(&reader, .{ .view = 1 });
 }
 
@@ -614,11 +616,11 @@ test "Consumer: resolve" {
         .expectFail().evaluate(&reader, .{ .view = 1 });
 
     // Sequence
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .position = 1 }).resolve(.passthrough))
+    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.passthrough))
         .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .position = 1 }).resolve(.{ .constant_char = 'x' }))
+    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.{ .constant_char = 'x' }))
         .expectSuccess('x', 2).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .position = 1 }).resolve(.fail))
+    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.fail))
         .expectFail().evaluate(&reader, .{ .view = 1 });
 }
 
@@ -632,32 +634,32 @@ test "Consumer: take single" {
 
 test "Consumer: take sequence" {
     var reader = TestingReader{};
-    try TestingConsumer(BuildOp.matchSequence(.invalid, .{ .position = 1 }))
+    try TestingConsumer(BuildOp.matchSequence(.invalid, .{ .index = 1 }))
         .expectFail().evaluate(&reader, .take);
     try reader.expectCursor(1); // Takes the first char, then the second fails
 
     reader.reset(.{ .buffer = "abcde" });
-    try TestingConsumer(BuildOp.matchSequence(.done_exclude, .{ .position = 2 }))
+    try TestingConsumer(BuildOp.matchSequence(.done_exclude, .{ .index = 2 }))
         .expectSuccess("ab", 2).evaluate(&reader, .take);
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .position = 1 }))
+    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }))
         .expectSuccess("cd", 2).evaluate(&reader, .take);
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .position = 1 }))
+    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }))
         .expectReaderError().evaluate(&reader, .take);
     try reader.expectCursor(5); // Takes the first char, then the second fails
 }
 
 test "Consumer: clone" {
     var reader = TestingReader{};
-    try TestingConsumer(BuildOp.matchSequence(.invalid, .{ .position = 1 }))
+    try TestingConsumer(BuildOp.matchSequence(.invalid, .{ .index = 1 }))
         .expectFail().evaluate(&reader, .clone);
     try reader.expectCursor(1); // Takes the first char, then the second fails
 
     reader.reset(.{ .buffer = "abcde" });
-    try TestingConsumer(BuildOp.matchSequence(.done_exclude, .{ .position = 2 }))
+    try TestingConsumer(BuildOp.matchSequence(.done_exclude, .{ .index = 2 }))
         .expectSuccess("ab", 2).evaluate(&reader, .clone);
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .position = 1 }))
+    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }))
         .expectSuccess("cd", 2).evaluate(&reader, .clone);
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .position = 1 }))
+    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }))
         .expectReaderError().evaluate(&reader, .clone);
     try reader.expectCursor(5); // Takes the first char, then the second fails
 }
@@ -671,7 +673,7 @@ test "Consumer: drop" {
         .evaluate(&reader, .drop);
     try reader.expectCursor(1);
 
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .position = 1 }))
+    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }))
         .expectSuccess(undefined, 2).evaluate(&reader, .drop);
     try reader.expectCursor(3);
 
@@ -681,7 +683,7 @@ test "Consumer: drop" {
         .evaluate(&reader, .drop);
     try reader.expectCursor(4);
 
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .position = 1 }).resolve(.{ .constant_char = 'x' }))
+    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.{ .constant_char = 'x' }))
         .expectSuccess(undefined, 2).evaluate(&reader, .drop);
     try reader.expectCursor(6);
 }
@@ -720,19 +722,19 @@ test "Consumer: filter sequence" {
     var reader = TestingReader{ .buffer = "abcd" };
 
     // Safe
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .position = 1 }).filterSingle(.safe, .ok, .passthrough))
+    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.safe, .ok, .passthrough))
         .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .position = 1 }).filterSingle(.safe, .ok, .{ .constant_char = 'x' }))
+    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.safe, .ok, .{ .constant_char = 'x' }))
         .expectSuccess("xx", 2).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .position = 1 }).filterSingle(.safe, .fail, .{ .constant_char = 'x' }))
+    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.safe, .fail, .{ .constant_char = 'x' }))
         .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
 
     // Fail
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .position = 1 }).filterSingle(.fail, .ok, .passthrough))
+    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.fail, .ok, .passthrough))
         .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .position = 1 }).filterSingle(.fail, .ok, .{ .constant_char = 'x' }))
+    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.fail, .ok, .{ .constant_char = 'x' }))
         .expectSuccess("xx", 2).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .position = 1 }).filterSingle(.fail, .fail, .{ .constant_char = 'x' }))
+    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.fail, .fail, .{ .constant_char = 'x' }))
         .expectFail().evaluate(&reader, .{ .view = 1 });
 
     // Skip

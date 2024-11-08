@@ -1,39 +1,38 @@
 const std = @import("std");
 
+pub const SizeHint = union(enum) {
+    dynamic,
+    bound: usize,
+    exact: usize,
+
+    pub const one = SizeHint{ .exact = 1 };
+
+    pub fn max(n: usize) SizeHint {
+        return .{ .bound = n };
+    }
+
+    pub fn count(n: usize) SizeHint {
+        return .{ .exact = n };
+    }
+};
+
 pub const OperatorDefine = struct {
     filter: ?Filter = null,
     resolve: ?Resolver = null,
+    /// The expected input size used before resolving.
+    scratch_hint: ?SizeHint = null,
 };
 
 pub const Operator = struct {
     match: Matcher,
     filter: ?Filter = null,
     resolve: ?Resolver = null,
-    /// The expected input size used before resolving.
-    scratch_hint: SizeHint,
 
-    pub const SizeHint = union(enum) {
-        dynamic,
-        bound: usize,
-        exact: usize,
-
-        pub const one = SizeHint{ .exact = 1 };
-
-        pub fn max(n: usize) SizeHint {
-            return .{ .bound = n };
-        }
-
-        pub fn count(n: usize) SizeHint {
-            return .{ .exact = n };
-        }
-    };
-
-    pub fn define(comptime matchFn: anytype, scratch_hint: SizeHint, options: OperatorDefine) Operator {
+    pub fn define(comptime matchFn: anytype, options: OperatorDefine) Operator {
         return .{
-            .match = Matcher.define(matchFn),
+            .match = Matcher.define(matchFn, options.scratch_hint),
             .filter = options.filter,
             .resolve = options.resolve,
-            .scratch_hint = scratch_hint,
         };
     }
 
@@ -66,9 +65,9 @@ pub const Matcher = struct {
     capacity: Capacity,
     func: *const anyopaque,
 
-    pub const Capacity = enum {
+    pub const Capacity = union(enum) {
         single,
-        sequence,
+        sequence: SizeHint,
     };
 
     pub const Verdict = enum {
@@ -86,33 +85,33 @@ pub const Matcher = struct {
         return fn (position: usize, value: T) Verdict;
     }
 
-    pub fn define(comptime func: anytype) Matcher {
+    pub fn define(comptime func: anytype, scratch_hint: ?SizeHint) Matcher {
         const meta = fnMeta(func);
         const params = meta.params;
         switch (params.len) {
-            1 => blk: {
-                if (meta.return_type.? != bool) break :blk;
-                if (params[0].type.? == void) break :blk;
-                return .{
-                    .Input = params[0].type.?,
-                    .capacity = .single,
-                    .func = func,
-                };
-            },
-            2 => blk: {
-                if (meta.return_type.? != Verdict) break :blk;
-                if (params[0].type.? != usize) break :blk;
-                if (params[1].type.? == void) break :blk;
-                return .{
-                    .Input = params[1].type.?,
-                    .capacity = .sequence,
-                    .func = func,
-                };
-            },
-            else => {},
-        }
+            1 => {
+                if (scratch_hint) |h|
+                    std.log.warn("single matcher does not expects scratch hints (found `.{s}`)", .{@tagName(h)});
 
-        @compileError("expected signature `fn (T) bool` or `fn (usize, T) Matcher.Verdict`");
+                if (meta.return_type.? == bool and params[0].type.? != void) {
+                    return .{
+                        .capacity = .single,
+                        .Input = params[0].type.?,
+                        .func = func,
+                    };
+                } else @compileError("single matcher expects signature `fn (T) bool`");
+            },
+            2 => {
+                if (meta.return_type.? == Verdict and params[0].type.? == usize and params[1].type.? != void) {
+                    return .{
+                        .capacity = .{ .sequence = scratch_hint orelse .dynamic },
+                        .Input = params[1].type.?,
+                        .func = func,
+                    };
+                } else @compileError("sequence matcher expects signature `fn (usize, T) Matcher.Verdict`");
+            },
+            else => @compileError("matcher expects signature `fn (T) bool` or `fn (usize, T) Matcher.Verdict`"),
+        }
     }
 
     pub fn evalSingle(comptime self: Matcher, value: self.Input) bool {
@@ -120,9 +119,9 @@ pub const Matcher = struct {
         return castFn(SingleFn(self.Input), self.func)(value);
     }
 
-    pub fn evalSequence(comptime self: Matcher, pos: usize, value: self.Input) Verdict {
+    pub fn evalSequence(comptime self: Matcher, i: usize, value: self.Input) Verdict {
         if (self.capacity != .sequence) @compileError("Matcher capacity is not sequence");
-        return castFn(SequenceFn(self.Input), self.func)(pos, value);
+        return castFn(SequenceFn(self.Input), self.func)(i, value);
     }
 };
 
@@ -131,7 +130,7 @@ pub const Filter = struct {
     operator: Operator,
 
     pub const Behavior = enum {
-        /// Evaluate the input, otherwise use the unevaluated input.
+        /// Evaluate the input, fallback to the source input.
         safe,
         /// Evaluate the input, otherwise the operation fails.
         fail,

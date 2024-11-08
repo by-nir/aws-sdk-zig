@@ -21,7 +21,7 @@ pub fn expectEvaluate(
     const T = operator.Output();
     switch (try Consumer(operator).evaluate(test_alloc, input, .direct_view, 0)) {
         .ok => |state| {
-            defer if (@typeInfo(T) == .pointer and state.owned) state.deinit(test_alloc);
+            defer state.deinit(test_alloc);
 
             if (used != state.used) {
                 std.debug.print("expected {} items consumed, found {}\n", .{ used, state.used });
@@ -47,7 +47,7 @@ pub fn expectFail(comptime operator: Operator, input: []const operator.Input()) 
     switch (try Consumer(operator).evaluate(test_alloc, input, .direct_view, 0)) {
         .ok => |state| {
             std.debug.print("expected failed operator, found " ++ valueFormat(T) ++ "\n", .{state.value});
-            if (@typeInfo(T) == .pointer and state.owned) state.deinit(test_alloc);
+            state.deinit(test_alloc);
         },
         .fail => {},
         .discard => undefined,
@@ -60,6 +60,14 @@ fn valueFormat(comptime T: type) []const u8 {
         []const u8 => "\"{s}\"",
         else => "{}",
     };
+}
+
+pub fn yieldState(success: bool) Operator {
+    return Operator.define(struct {
+        fn f(_: u8) bool {
+            return success;
+        }
+    }.f, .{});
 }
 
 /// Utility for testing decoders.
@@ -122,19 +130,19 @@ pub const TestingOperator = struct {
             }
         }.f;
 
-        return .{ .matcher = Matcher.define(func) };
+        return .{ .matcher = Matcher.define(func, null) };
     }
 
     pub fn matchSequence(comptime verdict: SequenceVerdict, comptime trigger: SequenceTrigger) TestingOperator {
         if (verdict == .next) @compileError("verdict `.next` is not allowed");
 
         const func = struct {
-            fn f(pos: usize, c: u8) SequenceVerdict {
-                return if (trigger.invoke(pos, c)) verdict else .next;
+            fn f(i: usize, c: u8) SequenceVerdict {
+                return if (trigger.invoke(i, c)) verdict else .next;
             }
         }.f;
 
-        return .{ .matcher = Matcher.define(func) };
+        return .{ .matcher = Matcher.define(func, null) };
     }
 
     pub fn filterSingle(
@@ -197,7 +205,7 @@ pub const TestingOperator = struct {
         }.f;
 
         var b = self.*;
-        b.resolver = Resolver.define(func);
+        b.resolver = Resolver.define(.fail, func);
         return b;
     }
 
@@ -206,7 +214,6 @@ pub const TestingOperator = struct {
             .match = self.matcher,
             .filter = self.filter,
             .resolve = self.resolver,
-            .scratch_hint = .dynamic,
         };
     }
 
@@ -220,20 +227,20 @@ pub const TestingOperator = struct {
     pub const SequenceVerdict = Matcher.Verdict;
 
     pub const SequenceTrigger = union(enum) {
-        position: usize,
+        index: usize,
         value: u8,
         unless: u8,
 
-        pub fn invoke(self: SequenceTrigger, pos: usize, value: u8) bool {
+        pub fn invoke(self: SequenceTrigger, i: usize, value: u8) bool {
             return switch (self) {
-                .position => |n| n == pos,
+                .index => |n| n == i,
                 .value => |c| c == value,
                 .unless => |c| c != value,
             };
         }
 
-        pub fn at(pos: usize) SequenceTrigger {
-            return .{ .position = pos };
+        pub fn at(i: usize) SequenceTrigger {
+            return .{ .index = i };
         }
 
         pub fn eql(value: u8) SequenceTrigger {
