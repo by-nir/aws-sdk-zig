@@ -28,25 +28,21 @@ pub const ConsumeBehavior = enum {
         stream,
     };
 
-    fn Skip(self: ConsumeBehavior) type {
-        return if (self.canSkip()) usize else u0;
-    }
-
-    fn canSkip(self: ConsumeBehavior) bool {
+    inline fn Skip(comptime self: ConsumeBehavior) type {
         return switch (self) {
-            .direct_clone, .direct_view, .stream_view => true,
-            .stream_take_clone, .stream_take, .stream_drop => false,
+            .direct_clone, .direct_view, .stream_view => usize,
+            .stream_take_clone, .stream_take, .stream_drop => u0,
         };
     }
 
-    fn canTake(self: ConsumeBehavior) bool {
+    inline fn canTake(comptime self: ConsumeBehavior) bool {
         return switch (self) {
             .stream_take_clone, .stream_take => true,
             else => false,
         };
     }
 
-    fn asView(self: ConsumeBehavior) ConsumeBehavior {
+    inline fn asView(comptime self: ConsumeBehavior) ConsumeBehavior {
         return switch (self) {
             .direct_clone => .direct_view,
             .direct_view, .stream_take, .stream_drop => .stream_view,
@@ -54,20 +50,44 @@ pub const ConsumeBehavior = enum {
         };
     }
 
-    fn source(self: ConsumeBehavior) Source {
+    inline fn source(comptime self: ConsumeBehavior) Source {
         return switch (self) {
             .direct_clone, .direct_view => .direct,
             .stream_take_clone, .stream_take, .stream_view, .stream_drop => .stream,
         };
     }
 
-    fn allocate(self: ConsumeBehavior) Allocate {
+    inline fn allocate(comptime self: ConsumeBehavior) Allocate {
         return switch (self) {
             .direct_clone, .stream_take_clone => .always,
             .direct_view, .stream_take, .stream_view, .stream_drop => .avoid,
         };
     }
 };
+
+pub fn Evaluate(comptime operator: combine.Operator) type {
+    const match = operator.match;
+    return union(enum) {
+        fail,
+        discard,
+        ok: EvalState(operator.Output()),
+
+        const Self = @This();
+
+        pub fn at(
+            allocator: Allocator,
+            source: anytype,
+            comptime behavior: ConsumeBehavior,
+            skip: behavior.Skip(),
+        ) !Self {
+            const Evaluator = switch (match.capacity) {
+                .single => Single(operator, @TypeOf(source), behavior),
+                .sequence => Sequence(operator, @TypeOf(source), behavior),
+            };
+            return Evaluator.evaluate(allocator, source, skip);
+        }
+    };
+}
 
 pub fn EvalState(comptime T: type) type {
     return struct {
@@ -107,298 +127,341 @@ pub fn EvalState(comptime T: type) type {
     };
 }
 
-const EvalOverlap = enum {
-    none,
-    partial,
-    full,
-};
-
-pub fn Consumer(comptime operator: combine.Operator) type {
-    const match = operator.match;
-    const filter_may_skip = if (operator.filter) |f| f.behavior == .skip else false;
-    const OutputState = EvalState(operator.Output());
-    const MatchState = EvalState(switch (match.capacity) {
-        .single => match.Input,
-        .sequence => []const match.Input,
-    });
-
-    return union(enum) {
-        fail,
-        discard,
-        ok: OutputState,
+fn Single(comptime op: combine.Operator, comptime Source: type, comptime behavior: ConsumeBehavior) type {
+    const can_own = @typeInfo(op.match.Input) == .pointer;
+    return struct {
+        allocator: Allocator,
+        provider: Provider(Source, op.Input(), op.match.Input),
+        used: usize = 0,
+        scratch: op.match.Input = undefined,
+        owned: if (can_own) bool else void = if (can_own) false else {},
 
         const Self = @This();
+        const Process = Processor(
+            op.match.Input,
+            op.Output(),
+            if (behavior == .stream_drop) .discard else if (behavior.allocate() == .always) .clone else .standard,
+            .{
+                .deinitScratch = deinitScratch,
+                .consumeUsed = consumeUsed,
+                .isOwned = isOwned,
+            },
+        );
 
-        fn provide(source: anytype) Provider(@TypeOf(source), operator.Input(), match.Input) {
-            return .{ .source = source };
-        }
-
-        pub fn evaluate(
-            allocator: Allocator,
-            source: anytype,
-            comptime behavior: ConsumeBehavior,
-            skip: behavior.Skip(),
-        ) !Self {
-            const matched: MatchState = switch (comptime match.capacity) {
-                .single => try matchSingle(allocator, source, behavior, skip),
-                .sequence => try matchSequence(allocator, source, behavior, skip),
-            } orelse {
-                @branchHint(.unlikely);
-                return .fail;
+        pub fn evaluate(allocator: Allocator, source: Source, skip: behavior.Skip()) !Evaluate(op) {
+            var self = Self{
+                .allocator = allocator,
+                .provider = .{ .source = source },
             };
 
-            if (comptime operator.resolve) |resolve| {
-                return processResolver(allocator, source, matched, resolve, behavior);
-            } else {
-                return processPassthrough(allocator, source, matched, behavior);
-            }
-        }
-
-        fn matchSingle(
-            allocator: Allocator,
-            source: anytype,
-            comptime behavior: ConsumeBehavior,
-            skip: behavior.Skip(),
-        ) !?EvalState(match.Input) {
-            const provider = provide(source);
-            switch (try provider.safeReadSingle(allocator, operator.filter, behavior, skip)) {
-                .filtered_skip => |state| return if (comptime filter_may_skip) state else unreachable,
-                inline .filtered, .standard => |state, g| {
-                    if (comptime g == .filtered and operator.filter == null) unreachable;
-                    if (match.evalSingle(state.value)) {
-                        if (comptime behavior.canTake()) provider.drop(state.used);
-                        return state;
-                    } else {
-                        @branchHint(.unlikely);
-                        return null;
-                    }
-                },
-                .fail => {
-                    @branchHint(.unlikely);
-                    return null;
-                },
-            }
-        }
-
-        fn matchSequence(
-            allocator: Allocator,
-            source: anytype,
-            comptime behavior: ConsumeBehavior,
-            skip: behavior.Skip(),
-        ) !?EvalState([]const match.Input) {
-            const provider = provide(source);
-            var sequencer = Sequencer(match.Input, match.capacity.sequence, behavior.canTake()).init(allocator, skip);
-            errdefer sequencer.deinit();
-
-            while (true) switch (try sequencer.cycle(provider, behavior, operator.filter)) {
-                .filtered_skip => |item| if (comptime filter_may_skip) {
-                    try sequencer.appendItem(provider, item, true);
-                    continue;
+            if (try self.match(skip)) switch (try Process.consume(allocator, &self, self.scratch, op.resolve)) {
+                .discard => return .discard,
+                .view => |output| if (comptime !can_own or behavior.allocate() == .avoid) {
+                    return .{ .ok = .fromView(output, self.used) };
                 } else unreachable,
-                inline .standard, .filtered => |item, t| {
-                    if (comptime t == .filtered and operator.filter == null) unreachable;
-                    switch (match.evalSequence(sequencer.i, item.value)) {
-                        inline .next, .done_include => |g| {
-                            try sequencer.appendItem(provider, item, t == .filtered);
-                            if (g == .next) continue else break;
-                        },
-                        .done_exclude => {
-                            if (sequencer.isEmpty()) {
-                                @branchHint(.cold);
-                                sequencer.deinit();
-                                return null;
-                            } else {
-                                break;
-                            }
-                        },
-                        .invalid => {
-                            @branchHint(.unlikely);
-                            sequencer.deinit();
-                            return null;
-                        },
-                    }
+                .owned => |output| if (comptime can_own) {
+                    return .{ .ok = .fromOwned(output, self.used) };
+                } else unreachable,
+                .fail => return .fail,
+            } else return .fail;
+        }
+
+        fn match(self: *Self, skip: behavior.Skip()) !bool {
+            switch (try self.provider.readAt(self.allocator, op.filter, behavior, skip)) {
+                .filtered => |item| {
+                    if (comptime op.filter) |f| return self.setItem(item, f.behavior != .skip) else unreachable;
                 },
-                .fail => {
-                    @branchHint(.unlikely);
-                    sequencer.deinit();
-                    return null;
+                .standard => |item| return self.setItem(item, true),
+                .fail => return false,
+            }
+        }
+
+        fn setItem(self: *Self, item: EvalState(op.match.Input), comptime eval: bool) bool {
+            if (eval and !op.match.evalSingle(item.value)) return false;
+            if (behavior.canTake()) self.provider.drop(item.used);
+            self.used = item.used;
+            self.owned = item.owned;
+            self.scratch = item.value;
+            return true;
+        }
+
+        fn isOwned(ctx: *const anyopaque) bool {
+            const self: *const Self = @ptrCast(@alignCast(ctx));
+            return if (comptime can_own) self.owned else false;
+        }
+
+        fn consumeUsed(ctx: *anyopaque) void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            self.provider.drop(self.used);
+        }
+
+        fn deinitScratch(ctx: *anyopaque) void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            switch (@typeInfo(op.match.Input)) {
+                .pointer => |meta| switch (meta.size) {
+                    .One => self.allocator.destroy(self.scratch),
+                    .Slice => self.allocator.free(self.scratch),
+                    else => @compileError("unsupported pointer size"),
                 },
-            };
-
-            return try sequencer.consume(provider);
-        }
-
-        fn processPassthrough(
-            allocator: Allocator,
-            source: anytype,
-            matched: MatchState,
-            comptime behavior: ConsumeBehavior,
-        ) !Self {
-            if (comptime behavior == .stream_drop) {
-                return discardMatched(allocator, source, matched);
-            } else {
-                return passthroughOutput(allocator, behavior, matched);
+                else => {},
             }
-        }
-
-        fn processResolver(
-            allocator: Allocator,
-            source: anytype,
-            matched: MatchState,
-            comptime resolve: combine.Resolver,
-            comptime behavior: ConsumeBehavior,
-        ) !Self {
-            const output = resolve.eval(matched.value) orelse {
-                @branchHint(.cold);
-                matched.deinit(allocator);
-                return .fail;
-            };
-
-            if (comptime behavior == .stream_drop) return discardMatched(allocator, source, matched);
-
-            if (comptime canOverlap(@TypeOf(matched.value), operator.Output())) {
-                switch (overlapValues(matched.value, output)) {
-                    .full => return passthroughOutput(allocator, behavior, .{
-                        .value = output,
-                        .used = matched.used,
-                        .owned = matched.owned,
-                    }),
-                    .partial => {
-                        defer matched.deinit(allocator);
-                        return .{ .ok = try cloneResolved(allocator, output, matched.used) };
-                    },
-                    .none => {},
-                }
-            }
-
-            matched.deinit(allocator);
-            return .{ .ok = .fromView(output, matched.used) };
-        }
-
-        fn discardMatched(allocator: Allocator, source: anytype, matched: MatchState) Self {
-            matched.deinit(allocator);
-            provide(source).drop(matched.used);
-            return .discard;
-        }
-
-        fn passthroughOutput(allocator: Allocator, comptime behavior: ConsumeBehavior, state: OutputState) !Self {
-            if ((comptime behavior.allocate() == .always and OutputState.can_own) and !state.owned) {
-                return .{ .ok = try cloneResolved(allocator, state.value, state.used) };
-            } else {
-                return .{ .ok = state };
-            }
-        }
-
-        fn cloneResolved(allocator: Allocator, resolved: operator.Output(), used: usize) !OutputState {
-            switch (@typeInfo(operator.Output())) {
-                .pointer => |meta| {
-                    switch (meta.size) {
-                        .One => {
-                            const value = try allocator.create(meta.child);
-                            value.* = resolved.*;
-                            return .fromOwned(value, used);
-                        },
-                        .Slice => return .fromOwned(try allocator.dupe(meta.child, resolved), used),
-                        else => @compileError("unsupported pointer size"),
-                    }
-                },
-                else => return .fromView(resolved, used),
-            }
-        }
-
-        fn canOverlap(comptime Lhs: type, comptime Rhs: type) bool {
-            return @typeInfo(Lhs) == .pointer and @typeInfo(Rhs) == .pointer;
-        }
-
-        /// Assumes both values are pointers.
-        fn overlapValues(lhs: anytype, rhs: anytype) EvalOverlap {
-            const lhs_bytes = switch (@typeInfo(@TypeOf(lhs)).pointer.size) {
-                .One => std.mem.asBytes(lhs),
-                .Slice => std.mem.sliceAsBytes(lhs),
-                else => @compileError("unsupported pointer size"),
-            };
-            const rhs_byts = switch (@typeInfo(@TypeOf(rhs)).pointer.size) {
-                .One => std.mem.asBytes(rhs),
-                .Slice => std.mem.sliceAsBytes(rhs),
-                else => @compileError("unsupported pointer size"),
-            };
-            const lhs_ptr = @intFromPtr(lhs_bytes.ptr);
-            const rhs_ptr = @intFromPtr(rhs_byts.ptr);
-
-            if (lhs_bytes.ptr == rhs_byts.ptr and lhs_bytes.len == rhs_byts.len)
-                return .full
-            else if (lhs_ptr >= rhs_ptr + rhs_byts.len or rhs_ptr >= lhs_ptr + lhs_bytes.len)
-                return .none
-            else
-                return .partial;
         }
     };
 }
 
-fn Sequencer(comptime T: type, comptime scratch_hint: combine.SizeHint, comptime can_take: bool) type {
-    const Skip = if (can_take) u0 else usize;
+fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behavior: ConsumeBehavior) type {
+    const use_scratch = op.filter != null or behavior.canTake();
     return struct {
         allocator: Allocator,
-        i: usize = 0,
-        skip: Skip = 0,
         used: usize = 0,
-        scratch: Scratch(T, scratch_hint) = .{},
-        scratch_active: if (can_take) void else bool = if (can_take) {} else false,
+        provider: Provider(Source, op.Input(), op.match.Input),
+        scratch: Scratch(op.match.Input, op.match.capacity.sequence) = .{},
+        active_scratch: if (use_scratch) bool else void = if (use_scratch) behavior.canTake() else {},
 
         const Self = @This();
+        const Process = Processor(
+            []const op.match.Input,
+            op.Output(),
+            if (behavior == .stream_drop) .discard else if (behavior.allocate() == .always) .clone else .standard,
+            .{
+                .deinitScratch = deinitScratch,
+                .consumeUsed = consumeUsed,
+                .isOwned = isOwned,
+            },
+        );
 
-        pub fn init(allocator: Allocator, skip: Skip) Self {
-            return .{
-                .skip = skip,
+        inline fn hasScratch(self: *const Self) bool {
+            return use_scratch and self.active_scratch;
+        }
+
+        pub fn evaluate(allocator: Allocator, source: Source, skip: behavior.Skip()) !Evaluate(op) {
+            var self = Self{
                 .allocator = allocator,
+                .provider = .{ .source = source },
             };
-        }
 
-        pub fn deinit(self: *Self) void {
-            self.scratch.deinit(self.allocator);
-        }
+            errdefer self.scratch.deinit(allocator);
 
-        pub fn isEmpty(self: *Self) bool {
-            return self.i == 0;
-        }
-
-        pub fn cycle(
-            self: Self,
-            provider: anytype,
-            comptime behavior: ConsumeBehavior,
-            comptime filter: ?combine.Filter,
-        ) !@TypeOf(provider).Item {
-            const skip = if (can_take) 0 else self.skip + self.used;
-            return provider.safeReadSingle(self.allocator, filter, behavior, skip);
-        }
-
-        pub fn appendItem(self: *Self, provider: anytype, item: EvalState(T), comptime filtered: bool) !void {
-            if (!can_take and filtered) {
-                if (!self.scratch_active) try self.actviateScratch(provider);
-                try self.scratch.appendItem(self.allocator, self.i, item.value);
-            } else if (can_take or self.scratch_active) {
-                try self.scratch.appendItem(self.allocator, self.i, item.value);
+            if (!try self.match(skip)) {
+                self.scratch.deinit(allocator);
+                return .fail;
             }
 
-            self.i += 1;
+            const slice = if (self.hasScratch())
+                self.scratch.view()
+            else
+                self.provider.viewSlice(skip, self.used);
+
+            switch (try Process.consume(allocator, &self, slice, op.resolve)) {
+                .discard => return .discard,
+                .view => |output| if (behavior.allocate() == .avoid) {
+                    if (self.hasScratch()) {
+                        if (@typeInfo(op.Output()) == .pointer) {
+                            const owned = try self.scratch.consume(allocator);
+                            return .{ .ok = .fromOwned(owned, self.used) };
+                        }
+
+                        self.scratch.deinit(allocator);
+                    }
+
+                    return .{ .ok = .fromView(output, self.used) };
+                } else unreachable,
+                .owned => |output| {
+                    if (@typeInfo(op.Output()) != .pointer) unreachable;
+                    self.scratch.deinit(allocator);
+                    return .{ .ok = .fromOwned(output, self.used) };
+                },
+                .fail => return .fail,
+            }
+        }
+
+        fn match(self: *Self, skip: behavior.Skip()) !bool {
+            var i: usize = 0;
+            while (true) : (i += 1) {
+                const skip_amount = if (behavior.canTake()) 0 else skip + self.used;
+                switch (try self.provider.readAt(self.allocator, op.filter, behavior, skip_amount)) {
+                    inline .standard, .filtered => |item, t| if (comptime t == .standard or op.filter != null) {
+                        defer item.deinit(self.allocator);
+                        if (comptime t == .filtered and op.filter.?.behavior == .skip) {
+                            try self.appendItem(skip, i, item, true);
+                            continue;
+                        } else switch (op.match.evalSequence(i, item.value)) {
+                            .next => {
+                                @branchHint(.likely);
+                                try self.appendItem(skip, i, item, t == .filtered);
+                                continue;
+                            },
+                            .done_include => {
+                                try self.appendItem(skip, i, item, t == .filtered);
+                                break;
+                            },
+                            .done_exclude => if (i > 0) break else {
+                                @branchHint(.cold);
+                                return false;
+                            },
+                            .invalid => return false,
+                        }
+                    } else unreachable,
+                    .fail => {
+                        @branchHint(.unlikely);
+                        return false;
+                    },
+                }
+            }
+
+            return true;
+        }
+
+        fn appendItem(
+            self: *Self,
+            skip: behavior.Skip(),
+            i: usize,
+            item: EvalState(op.match.Input),
+            comptime filtered: bool,
+        ) !void {
+            if (filtered and !(behavior.canTake() or self.hasScratch())) {
+                @branchHint(.unlikely);
+                std.debug.assert(i == self.used);
+                try self.scratch.appendSlice(self.allocator, 0, self.provider.viewSlice(skip, i));
+                self.active_scratch = true;
+            }
+
+            if (filtered or behavior.canTake() or self.hasScratch()) try self.scratch.appendItem(self.allocator, i, item.value);
+            if (behavior.canTake()) self.provider.drop(item.used);
             self.used += item.used;
-            if (can_take) provider.drop(item.used);
         }
 
-        fn actviateScratch(self: *Self, provider: anytype) !void {
-            @branchHint(.unlikely);
-            std.debug.assert(self.i == self.used);
-            std.debug.assert(!self.scratch_active);
-            try self.scratch.appendSlice(self.allocator, 0, provider.peekSequence(self.skip, self.i));
-            self.scratch_active = true;
+        fn consumeUsed(ctx: *anyopaque) void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            self.provider.drop(self.used);
         }
 
-        pub fn consume(self: *Self, provider: anytype) !EvalState([]const T) {
-            if (can_take or self.scratch_active) {
-                return .fromOwned(try self.scratch.consume(self.allocator), self.used);
+        fn deinitScratch(ctx: *anyopaque) void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            self.scratch.deinit(self.allocator);
+            if (use_scratch) self.active_scratch = false;
+        }
+
+        fn isOwned(_: *const anyopaque) bool {
+            return false;
+        }
+    };
+}
+
+const ProcessVTable = struct {
+    deinitScratch: fn (ctx: *anyopaque) void,
+    consumeUsed: fn (ctx: *anyopaque) void,
+    isOwned: fn (ctx: *const anyopaque) bool,
+};
+const ProcessOverlap = enum { none, partial, full };
+const ProcessBehavior = enum { standard, discard, clone };
+
+fn Processor(
+    comptime In: type,
+    comptime Out: type,
+    comptime behavior: ProcessBehavior,
+    comptime vtable: ProcessVTable,
+) type {
+    return struct {
+        ctx: *anyopaque,
+        allocator: Allocator,
+
+        const Self = @This();
+        const State = union(enum) { fail, discard, view: Out, owned: Out };
+        const can_overlap = @typeInfo(In) == .pointer and @typeInfo(Out) == .pointer;
+
+        pub fn consume(allocator: Allocator, ctx: *anyopaque, input: In, comptime resolver: ?combine.Resolver) !State {
+            const self = Self{
+                .allocator = allocator,
+                .ctx = ctx,
+            };
+
+            if (comptime resolver) |r| {
+                return self.resolve(input, r);
+            } else if (comptime behavior == .discard) {
+                return self.consumeScratch();
             } else {
-                return .fromView(provider.peekSequence(self.skip, self.used), self.used);
+                return self.consumeOrView(input);
             }
+        }
+
+        fn resolve(self: Self, input: In, comptime resolver: combine.Resolver) !State {
+            const output = resolver.eval(input) orelse {
+                @branchHint(.cold);
+                vtable.deinitScratch(self.ctx);
+                return .fail;
+            };
+
+            if (comptime behavior == .discard) {
+                return self.consumeScratch();
+            } else if (comptime !can_overlap) {
+                vtable.deinitScratch(self.ctx);
+                return .{ .view = output };
+            } else switch (overlapValues(input, output)) {
+                .full => return self.consumeOrView(output),
+                .partial => {
+                    defer vtable.deinitScratch(self.ctx);
+                    return self.cloneResolved(output);
+                },
+                .none => {
+                    vtable.deinitScratch(self.ctx);
+                    return .{ .view = output };
+                },
+            }
+        }
+
+        fn consumeScratch(self: Self) State {
+            vtable.deinitScratch(self.ctx);
+            vtable.consumeUsed(self.ctx);
+            return .discard;
+        }
+
+        fn consumeOrView(self: Self, output: Out) !State {
+            const owned = vtable.isOwned(self.ctx);
+            if ((comptime behavior == .clone) and !owned) {
+                return self.cloneResolved(output);
+            } else if (owned) {
+                return .{ .owned = output };
+            } else {
+                return .{ .view = output };
+            }
+        }
+
+        fn cloneResolved(self: Self, output: Out) !State {
+            switch (@typeInfo(Out)) {
+                .pointer => |meta| switch (meta.size) {
+                    .One => {
+                        const value = try self.allocator.create(meta.child);
+                        value.* = output.*;
+                        return .{ .owned = value };
+                    },
+                    .Slice => return .{ .owned = try self.allocator.dupe(meta.child, output) },
+                    else => @compileError("unsupported pointer size"),
+                },
+                else => return .{ .view = output },
+            }
+        }
+
+        /// Assumes both values are pointers.
+        fn overlapValues(input: In, output: Out) ProcessOverlap {
+            const in_bytes = switch (@typeInfo(In).pointer.size) {
+                .One => std.mem.asBytes(input),
+                .Slice => std.mem.sliceAsBytes(input),
+                else => @compileError("unsupported pointer size"),
+            };
+            const out_byts = switch (@typeInfo(Out).pointer.size) {
+                .One => std.mem.asBytes(output),
+                .Slice => std.mem.sliceAsBytes(output),
+                else => @compileError("unsupported pointer size"),
+            };
+
+            const in_ptr = @intFromPtr(in_bytes.ptr);
+            if (in_bytes.ptr == out_byts.ptr and in_bytes.len == out_byts.len) return .full;
+
+            const out_ptr = @intFromPtr(out_byts.ptr);
+            if (in_ptr >= out_ptr + out_byts.len or out_ptr >= in_ptr + in_bytes.len) return .none;
+
+            return .partial;
         }
     };
 }
@@ -415,13 +478,11 @@ fn Provider(comptime Source: type, comptime In: type, comptime Out: type) type {
             standard: EvalState(Out),
             /// Filtered item.
             filtered: EvalState(Out),
-            /// Filtered item should skip matching.
-            filtered_skip: EvalState(Out),
             /// Invalid item or filter.
             fail,
         };
 
-        pub fn reserveSingle(self: Self, i: usize) !void {
+        pub fn reserveItem(self: Self, i: usize) !void {
             if (!is_direct) {
                 try self.source.reserve(i + 1);
             } else if (i >= self.source.len) {
@@ -429,7 +490,7 @@ fn Provider(comptime Source: type, comptime In: type, comptime Out: type) type {
             }
         }
 
-        pub fn reserveSequence(self: Self, i: usize, len: usize) !void {
+        pub fn reserveSlice(self: Self, i: usize, len: usize) !void {
             if (!is_direct) {
                 try self.source.reserve(i + len);
             } else if (i + len > self.source.len) {
@@ -438,12 +499,12 @@ fn Provider(comptime Source: type, comptime In: type, comptime Out: type) type {
         }
 
         /// Assumes valid bounds.
-        pub fn peekSingle(self: Self, i: usize) In {
+        pub fn viewItem(self: Self, i: usize) In {
             return if (is_direct) self.source[i] else return self.source.peekByte(i);
         }
 
         /// Assumes valid bounds.
-        pub fn peekSequence(self: Self, i: usize, len: usize) []const In {
+        pub fn viewSlice(self: Self, i: usize, len: usize) []const In {
             return if (is_direct) self.source[i..][0..len] else self.source.peekSlice(i, len);
         }
 
@@ -452,7 +513,7 @@ fn Provider(comptime Source: type, comptime In: type, comptime Out: type) type {
             if (!is_direct) self.source.drop(len);
         }
 
-        pub fn safeReadSingle(
+        pub fn readAt(
             self: Self,
             allocator: Allocator,
             comptime filter: ?combine.Filter,
@@ -461,24 +522,19 @@ fn Provider(comptime Source: type, comptime In: type, comptime Out: type) type {
         ) !Item {
             if (comptime filter) |f| {
                 comptime f.operator.validate(In, Out);
-                switch (try Consumer(f.operator).evaluate(allocator, self.source, comptime behavior.asView(), i)) {
-                    .ok => |consume| return switch (comptime f.behavior) {
-                        .skip => .{ .filtered_skip = consume },
-                        else => .{ .filtered = consume },
-                    },
+                switch (try Evaluate(f.operator).at(allocator, self.source, comptime behavior.asView(), i)) {
+                    .ok => |state| return .{ .filtered = state },
                     .fail => {
-                        if (comptime f.behavior == .fail) {
-                            @branchHint(.unlikely);
-                            return .fail;
-                        }
-                        // Else, safe behavior will continue as if there was no filter...
+                        if (comptime f.behavior == .fail) return .fail;
+                        try self.reserveItem(i);
+                        return .{ .standard = .fromView(self.viewItem(i), 1) };
                     },
                     .discard => unreachable,
                 }
+            } else {
+                try self.reserveItem(i);
+                return .{ .standard = .fromView(self.viewItem(i), 1) };
             }
-
-            try self.reserveSingle(i);
-            return .{ .standard = .fromView(self.peekSingle(i), 1) };
         }
     };
 }
@@ -503,6 +559,22 @@ fn Scratch(comptime T: type, comptime size_hint: combine.SizeHint) type {
                 .dynamic => self.buffer.deinit(allocator),
                 else => {},
             }
+        }
+
+        pub fn consume(self: *Self, allocator: Allocator) ![]const T {
+            return switch (size_hint) {
+                .dynamic => self.buffer.toOwnedSlice(allocator),
+                .bound => try allocator.dupe(T, self.buffer.constSlice()),
+                .exact => try allocator.dupe(T, &self.buffer),
+            };
+        }
+
+        pub fn view(self: Self) []const T {
+            return switch (size_hint) {
+                .dynamic => self.buffer.items,
+                .bound => self.buffer.constSlice(),
+                .exact => &self.buffer,
+            };
         }
 
         pub fn appendItem(self: *Self, allocator: Allocator, i: usize, item: T) !void {
@@ -531,14 +603,6 @@ fn Scratch(comptime T: type, comptime size_hint: combine.SizeHint) type {
                 },
                 .exact => @memcpy(self.buffer[i..][0..items.len], items),
             }
-        }
-
-        pub fn consume(self: *Self, allocator: Allocator) ![]const T {
-            return switch (size_hint) {
-                .dynamic => self.buffer.toOwnedSlice(allocator),
-                .bound => try allocator.dupe(T, self.buffer.constSlice()),
-                .exact => try allocator.dupe(T, &self.buffer),
-            };
         }
     };
 }
@@ -791,7 +855,7 @@ fn TestingConsumer(comptime op: BuildOp) type {
             };
 
             const inital_cursor = reader.countConsumed();
-            const evaluated = Consumer(operator).evaluate(test_alloc, reader, behave, skip);
+            const evaluated = Evaluate(operator).at(test_alloc, reader, behave, skip);
             switch (self.expected) {
                 .stream_error => return testing.expectError(error.EndOfStream, evaluated),
                 .eval_fail => return testing.expectEqual(.fail, try evaluated),

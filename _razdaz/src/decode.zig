@@ -4,7 +4,7 @@ const Allocator = std.mem.Allocator;
 const test_alloc = testing.allocator;
 const read = @import("read.zig");
 const evl = @import("evaluate.zig");
-const Consumer = evl.Consumer;
+const Evaluate = evl.Evaluate;
 const EvalState = evl.EvalState;
 const Operator = @import("combine.zig").Operator;
 const BuildOp = @import("testing.zig").TestingOperator;
@@ -62,7 +62,7 @@ pub fn Decoder(comptime Reader: type) type {
         /// When the operation fails, returns `error.FailedOperation` **without rolling back the state**.
         pub fn skip(self: *Self, comptime operator: Operator) !void {
             comptime operator.validate(u8, null);
-            const output = try Consumer(operator).evaluate(self.allocator, &self.reader, .stream_drop, 0);
+            const output = try Evaluate(operator).at(self.allocator, &self.reader, .stream_drop, 0);
             switch (output) {
                 .ok => unreachable,
                 .discard => {},
@@ -81,7 +81,7 @@ pub fn Decoder(comptime Reader: type) type {
             comptime operator: Operator,
         ) !Value(operator.Output()) {
             comptime operator.validate(u8, null);
-            const output = try Consumer(operator).evaluate(self.allocator, &self.reader, switch (allocate) {
+            const output = try Evaluate(operator).at(self.allocator, &self.reader, switch (allocate) {
                 .avoid => .stream_take,
                 .always => .stream_take_clone,
             }, 0);
@@ -105,7 +105,7 @@ pub fn Decoder(comptime Reader: type) type {
         /// When the operation fails, returns `error.FailedOperation` **without rolling back the state**.
         pub fn peek(self: *Self, comptime operator: Operator) !Peek(operator.Output()) {
             comptime operator.validate(u8, null);
-            switch (try Consumer(operator).evaluate(self.allocator, &self.reader, .stream_view, 0)) {
+            switch (try Evaluate(operator).at(self.allocator, &self.reader, .stream_view, 0)) {
                 .discard => unreachable,
                 .ok => |state| {
                     return .{

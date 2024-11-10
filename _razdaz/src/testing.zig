@@ -8,7 +8,7 @@ const Resolver = lib.Resolver;
 const Operator = lib.Operator;
 const Value = @import("decode.zig").Value;
 const Decoder = @import("decode.zig").Decoder;
-const Consumer = @import("evaluate.zig").Consumer;
+const Evaluate = @import("evaluate.zig").Evaluate;
 const AllocatePref = @import("evaluate.zig").ConsumeBehavior.Allocate;
 const TestingReader = @import("read.zig").TestingReader;
 
@@ -19,7 +19,7 @@ pub fn expectEvaluate(
     used: usize,
 ) !void {
     const T = operator.Output();
-    switch (try Consumer(operator).evaluate(test_alloc, input, .direct_view, 0)) {
+    switch (try Evaluate(operator).at(test_alloc, input, .direct_view, 0)) {
         .ok => |state| {
             defer state.deinit(test_alloc);
 
@@ -44,7 +44,7 @@ pub fn expectEvaluate(
 
 pub fn expectFail(comptime operator: Operator, input: []const operator.Input()) !void {
     const T = operator.Output();
-    switch (try Consumer(operator).evaluate(test_alloc, input, .direct_view, 0)) {
+    switch (try Evaluate(operator).at(test_alloc, input, .direct_view, 0)) {
         .ok => |state| {
             std.debug.print("expected failed operator, found " ++ valueFormat(T) ++ "\n", .{state.value});
             state.deinit(test_alloc);
