@@ -2,8 +2,8 @@ const std = @import("std");
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const Allocator = std.mem.Allocator;
-const combine = @import("combine.zig");
-const BuildOp = @import("testing.zig").TestingOperator;
+const combine = @import("../combine.zig");
+const BuildOp = @import("../testing.zig").TestingOperator;
 const TestingReader = @import("read.zig").TestingReader;
 
 pub const ConsumeBehavior = enum {
@@ -142,9 +142,9 @@ fn Single(comptime op: combine.Operator, comptime Source: type, comptime behavio
             op.Output(),
             if (behavior == .stream_drop) .discard else if (behavior.allocate() == .always) .clone else .standard,
             .{
-                .deinitScratch = deinitScratch,
-                .consumeUsed = consumeUsed,
-                .isOwned = isOwned,
+                .deinit = processDeinit,
+                .discard = processDiscard,
+                .ownership = processOwnership,
             },
         );
 
@@ -154,7 +154,7 @@ fn Single(comptime op: combine.Operator, comptime Source: type, comptime behavio
                 .provider = .{ .source = source },
             };
 
-            if (try self.match(skip)) switch (try Process.consume(allocator, &self, self.scratch, op.resolve)) {
+            if (try self.match(skip)) switch (try Process.consumeInput(allocator, &self, self.scratch, op.resolve)) {
                 .discard => return .discard,
                 .view => |output| if (comptime !can_own or behavior.allocate() == .avoid) {
                     return .{ .ok = .fromView(output, self.used) };
@@ -168,9 +168,9 @@ fn Single(comptime op: combine.Operator, comptime Source: type, comptime behavio
 
         fn match(self: *Self, skip: behavior.Skip()) !bool {
             switch (try self.provider.readAt(self.allocator, op.filter, behavior, skip)) {
-                .filtered => |item| {
-                    if (comptime op.filter) |f| return self.setItem(item, f.behavior != .skip) else unreachable;
-                },
+                .filtered => |item| if (comptime op.filter) |f| {
+                    return self.setItem(item, f.behavior != .skip);
+                } else unreachable,
                 .standard => |item| return self.setItem(item, true),
                 .fail => return false,
             }
@@ -185,17 +185,17 @@ fn Single(comptime op: combine.Operator, comptime Source: type, comptime behavio
             return true;
         }
 
-        fn isOwned(ctx: *const anyopaque) bool {
+        fn processOwnership(ctx: *const anyopaque) ProcessOwnership {
             const self: *const Self = @ptrCast(@alignCast(ctx));
-            return if (comptime can_own) self.owned else false;
+            return if (can_own and self.owned) .owned else .view;
         }
 
-        fn consumeUsed(ctx: *anyopaque) void {
-            const self: *Self = @ptrCast(@alignCast(ctx));
+        fn processDiscard(ctx: *const anyopaque) void {
+            const self: *const Self = @ptrCast(@alignCast(ctx));
             self.provider.drop(self.used);
         }
 
-        fn deinitScratch(ctx: *anyopaque) void {
+        fn processDeinit(ctx: *anyopaque) void {
             const self: *Self = @ptrCast(@alignCast(ctx));
             switch (@typeInfo(op.match.Input)) {
                 .pointer => |meta| switch (meta.size) {
@@ -224,9 +224,10 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
             op.Output(),
             if (behavior == .stream_drop) .discard else if (behavior.allocate() == .always) .clone else .standard,
             .{
-                .deinitScratch = deinitScratch,
-                .consumeUsed = consumeUsed,
-                .isOwned = isOwned,
+                .deinit = processDeinit,
+                .discard = processDiscard,
+                .consume = processConsume,
+                .ownership = processOwnership,
             },
         );
 
@@ -252,23 +253,13 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
             else
                 self.provider.viewSlice(skip, self.used);
 
-            switch (try Process.consume(allocator, &self, slice, op.resolve)) {
+            switch (try Process.consumeInput(allocator, &self, slice, op.resolve)) {
                 .discard => return .discard,
-                .view => |output| if (behavior.allocate() == .avoid) {
-                    if (self.hasScratch()) {
-                        if (@typeInfo(op.Output()) == .pointer) {
-                            const owned = try self.scratch.consume(allocator);
-                            return .{ .ok = .fromOwned(owned, self.used) };
-                        }
-
-                        self.scratch.deinit(allocator);
-                    }
-
+                .view => |output| if (@typeInfo(op.Output()) != .pointer or behavior.allocate() == .avoid) {
                     return .{ .ok = .fromView(output, self.used) };
                 } else unreachable,
                 .owned => |output| {
-                    if (@typeInfo(op.Output()) != .pointer) unreachable;
-                    self.scratch.deinit(allocator);
+                    if (@typeInfo(op.Output()) != .pointer or self.hasScratch()) unreachable;
                     return .{ .ok = .fromOwned(output, self.used) };
                 },
                 .fail => return .fail,
@@ -295,11 +286,18 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
                                 try self.appendItem(skip, i, item, t == .filtered);
                                 break;
                             },
-                            .done_exclude => if (i > 0) break else {
-                                @branchHint(.cold);
+                            .done_exclude => {
+                                if (i > 0)
+                                    break
+                                else {
+                                    @branchHint(.cold);
+                                    return false;
+                                }
+                            },
+                            .invalid => {
+                                @branchHint(.unlikely);
                                 return false;
                             },
-                            .invalid => return false,
                         }
                     } else unreachable,
                     .fail => {
@@ -331,30 +329,47 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
             self.used += item.used;
         }
 
-        fn consumeUsed(ctx: *anyopaque) void {
-            const self: *Self = @ptrCast(@alignCast(ctx));
+        fn processOwnership(ctx: *const anyopaque) ProcessOwnership {
+            const self: *const Self = @ptrCast(@alignCast(ctx));
+            return if (self.hasScratch()) .scratch else .view;
+        }
+
+        fn processDiscard(ctx: *const anyopaque) void {
+            const self: *const Self = @ptrCast(@alignCast(ctx));
             self.provider.drop(self.used);
         }
 
-        fn deinitScratch(ctx: *anyopaque) void {
+        fn processConsume(ctx: *anyopaque, output: *anyopaque) !void {
+            if (comptime !use_scratch) unreachable;
             const self: *Self = @ptrCast(@alignCast(ctx));
-            self.scratch.deinit(self.allocator);
-            if (use_scratch) self.active_scratch = false;
+            const out: *[]const op.match.Input = @ptrCast(@alignCast(output));
+            const slice = try self.scratch.consume(self.allocator);
+            out.* = slice;
+            self.active_scratch = false;
         }
 
-        fn isOwned(_: *const anyopaque) bool {
-            return false;
+        fn processDeinit(ctx: *anyopaque) void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            self.scratch.deinit(self.allocator);
+            if (comptime use_scratch) self.active_scratch = false;
         }
     };
 }
 
-const ProcessVTable = struct {
-    deinitScratch: fn (ctx: *anyopaque) void,
-    consumeUsed: fn (ctx: *anyopaque) void,
-    isOwned: fn (ctx: *const anyopaque) bool,
-};
 const ProcessOverlap = enum { none, partial, full };
+const ProcessOwnership = enum { view, scratch, owned };
 const ProcessBehavior = enum { standard, discard, clone };
+
+const ProcessVTable = struct {
+    deinit: fn (ctx: *anyopaque) void,
+    discard: fn (ctx: *const anyopaque) void,
+    ownership: fn (ctx: *const anyopaque) ProcessOwnership,
+    consume: fn (ctx: *anyopaque, value: *anyopaque) anyerror!void = struct {
+        fn f(_: *anyopaque, _: *anyopaque) !void {
+            unreachable;
+        }
+    }.f,
+};
 
 fn Processor(
     comptime In: type,
@@ -370,64 +385,57 @@ fn Processor(
         const State = union(enum) { fail, discard, view: Out, owned: Out };
         const can_overlap = @typeInfo(In) == .pointer and @typeInfo(Out) == .pointer;
 
-        pub fn consume(allocator: Allocator, ctx: *anyopaque, input: In, comptime resolver: ?combine.Resolver) !State {
+        pub fn consumeInput(allocator: Allocator, ctx: *anyopaque, input: In, comptime resolver: ?combine.Resolver) !State {
             const self = Self{
                 .allocator = allocator,
                 .ctx = ctx,
             };
 
             if (comptime resolver) |r| {
-                return self.resolve(input, r);
+                return self.resolveInput(input, r);
             } else if (comptime behavior == .discard) {
-                return self.consumeScratch();
-            } else {
-                return self.consumeOrView(input);
+                return self.discardInput();
+            } else switch (vtable.ownership(self.ctx)) {
+                .owned => return .{ .owned = input },
+                .scratch => if (comptime can_overlap) {
+                    return .{ .owned = try self.consumeScratch() };
+                } else unreachable,
+                .view => return if (behavior == .clone) self.cloneOutput(input) else .{ .view = input },
             }
         }
 
-        fn resolve(self: Self, input: In, comptime resolver: combine.Resolver) !State {
+        fn resolveInput(self: Self, input: In, comptime resolver: combine.Resolver) !State {
             const output = resolver.eval(input) orelse {
                 @branchHint(.cold);
-                vtable.deinitScratch(self.ctx);
+                vtable.deinit(self.ctx);
                 return .fail;
             };
 
             if (comptime behavior == .discard) {
-                return self.consumeScratch();
-            } else if (comptime !can_overlap) {
-                vtable.deinitScratch(self.ctx);
-                return .{ .view = output };
-            } else switch (overlapValues(input, output)) {
-                .full => return self.consumeOrView(output),
-                .partial => {
-                    defer vtable.deinitScratch(self.ctx);
-                    return self.cloneResolved(output);
+                return self.discardInput();
+            } else switch (valuesOverlap(input, output)) {
+                .full => switch (vtable.ownership(self.ctx)) {
+                    .scratch => if (comptime can_overlap) {
+                        return .{ .owned = @ptrCast(@alignCast(try self.consumeScratch())) };
+                    } else unreachable,
+                    .view => return .{ .view = output },
+                    .owned => {},
                 },
-                .none => {
-                    vtable.deinitScratch(self.ctx);
-                    return .{ .view = output };
-                },
+                .none => if (behavior != .clone and vtable.ownership(self.ctx) == .view) return .{ .view = output },
+                .partial => {},
             }
+
+            defer vtable.deinit(self.ctx);
+            return self.cloneOutput(output);
         }
 
-        fn consumeScratch(self: Self) State {
-            vtable.deinitScratch(self.ctx);
-            vtable.consumeUsed(self.ctx);
+        fn discardInput(self: Self) State {
+            vtable.deinit(self.ctx);
+            vtable.discard(self.ctx);
             return .discard;
         }
 
-        fn consumeOrView(self: Self, output: Out) !State {
-            const owned = vtable.isOwned(self.ctx);
-            if ((comptime behavior == .clone) and !owned) {
-                return self.cloneResolved(output);
-            } else if (owned) {
-                return .{ .owned = output };
-            } else {
-                return .{ .view = output };
-            }
-        }
-
-        fn cloneResolved(self: Self, output: Out) !State {
+        fn cloneOutput(self: Self, output: Out) !State {
             switch (@typeInfo(Out)) {
                 .pointer => |meta| switch (meta.size) {
                     .One => {
@@ -442,8 +450,16 @@ fn Processor(
             }
         }
 
+        fn consumeScratch(self: Self) !In {
+            var value: In = undefined;
+            try vtable.consume(self.ctx, @ptrCast(&value));
+            return value;
+        }
+
         /// Assumes both values are pointers.
-        fn overlapValues(input: In, output: Out) ProcessOverlap {
+        fn valuesOverlap(input: In, output: Out) ProcessOverlap {
+            if (comptime !can_overlap) return .none;
+
             const in_bytes = switch (@typeInfo(In).pointer.size) {
                 .One => std.mem.asBytes(input),
                 .Slice => std.mem.sliceAsBytes(input),

@@ -1,6 +1,6 @@
 test {
-    _ = @import("read.zig");
-    _ = @import("evaluate.zig");
+    _ = @import("consume/read.zig");
+    _ = @import("consume/evaluate.zig");
     _ = combine;
     _ = decoder;
     _ = testing;
@@ -8,7 +8,7 @@ test {
     _ = ops_char;
 }
 
-const decoder = @import("decode.zig");
+const decoder = @import("consume/decode.zig");
 pub const SliceDecoder = decoder.SliceDecoder;
 pub const ReaderDecoder = decoder.ReaderDecoder;
 

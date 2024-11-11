@@ -6,11 +6,11 @@ const Filter = lib.Filter;
 const Matcher = lib.Matcher;
 const Resolver = lib.Resolver;
 const Operator = lib.Operator;
-const Value = @import("decode.zig").Value;
-const Decoder = @import("decode.zig").Decoder;
-const Evaluate = @import("evaluate.zig").Evaluate;
-const AllocatePref = @import("evaluate.zig").ConsumeBehavior.Allocate;
-const TestingReader = @import("read.zig").TestingReader;
+const Value = @import("consume/decode.zig").Value;
+const Decoder = @import("consume/decode.zig").Decoder;
+const Evaluate = @import("consume/evaluate.zig").Evaluate;
+const AllocatePref = @import("consume/evaluate.zig").ConsumeBehavior.Allocate;
+const TestingReader = @import("consume/read.zig").TestingReader;
 
 pub fn expectEvaluate(
     comptime operator: Operator,

@@ -6,9 +6,9 @@ const read = @import("read.zig");
 const evl = @import("evaluate.zig");
 const Evaluate = evl.Evaluate;
 const EvalState = evl.EvalState;
-const Operator = @import("combine.zig").Operator;
-const BuildOp = @import("testing.zig").TestingOperator;
-const TestingDecoder = @import("testing.zig").TestingDecoder;
+const Operator = @import("../combine.zig").Operator;
+const BuildOp = @import("../testing.zig").TestingOperator;
+const TestingDecoder = @import("../testing.zig").TestingDecoder;
 
 pub const AllocatePref = evl.ConsumeBehavior.Allocate;
 
