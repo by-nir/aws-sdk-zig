@@ -154,7 +154,7 @@ pub const TestingOperator = struct {
         var b = self.*;
         b.filter = .{
             .behavior = behavior,
-            .operator = TestingOperator.matchSingle(verdict).resolve(action).build(),
+            .operator = TestingOperator.matchSingle(verdict).resolve(.fail, action).build(),
         };
         return b;
     }
@@ -169,13 +169,17 @@ pub const TestingOperator = struct {
         var b = self.*;
         b.filter = .{
             .behavior = behavior,
-            .operator = TestingOperator.matchSequence(verdict, trigger).resolve(action).build(),
+            .operator = TestingOperator.matchSequence(verdict, trigger).resolve(.fail, action).build(),
         };
         return b;
     }
 
-    pub fn resolve(comptime self: *const TestingOperator, comptime action: ResolveAction) TestingOperator {
-        const In = switch (self.matcher.capacity) {
+    pub fn resolve(
+        comptime self: *const TestingOperator,
+        comptime behavior: Resolver.Behavior,
+        comptime action: ResolveAction,
+    ) TestingOperator {
+        const In = if (behavior.isEach()) u8 else switch (self.matcher.capacity) {
             .single => u8,
             .sequence => []const u8,
         };
@@ -205,7 +209,7 @@ pub const TestingOperator = struct {
         }.f;
 
         var b = self.*;
-        b.resolver = Resolver.define(.fail, func);
+        b.resolver = Resolver.define(behavior, func);
         return b;
     }
 

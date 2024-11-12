@@ -72,14 +72,12 @@ pub fn Evaluate(comptime operator: combine.Operator) type {
         discard,
         ok: EvalState(operator.Output()),
 
-        const Self = @This();
-
         pub fn at(
             allocator: Allocator,
             source: anytype,
             comptime behavior: ConsumeBehavior,
             skip: behavior.Skip(),
-        ) !Self {
+        ) !@This() {
             const Evaluator = switch (match.capacity) {
                 .single => Single(operator, @TypeOf(source), behavior),
                 .sequence => Sequence(operator, @TypeOf(source), behavior),
@@ -154,7 +152,13 @@ fn Single(comptime op: combine.Operator, comptime Source: type, comptime behavio
                 .provider = .{ .source = source },
             };
 
-            if (try self.match(skip)) switch (try Process.consumeInput(allocator, &self, self.scratch, op.resolve)) {
+            if (!try self.match(skip)) return .fail;
+
+            const process = Process{
+                .ctx = &self,
+                .allocator = allocator,
+            };
+            switch (try process.consume(self.scratch, op.resolve)) {
                 .discard => return .discard,
                 .view => |output| if (comptime !can_own or behavior.allocate() == .avoid) {
                     return .{ .ok = .fromView(output, self.used) };
@@ -163,7 +167,7 @@ fn Single(comptime op: combine.Operator, comptime Source: type, comptime behavio
                     return .{ .ok = .fromOwned(output, self.used) };
                 } else unreachable,
                 .fail => return .fail,
-            } else return .fail;
+            }
         }
 
         fn match(self: *Self, skip: behavior.Skip()) !bool {
@@ -210,29 +214,49 @@ fn Single(comptime op: combine.Operator, comptime Source: type, comptime behavio
 }
 
 fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behavior: ConsumeBehavior) type {
-    const use_scratch = op.filter != null or behavior.canTake();
+    const scratch_hint = blk: {
+        const hint = op.match.capacity.sequence;
+        break :blk switch (hint) {
+            .exact => |n| if (op.resolve != null and op.resolve.?.behavior.isSkip()) .{ .bound = n } else hint,
+            else => hint,
+        };
+    };
+    const use_scratch = behavior.canTake() or op.filter != null or (if (op.resolve) |r| r.behavior.isEach() else false);
+    const proc_behave = if (behavior == .stream_drop) .discard else if (behavior.allocate() == .always) .clone else .standard;
+
     return struct {
         allocator: Allocator,
         used: usize = 0,
         provider: Provider(Source, op.Input(), op.match.Input),
-        scratch: Scratch(op.match.Input, op.match.capacity.sequence) = .{},
+        scratch: Scratch(op.match.Input, scratch_hint) = .{},
         active_scratch: if (use_scratch) bool else void = if (use_scratch) behavior.canTake() else {},
 
         const Self = @This();
-        const Process = Processor(
-            []const op.match.Input,
-            op.Output(),
-            if (behavior == .stream_drop) .discard else if (behavior.allocate() == .always) .clone else .standard,
-            .{
-                .deinit = processDeinit,
-                .discard = processDiscard,
-                .consume = processConsume,
-                .ownership = processOwnership,
-            },
-        );
+        const Process = Processor([]const op.match.Input, op.Output(), proc_behave, proc_table);
+        const proc_table = ProcessVTable{
+            .deinit = processDeinit,
+            .discard = processDiscard,
+            .consume = processConsume,
+            .ownership = processOwnership,
+        };
 
         inline fn hasScratch(self: *const Self) bool {
             return use_scratch and self.active_scratch;
+        }
+
+        fn processor(self: *Self) Process {
+            return .{
+                .ctx = self,
+                .allocator = self.allocator,
+            };
+        }
+
+        fn view(self: *const Self, skip: behavior.Skip()) []const op.match.Input {
+            if (self.hasScratch()) {
+                return self.scratch.view();
+            } else {
+                return self.provider.viewSlice(skip, self.used);
+            }
         }
 
         pub fn evaluate(allocator: Allocator, source: Source, skip: behavior.Skip()) !Evaluate(op) {
@@ -240,93 +264,170 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
                 .allocator = allocator,
                 .provider = .{ .source = source },
             };
-
             errdefer self.scratch.deinit(allocator);
 
-            if (!try self.match(skip)) {
-                self.scratch.deinit(allocator);
-                return .fail;
-            }
-
-            const slice = if (self.hasScratch())
-                self.scratch.view()
-            else
-                self.provider.viewSlice(skip, self.used);
-
-            switch (try Process.consumeInput(allocator, &self, slice, op.resolve)) {
-                .discard => return .discard,
-                .view => |output| if (@typeInfo(op.Output()) != .pointer or behavior.allocate() == .avoid) {
-                    return .{ .ok = .fromView(output, self.used) };
-                } else unreachable,
-                .owned => |output| {
-                    if (@typeInfo(op.Output()) != .pointer or self.hasScratch()) unreachable;
-                    return .{ .ok = .fromOwned(output, self.used) };
-                },
-                .fail => return .fail,
-            }
-        }
-
-        fn match(self: *Self, skip: behavior.Skip()) !bool {
             var i: usize = 0;
             while (true) : (i += 1) {
                 const skip_amount = if (behavior.canTake()) 0 else skip + self.used;
                 switch (try self.provider.readAt(self.allocator, op.filter, behavior, skip_amount)) {
                     inline .standard, .filtered => |item, t| if (comptime t == .standard or op.filter != null) {
                         defer item.deinit(self.allocator);
-                        if (comptime t == .filtered and op.filter.?.behavior == .skip) {
-                            try self.appendItem(skip, i, item, true);
-                            continue;
+                        const is_filtered = t == .filtered;
+                        if (comptime is_filtered and op.filter.?.behavior == .skip) {
+                            if (try self.resolveCycle(skip, i, item, is_filtered)) |out| return out else continue;
                         } else switch (op.match.evalSequence(i, item.value)) {
                             .next => {
                                 @branchHint(.likely);
-                                try self.appendItem(skip, i, item, t == .filtered);
-                                continue;
+                                if (try self.resolveCycle(skip, i, item, is_filtered)) |out| return out else continue;
                             },
-                            .done_include => {
-                                try self.appendItem(skip, i, item, t == .filtered);
-                                break;
-                            },
+                            .done_include => return self.resolveLast(skip, i, item, is_filtered),
                             .done_exclude => {
-                                if (i > 0)
-                                    break
-                                else {
-                                    @branchHint(.cold);
-                                    return false;
-                                }
+                                std.debug.assert(i > 0);
+                                if (op.resolve) |resolve| switch (resolve.behavior) {
+                                    .each_safe, .each_fail => {},
+                                    .safe, .fail => if (comptime resolve.Input == []const op.match.Input) {
+                                        const state = try self.processor().consume(self.view(skip), resolve);
+                                        return self.consumeState(state);
+                                    } else unreachable,
+                                    // Resolve with skip should have resolved at previous iteration.
+                                    .skip, .skip_defer => unreachable,
+                                };
+
+                                return self.consumeState(try self.processor().consumeInput(self.view(skip)));
                             },
                             .invalid => {
                                 @branchHint(.unlikely);
-                                return false;
+                                self.scratch.deinit(self.allocator);
+                                return .fail;
                             },
                         }
                     } else unreachable,
                     .fail => {
                         @branchHint(.unlikely);
-                        return false;
+                        self.scratch.deinit(self.allocator);
+                        return .fail;
                     },
                 }
             }
+        }
 
-            return true;
+        fn resolveCycle(
+            self: *Self,
+            skip: behavior.Skip(),
+            i: usize,
+            item: EvalState(op.match.Input),
+            comptime is_filtered: bool,
+        ) !?Evaluate(op) {
+            if (comptime op.resolve) |resolve| behave: switch (comptime resolve.behavior) {
+                .skip_defer => |min| if (i >= min) continue :behave .skip,
+                .skip => if (comptime resolve.Input == []const op.match.Input) {
+                    try self.appendItem(skip, i, item.value, item.used, is_filtered);
+
+                    const input = self.view(skip);
+                    const output = resolve.eval(input) orelse return null;
+                    return try self.consumeState(try self.processor().consumeResolved(input, output));
+                } else unreachable,
+                .each_safe => if (comptime resolve.Input == op.match.Input) {
+                    if (resolve.eval(item.value)) |value| {
+                        try self.appendItem(skip, i, value, item.used, true);
+                        return null;
+                    }
+                } else unreachable,
+                .each_fail => if (comptime resolve.Input == op.match.Input) {
+                    const value = resolve.eval(item.value) orelse {
+                        @branchHint(.unlikely);
+                        self.scratch.deinit(self.allocator);
+                        return .fail;
+                    };
+                    try self.appendItem(skip, i, value, item.used, true);
+                    return null;
+                } else unreachable,
+                else => {},
+            };
+
+            try self.appendItem(skip, i, item.value, item.used, is_filtered);
+            return null;
+        }
+
+        fn resolveLast(
+            self: *Self,
+            skip: behavior.Skip(),
+            i: usize,
+            item: EvalState(op.match.Input),
+            comptime is_filtered: bool,
+        ) !Evaluate(op) {
+            if (comptime op.resolve) |resolve| behave: switch (comptime resolve.behavior) {
+                .skip_defer => |min| if (i >= min) continue :behave .skip else unreachable,
+                .skip => if (comptime resolve.Input == []const op.match.Input) {
+                    try self.appendItem(skip, i, item.value, item.used, is_filtered);
+
+                    const input = self.view(skip);
+                    const output = resolve.eval(input) orelse {
+                        @branchHint(.unlikely);
+                        self.scratch.deinit(self.allocator);
+                        return .fail;
+                    };
+                    return self.consumeState(try self.processor().consumeResolved(input, output));
+                } else unreachable,
+                .each_safe => if (comptime resolve.Input == op.match.Input) {
+                    if (resolve.eval(item.value)) |value| {
+                        try self.appendItem(skip, i, value, item.used, true);
+                    } else {
+                        try self.appendItem(skip, i, item.value, item.used, is_filtered);
+                    }
+                    return self.consumeState(try self.processor().consumeInput(self.view(skip)));
+                } else unreachable,
+                .each_fail => if (comptime resolve.Input == op.match.Input) {
+                    const value = resolve.eval(item.value) orelse {
+                        @branchHint(.unlikely);
+                        self.scratch.deinit(self.allocator);
+                        return .fail;
+                    };
+                    try self.appendItem(skip, i, value, item.used, true);
+                    return self.consumeState(try self.processor().consumeInput(self.view(skip)));
+                } else unreachable,
+                else => if (comptime resolve.Input == []const op.match.Input) {
+                    try self.appendItem(skip, i, item.value, item.used, is_filtered);
+                    return self.consumeState(try self.processor().consume(self.view(skip), resolve));
+                } else unreachable,
+            };
+
+            try self.appendItem(skip, i, item.value, item.used, is_filtered);
+            return self.consumeState(try self.processor().consumeInput(self.view(skip)));
         }
 
         fn appendItem(
             self: *Self,
             skip: behavior.Skip(),
             i: usize,
-            item: EvalState(op.match.Input),
-            comptime filtered: bool,
+            value: op.match.Input,
+            used: usize,
+            comptime did_modify: bool,
         ) !void {
-            if (filtered and !(behavior.canTake() or self.hasScratch())) {
+            if (did_modify and !(behavior.canTake() or self.hasScratch())) {
                 @branchHint(.unlikely);
                 std.debug.assert(i == self.used);
                 try self.scratch.appendSlice(self.allocator, 0, self.provider.viewSlice(skip, i));
                 self.active_scratch = true;
             }
 
-            if (filtered or behavior.canTake() or self.hasScratch()) try self.scratch.appendItem(self.allocator, i, item.value);
-            if (behavior.canTake()) self.provider.drop(item.used);
-            self.used += item.used;
+            if (did_modify or behavior.canTake() or self.hasScratch()) try self.scratch.appendItem(self.allocator, i, value);
+            if (behavior.canTake()) self.provider.drop(used);
+            self.used += used;
+        }
+
+        fn consumeState(self: *Self, state: Process.State) !Evaluate(op) {
+            const out_ptr = @typeInfo(op.Output()) == .pointer;
+            switch (state) {
+                .owned => |output| if (out_ptr and !self.hasScratch()) {
+                    return .{ .ok = .fromOwned(output, self.used) };
+                } else unreachable,
+                .view => |output| if (!out_ptr or behavior.allocate() == .avoid) {
+                    return .{ .ok = .fromView(output, self.used) };
+                } else unreachable,
+                .discard => return .discard,
+                .fail => return .fail,
+            }
         }
 
         fn processOwnership(ctx: *const anyopaque) ProcessOwnership {
@@ -385,40 +486,46 @@ fn Processor(
         const State = union(enum) { fail, discard, view: Out, owned: Out };
         const can_overlap = @typeInfo(In) == .pointer and @typeInfo(Out) == .pointer;
 
-        pub fn consumeInput(allocator: Allocator, ctx: *anyopaque, input: In, comptime resolver: ?combine.Resolver) !State {
-            const self = Self{
-                .allocator = allocator,
-                .ctx = ctx,
-            };
-
+        pub fn consume(self: Self, input: In, comptime resolver: ?combine.Resolver) !State {
             if (comptime resolver) |r| {
-                return self.resolveInput(input, r);
-            } else if (comptime behavior == .discard) {
-                return self.discardInput();
-            } else switch (vtable.ownership(self.ctx)) {
-                .owned => return .{ .owned = input },
-                .scratch => if (comptime can_overlap) {
-                    return .{ .owned = try self.consumeScratch() };
-                } else unreachable,
-                .view => return if (behavior == .clone) self.cloneOutput(input) else .{ .view = input },
+                if (r.eval(input)) |out| {
+                    return self.consumeResolved(input, out);
+                } else switch (r.behavior) {
+                    .safe => return self.consumeInput(input),
+                    .fail => {
+                        @branchHint(.unlikely);
+                        vtable.deinit(self.ctx);
+                        return .fail;
+                    },
+                    else => unreachable,
+                }
+            } else {
+                return self.consumeInput(input);
             }
         }
 
-        fn resolveInput(self: Self, input: In, comptime resolver: combine.Resolver) !State {
-            const output = resolver.eval(input) orelse {
-                @branchHint(.cold);
-                vtable.deinit(self.ctx);
-                return .fail;
-            };
+        pub fn consumeInput(self: Self, input: In) !State {
+            std.debug.assert(In == Out);
+            if (comptime behavior == .discard) {
+                return self.discardInput();
+            } else {
+                return switch (vtable.ownership(self.ctx)) {
+                    .view => if (behavior == .clone) self.cloneOutput(input) else .{ .view = input },
+                    .scratch => .{ .owned = try self.consumeScratch() },
+                    .owned => .{ .owned = input },
+                };
+            }
+        }
 
+        pub fn consumeResolved(self: Self, input: In, output: Out) !State {
             if (comptime behavior == .discard) {
                 return self.discardInput();
             } else switch (valuesOverlap(input, output)) {
                 .full => switch (vtable.ownership(self.ctx)) {
+                    .view => return .{ .view = output },
                     .scratch => if (comptime can_overlap) {
                         return .{ .owned = @ptrCast(@alignCast(try self.consumeScratch())) };
                     } else unreachable,
-                    .view => return .{ .view = output },
                     .owned => {},
                 },
                 .none => if (behavior != .clone and vtable.ownership(self.ctx) == .view) return .{ .view = output },
@@ -426,13 +533,19 @@ fn Processor(
             }
 
             defer vtable.deinit(self.ctx);
-            return self.cloneOutput(output);
+            return try self.cloneOutput(output);
         }
 
         fn discardInput(self: Self) State {
             vtable.deinit(self.ctx);
             vtable.discard(self.ctx);
             return .discard;
+        }
+
+        fn consumeScratch(self: Self) !In {
+            var value: In = undefined;
+            try vtable.consume(self.ctx, @ptrCast(&value));
+            return value;
         }
 
         fn cloneOutput(self: Self, output: Out) !State {
@@ -448,12 +561,6 @@ fn Processor(
                 },
                 else => return .{ .view = output },
             }
-        }
-
-        fn consumeScratch(self: Self) !In {
-            var value: In = undefined;
-            try vtable.consume(self.ctx, @ptrCast(&value));
-            return value;
         }
 
         /// Assumes both values are pointers.
@@ -655,178 +762,226 @@ test "Scratch: dynamic" {
     try testing.expectEqualStrings("abc", slice);
 }
 
-test "Consumer: match single" {
+test "Evaluate: match single" {
     var reader = TestingReader{ .buffer = "abc" };
-    try TestingConsumer(BuildOp.matchSingle(.ok)).expectSuccess('b', 1).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSingle(.fail)).expectFail().evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSingle(.ok)).expectSuccess('b', 1).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSingle(.fail)).expectFail().evaluate(&reader, .{ .view = 1 });
 
     // Propogate reader failure
     reader.reset(.{ .fail = .{ .cursor = 0 } });
-    try TestingConsumer(BuildOp.matchSingle(.ok)).expectReaderError().evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSingle(.ok)).expectReaderError().evaluate(&reader, .{ .view = 1 });
 }
 
-test "Consumer: match sequence" {
+test "Evaluate: match sequence" {
     var reader = TestingReader{ .buffer = "abcd" };
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }))
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }))
         .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSequence(.done_exclude, .{ .index = 2 }))
+    try TestingEvaluator(BuildOp.matchSequence(.done_exclude, .{ .index = 2 }))
         .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSequence(.invalid, .{ .index = 2 }))
-        .expectFail().evaluate(&reader, .{ .view = 1 });
-
-    // Fail when exclude at i == 0
-    try TestingConsumer(BuildOp.matchSequence(.done_exclude, .{ .index = 0 }))
+    try TestingEvaluator(BuildOp.matchSequence(.invalid, .{ .index = 2 }))
         .expectFail().evaluate(&reader, .{ .view = 1 });
 
     // Propogate reader failure
     reader.reset(.{ .fail = .{ .cursor = 0 } });
-    try TestingConsumer(BuildOp.matchSequence(.done_exclude, .{ .index = 2 }))
+    try TestingEvaluator(BuildOp.matchSequence(.done_exclude, .{ .index = 2 }))
         .expectReaderError().evaluate(&reader, .{ .view = 1 });
 }
 
-test "Consumer: resolve" {
+test "Evaluate: resolve" {
     var reader = TestingReader{ .buffer = "abcd" };
 
+    //
     // Single
-    try TestingConsumer(BuildOp.matchSingle(.ok).resolve(.passthrough))
-        .expectSuccess('b', 1).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSingle(.ok).resolve(.{ .constant_char = 'x' }))
+    //
+
+    // Safe
+    try TestingEvaluator(BuildOp.matchSingle(.ok).resolve(.safe, .{ .constant_char = 'x' }))
         .expectSuccess('x', 1).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSingle(.ok).resolve(.fail))
+    try TestingEvaluator(BuildOp.matchSingle(.ok).resolve(.safe, .fail))
+        .expectSuccess('b', 1).evaluate(&reader, .{ .view = 1 });
+
+    // Fail
+    try TestingEvaluator(BuildOp.matchSingle(.ok).resolve(.fail, .passthrough))
+        .expectSuccess('b', 1).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSingle(.ok).resolve(.fail, .{ .constant_char = 'x' }))
+        .expectSuccess('x', 1).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSingle(.ok).resolve(.fail, .fail))
         .expectFail().evaluate(&reader, .{ .view = 1 });
 
+    //
     // Sequence
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.passthrough))
+    //
+
+    // Safe
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.safe, .{ .constant_slice = "xx" }))
+        .expectSuccess("xx", 2).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.safe, .fail))
         .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.{ .constant_char = 'x' }))
+
+    // Fail
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.fail, .passthrough))
+        .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.fail, .{ .constant_char = 'x' }))
         .expectSuccess('x', 2).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.fail))
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.fail, .fail))
+        .expectFail().evaluate(&reader, .{ .view = 1 });
+
+    // Skip
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.skip, .passthrough))
+        .expectSuccess("b", 1).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.skip, .{ .constant_char = 'x' }))
+        .expectSuccess('x', 1).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.skip, .fail))
+        .expectFail().evaluate(&reader, .{ .view = 1 });
+
+    // Skip Defer
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.{ .skip_defer = 1 }, .passthrough))
+        .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.{ .skip_defer = 1 }, .{ .constant_char = 'x' }))
+        .expectSuccess('x', 2).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.{ .skip_defer = 1 }, .fail))
+        .expectFail().evaluate(&reader, .{ .view = 1 });
+
+    // Each Safe
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.each_safe, .passthrough))
+        .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.each_safe, .{ .constant_char = 'x' }))
+        .expectSuccess("xx", 2).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.each_safe, .fail))
+        .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
+
+    // Each Fail
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.each_fail, .passthrough))
+        .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.each_fail, .{ .constant_char = 'x' }))
+        .expectSuccess("xx", 2).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.each_fail, .fail))
         .expectFail().evaluate(&reader, .{ .view = 1 });
 }
 
-test "Consumer: take single" {
+test "Evaluate: take single" {
     var reader = TestingReader{ .buffer = "ab" };
-    try TestingConsumer(BuildOp.matchSingle(.fail)).expectFail().evaluate(&reader, .take);
-    try TestingConsumer(BuildOp.matchSingle(.ok)).expectSuccess('a', 1).evaluate(&reader, .take);
-    try TestingConsumer(BuildOp.matchSingle(.ok)).expectSuccess('b', 1).evaluate(&reader, .take);
-    try TestingConsumer(BuildOp.matchSingle(.ok)).expectReaderError().evaluate(&reader, .take);
+    try TestingEvaluator(BuildOp.matchSingle(.fail)).expectFail().evaluate(&reader, .take);
+    try TestingEvaluator(BuildOp.matchSingle(.ok)).expectSuccess('a', 1).evaluate(&reader, .take);
+    try TestingEvaluator(BuildOp.matchSingle(.ok)).expectSuccess('b', 1).evaluate(&reader, .take);
+    try TestingEvaluator(BuildOp.matchSingle(.ok)).expectReaderError().evaluate(&reader, .take);
 }
 
-test "Consumer: take sequence" {
+test "Evaluate: take sequence" {
     var reader = TestingReader{};
-    try TestingConsumer(BuildOp.matchSequence(.invalid, .{ .index = 1 }))
+    try TestingEvaluator(BuildOp.matchSequence(.invalid, .{ .index = 1 }))
         .expectFail().evaluate(&reader, .take);
     try reader.expectCursor(1); // Takes the first char, then the second fails
 
     reader.reset(.{ .buffer = "abcde" });
-    try TestingConsumer(BuildOp.matchSequence(.done_exclude, .{ .index = 2 }))
+    try TestingEvaluator(BuildOp.matchSequence(.done_exclude, .{ .index = 2 }))
         .expectSuccess("ab", 2).evaluate(&reader, .take);
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }))
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }))
         .expectSuccess("cd", 2).evaluate(&reader, .take);
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }))
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }))
         .expectReaderError().evaluate(&reader, .take);
     try reader.expectCursor(5); // Takes the first char, then the second fails
 }
 
-test "Consumer: clone" {
+test "Evaluate: clone" {
     var reader = TestingReader{};
-    try TestingConsumer(BuildOp.matchSequence(.invalid, .{ .index = 1 }))
+    try TestingEvaluator(BuildOp.matchSequence(.invalid, .{ .index = 1 }))
         .expectFail().evaluate(&reader, .clone);
     try reader.expectCursor(1); // Takes the first char, then the second fails
 
     reader.reset(.{ .buffer = "abcde" });
-    try TestingConsumer(BuildOp.matchSequence(.done_exclude, .{ .index = 2 }))
+    try TestingEvaluator(BuildOp.matchSequence(.done_exclude, .{ .index = 2 }))
         .expectSuccess("ab", 2).evaluate(&reader, .clone);
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }))
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }))
         .expectSuccess("cd", 2).evaluate(&reader, .clone);
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }))
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }))
         .expectReaderError().evaluate(&reader, .clone);
     try reader.expectCursor(5); // Takes the first char, then the second fails
 }
 
-test "Consumer: drop" {
+test "Evaluate: drop" {
     var reader = TestingReader{};
 
     // Unresolved
 
-    try TestingConsumer(BuildOp.matchSingle(.ok)).expectSuccess(undefined, 1)
+    try TestingEvaluator(BuildOp.matchSingle(.ok)).expectSuccess(undefined, 1)
         .evaluate(&reader, .drop);
     try reader.expectCursor(1);
 
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }))
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }))
         .expectSuccess(undefined, 2).evaluate(&reader, .drop);
     try reader.expectCursor(3);
 
     // Resolved
 
-    try TestingConsumer(BuildOp.matchSingle(.ok).resolve(.passthrough)).expectSuccess(undefined, 1)
+    try TestingEvaluator(BuildOp.matchSingle(.ok).resolve(.fail, .passthrough)).expectSuccess(undefined, 1)
         .evaluate(&reader, .drop);
     try reader.expectCursor(4);
 
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.{ .constant_char = 'x' }))
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.fail, .{ .constant_char = 'x' }))
         .expectSuccess(undefined, 2).evaluate(&reader, .drop);
     try reader.expectCursor(6);
 }
 
-test "Consumer: filter single" {
+test "Evaluate: filter single" {
     var reader = TestingReader{ .buffer = "abc" };
 
     // Safe
-    try TestingConsumer(BuildOp.matchSingle(.ok).filterSingle(.safe, .ok, .passthrough))
+    try TestingEvaluator(BuildOp.matchSingle(.ok).filterSingle(.safe, .ok, .passthrough))
         .expectSuccess('b', 1).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSingle(.ok).filterSingle(.safe, .ok, .{ .constant_char = 'x' }))
+    try TestingEvaluator(BuildOp.matchSingle(.ok).filterSingle(.safe, .ok, .{ .constant_char = 'x' }))
         .expectSuccess('x', 1).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSingle(.ok).filterSingle(.safe, .fail, .{ .constant_char = 'x' }))
+    try TestingEvaluator(BuildOp.matchSingle(.ok).filterSingle(.safe, .fail, .{ .constant_char = 'x' }))
         .expectSuccess('b', 1).evaluate(&reader, .{ .view = 1 });
 
     // Fail
-    try TestingConsumer(BuildOp.matchSingle(.ok).filterSingle(.fail, .ok, .passthrough))
+    try TestingEvaluator(BuildOp.matchSingle(.ok).filterSingle(.fail, .ok, .passthrough))
         .expectSuccess('b', 1).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSingle(.ok).filterSingle(.fail, .ok, .{ .constant_char = 'x' }))
+    try TestingEvaluator(BuildOp.matchSingle(.ok).filterSingle(.fail, .ok, .{ .constant_char = 'x' }))
         .expectSuccess('x', 1).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSingle(.ok).filterSingle(.fail, .fail, .{ .constant_char = 'x' }))
+    try TestingEvaluator(BuildOp.matchSingle(.ok).filterSingle(.fail, .fail, .{ .constant_char = 'x' }))
         .expectFail().evaluate(&reader, .{ .view = 1 });
 
     // Skip
-    try TestingConsumer(BuildOp.matchSingle(.{ .fail_value = 'b' }).filterSingle(.skip, .ok, .passthrough))
+    try TestingEvaluator(BuildOp.matchSingle(.{ .fail_value = 'b' }).filterSingle(.skip, .ok, .passthrough))
         .expectSuccess('b', 1).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSingle(.{ .fail_value = 'x' }).filterSingle(.skip, .ok, .{ .constant_char = 'x' }))
+    try TestingEvaluator(BuildOp.matchSingle(.{ .fail_value = 'x' }).filterSingle(.skip, .ok, .{ .constant_char = 'x' }))
         .expectSuccess('x', 1).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSingle(.{ .fail_value = 'x' }).filterSingle(.skip, .fail, .{ .constant_char = 'x' }))
+    try TestingEvaluator(BuildOp.matchSingle(.{ .fail_value = 'x' }).filterSingle(.skip, .fail, .{ .constant_char = 'x' }))
         .expectSuccess('b', 1).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSingle(.{ .fail_value = 'b' }).filterSingle(.skip, .fail, .{ .constant_char = 'x' }))
+    try TestingEvaluator(BuildOp.matchSingle(.{ .fail_value = 'b' }).filterSingle(.skip, .fail, .{ .constant_char = 'x' }))
         .expectFail().evaluate(&reader, .{ .view = 1 });
 }
 
-test "Consumer: filter sequence" {
+test "Evaluate: filter sequence" {
     var reader = TestingReader{ .buffer = "abcd" };
 
     // Safe
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.safe, .ok, .passthrough))
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.safe, .ok, .passthrough))
         .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.safe, .ok, .{ .constant_char = 'x' }))
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.safe, .ok, .{ .constant_char = 'x' }))
         .expectSuccess("xx", 2).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.safe, .fail, .{ .constant_char = 'x' }))
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.safe, .fail, .{ .constant_char = 'x' }))
         .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
 
     // Fail
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.fail, .ok, .passthrough))
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.fail, .ok, .passthrough))
         .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.fail, .ok, .{ .constant_char = 'x' }))
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.fail, .ok, .{ .constant_char = 'x' }))
         .expectSuccess("xx", 2).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.fail, .fail, .{ .constant_char = 'x' }))
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.fail, .fail, .{ .constant_char = 'x' }))
         .expectFail().evaluate(&reader, .{ .view = 1 });
 
     // Skip
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .value = 'c' }).filterSingle(.skip, .{ .fail_value = 'c' }, .passthrough))
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .value = 'c' }).filterSingle(.skip, .{ .fail_value = 'c' }, .passthrough))
         .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSequence(.done_include, .{ .value = 'c' }).filterSingle(.skip, .{ .fail_value = 'c' }, .{ .constant_char = 'x' }))
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .value = 'c' }).filterSingle(.skip, .{ .fail_value = 'c' }, .{ .constant_char = 'x' }))
         .expectSuccess("xc", 2).evaluate(&reader, .{ .view = 1 });
-    try TestingConsumer(BuildOp.matchSequence(.invalid, .{ .value = 'c' }).filterSingle(.skip, .{ .fail_value = 'c' }, .{ .constant_char = 'x' }))
+    try TestingEvaluator(BuildOp.matchSequence(.invalid, .{ .value = 'c' }).filterSingle(.skip, .{ .fail_value = 'c' }, .{ .constant_char = 'x' }))
         .expectFail().evaluate(&reader, .{ .view = 1 });
 }
 
-fn TestingConsumer(comptime op: BuildOp) type {
+fn TestingEvaluator(comptime op: BuildOp) type {
     const operator = op.build();
     return struct {
         expected: ExpectState,

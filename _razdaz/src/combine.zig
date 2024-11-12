@@ -42,8 +42,13 @@ pub const Operator = struct {
 
     pub fn Output(comptime self: Operator) type {
         const match = self.match;
-        if (self.resolve) |resolve| return resolve.Output;
-        return if (match.capacity == .sequence) []const match.Input else match.Input;
+        return if (self.resolve) |resolve| switch (resolve.behavior) {
+            .each_safe, .each_fail => []const resolve.Output,
+            else => resolve.Output,
+        } else if (match.capacity == .sequence)
+            []const match.Input
+        else
+            match.Input;
     }
 
     pub fn validate(comptime op: Operator, comptime In: type, comptime Out: ?type) void {
@@ -51,11 +56,35 @@ pub const Operator = struct {
             if (op.Input() != In) @compileError("expects operator input `" ++ In ++ "` (found `" ++ op.Input() ++ "`)");
             if (Out) |O| if (op.Output() != O) @compileError("expects operator output `" ++ O ++ "` (found `" ++ op.Output() ++ "`)");
 
-            if (op.filter) |f| if (f.operator.Output() != op.match.Input)
-                @compileError("expects same filter output and matcher input types (found  `" ++ f.operator.Output() ++ "` and `" ++ op.match.Input ++ "`)");
+            const MatchIn = op.match.Input;
+            if (op.filter) |f| if (f.operator.Output() != MatchIn)
+                @compileError("filter output expects same type `" ++ MatchIn ++ "` (found  `" ++ f.operator.Output() ++ "`)");
 
-            if (op.resolve) |r| if (r.Input != if (op.match.capacity == .sequence) []const op.match.Input else op.match.Input)
-                @compileError("expects same resolver input and matcher input types (found `" ++ r.Input ++ "` and `" ++ op.match.Input ++ "`)");
+            if (op.resolve) |r| {
+                var expect_sequence = false;
+                var expected_input: ?type = null;
+                behave: switch (r.behavior) {
+                    .skip, .skip_defer => {
+                        expect_sequence = true;
+                        expected_input == []const MatchIn;
+                    },
+                    inline .safe, .each_safe => |_, g| {
+                        if (r.Input != r.Output) @compileError("resolver output expects same type as input");
+                        continue :behave if (g == .safe) .fail else .each_fail;
+                    },
+                    .fail => expected_input = if (op.match.capacity == .sequence) []const MatchIn else MatchIn,
+                    .each_fail => {
+                        expect_sequence = true;
+                        expected_input == MatchIn;
+                    },
+                }
+
+                if (expect_sequence and op.match.capacity != .sequence)
+                    @compileError("resolver behavior expects a sequence matcher");
+
+                if (expected_input) |Expected| if (r.Input != Expected)
+                    @compileError("resolver input expects type `" ++ Expected ++ "` (found `" ++ r.Input ++ "`)");
+            }
         }
     }
 };
@@ -143,12 +172,44 @@ pub const Resolver = struct {
     Input: type,
     Output: type,
     func: *const anyopaque,
+    behavior: Behavior,
+
+    pub const Behavior = union(enum) {
+        /// Evaluate the input, fallback to the source input.
+        safe,
+        /// Evaluate the input, otherwise the operation fails.
+        fail,
+        /// Evaluate the matched input after each iteration.
+        /// Success will resolve the operator, otherwise continue matching.
+        skip,
+        /// Evaluate the matched input after each iteration from the specified count.
+        /// Success will resolve the operator, otherwise continue matching.
+        skip_defer: usize,
+        /// Evaluate each item, fallback to the source input.
+        each_safe,
+        /// Evaluate each item, otherwise the operation fails.
+        each_fail,
+
+        pub fn isSkip(self: Behavior) bool {
+            return switch (self) {
+                .skip, .skip_defer => true,
+                else => false,
+            };
+        }
+
+        pub fn isEach(self: Behavior) bool {
+            return switch (self) {
+                .each_safe, .each_fail => true,
+                else => false,
+            };
+        }
+    };
 
     pub fn Fn(comptime Input: type, comptime Output: type) type {
         return fn (value: Input) ?Output;
     }
 
-    pub fn define(comptime func: anytype) Resolver {
+    pub fn define(behavior: Behavior, comptime func: anytype) Resolver {
         const meta = fnMeta(func);
 
         const Out = blk: {
@@ -163,6 +224,7 @@ pub const Resolver = struct {
             .Input = meta.params[0].type.?,
             .Output = Out,
             .func = func,
+            .behavior = behavior,
         };
     }
 
