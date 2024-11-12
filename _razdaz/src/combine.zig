@@ -182,7 +182,7 @@ pub const Resolver = struct {
         /// Evaluate the matched input after each iteration.
         /// Success will resolve the operator, otherwise continue matching.
         skip,
-        /// Evaluate the matched input after each iteration from the specified count.
+        /// Evaluate the matched input starting at the interation of the specified index.
         /// Success will resolve the operator, otherwise continue matching.
         skip_defer: usize,
         /// Evaluate each item, fallback to the source input.

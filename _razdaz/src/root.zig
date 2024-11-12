@@ -6,6 +6,7 @@ test {
     _ = testing;
 
     _ = ops_char;
+    _ = ops_seq;
 }
 
 const decoder = @import("consume/decode.zig");
@@ -23,6 +24,7 @@ pub const OperatorDefine = combine.OperatorDefine;
 pub const testing = @import("testing.zig");
 
 const ops_char = @import("ops/char.zig");
+const ops_seq = @import("ops/sequence.zig");
 
 pub const ops = struct {
     // Char
@@ -41,4 +43,9 @@ pub const ops = struct {
     pub const matchAscii = ops_char.matchAscii;
     pub const escapeChar = ops_char.encodeEscape;
     pub const unescapeChar = ops_char.decodeEscape;
+
+    // Sequence
+    pub const matchSequence = ops_seq.matchSequence;
+    pub const matchString = ops_seq.matchString;
+    pub const matchAnyString = ops_seq.matchAnyString;
 };
