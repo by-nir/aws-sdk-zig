@@ -57,8 +57,10 @@ pub const Operator = struct {
             if (Out) |O| if (op.Output() != O) @compileError("expects operator output `" ++ O ++ "` (found `" ++ op.Output() ++ "`)");
 
             const MatchIn = op.match.Input;
-            if (op.filter) |f| if (f.operator.Output() != MatchIn)
-                @compileError("filter output expects same type `" ++ MatchIn ++ "` (found  `" ++ f.operator.Output() ++ "`)");
+            if (op.filter) |f| {
+                if (f.operator.Output() != MatchIn) @compileError("filter output expects same type `" ++ MatchIn ++ "` (found  `" ++ f.operator.Output() ++ "`)");
+                if (f.behavior == .until_fail and op.match.capacity != .sequence) @compileError("filter behavior `.until_fail` expects a sequence matcher");
+            }
 
             if (op.resolve) |r| {
                 var expect_sequence = false;
@@ -80,7 +82,7 @@ pub const Operator = struct {
                 }
 
                 if (expect_sequence and op.match.capacity != .sequence)
-                    @compileError("resolver behavior expects a sequence matcher");
+                    @compileError("resolver behavior `." ++ @tagName(r.behavior) ++ "` expects a sequence matcher");
 
                 if (expected_input) |Expected| if (r.Input != Expected)
                     @compileError("resolver input expects type `" ++ Expected ++ "` (found `" ++ r.Input ++ "`)");
@@ -120,7 +122,7 @@ pub const Matcher = struct {
         switch (params.len) {
             1 => {
                 if (scratch_hint) |h|
-                    std.log.warn("single matcher does not expects scratch hints (found `.{s}`)", .{@tagName(h)});
+                    @compileError("single matcher does not expects scratch hints (found `." ++ @tagName(h) ++ "`)");
 
                 if (meta.return_type.? == bool and params[0].type.? != void) {
                     return .{
@@ -165,6 +167,8 @@ pub const Filter = struct {
         fail,
         /// Only match the input when evaluating the filter fails.
         skip,
+        /// Evaluate the sequence items as long as the filter succeeds.
+        until_fail,
     };
 };
 
@@ -179,15 +183,15 @@ pub const Resolver = struct {
         safe,
         /// Evaluate the input, otherwise the operation fails.
         fail,
-        /// Evaluate the matched input after each iteration.
+        /// Evaluate the matched input after each sequence iteration.
         /// Success will resolve the operator, otherwise continue matching.
         skip,
-        /// Evaluate the matched input starting at the interation of the specified index.
+        /// Evaluate the matched input starting at the sequence interation of the specified index.
         /// Success will resolve the operator, otherwise continue matching.
         skip_defer: usize,
-        /// Evaluate each item, fallback to the source input.
+        /// Evaluate each sequence item, fallback to the source input.
         each_safe,
-        /// Evaluate each item, otherwise the operation fails.
+        /// Evaluate each sequence item, otherwise the operation fails.
         each_fail,
 
         pub fn isSkip(self: Behavior) bool {

@@ -283,17 +283,7 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
                             .done_include => return self.resolveLast(skip, i, item, is_filtered),
                             .done_exclude => {
                                 std.debug.assert(i > 0);
-                                if (op.resolve) |resolve| switch (resolve.behavior) {
-                                    .each_safe, .each_fail => {},
-                                    .safe, .fail => if (comptime resolve.Input == []const op.match.Input) {
-                                        const state = try self.processor().consume(self.view(skip), resolve);
-                                        return self.consumeState(state);
-                                    } else unreachable,
-                                    // Resolve with skip should have resolved at previous iteration.
-                                    .skip, .skip_defer => unreachable,
-                                };
-
-                                return self.consumeState(try self.processor().consumeInput(self.view(skip)));
+                                return self.resolveExclude(skip);
                             },
                             .invalid => {
                                 @branchHint(.unlikely);
@@ -303,9 +293,14 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
                         }
                     } else unreachable,
                     .fail => {
-                        @branchHint(.unlikely);
-                        self.scratch.deinit(self.allocator);
-                        return .fail;
+                        const is_until_fail = if (op.filter) |f| f.behavior == .until_fail else false;
+                        if ((comptime is_until_fail) and i > 0) {
+                            return self.resolveExclude(skip);
+                        } else {
+                            @branchHint(.unlikely);
+                            self.scratch.deinit(self.allocator);
+                            return .fail;
+                        }
                     },
                 }
             }
@@ -393,6 +388,19 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
             };
 
             try self.appendItem(skip, i, item.value, item.used, is_filtered);
+            return self.consumeState(try self.processor().consumeInput(self.view(skip)));
+        }
+
+        fn resolveExclude(self: *Self, skip: behavior.Skip()) !Evaluate(op) {
+            if (op.resolve) |resolve| switch (resolve.behavior) {
+                .each_safe, .each_fail => {},
+                .safe, .fail => if (comptime resolve.Input == []const op.match.Input) {
+                    const state = try self.processor().consume(self.view(skip), resolve);
+                    return self.consumeState(state);
+                } else unreachable,
+                .skip, .skip_defer => unreachable, // Skip should have resolved by the previous iteration.
+            };
+
             return self.consumeState(try self.processor().consumeInput(self.view(skip)));
         }
 
@@ -647,10 +655,12 @@ fn Provider(comptime Source: type, comptime In: type, comptime Out: type) type {
                 comptime f.operator.validate(In, Out);
                 switch (try Evaluate(f.operator).at(allocator, self.source, comptime behavior.asView(), i)) {
                     .ok => |state| return .{ .filtered = state },
-                    .fail => {
-                        if (comptime f.behavior == .fail) return .fail;
-                        try self.reserveItem(i);
-                        return .{ .standard = .fromView(self.viewItem(i), 1) };
+                    .fail => switch (comptime f.behavior) {
+                        .safe, .skip => {
+                            try self.reserveItem(i);
+                            return .{ .standard = .fromView(self.viewItem(i), 1) };
+                        },
+                        .fail, .until_fail => return .fail,
                     },
                     .discard => unreachable,
                 }
@@ -978,6 +988,14 @@ test "Evaluate: filter sequence" {
     try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .value = 'c' }).filterSingle(.skip, .{ .fail_value = 'c' }, .{ .constant_char = 'x' }))
         .expectSuccess("xc", 2).evaluate(&reader, .{ .view = 1 });
     try TestingEvaluator(BuildOp.matchSequence(.invalid, .{ .value = 'c' }).filterSingle(.skip, .{ .fail_value = 'c' }, .{ .constant_char = 'x' }))
+        .expectFail().evaluate(&reader, .{ .view = 1 });
+
+    // Until Fail
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .value = 'c' }).filterSingle(.until_fail, .{ .fail_value = 'c' }, .{ .constant_char = 'x' }))
+        .expectSuccess("x", 1).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .value = 'c' }).filterSingle(.until_fail, .{ .fail_value = 'c' }, .passthrough))
+        .expectSuccess("b", 1).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSequence(.invalid, .{ .value = 'b' }).filterSingle(.until_fail, .{ .fail_value = 'c' }, .passthrough))
         .expectFail().evaluate(&reader, .{ .view = 1 });
 }
 
