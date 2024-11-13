@@ -293,8 +293,7 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
                         }
                     } else unreachable,
                     .fail => {
-                        const is_until_fail = if (op.filter) |f| f.behavior == .until_fail else false;
-                        if ((comptime is_until_fail) and i > 0) {
+                        if (comptime if (op.filter) |f| f.behavior == .until_fail else false) {
                             return self.resolveExclude(skip);
                         } else {
                             @branchHint(.unlikely);

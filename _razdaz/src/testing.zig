@@ -48,6 +48,7 @@ pub fn expectFail(comptime operator: Operator, input: []const operator.Input()) 
         .ok => |state| {
             std.debug.print("expected failed operator, found " ++ valueFormat(T) ++ "\n", .{state.value});
             state.deinit(test_alloc);
+            return error.TestExpectedFailed;
         },
         .fail => {},
         .discard => undefined,
@@ -66,6 +67,23 @@ pub fn yieldState(success: bool) Operator {
     return Operator.define(struct {
         fn f(_: u8) bool {
             return success;
+        }
+    }.f, .{});
+}
+
+pub fn yieldStateChar(char: u8, success: bool) Operator {
+    return Operator.define(struct {
+        fn f(c: u8) bool {
+            return if (c == char) success else !success;
+        }
+    }.f, .{});
+}
+
+pub fn yieldStateAt(index: usize, state: Matcher.Verdict) Operator {
+    std.debug.assert(state != .next);
+    return Operator.define(struct {
+        fn f(i: usize, _: u8) Matcher.Verdict {
+            return if (i == index) state else .next;
         }
     }.f, .{});
 }

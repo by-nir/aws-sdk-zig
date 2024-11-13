@@ -7,6 +7,7 @@ test {
 
     _ = ops_char;
     _ = ops_seq;
+    _ = ops_repeat;
 }
 
 const decoder = @import("consume/decode.zig");
@@ -25,8 +26,9 @@ pub const testing = @import("testing.zig");
 
 const ops_char = @import("ops/char.zig");
 const ops_seq = @import("ops/sequence.zig");
+const ops_repeat = @import("ops/repeat.zig");
 
-pub const ops = struct {
+pub const op = struct {
     // Char
     pub const matchChar = ops_char.matchChar;
     pub const unlessChar = ops_char.unlessChar;
@@ -45,7 +47,15 @@ pub const ops = struct {
     pub const unescapeChar = ops_char.decodeEscape;
 
     // Sequence
+    pub const amount = ops_seq.amount;
     pub const matchSequence = ops_seq.matchSequence;
     pub const matchString = ops_seq.matchString;
     pub const matchAnyString = ops_seq.matchAnyString;
+
+    // Repeat
+    pub const repeat = ops_repeat.repeat;
+    pub const repeatMin = ops_repeat.repeatMin;
+    pub const repeatMax = ops_repeat.repeatMax;
+    pub const repeatRange = ops_repeat.repeatRange;
+    pub const repeatWhile = ops_repeat.repeatWhile;
 };

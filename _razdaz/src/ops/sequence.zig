@@ -5,6 +5,28 @@ const Resolver = lib.Resolver;
 const MatchVerdict = lib.Matcher.Verdict;
 const testing = @import("../testing.zig");
 
+/// Consumes a specified amount of items.
+pub fn amount(comptime T: type, n: usize) Operator {
+    const funcs = struct {
+        fn match(i: usize, _: T) MatchVerdict {
+            return if (i == n - 1) .done_include else .next;
+        }
+
+        fn resolve(out: []const T) ?[]const T {
+            return if (out.len < n) null else out;
+        }
+    };
+
+    return Operator.define(funcs.match, .{
+        .scratch_hint = .count(n),
+        .resolve = Resolver.define(.fail, funcs.resolve),
+    });
+}
+
+test amount {
+    try testing.expectEvaluate(amount(u8, 2), "abc", "ab", 2);
+}
+
 /// Match a specified slice.
 pub fn matchSequence(comptime T: type, comptime value: []const T) Operator {
     const len = value.len;
