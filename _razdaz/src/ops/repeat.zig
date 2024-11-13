@@ -45,7 +45,7 @@ pub fn repeatMin(comptime min: usize, comptime op: Operator) Operator {
 
     return Operator.define(funcs.match, .{
         .filter = .{
-            .behavior = .until_fail,
+            .behavior = .validate,
             .operator = op,
         },
         .resolve = Resolver.define(.fail, funcs.resolve),
@@ -66,7 +66,7 @@ pub fn repeatMax(comptime max: usize, comptime op: Operator) Operator {
         }
     }.f, .{
         .filter = .{
-            .behavior = .until_fail,
+            .behavior = .validate,
             .operator = op,
         },
     });
@@ -92,7 +92,7 @@ pub fn repeatRange(comptime min: usize, comptime max: usize, comptime op: Operat
 
     return Operator.define(funcs.match, .{
         .filter = .{
-            .behavior = .until_fail,
+            .behavior = .validate,
             .operator = op,
         },
         .scratch_hint = .max(max),
@@ -115,7 +115,7 @@ pub fn repeatWhile(comptime op: Operator) Operator {
         }
     }.f, .{
         .filter = .{
-            .behavior = .until_fail,
+            .behavior = .validate,
             .operator = op,
         },
     });
@@ -125,4 +125,24 @@ test repeatWhile {
     try testing.expectEvaluate(repeatWhile(testing.yieldStateChar('a', false)), "abcde", "", 0);
     try testing.expectEvaluate(repeatWhile(testing.yieldStateChar('b', false)), "abcde", "a", 1);
     try testing.expectEvaluate(repeatWhile(testing.yieldStateChar('d', false)), "abcde", "abc", 3);
+}
+
+/// Repeat the operator zero or more times while it’s valid.
+pub fn repeatUntil(comptime op: Operator) Operator {
+    return Operator.define(struct {
+        fn f(_: usize, _: op.match.Input) MatchVerdict {
+            return .next;
+        }
+    }.f, .{
+        .filter = .{
+            .behavior = .unless,
+            .operator = op,
+        },
+    });
+}
+
+test repeatUntil {
+    try testing.expectEvaluate(repeatUntil(testing.yieldStateChar('a', true)), "abcde", "", 0);
+    try testing.expectEvaluate(repeatUntil(testing.yieldStateChar('b', true)), "abcde", "a", 1);
+    try testing.expectEvaluate(repeatUntil(testing.yieldStateChar('d', true)), "abcde", "abc", 3);
 }

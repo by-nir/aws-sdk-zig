@@ -155,7 +155,7 @@ pub fn matchAnyString(comptime vals: []const []const u8) Operator {
         else => funcs.matchMany,
     }, .{
         .scratch_hint = .max(max_len),
-        .resolve = Resolver.define(.{ .skip_defer = min_len - 1 }, funcs.resolve),
+        .resolve = Resolver.define(.{ .partial_defer = min_len - 1 }, funcs.resolve),
     });
 }
 

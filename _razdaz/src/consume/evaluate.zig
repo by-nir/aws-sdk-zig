@@ -173,20 +173,22 @@ fn Single(comptime op: combine.Operator, comptime Source: type, comptime behavio
         fn match(self: *Self, skip: behavior.Skip()) !bool {
             switch (try self.provider.readAt(self.allocator, op.filter, behavior, skip)) {
                 .filtered => |item| if (comptime op.filter) |f| {
-                    return self.setItem(item, f.behavior != .skip);
+                    return self.setItem(item, f.behavior == .override);
                 } else unreachable,
-                .standard => |item| return self.setItem(item, true),
+                .standard => |item| return self.setItem(item, false),
                 .fail => return false,
             }
         }
 
-        fn setItem(self: *Self, item: EvalState(op.match.Input), comptime eval: bool) bool {
-            if (eval and !op.match.evalSingle(item.value)) return false;
-            if (behavior.canTake()) self.provider.drop(item.used);
-            self.used = item.used;
-            self.owned = item.owned;
-            self.scratch = item.value;
-            return true;
+        fn setItem(self: *Self, item: EvalState(op.match.Input), comptime skip_eval: bool) bool {
+            const success = skip_eval or op.match.evalSingle(item.value);
+            if (success) {
+                if (behavior.canTake()) self.provider.drop(item.used);
+                self.used = item.used;
+                self.owned = item.owned;
+                self.scratch = item.value;
+            }
+            return success;
         }
 
         fn processOwnership(ctx: *const anyopaque) ProcessOwnership {
@@ -216,10 +218,11 @@ fn Single(comptime op: combine.Operator, comptime Source: type, comptime behavio
 fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behavior: ConsumeBehavior) type {
     const scratch_hint = blk: {
         const hint = op.match.capacity.sequence;
-        break :blk switch (hint) {
-            .exact => |n| if (op.resolve != null and op.resolve.?.behavior.isSkip()) .{ .bound = n } else hint,
-            else => hint,
-        };
+        switch (hint) {
+            .exact => |n| if (op.resolve) |r| if (r.behavior.isPartial()) break :blk .{ .bound = n },
+            else => {},
+        }
+        break :blk hint;
     };
     const use_scratch = behavior.canTake() or op.filter != null or (if (op.resolve) |r| r.behavior.isEach() else false);
     const proc_behave = if (behavior == .stream_drop) .discard else if (behavior.allocate() == .always) .clone else .standard;
@@ -273,7 +276,7 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
                     inline .standard, .filtered => |item, t| if (comptime t == .standard or op.filter != null) {
                         defer item.deinit(self.allocator);
                         const is_filtered = t == .filtered;
-                        if (comptime is_filtered and op.filter.?.behavior == .skip) {
+                        if (comptime is_filtered and op.filter.?.behavior == .override) {
                             if (try self.resolveCycle(skip, i, item, is_filtered)) |out| return out else continue;
                         } else switch (op.match.evalSequence(i, item.value)) {
                             .next => {
@@ -293,7 +296,7 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
                         }
                     } else unreachable,
                     .fail => {
-                        if (comptime if (op.filter) |f| f.behavior == .until_fail else false) {
+                        if (comptime if (op.filter) |f| f.behavior.isBreaking() else false) {
                             return self.resolveExclude(skip);
                         } else {
                             @branchHint(.unlikely);
@@ -313,8 +316,8 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
             comptime is_filtered: bool,
         ) !?Evaluate(op) {
             if (comptime op.resolve) |resolve| behave: switch (comptime resolve.behavior) {
-                .skip_defer => |min| if (i >= min) continue :behave .skip,
-                .skip => if (comptime resolve.Input == []const op.match.Input) {
+                .partial_defer => |min| if (i >= min) continue :behave .partial,
+                .partial => if (comptime resolve.Input == []const op.match.Input) {
                     try self.appendItem(skip, i, item.value, item.used, is_filtered);
 
                     const input = self.view(skip);
@@ -351,8 +354,8 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
             comptime is_filtered: bool,
         ) !Evaluate(op) {
             if (comptime op.resolve) |resolve| behave: switch (comptime resolve.behavior) {
-                .skip_defer => |min| if (i >= min) continue :behave .skip else unreachable,
-                .skip => if (comptime resolve.Input == []const op.match.Input) {
+                .partial_defer => |min| if (i >= min) continue :behave .partial else unreachable,
+                .partial => if (comptime resolve.Input == []const op.match.Input) {
                     try self.appendItem(skip, i, item.value, item.used, is_filtered);
 
                     const input = self.view(skip);
@@ -397,7 +400,7 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
                     const state = try self.processor().consume(self.view(skip), resolve);
                     return self.consumeState(state);
                 } else unreachable,
-                .skip, .skip_defer => unreachable, // Skip should have resolved by the previous iteration.
+                .partial, .partial_defer => unreachable, // Partial should have resolved by the previous iteration.
             };
 
             return self.consumeState(try self.processor().consumeInput(self.view(skip)));
@@ -650,23 +653,27 @@ fn Provider(comptime Source: type, comptime In: type, comptime Out: type) type {
             comptime behavior: ConsumeBehavior,
             i: usize,
         ) !Item {
-            if (comptime filter) |f| {
+            if (comptime filter) |f| blk: {
                 comptime f.operator.validate(In, Out);
                 switch (try Evaluate(f.operator).at(allocator, self.source, comptime behavior.asView(), i)) {
-                    .ok => |state| return .{ .filtered = state },
+                    .ok => |state| switch (comptime f.behavior) {
+                        .unless => return .fail,
+                        else => return .{ .filtered = state },
+                    },
                     .fail => switch (comptime f.behavior) {
-                        .safe, .skip => {
+                        .unless => break :blk,
+                        .fail, .validate => return .fail,
+                        .fallback, .override => {
                             try self.reserveItem(i);
                             return .{ .standard = .fromView(self.viewItem(i), 1) };
                         },
-                        .fail, .until_fail => return .fail,
                     },
                     .discard => unreachable,
                 }
-            } else {
-                try self.reserveItem(i);
-                return .{ .standard = .fromView(self.viewItem(i), 1) };
             }
+
+            try self.reserveItem(i);
+            return .{ .standard = .fromView(self.viewItem(i), 1) };
         }
     };
 }
@@ -835,20 +842,20 @@ test "Evaluate: resolve" {
     try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.fail, .fail))
         .expectFail().evaluate(&reader, .{ .view = 1 });
 
-    // Skip
-    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.skip, .passthrough))
+    // Partial
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.partial, .passthrough))
         .expectSuccess("b", 1).evaluate(&reader, .{ .view = 1 });
-    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.skip, .{ .constant_char = 'x' }))
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.partial, .{ .constant_char = 'x' }))
         .expectSuccess('x', 1).evaluate(&reader, .{ .view = 1 });
-    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.skip, .fail))
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.partial, .fail))
         .expectFail().evaluate(&reader, .{ .view = 1 });
 
-    // Skip Defer
-    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.{ .skip_defer = 1 }, .passthrough))
+    // Partial Defer
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.{ .partial_defer = 1 }, .passthrough))
         .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
-    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.{ .skip_defer = 1 }, .{ .constant_char = 'x' }))
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.{ .partial_defer = 1 }, .{ .constant_char = 'x' }))
         .expectSuccess('x', 2).evaluate(&reader, .{ .view = 1 });
-    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.{ .skip_defer = 1 }, .fail))
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).resolve(.{ .partial_defer = 1 }, .fail))
         .expectFail().evaluate(&reader, .{ .view = 1 });
 
     // Each Safe
@@ -935,14 +942,6 @@ test "Evaluate: drop" {
 test "Evaluate: filter single" {
     var reader = TestingReader{ .buffer = "abc" };
 
-    // Safe
-    try TestingEvaluator(BuildOp.matchSingle(.ok).filterSingle(.safe, .ok, .passthrough))
-        .expectSuccess('b', 1).evaluate(&reader, .{ .view = 1 });
-    try TestingEvaluator(BuildOp.matchSingle(.ok).filterSingle(.safe, .ok, .{ .constant_char = 'x' }))
-        .expectSuccess('x', 1).evaluate(&reader, .{ .view = 1 });
-    try TestingEvaluator(BuildOp.matchSingle(.ok).filterSingle(.safe, .fail, .{ .constant_char = 'x' }))
-        .expectSuccess('b', 1).evaluate(&reader, .{ .view = 1 });
-
     // Fail
     try TestingEvaluator(BuildOp.matchSingle(.ok).filterSingle(.fail, .ok, .passthrough))
         .expectSuccess('b', 1).evaluate(&reader, .{ .view = 1 });
@@ -951,27 +950,43 @@ test "Evaluate: filter single" {
     try TestingEvaluator(BuildOp.matchSingle(.ok).filterSingle(.fail, .fail, .{ .constant_char = 'x' }))
         .expectFail().evaluate(&reader, .{ .view = 1 });
 
-    // Skip
-    try TestingEvaluator(BuildOp.matchSingle(.{ .fail_value = 'b' }).filterSingle(.skip, .ok, .passthrough))
+    // Fallback
+    try TestingEvaluator(BuildOp.matchSingle(.ok).filterSingle(.fallback, .ok, .passthrough))
         .expectSuccess('b', 1).evaluate(&reader, .{ .view = 1 });
-    try TestingEvaluator(BuildOp.matchSingle(.{ .fail_value = 'x' }).filterSingle(.skip, .ok, .{ .constant_char = 'x' }))
+    try TestingEvaluator(BuildOp.matchSingle(.ok).filterSingle(.fallback, .ok, .{ .constant_char = 'x' }))
         .expectSuccess('x', 1).evaluate(&reader, .{ .view = 1 });
-    try TestingEvaluator(BuildOp.matchSingle(.{ .fail_value = 'x' }).filterSingle(.skip, .fail, .{ .constant_char = 'x' }))
+    try TestingEvaluator(BuildOp.matchSingle(.ok).filterSingle(.fallback, .fail, .{ .constant_char = 'x' }))
         .expectSuccess('b', 1).evaluate(&reader, .{ .view = 1 });
-    try TestingEvaluator(BuildOp.matchSingle(.{ .fail_value = 'b' }).filterSingle(.skip, .fail, .{ .constant_char = 'x' }))
+
+    // Override
+    try TestingEvaluator(BuildOp.matchSingle(.{ .fail_value = 'b' }).filterSingle(.override, .ok, .passthrough))
+        .expectSuccess('b', 1).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSingle(.{ .fail_value = 'x' }).filterSingle(.override, .ok, .{ .constant_char = 'x' }))
+        .expectSuccess('x', 1).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSingle(.{ .fail_value = 'x' }).filterSingle(.override, .fail, .{ .constant_char = 'x' }))
+        .expectSuccess('b', 1).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSingle(.{ .fail_value = 'b' }).filterSingle(.override, .fail, .{ .constant_char = 'x' }))
+        .expectFail().evaluate(&reader, .{ .view = 1 });
+
+    // Validate (same as fail for single matchers)
+    try TestingEvaluator(BuildOp.matchSingle(.ok).filterSingle(.validate, .ok, .passthrough))
+        .expectSuccess('b', 1).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSingle(.ok).filterSingle(.validate, .ok, .{ .constant_char = 'x' }))
+        .expectSuccess('x', 1).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSingle(.ok).filterSingle(.validate, .fail, .{ .constant_char = 'x' }))
+        .expectFail().evaluate(&reader, .{ .view = 1 });
+
+    // Unless
+    try TestingEvaluator(BuildOp.matchSingle(.ok).filterSingle(.unless, .fail, .{ .constant_char = 'x' }))
+        .expectSuccess('b', 1).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSingle(.ok).filterSingle(.unless, .fail, .passthrough))
+        .expectSuccess('b', 1).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSingle(.ok).filterSingle(.unless, .ok, .passthrough))
         .expectFail().evaluate(&reader, .{ .view = 1 });
 }
 
 test "Evaluate: filter sequence" {
     var reader = TestingReader{ .buffer = "abcd" };
-
-    // Safe
-    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.safe, .ok, .passthrough))
-        .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
-    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.safe, .ok, .{ .constant_char = 'x' }))
-        .expectSuccess("xx", 2).evaluate(&reader, .{ .view = 1 });
-    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.safe, .fail, .{ .constant_char = 'x' }))
-        .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
 
     // Fail
     try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.fail, .ok, .passthrough))
@@ -981,20 +996,36 @@ test "Evaluate: filter sequence" {
     try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.fail, .fail, .{ .constant_char = 'x' }))
         .expectFail().evaluate(&reader, .{ .view = 1 });
 
-    // Skip
-    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .value = 'c' }).filterSingle(.skip, .{ .fail_value = 'c' }, .passthrough))
+    // Fallback
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.fallback, .ok, .passthrough))
         .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
-    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .value = 'c' }).filterSingle(.skip, .{ .fail_value = 'c' }, .{ .constant_char = 'x' }))
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.fallback, .ok, .{ .constant_char = 'x' }))
+        .expectSuccess("xx", 2).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).filterSingle(.fallback, .fail, .{ .constant_char = 'x' }))
+        .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
+
+    // Override
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .value = 'c' }).filterSingle(.override, .{ .fail_value = 'c' }, .passthrough))
+        .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .value = 'c' }).filterSingle(.override, .{ .fail_value = 'c' }, .{ .constant_char = 'x' }))
         .expectSuccess("xc", 2).evaluate(&reader, .{ .view = 1 });
-    try TestingEvaluator(BuildOp.matchSequence(.invalid, .{ .value = 'c' }).filterSingle(.skip, .{ .fail_value = 'c' }, .{ .constant_char = 'x' }))
+    try TestingEvaluator(BuildOp.matchSequence(.invalid, .{ .value = 'c' }).filterSingle(.override, .{ .fail_value = 'c' }, .{ .constant_char = 'x' }))
         .expectFail().evaluate(&reader, .{ .view = 1 });
 
-    // Until Fail
-    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .value = 'c' }).filterSingle(.until_fail, .{ .fail_value = 'c' }, .{ .constant_char = 'x' }))
+    // Validate
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .value = 'd' }).filterSingle(.validate, .{ .fail_value = 'c' }, .{ .constant_char = 'x' }))
         .expectSuccess("x", 1).evaluate(&reader, .{ .view = 1 });
-    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .value = 'c' }).filterSingle(.until_fail, .{ .fail_value = 'c' }, .passthrough))
-        .expectSuccess("b", 1).evaluate(&reader, .{ .view = 1 });
-    try TestingEvaluator(BuildOp.matchSequence(.invalid, .{ .value = 'b' }).filterSingle(.until_fail, .{ .fail_value = 'c' }, .passthrough))
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .value = 'd' }).filterSingle(.validate, .{ .fail_value = 'd' }, .passthrough))
+        .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSequence(.invalid, .{ .value = 'b' }).filterSingle(.validate, .{ .fail_value = 'c' }, .passthrough))
+        .expectFail().evaluate(&reader, .{ .view = 1 });
+
+    // Unless
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .value = 'd' }).filterSingle(.unless, .{ .fail_unless = 'd' }, .{ .constant_char = 'x' }))
+        .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .value = 'd' }).filterSingle(.unless, .{ .fail_unless = 'd' }, .passthrough))
+        .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
+    try TestingEvaluator(BuildOp.matchSequence(.invalid, .{ .value = 'b' }).filterSingle(.unless, .{ .fail_unless = 'c' }, .passthrough))
         .expectFail().evaluate(&reader, .{ .view = 1 });
 }
 

@@ -57,16 +57,14 @@ pub const Operator = struct {
             if (Out) |O| if (op.Output() != O) @compileError("expects operator output `" ++ O ++ "` (found `" ++ op.Output() ++ "`)");
 
             const MatchIn = op.match.Input;
-            if (op.filter) |f| {
-                if (f.operator.Output() != MatchIn) @compileError("filter output expects same type `" ++ MatchIn ++ "` (found  `" ++ f.operator.Output() ++ "`)");
-                if (f.behavior == .until_fail and op.match.capacity != .sequence) @compileError("filter behavior `.until_fail` expects a sequence matcher");
-            }
+            if (op.filter) |f| if (f.operator.Output() != MatchIn)
+                @compileError("filter output expects same type `" ++ MatchIn ++ "` (found  `" ++ f.operator.Output() ++ "`)");
 
             if (op.resolve) |r| {
                 var expect_sequence = false;
                 var expected_input: ?type = null;
                 behave: switch (r.behavior) {
-                    .skip, .skip_defer => {
+                    .partial, .partial_defer => {
                         expect_sequence = true;
                         expected_input == []const MatchIn;
                     },
@@ -161,14 +159,23 @@ pub const Filter = struct {
     operator: Operator,
 
     pub const Behavior = enum {
-        /// Evaluate the input, fallback to the source input.
-        safe,
         /// Evaluate the input, otherwise the operation fails.
         fail,
-        /// Only match the input when evaluating the filter fails.
-        skip,
-        /// Evaluate the sequence items as long as the filter succeeds.
-        until_fail,
+        /// Evaluate the input, otherwise use it as-is.
+        fallback,
+        /// Evaluate the input and skip matching, otherwise use it as-is.
+        override,
+        /// Evaluate the input while the filter succeeds.
+        validate,
+        /// Evaluate the input until the filter succeeds.
+        unless,
+
+        pub fn isBreaking(self: Behavior) bool {
+            return switch (self) {
+                .validate, .unless => true,
+                else => false,
+            };
+        }
     };
 };
 
@@ -179,24 +186,24 @@ pub const Resolver = struct {
     behavior: Behavior,
 
     pub const Behavior = union(enum) {
-        /// Evaluate the input, fallback to the source input.
-        safe,
         /// Evaluate the input, otherwise the operation fails.
         fail,
+        /// Evaluate the input, otherwise use it as-is.
+        safe,
         /// Evaluate the matched input after each sequence iteration.
         /// Success will resolve the operator, otherwise continue matching.
-        skip,
+        partial,
         /// Evaluate the matched input starting at the sequence interation of the specified index.
         /// Success will resolve the operator, otherwise continue matching.
-        skip_defer: usize,
+        partial_defer: usize,
         /// Evaluate each sequence item, fallback to the source input.
         each_safe,
         /// Evaluate each sequence item, otherwise the operation fails.
         each_fail,
 
-        pub fn isSkip(self: Behavior) bool {
+        pub fn isPartial(self: Behavior) bool {
             return switch (self) {
-                .skip, .skip_defer => true,
+                .partial, .partial_defer => true,
                 else => false,
             };
         }

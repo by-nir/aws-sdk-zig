@@ -58,4 +58,5 @@ pub const op = struct {
     pub const repeatMax = ops_repeat.repeatMax;
     pub const repeatRange = ops_repeat.repeatRange;
     pub const repeatWhile = ops_repeat.repeatWhile;
+    pub const repeatUntil = ops_repeat.repeatUntil;
 };
