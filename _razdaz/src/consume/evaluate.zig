@@ -127,6 +127,7 @@ pub fn EvalState(comptime T: type) type {
 
 fn Single(comptime op: combine.Operator, comptime Source: type, comptime behavior: ConsumeBehavior) type {
     const can_own = @typeInfo(op.match.Input) == .pointer;
+    const Padding = if (op.alignment == null) u0 else usize;
     return struct {
         allocator: Allocator,
         provider: Provider(Source, op.Input(), op.match.Input),
@@ -152,7 +153,13 @@ fn Single(comptime op: combine.Operator, comptime Source: type, comptime behavio
                 .provider = .{ .source = source },
             };
 
-            if (!try self.match(skip)) return .fail;
+            const padding: Padding = blk: {
+                const alignment = op.alignment orelse break :blk 0;
+                const addr = source.countConsumed() + skip;
+                break :blk std.mem.alignForward(usize, addr, alignment) - addr;
+            };
+
+            if (!try self.match(skip, padding)) return .fail;
 
             const process = Process{
                 .ctx = &self,
@@ -170,23 +177,23 @@ fn Single(comptime op: combine.Operator, comptime Source: type, comptime behavio
             }
         }
 
-        fn match(self: *Self, skip: behavior.Skip()) !bool {
-            switch (try self.provider.readAt(self.allocator, op.filter, behavior, skip)) {
+        fn match(self: *Self, skip: behavior.Skip(), pad: Padding) !bool {
+            switch (try self.provider.readAt(self.allocator, op.filter, behavior, skip + pad)) {
                 .filtered => |item| if (comptime op.filter) |f| {
-                    return self.setItem(item, f.behavior == .override);
+                    return self.setItem(item, pad, f.behavior == .override);
                 } else unreachable,
-                .standard => |item| return self.setItem(item, false),
+                .standard => |item| return self.setItem(item, pad, false),
                 .fail => return false,
             }
         }
 
-        fn setItem(self: *Self, item: EvalState(op.match.Input), comptime skip_eval: bool) bool {
+        fn setItem(self: *Self, item: EvalState(op.match.Input), pad: Padding, comptime skip_eval: bool) bool {
             const success = skip_eval or op.match.evalSingle(item.value);
             if (success) {
-                if (behavior.canTake()) self.provider.drop(item.used);
-                self.used = item.used;
+                self.used = item.used + pad;
                 self.owned = item.owned;
                 self.scratch = item.value;
+                if (behavior.canTake()) self.provider.drop(self.used);
             }
             return success;
         }
@@ -230,6 +237,7 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
     return struct {
         allocator: Allocator,
         used: usize = 0,
+        padding: if (op.alignment == null or behavior.canTake()) u0 else usize = 0,
         provider: Provider(Source, op.Input(), op.match.Input),
         scratch: Scratch(op.match.Input, scratch_hint) = .{},
         active_scratch: if (use_scratch) bool else void = if (use_scratch) behavior.canTake() else {},
@@ -258,7 +266,7 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
             if (self.hasScratch()) {
                 return self.scratch.view();
             } else {
-                return self.provider.viewSlice(skip, self.used);
+                return self.provider.viewSlice(skip + self.padding, self.used);
             }
         }
 
@@ -269,9 +277,19 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
             };
             errdefer self.scratch.deinit(allocator);
 
+            if (op.alignment) |alignment| {
+                const addr = source.countConsumed() + skip;
+                const pad = std.mem.alignForward(usize, addr, alignment) - addr;
+                if (behavior.canTake()) {
+                    self.provider.drop(pad);
+                } else {
+                    self.padding = pad;
+                }
+            }
+
             var i: usize = 0;
             while (true) : (i += 1) {
-                const skip_amount = if (behavior.canTake()) 0 else skip + self.used;
+                const skip_amount = if (behavior.canTake()) 0 else skip + self.padding + self.used;
                 switch (try self.provider.readAt(self.allocator, op.filter, behavior, skip_amount)) {
                     inline .standard, .filtered => |item, t| if (comptime t == .standard or op.filter != null) {
                         defer item.deinit(self.allocator);
@@ -430,10 +448,10 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
             const out_ptr = @typeInfo(op.Output()) == .pointer;
             switch (state) {
                 .owned => |output| if (out_ptr and !self.hasScratch()) {
-                    return .{ .ok = .fromOwned(output, self.used) };
+                    return .{ .ok = .fromOwned(output, self.padding + self.used) };
                 } else unreachable,
                 .view => |output| if (!out_ptr or behavior.allocate() == .avoid) {
-                    return .{ .ok = .fromView(output, self.used) };
+                    return .{ .ok = .fromView(output, self.padding + self.used) };
                 } else unreachable,
                 .discard => return .discard,
                 .fail => return .fail,
@@ -447,7 +465,7 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
 
         fn processDiscard(ctx: *const anyopaque) void {
             const self: *const Self = @ptrCast(@alignCast(ctx));
-            self.provider.drop(self.used);
+            self.provider.drop(self.padding + self.used);
         }
 
         fn processConsume(ctx: *anyopaque, output: *anyopaque) !void {
@@ -1027,6 +1045,28 @@ test "Evaluate: filter sequence" {
         .expectSuccess("bc", 2).evaluate(&reader, .{ .view = 1 });
     try TestingEvaluator(BuildOp.matchSequence(.invalid, .{ .value = 'b' }).filterSingle(.unless, .{ .fail_unless = 'c' }, .passthrough))
         .expectFail().evaluate(&reader, .{ .view = 1 });
+}
+
+test "Evaluate: align single" {
+    var reader = TestingReader{ .buffer = "abcd" };
+
+    try TestingEvaluator(BuildOp.matchSingle(.ok).alignment(2))
+        .expectSuccess('c', 2).evaluate(&reader, .{ .view = 1 });
+
+    reader.drop(1);
+    try TestingEvaluator(BuildOp.matchSingle(.ok).alignment(2))
+        .expectSuccess('c', 2).evaluate(&reader, .take);
+}
+
+test "Evaluate: align sequence" {
+    var reader = TestingReader{ .buffer = "abcd" };
+
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).alignment(2))
+        .expectSuccess("cd", 3).evaluate(&reader, .{ .view = 1 });
+
+    reader.drop(1);
+    try TestingEvaluator(BuildOp.matchSequence(.done_include, .{ .index = 1 }).alignment(2))
+        .expectSuccess("cd", 3).evaluate(&reader, .take);
 }
 
 fn TestingEvaluator(comptime op: BuildOp) type {

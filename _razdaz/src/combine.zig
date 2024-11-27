@@ -21,18 +21,22 @@ pub const OperatorDefine = struct {
     resolve: ?Resolver = null,
     /// The expected input size used before resolving.
     scratch_hint: ?SizeHint = null,
+    /// Ensure the source’s cursor is aligned prior to evaluating the operator.
+    alignment: ?u29 = null,
 };
 
 pub const Operator = struct {
     match: Matcher,
     filter: ?Filter = null,
     resolve: ?Resolver = null,
+    alignment: ?u29 = null,
 
     pub fn define(comptime matchFn: anytype, options: OperatorDefine) Operator {
         return .{
             .match = Matcher.define(matchFn, options.scratch_hint),
             .filter = options.filter,
             .resolve = options.resolve,
+            .alignment = options.alignment,
         };
     }
 

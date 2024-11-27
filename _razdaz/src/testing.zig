@@ -135,6 +135,7 @@ pub const TestingOperator = struct {
     matcher: Matcher,
     filter: ?Filter = null,
     resolver: ?Resolver = null,
+    aligns: ?u29 = null,
 
     pub fn matchSingle(comptime verdict: SingleVerdict) TestingOperator {
         const func = struct {
@@ -231,11 +232,18 @@ pub const TestingOperator = struct {
         return b;
     }
 
+    pub fn alignment(comptime self: TestingOperator, n: u29) TestingOperator {
+        var b = self;
+        b.aligns = n;
+        return b;
+    }
+
     pub fn build(comptime self: TestingOperator) Operator {
         return .{
             .match = self.matcher,
             .filter = self.filter,
             .resolve = self.resolver,
+            .alignment = self.aligns,
         };
     }
 
