@@ -55,6 +55,10 @@ pub fn expectFail(comptime operator: Operator, input: []const operator.Input()) 
     }
 }
 
+pub fn expectStreamError(comptime operator: Operator, input: []const operator.Input()) !void {
+    try testing.expectError(error.EndOfStream, Evaluate(operator).at(test_alloc, input, .direct_view, 0));
+}
+
 fn valueFormat(comptime T: type) []const u8 {
     return switch (T) {
         u8 => "'{c}'",

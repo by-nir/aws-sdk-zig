@@ -155,7 +155,7 @@ fn Single(comptime op: combine.Operator, comptime Source: type, comptime behavio
 
             const padding: Padding = blk: {
                 const alignment = op.alignment orelse break :blk 0;
-                const addr = source.countConsumed() + skip;
+                const addr = self.provider.address() + skip;
                 break :blk std.mem.alignForward(usize, addr, alignment) - addr;
             };
 
@@ -278,7 +278,7 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
             errdefer self.scratch.deinit(allocator);
 
             if (op.alignment) |alignment| {
-                const addr = source.countConsumed() + skip;
+                const addr = self.provider.address() + skip;
                 const pad = std.mem.alignForward(usize, addr, alignment) - addr;
                 if (behavior.canTake()) {
                     self.provider.drop(pad);
@@ -632,6 +632,11 @@ fn Provider(comptime Source: type, comptime In: type, comptime Out: type) type {
             /// Invalid item or filter.
             fail,
         };
+
+        /// Assumes valid bounds.
+        pub fn address(self: Self) if (is_direct) u0 else usize {
+            return if (is_direct) 0 else self.source.countConsumed();
+        }
 
         pub fn reserveItem(self: Self, i: usize) !void {
             if (!is_direct) {

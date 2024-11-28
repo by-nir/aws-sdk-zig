@@ -8,6 +8,7 @@ test {
     _ = ops_char;
     _ = ops_seq;
     _ = ops_repeat;
+    _ = ops_type;
 }
 
 const decoder = @import("consume/decode.zig");
@@ -27,6 +28,10 @@ pub const testing = @import("testing.zig");
 const ops_char = @import("ops/char.zig");
 const ops_seq = @import("ops/sequence.zig");
 const ops_repeat = @import("ops/repeat.zig");
+
+const ops_type = @import("ops/type.zig");
+pub const TypeLayout = ops_type.Layout;
+pub const TypeValueOptions = ops_type.ValueOptions;
 
 pub const op = struct {
     // Char
@@ -59,4 +64,7 @@ pub const op = struct {
     pub const repeatRange = ops_repeat.repeatRange;
     pub const repeatWhile = ops_repeat.repeatWhile;
     pub const repeatUntil = ops_repeat.repeatUntil;
+
+    // Type
+    pub const typeValue = ops_type.typeValue;
 };
