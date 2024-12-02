@@ -7,7 +7,15 @@ const Resolver = lib.Resolver;
 const MatchVerdict = lib.Matcher.Verdict;
 const testing = @import("../testing.zig");
 
-/// Match a specified ASCII character.
+/// Match any valid ASCII character.
+pub const matchValid = Operator.define(ascii.isAscii, .{});
+
+test matchValid {
+    try testing.expectEvaluate(matchValid, "\x7F", '\x7F', 1);
+    try testing.expectFail(matchValid, "\x80");
+}
+
+/// Match a given ASCII character.
 pub fn matchChar(comptime char: u8) Operator {
     return Operator.define(struct {
         fn f(c: u8) bool {
@@ -21,7 +29,7 @@ test matchChar {
     try testing.expectFail(matchChar('x'), "a");
 }
 
-/// Match any character other than the specified ASCII character.
+/// Match any character other than the given ASCII character.
 pub fn unlessChar(comptime char: u8) Operator {
     return Operator.define(struct {
         fn f(c: u8) bool {
@@ -35,7 +43,7 @@ test unlessChar {
     try testing.expectFail(unlessChar('a'), "a");
 }
 
-/// Match any of the specified ASCII characters.
+/// Match any of the given ASCII characters.
 pub fn matchAnyChar(comptime chars: []const u8) Operator {
     return Operator.define(struct {
         fn f(c: u8) bool {
@@ -51,7 +59,7 @@ test matchAnyChar {
     try testing.expectFail(matchAnyChar("abc"), "x");
 }
 
-/// Match any character other than the specified ASCII characters.
+/// Match any character other than the given ASCII characters.
 pub fn unlessAnyChar(comptime chars: []const u8) Operator {
     return Operator.define(struct {
         fn f(c: u8) bool {
@@ -220,14 +228,6 @@ test matchControl {
     try testing.expectFail(matchControl, "x");
     try testing.expectFail(matchControl, "8");
     try testing.expectFail(matchControl, "-");
-}
-
-/// Match any ASCII character.
-pub const matchAscii = Operator.define(ascii.isAscii, .{});
-
-test matchAscii {
-    try testing.expectEvaluate(matchAscii, "\x7F", '\x7F', 1);
-    try testing.expectFail(matchAscii, "\x80");
 }
 
 /// Decode an escaped character.

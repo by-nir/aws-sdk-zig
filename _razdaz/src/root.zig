@@ -5,7 +5,8 @@ test {
     _ = decoder;
     _ = testing;
 
-    _ = ops_char;
+    _ = ops_ascii;
+    _ = ops_utf8;
     _ = ops_seq;
     _ = ops_repeat;
     _ = ops_type;
@@ -27,7 +28,8 @@ pub const OperatorDefine = combine.OperatorDefine;
 
 pub const testing = @import("testing.zig");
 
-const ops_char = @import("ops/char.zig");
+const ops_ascii = @import("ops/ascii.zig");
+const ops_utf8 = @import("ops/utf8.zig");
 const ops_seq = @import("ops/sequence.zig");
 const ops_repeat = @import("ops/repeat.zig");
 
@@ -36,31 +38,6 @@ pub const TypeLayout = ops_type.Layout;
 pub const TypeValueOptions = ops_type.ValueOptions;
 
 pub const op = struct {
-    // Char
-    pub const matchChar = ops_char.matchChar;
-    pub const unlessChar = ops_char.unlessChar;
-    pub const matchAnyChar = ops_char.matchAnyChar;
-    pub const unlessAnyChar = ops_char.unlessAnyChar;
-    pub const matchCharCompound = ops_char.matchCharCompound;
-    pub const CharCompund = ops_char.CharCompound;
-    pub const matchWhitespace = ops_char.matchWhitespace;
-    pub const matchAlphabet = ops_char.matchAlphabet;
-    pub const matchAlphanum = ops_char.matchAlphanum;
-    pub const matchDigit = ops_char.matchDigit;
-    pub const matchHex = ops_char.matchHex;
-    pub const matchLower = ops_char.matchLower;
-    pub const matchUpper = ops_char.matchUpper;
-    pub const matchControl = ops_char.matchControl;
-    pub const matchAscii = ops_char.matchAscii;
-    pub const escapeChar = ops_char.encodeEscape;
-    pub const unescapeChar = ops_char.decodeEscape;
-
-    // Sequence
-    pub const amount = ops_seq.amount;
-    pub const matchSequence = ops_seq.matchSequence;
-    pub const matchString = ops_seq.matchString;
-    pub const matchAnyString = ops_seq.matchAnyString;
-
     // Repeat
     pub const repeat = ops_repeat.repeat;
     pub const repeatMin = ops_repeat.repeatMin;
@@ -71,4 +48,43 @@ pub const op = struct {
 
     // Type
     pub const typeValue = ops_type.typeValue;
+
+    // Sequence
+    pub const amount = ops_seq.amount;
+    pub const matchSequence = ops_seq.matchSequence;
+    pub const matchString = ops_seq.matchString;
+    pub const matchAnyString = ops_seq.matchAnyString;
+
+    /// ASCII character
+    pub const ascii = struct {
+        pub const any = ops_ascii.matchValid;
+        pub const char = ops_ascii.matchChar;
+        pub const unless = ops_ascii.unlessChar;
+        pub const from = ops_ascii.matchAnyChar;
+        pub const unlessFrom = ops_ascii.unlessAnyChar;
+        pub const compound = ops_ascii.matchCharCompound;
+        pub const whitespace = ops_ascii.matchWhitespace;
+        pub const alphabet = ops_ascii.matchAlphabet;
+        pub const alphanum = ops_ascii.matchAlphanum;
+        pub const digit = ops_ascii.matchDigit;
+        pub const hex = ops_ascii.matchHex;
+        pub const lower = ops_ascii.matchLower;
+        pub const upper = ops_ascii.matchUpper;
+        pub const control = ops_ascii.matchControl;
+        pub const escape = ops_ascii.encodeEscape;
+        pub const unescape = ops_ascii.decodeEscape;
+    };
+    pub const AsciiCompund = ops_ascii.CharCompound;
+
+    /// UTF-8 codepoint (byte sequence)
+    pub const utf8 = struct {
+        pub const any = ops_utf8.matchValid;
+        pub const char = ops_utf8.matchChar;
+        pub const unless = ops_utf8.unlessChar;
+        pub const from = ops_utf8.matchAnyChar;
+        pub const unlessFrom = ops_utf8.unlessAnyChar;
+        pub const compound = ops_utf8.matchCharCompound;
+        pub const unlessCompound = ops_utf8.unlessCharCompound;
+    };
+    pub const Utf8Compund = ops_utf8.CharCompound;
 };

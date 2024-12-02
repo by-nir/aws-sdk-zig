@@ -33,22 +33,22 @@ fn Decoder(comptime ReaderType: type, comptime buffer_size: usize) type {
         // [32] SDDecl       ::= S 'standalone' Eq (("'" ('yes' | 'no') "'") | ('"' ('yes' | 'no') '"'))
         pub fn skipXmlDecl(self: *Self) !void {
             try self.serial.skip(ops.matchString("<?xml"));
-            try self.serial.skip(ops.repeatMin(1, ops.matchWhitespace));
+            try self.serial.skip(ops.repeatMin(1, ops.ascii.whitespace));
 
             try self.serial.skip(ops.matchString("version"));
             var quote = try self.skipEqlQuote();
             try self.serial.skip(ops.matchString("1."));
-            try self.serial.skip(ops.repeatMin(1, ops.matchDigit));
+            try self.serial.skip(ops.repeatMin(1, ops.ascii.digit));
             try quote.end();
-            try self.serial.skip(ops.repeatWhile(ops.matchWhitespace));
+            try self.serial.skip(ops.repeatWhile(ops.ascii.whitespace));
 
             var part = try self.serial.peek(ops.matchAnyString(&.{ "?>", "encoding", "standalone" }));
 
             if (mem.eql(u8, "encoding", part.view())) {
                 part.commitAndFree();
                 quote = try self.skipEqlQuote();
-                try self.serial.skip(ops.matchAlphabet);
-                try self.serial.skip(ops.repeatWhile(ops.matchCharCompound(.{
+                try self.serial.skip(ops.ascii.alphabet);
+                try self.serial.skip(ops.repeatWhile(ops.ascii.compound(.{
                     .digit = true,
                     .lowercase = true,
                     .uppercase = true,
@@ -56,7 +56,7 @@ fn Decoder(comptime ReaderType: type, comptime buffer_size: usize) type {
                 })));
                 try quote.end();
 
-                try self.serial.skip(ops.repeatWhile(ops.matchWhitespace));
+                try self.serial.skip(ops.repeatWhile(ops.ascii.whitespace));
                 part = try self.serial.peek(ops.matchAnyString(&.{ "?>", "standalone" }));
             }
 
@@ -66,7 +66,7 @@ fn Decoder(comptime ReaderType: type, comptime buffer_size: usize) type {
                 try self.serial.skip(ops.matchAnyString(&.{ "yes", "no" }));
                 try quote.end();
 
-                try self.serial.skip(ops.repeatWhile(ops.matchWhitespace));
+                try self.serial.skip(ops.repeatWhile(ops.ascii.whitespace));
                 try self.serial.skip(ops.matchString("?>"));
                 return;
             }
@@ -74,6 +74,35 @@ fn Decoder(comptime ReaderType: type, comptime buffer_size: usize) type {
             // `?>`
             part.commitAndFree();
         }
+
+        fn skipEqlQuote(self: *Self) !EqlQuote {
+            return EqlQuote.skip(&self.serial);
+        }
+
+        const EqlQuote = struct {
+            serial: *Serial,
+            q: u8,
+
+            pub fn skip(serial: *Serial) !EqlQuote {
+                try serial.skip(ops.repeatWhile(ops.ascii.whitespace));
+                try serial.skip(ops.ascii.char('='));
+                try serial.skip(ops.repeatWhile(ops.ascii.whitespace));
+                const char = try serial.peek(ops.ascii.from(&.{ '"', '\'' }));
+                defer char.commitAndFree();
+                return .{
+                    .serial = serial,
+                    .q = char.view(),
+                };
+            }
+
+            pub fn end(self: EqlQuote) !void {
+                switch (self.q) {
+                    '"' => try self.serial.skip(ops.ascii.char('"')),
+                    '\'' => try self.serial.skip(ops.ascii.char('\'')),
+                    else => unreachable,
+                }
+            }
+        };
     };
 }
 

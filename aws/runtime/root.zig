@@ -56,6 +56,7 @@ test {
     _ = @import("utils/hashing.zig");
     _ = @import("utils/TimeStr.zig");
     _ = @import("utils/SharedResource.zig");
+    _ = @import("utils/xml.zig");
     _ = @import("config/entries.zig");
     _ = @import("config/env.zig");
     _ = @import("config/profile.zig");
