@@ -127,7 +127,7 @@ test repeatWhile {
     try testing.expectEvaluate(repeatWhile(testing.yieldStateChar('d', false)), "abcde", "abc", 3);
 }
 
-/// Repeat the operator zero or more times while it’s valid.
+/// Repeat the operator zero or more times while it’s invalid.
 pub fn repeatUntil(comptime op: Operator) Operator {
     return Operator.define(struct {
         fn f(_: usize, _: op.match.Input) MatchVerdict {

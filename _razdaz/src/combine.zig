@@ -57,12 +57,12 @@ pub const Operator = struct {
 
     pub fn validate(comptime op: Operator, comptime In: type, comptime Out: ?type) void {
         comptime {
-            if (op.Input() != In) @compileError("expects operator input `" ++ In ++ "` (found `" ++ op.Input() ++ "`)");
-            if (Out) |O| if (op.Output() != O) @compileError("expects operator output `" ++ O ++ "` (found `" ++ op.Output() ++ "`)");
+            if (op.Input() != In) @compileError("expects operator input `" ++ @typeName(In) ++ "` (found `" ++ @typeName(op.Input()) ++ "`)");
+            if (Out) |O| if (op.Output() != O) @compileError("expects operator output `" ++ @typeName(O) ++ "` (found `" ++ @typeName(op.Output()) ++ "`)");
 
             const MatchIn = op.match.Input;
             if (op.filter) |f| if (f.operator.Output() != MatchIn)
-                @compileError("filter output expects same type `" ++ MatchIn ++ "` (found  `" ++ f.operator.Output() ++ "`)");
+                @compileError("filter output expects same type `" ++ @typeName(MatchIn) ++ "` (found  `" ++ @typeName(f.operator.Output()) ++ "`)");
 
             if (op.resolve) |r| {
                 var expect_sequence = false;
@@ -87,7 +87,7 @@ pub const Operator = struct {
                     @compileError("resolver behavior `." ++ @tagName(r.behavior) ++ "` expects a sequence matcher");
 
                 if (expected_input) |Expected| if (r.Input != Expected)
-                    @compileError("resolver input expects type `" ++ Expected ++ "` (found `" ++ r.Input ++ "`)");
+                    @compileError("resolver input expects type `" ++ @typeName(Expected) ++ "` (found `" ++ @typeName(r.Input) ++ "`)");
             }
         }
     }
@@ -181,6 +181,13 @@ pub const Filter = struct {
             };
         }
     };
+
+    pub fn define(behavior: Behavior, comptime op: Operator) Filter {
+        return .{
+            .behavior = behavior,
+            .operator = op,
+        };
+    }
 };
 
 pub const Resolver = struct {

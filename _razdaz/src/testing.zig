@@ -92,6 +92,14 @@ pub fn yieldStateAt(index: usize, state: Matcher.Verdict) Operator {
     }.f, .{});
 }
 
+pub fn resolveState(comptime T: type, success: bool) Resolver.Fn(T, T) {
+    return struct {
+        fn f(input: T) ?T {
+            return if (success) input else null;
+        }
+    }.f;
+}
+
 /// Utility for testing decoders.
 pub const TestingDecoder = struct {
     decoder: Decoder(TestingReader) = .{

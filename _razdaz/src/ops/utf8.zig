@@ -145,10 +145,10 @@ test unlessAnyChar {
 }
 
 pub const CharCompound = union(enum) {
-    codepint: u21,
-    codepint_bytes: []const u8,
+    codepoint: u21,
+    codepoint_bytes: []const u8,
     /// Min/max range, inclusive.
-    range_codepints: [2]u21,
+    range_codepoints: [2]u21,
     /// Min/max range, inclusive.
     range_bytes: [2][]const u8,
 };
@@ -175,9 +175,9 @@ pub fn matchCharCompound(comptime compound: []const CharCompound) Operator {
 
 test matchCharCompound {
     const compund: []const CharCompound = &.{
-        .{ .codepint = '@' },
-        .{ .codepint_bytes = "😀" },
-        .{ .range_codepints = .{ 'a', 'z' } },
+        .{ .codepoint = '@' },
+        .{ .codepoint_bytes = "😀" },
+        .{ .range_codepoints = .{ 'a', 'z' } },
         .{ .range_bytes = .{ "א", "ת" } },
     };
     try testing.expectEvaluate(matchCharCompound(compund), "@xx", "@", 1);
@@ -212,9 +212,9 @@ pub fn unlessCharCompound(comptime compound: []const CharCompound) Operator {
 
 test unlessCharCompound {
     const compund: []const CharCompound = &.{
-        .{ .codepint = '@' },
-        .{ .codepint_bytes = "😀" },
-        .{ .range_codepints = .{ 'a', 'z' } },
+        .{ .codepoint = '@' },
+        .{ .codepoint_bytes = "😀" },
+        .{ .range_codepoints = .{ 'a', 'z' } },
         .{ .range_bytes = .{ "א", "ת" } },
     };
     try testing.expectEvaluate(unlessCharCompound(compund), "$xx", "$", 1);
@@ -315,15 +315,15 @@ const CompoundCodepoints = struct {
         var codepoints: std.BoundedArray(u21, compound.len) = .{};
         for (compound) |entry| {
             switch (entry) {
-                .codepint => |cp| {
+                .codepoint => |cp| {
                     if (!processCodepoint(cp, &min, &max)) @compileError("invalid codepoint");
                     codepoints.append(cp) catch unreachable;
                 },
-                .codepint_bytes => |bytes| {
+                .codepoint_bytes => |bytes| {
                     const cp = processBytes(bytes, &min, &max) orelse @compileError("invalid codepoint byte sequence");
                     codepoints.append(cp) catch unreachable;
                 },
-                .range_codepints => |range| {
+                .range_codepoints => |range| {
                     const cp_min, const cp_max = range;
                     if (!processCodepoint(cp_min, &min, &max)) @compileError("invalid codepoint");
                     if (!processCodepoint(cp_max, &min, &max)) @compileError("invalid codepoint");

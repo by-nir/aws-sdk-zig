@@ -5,6 +5,7 @@ test {
     _ = decoder;
     _ = testing;
 
+    _ = ops_meta;
     _ = ops_ascii;
     _ = ops_utf8;
     _ = ops_seq;
@@ -28,6 +29,7 @@ pub const OperatorDefine = combine.OperatorDefine;
 
 pub const testing = @import("testing.zig");
 
+const ops_meta = @import("ops/meta.zig");
 const ops_ascii = @import("ops/ascii.zig");
 const ops_utf8 = @import("ops/utf8.zig");
 const ops_seq = @import("ops/sequence.zig");
@@ -38,6 +40,13 @@ pub const TypeLayout = ops_type.Layout;
 pub const TypeValueOptions = ops_type.ValueOptions;
 
 pub const op = struct {
+    // Meta
+    pub const not = ops_meta.not;
+    pub const withFilter = ops_meta.withFilter;
+    pub const overrideFilter = ops_meta.overrideFilter;
+    pub const withResolver = ops_meta.withResolver;
+    pub const overrideResolver = ops_meta.overrideResolver;
+
     // Repeat
     pub const repeat = ops_repeat.repeat;
     pub const repeatMin = ops_repeat.repeatMin;
