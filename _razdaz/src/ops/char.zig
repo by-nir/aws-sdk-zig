@@ -87,6 +87,60 @@ fn charFlags(chars: []const u8) u128 {
     return flags;
 }
 
+pub const CharCompound = struct {
+    digit: bool = false,
+    lowercase: bool = false,
+    uppercase: bool = false,
+    whitespace: bool = false,
+    other: []const u8 = "",
+};
+
+/// Match a manually configured character.
+pub fn matchCharCompound(comptime compound: CharCompound) Operator {
+    if (!compound.lowercase and !compound.uppercase and
+        !compound.digit and !compound.whitespace and compound.other.len == 0)
+    {
+        @compileError("empty charachter compound");
+    }
+
+    return Operator.define(struct {
+        // `other` may declare a character of a name range while the range isn’t
+        // active, so we only consider named ranges for success scenario.
+        // For example `.{ .other = "18", .digit = false }`
+        fn f(c: u8) bool {
+            switch (c) {
+                '0'...'9' => if (compound.digit) return true,
+                'a'...'z' => if (compound.lowercase) return true,
+                'A'...'Z' => if (compound.uppercase) return true,
+                ' ', '\t', '\n', '\r' => if (compound.whitespace) return true,
+                else => {},
+            }
+
+            return compound.other.len > 0 and isAnyChar(compound.other, c);
+        }
+    }.f, .{});
+}
+
+test matchCharCompound {
+    try testing.expectEvaluate(matchCharCompound(.{ .digit = true }), "8", '8', 1);
+    try testing.expectFail(matchCharCompound(.{ .digit = true }), "x");
+
+    try testing.expectEvaluate(matchCharCompound(.{ .lowercase = true }), "x", 'x', 1);
+    try testing.expectFail(matchCharCompound(.{ .lowercase = true }), "8");
+
+    try testing.expectEvaluate(matchCharCompound(.{ .uppercase = true }), "X", 'X', 1);
+    try testing.expectFail(matchCharCompound(.{ .uppercase = true }), "8");
+
+    try testing.expectEvaluate(matchCharCompound(.{ .whitespace = true }), " ", ' ', 1);
+    try testing.expectFail(matchCharCompound(.{ .whitespace = true }), "x");
+
+    try testing.expectEvaluate(matchCharCompound(.{ .other = "+-@." }), "@", '@', 1);
+    try testing.expectFail(matchCharCompound(.{ .other = "+-@." }), "$");
+
+    try testing.expectEvaluate(matchCharCompound(.{ .digit = false, .other = "18" }), "8", '8', 1);
+    try testing.expectFail(matchCharCompound(.{ .digit = false, .other = "18" }), "0");
+}
+
 /// Match any whitespace character.
 pub const matchWhitespace = Operator.define(ascii.isWhitespace, .{});
 

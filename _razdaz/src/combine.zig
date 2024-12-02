@@ -70,7 +70,7 @@ pub const Operator = struct {
                 behave: switch (r.behavior) {
                     .partial, .partial_defer => {
                         expect_sequence = true;
-                        expected_input == []const MatchIn;
+                        expected_input = []const MatchIn;
                     },
                     inline .safe, .each_safe => |_, g| {
                         if (r.Input != r.Output) @compileError("resolver output expects same type as input");
@@ -79,7 +79,7 @@ pub const Operator = struct {
                     .fail => expected_input = if (op.match.capacity == .sequence) []const MatchIn else MatchIn,
                     .each_fail => {
                         expect_sequence = true;
-                        expected_input == MatchIn;
+                        expected_input = MatchIn;
                     },
                 }
 

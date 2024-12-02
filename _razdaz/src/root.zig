@@ -13,7 +13,9 @@ test {
 
 const decoder = @import("consume/decode.zig");
 pub const SliceDecoder = decoder.SliceDecoder;
+pub const sliceDecoder = decoder.sliceDecoder;
 pub const ReaderDecoder = decoder.ReaderDecoder;
+pub const readerDecoder = decoder.readerDecoder;
 
 const combine = @import("combine.zig");
 pub const Filter = combine.Filter;
@@ -39,6 +41,8 @@ pub const op = struct {
     pub const unlessChar = ops_char.unlessChar;
     pub const matchAnyChar = ops_char.matchAnyChar;
     pub const unlessAnyChar = ops_char.unlessAnyChar;
+    pub const matchCharCompound = ops_char.matchCharCompound;
+    pub const CharCompund = ops_char.CharCompound;
     pub const matchWhitespace = ops_char.matchWhitespace;
     pub const matchAlphabet = ops_char.matchAlphabet;
     pub const matchAlphanum = ops_char.matchAlphanum;

@@ -30,7 +30,7 @@ pub fn ReaderDecoder(comptime ReaderType: type, comptime buffer_size: usize) typ
 }
 
 /// Decode a complete slice.
-pub fn decodeSlice(allocator: Allocator, buffer: []const u8) SliceDecoder {
+pub fn sliceDecoder(allocator: Allocator, buffer: []const u8) SliceDecoder {
     const reader = read.SliceReader{ .buffer = buffer };
     return .{
         .reader = reader,
@@ -39,14 +39,14 @@ pub fn decodeSlice(allocator: Allocator, buffer: []const u8) SliceDecoder {
 }
 
 /// Decode a stream backed by any std.io reader type.
-pub fn decodeReader(
+pub fn readerDecoder(
     allocator: Allocator,
     reader: anytype,
     comptime buffer_size: usize,
 ) ReaderDecoder(@TypeOf(reader), buffer_size) {
     return .{
-        .reader = reader,
         .allocator = allocator,
+        .reader = .{ .reader = reader },
     };
 }
 
@@ -132,18 +132,18 @@ pub fn Decoder(comptime Reader: type) type {
 
                 /// Owns the returned value and advances the reader.
                 pub fn consume(self: @This()) T {
-                    self.commit();
+                    self.commitRetain();
                     return self.state.value;
                 }
 
                 /// Advances the reader without deallocating the value.
-                pub fn commit(self: @This()) void {
+                pub fn commitRetain(self: @This()) void {
                     self.decoder.reader.drop(self.state.used);
                 }
 
                 /// Advances the reader and deallocates the value.
                 pub fn commitAndFree(self: @This()) void {
-                    self.commit();
+                    self.commitRetain();
                     self.deinit();
                 }
 
@@ -189,7 +189,7 @@ test "peek" {
         errdefer char.deinit();
         try testing.expectEqual('a', char.view());
         try tester.expectCursor(0);
-        char.commit();
+        char.commitRetain();
         try tester.expectCursor(1);
         try testing.expectEqual('a', char.consume());
         try tester.expectCursor(2);
@@ -202,7 +202,7 @@ test "peek" {
         errdefer seq.deinit();
         try testing.expectEqualStrings("bc", seq.view());
         try tester.expectCursor(3);
-        seq.commit();
+        seq.commitRetain();
         try tester.expectCursor(5);
         try testing.expectEqualStrings("bc", seq.consume());
         try tester.expectCursor(7);

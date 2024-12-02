@@ -9,18 +9,22 @@ pub fn build(b: *std.Build) void {
     // Dependencies
     //
 
-    const bitz = b.dependency("bitz", .{
+    const jobz = b.dependency("bitz", .{
         .target = target,
         .optimize = optimize,
-    });
-    const jobz = bitz.module("jobz");
+    }).module("jobz");
 
-    const rzdz = b.dependency("codmod", .{
+    const razdaz = b.dependency("razdaz", .{
+        .target = target,
+        .optimize = optimize,
+    }).module("razdaz");
+
+    const cdmd = b.dependency("codmod", .{
         .target = target,
         .optimize = optimize,
     });
-    const codmod = rzdz.module("codmod");
-    const codmod_jobs = rzdz.module("jobs");
+    const codmod = cdmd.module("codmod");
+    const codmod_jobs = cdmd.module("jobs");
 
     const smithy = b.dependency("smithy", .{
         .target = target,
@@ -39,6 +43,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("runtime/root.zig"),
         .imports = &.{
             .{ .name = "smithy/runtime", .module = smithy_runtime },
+            .{ .name = "razdaz", .module = razdaz },
         },
     });
 
@@ -76,8 +81,8 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("runtime/root.zig"),
     });
     test_runtime_step.dependOn(&b.addRunArtifact(test_runtime_exe).step);
-    test_runtime_exe.root_module.addImport("srlz", srlz);
     test_runtime_exe.root_module.addImport("smithy/runtime", smithy_runtime);
+    test_runtime_exe.root_module.addImport("razdaz", razdaz);
 
     const debug_runtime_step = b.step("lldb:runtime", "Install runtime LLDB binary");
     debug_runtime_step.dependOn(&b.addInstallArtifact(test_runtime_exe, .{
