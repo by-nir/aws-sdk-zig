@@ -231,8 +231,11 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
         }
         break :blk hint;
     };
-    const use_scratch = behavior.canTake() or op.filter != null or (if (op.resolve) |r| r.behavior.isEach() else false);
     const proc_behave = if (behavior == .stream_drop) .discard else if (behavior.allocate() == .always) .clone else .standard;
+    const use_scratch = behavior.canTake() or op.filter != null or (if (op.resolve) |r| r.behavior.isEach() else false);
+    const defer_scratch =
+        use_scratch and !behavior.canTake() and
+        (if (op.filter) |f| f.operator.Output() == []const op.match.Input else true);
 
     return struct {
         allocator: Allocator,
@@ -240,7 +243,7 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
         padding: if (op.alignment == null or behavior.canTake()) u0 else usize = 0,
         provider: Provider(Source, op.Input(), op.match.Input),
         scratch: Scratch(op.match.Input, scratch_hint) = .{},
-        active_scratch: if (use_scratch) bool else void = if (use_scratch) behavior.canTake() else {},
+        active_scratch: if (use_scratch) bool else void = if (use_scratch) !defer_scratch else {},
 
         const Self = @This();
         const Process = Processor([]const op.match.Input, op.Output(), proc_behave, proc_table);
@@ -265,8 +268,10 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
         fn view(self: *const Self, skip: behavior.Skip()) []const op.match.Input {
             if (self.hasScratch()) {
                 return self.scratch.view();
-            } else {
+            } else if (!use_scratch or defer_scratch) {
                 return self.provider.viewSlice(skip + self.padding, self.used);
+            } else {
+                unreachable;
             }
         }
 
@@ -432,14 +437,14 @@ fn Sequence(comptime op: combine.Operator, comptime Source: type, comptime behav
             used: usize,
             comptime did_modify: bool,
         ) !void {
-            if (did_modify and !(behavior.canTake() or self.hasScratch())) {
+            if (did_modify and defer_scratch and !self.hasScratch()) {
                 @branchHint(.unlikely);
                 std.debug.assert(i == self.used);
                 try self.scratch.appendSlice(self.allocator, 0, self.provider.viewSlice(skip, i));
                 self.active_scratch = true;
             }
 
-            if (did_modify or behavior.canTake() or self.hasScratch()) try self.scratch.appendItem(self.allocator, i, value);
+            if (did_modify or self.hasScratch()) try self.scratch.appendItem(self.allocator, i, value);
             if (behavior.canTake()) self.provider.drop(used);
             self.used += used;
         }

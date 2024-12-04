@@ -7,7 +7,7 @@ const testing = @import("../testing.zig");
 /// Repeat the operator a specified times.
 pub fn repeat(comptime n: usize, comptime op: Operator) Operator {
     const funcs = struct {
-        fn match(i: usize, _: op.match.Input) MatchVerdict {
+        fn match(i: usize, _: op.Output()) MatchVerdict {
             return if (i == n - 1) .done_include else .next;
         }
 
@@ -34,7 +34,7 @@ test repeat {
 /// Repeat the operator at least the given amount of times.
 pub fn repeatMin(comptime min: usize, comptime op: Operator) Operator {
     const funcs = struct {
-        fn match(_: usize, _: op.match.Input) MatchVerdict {
+        fn match(_: usize, _: op.Output()) MatchVerdict {
             return .next;
         }
 
@@ -61,7 +61,7 @@ test repeatMin {
 /// Repeat the operator from zero up to the given amount of times.
 pub fn repeatMax(comptime max: usize, comptime op: Operator) Operator {
     return Operator.define(struct {
-        fn f(i: usize, _: op.match.Input) MatchVerdict {
+        fn f(i: usize, _: op.Output()) MatchVerdict {
             return if (i == max - 1) .done_include else .next;
         }
     }.f, .{
@@ -81,7 +81,7 @@ test repeatMax {
 /// Repeat the operator at least the `min` amount of times and up to `max` amount of times.
 pub fn repeatRange(comptime min: usize, comptime max: usize, comptime op: Operator) Operator {
     const funcs = struct {
-        fn match(i: usize, _: op.match.Input) MatchVerdict {
+        fn match(i: usize, _: op.Output()) MatchVerdict {
             return if (i == max - 1) .done_include else .next;
         }
 
@@ -110,7 +110,7 @@ test repeatRange {
 /// Repeat the operator zero or more times while it’s valid.
 pub fn repeatWhile(comptime op: Operator) Operator {
     return Operator.define(struct {
-        fn f(_: usize, _: op.match.Input) MatchVerdict {
+        fn f(_: usize, _: op.Output()) MatchVerdict {
             return .next;
         }
     }.f, .{
@@ -130,7 +130,7 @@ test repeatWhile {
 /// Repeat the operator zero or more times while it’s invalid.
 pub fn repeatUntil(comptime op: Operator) Operator {
     return Operator.define(struct {
-        fn f(_: usize, _: op.match.Input) MatchVerdict {
+        fn f(_: usize, _: op.Output()) MatchVerdict {
             return .next;
         }
     }.f, .{
