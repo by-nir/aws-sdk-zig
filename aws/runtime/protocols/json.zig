@@ -8,8 +8,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const testing = std.testing;
 const smithy = @import("smithy/runtime");
 const srlz = smithy.serial;
-const Request = @import("../http.zig").Request;
-const Response = @import("../http.zig").Response;
+const http = @import("../http.zig");
 
 const log = std.log.scoped(.aws_sdk);
 const JsonWriter = std.json.WriteStream(std.ArrayList(u8).Writer, .{ .checked_to_fixed_depth = 256 });
@@ -19,7 +18,7 @@ pub fn requestPayload(
     allocator: Allocator,
     comptime meta: anytype,
     comptime member: anytype,
-    request: *Request,
+    request: *http.Request,
     value: anytype,
 ) !void {
     switch (@as(smithy.MetaPayload, meta[0])) {
@@ -28,9 +27,8 @@ pub fn requestPayload(
             try request.putHeader(allocator, "content-type", meta[2]);
         },
         .shape => {
-            const scheme = member[3];
-            const required: bool = member[2];
-            const shape: smithy.SerialType = scheme[0];
+            const shape: smithy.SerialType = member.scheme.shape;
+            const required = @hasField(@TypeOf(member), "required");
 
             try request.putHeader(allocator, "content-type", switch (shape) {
                 .blob => "application/octet-stream",
@@ -46,7 +44,7 @@ pub fn requestPayload(
                     if (!required and value == null) return;
                     var payload = std.ArrayList(u8).init(allocator);
                     var json = std.json.writeStream(payload.writer(), .{});
-                    try writeValue(&json, scheme, value);
+                    try writeValue(&json, member.scheme, value);
                     request.payload = try payload.toOwnedSlice();
                 },
                 else => unreachable,
@@ -60,7 +58,7 @@ pub fn requestShape(
     comptime members: anytype,
     comptime body_ids: anytype,
     content_type: []const u8,
-    request: *Request,
+    request: *http.Request,
     input: anytype,
 ) !void {
     try request.putHeader(allocator, "content-type", content_type);
@@ -76,7 +74,7 @@ pub fn requestShape(
 }
 
 fn writeValue(json: *JsonWriter, comptime scheme: anytype, value: anytype) !void {
-    switch (@as(smithy.SerialType, scheme[0])) {
+    switch (@as(smithy.SerialType, scheme.shape)) {
         .boolean, .byte, .short, .integer, .long, .string => try json.write(value),
         inline .float, .double => |g| {
             const T = if (g == .double) f64 else f32;
@@ -98,38 +96,34 @@ fn writeValue(json: *JsonWriter, comptime scheme: anytype, value: anytype) !void
             try json.endWriteRaw();
         },
         inline .list_dense, .list_sparse => |g| {
-            const member_scheme = scheme[1];
             try json.beginArray();
             for (value) |item| {
                 if (g == .list_sparse and item == null) {
                     try json.write(null);
                 } else {
-                    try writeValue(json, member_scheme, item);
+                    try writeValue(json, scheme.member, item);
                 }
             }
             try json.endArray();
         },
         .set => {
-            const member_scheme = scheme[1];
             try json.beginArray();
             var it = value.iterator();
             while (it.next()) |item| {
-                try writeValue(json, member_scheme, item);
+                try writeValue(json, scheme.member, item);
             }
             try json.endArray();
         },
         .map => {
-            const sparse: bool = scheme[1];
-            // const key_scheme = scheme[2];
-            const val_scheme = scheme[3];
+            const is_sparse = @hasField(@TypeOf(scheme), "sparse");
             try json.beginObject();
             var it = value.iterator();
             while (it.next()) |entry| {
                 try json.objectField(entry.key_ptr.*);
-                if (sparse and entry.value_ptr.* == null) {
+                if (is_sparse and entry.value_ptr.* == null) {
                     try json.write(null);
                 } else {
-                    try writeValue(json, val_scheme, entry.value_ptr);
+                    try writeValue(json, scheme.val, entry.value_ptr);
                 }
             }
             try json.endObject();
@@ -137,28 +131,25 @@ fn writeValue(json: *JsonWriter, comptime scheme: anytype, value: anytype) !void
         .int_enum => try json.write(@as(i32, @intFromEnum(value))),
         .str_enum, .trt_enum => try json.write(value.toString()),
         .tagged_union => {
-            const members = scheme[1];
             try json.beginObject();
             switch (value) {
                 inline else => |v, g| {
                     const member_scheme = comptime blk: {
-                        for (members, 0..) |member, i| {
-                            const member_name = member[1];
-                            if (mem.eql(u8, member_name, @tagName(g))) break :blk members[i];
+                        for (scheme.members, 0..) |member, i| {
+                            if (mem.eql(u8, member.name_zig, @tagName(g))) break :blk scheme.members[i];
                         }
                         unreachable;
                     };
 
-                    try json.objectField(member_scheme[0]);
-                    try writeValue(json, member_scheme[2], v);
+                    try json.objectField(member_scheme.shape);
+                    try writeValue(json, member_scheme.scheme, v);
                 },
             }
             try json.endObject();
         },
         .structure => {
-            const members = scheme[1];
             try json.beginObject();
-            inline for (members) |member| {
+            inline for (scheme.members) |member| {
                 try writeStructMember(json, member, value);
             }
             try json.endObject();
@@ -185,22 +176,18 @@ fn writeValue(json: *JsonWriter, comptime scheme: anytype, value: anytype) !void
     }
 }
 
-fn writeStructMember(json: *JsonWriter, comptime scheme: anytype, struct_value: anytype) !void {
-    const api_name: []const u8 = scheme[0];
-    const field_name: []const u8 = scheme[1];
-    const required: bool = scheme[2];
-    const member_scheme = scheme[3];
-
+fn writeStructMember(json: *JsonWriter, comptime member: anytype, struct_value: anytype) !void {
+    const required = @hasField(@TypeOf(member), "required");
     const has_value: bool, const member_value = if (required)
-        .{ true, @field(struct_value, field_name) }
-    else if (@field(struct_value, field_name)) |val|
+        .{ true, @field(struct_value, member.name_zig) }
+    else if (@field(struct_value, member.name_zig)) |val|
         .{ true, val }
     else
         .{ false, null };
 
     if (has_value) {
-        try json.objectField(api_name);
-        try writeValue(json, member_scheme, member_value);
+        try json.objectField(member.name_api);
+        try writeValue(json, member.scheme, member_value);
     }
 }
 
@@ -211,12 +198,12 @@ pub fn responseOutput(
     payload: []const u8,
     value: anytype,
 ) !void {
-    if (@hasField(@TypeOf(scheme[0]), "payload")) {
-        const meta = scheme[0].payload;
-        const member = scheme[2][meta[1]];
+    if (@hasField(@TypeOf(scheme.meta), "payload")) {
+        const meta = scheme.meta.payload;
+        const member = scheme.members[meta[1]];
         try responsePayload(scratch_alloc, output_alloc, member, meta[0], payload, value);
-    } else if (scheme[1].len > 0) {
-        try responseShape(scratch_alloc, output_alloc, scheme[2], payload, value);
+    } else if (scheme.body_ids.len > 0) {
+        try responseShape(scratch_alloc, output_alloc, scheme.members, payload, value);
     } else {
         std.debug.assert(payload.len == 0);
     }
@@ -232,19 +219,16 @@ fn responsePayload(
 ) !void {
     switch (@as(smithy.MetaPayload, kind)) {
         .media => value.* = payload,
-        .shape => {
-            const required: bool = member[2];
-            const scheme = member[3];
-            switch (@as(smithy.SerialType, scheme[0])) {
-                .string, .blob => value.* = payload,
-                .str_enum, .trt_enum, .document, .structure, .tagged_union => {
-                    var stream = std.io.fixedBufferStream(payload);
-                    var reader = std.json.reader(scratch_alloc, stream.reader());
-                    if (!required and .null == try reader.peekNextTokenType()) return;
-                    try parseStructMemberValue(scratch_alloc, output_alloc, &reader, scheme, value);
-                },
-                else => unreachable,
-            }
+        .shape => switch (@as(smithy.SerialType, member.scheme.shape)) {
+            .string, .blob => value.* = payload,
+            .str_enum, .trt_enum, .document, .structure, .tagged_union => {
+                var stream = std.io.fixedBufferStream(payload);
+                var reader = std.json.reader(scratch_alloc, stream.reader());
+                const required = @hasField(@TypeOf(member), "required");
+                if (!required and .null == try reader.peekNextTokenType()) return;
+                try parseStructMemberValue(scratch_alloc, output_alloc, &reader, member.scheme, value);
+            },
+            else => unreachable,
         },
     }
 }
@@ -279,7 +263,7 @@ fn parseValue(
     comptime scheme: anytype,
     value: anytype,
 ) !void {
-    switch (@as(smithy.SerialType, scheme[0])) {
+    switch (@as(smithy.SerialType, scheme.shape)) {
         .boolean => value.* = try std.json.innerParse(bool, scratch_alloc, json, .{}),
         .byte => value.* = try std.json.innerParse(i8, scratch_alloc, json, .{}),
         .short => value.* = try std.json.innerParse(i16, scratch_alloc, json, .{}),
@@ -304,8 +288,6 @@ fn parseValue(
             value.* = member_value;
         },
         inline .list_dense, .list_sparse => |g| {
-            const member_scheme = scheme[1];
-
             const Child = switch (@typeInfo(@TypeOf(value.*))) {
                 .pointer => |m| m.child,
                 .optional => |m| @typeInfo(m.child).pointer.child,
@@ -319,7 +301,7 @@ fn parseValue(
                 if (g == .list_sparse and .null == try json.peekNextTokenType()) {
                     try list.append(null);
                 } else {
-                    try parseValue(scratch_alloc, output_alloc, json, member_scheme, try list.addOne());
+                    try parseValue(scratch_alloc, output_alloc, json, scheme.member, try list.addOne());
                 }
             }
             if ((try json.next()) != .array_end) return error.UnexpectedToken;
@@ -327,31 +309,23 @@ fn parseValue(
             value.* = try list.toOwnedSlice();
         },
         .set => {
-            const member_scheme = scheme[1];
-
             const Set = ValueType(value);
             var set = Set{};
-
             if ((try json.next()) != .array_begin) return error.UnexpectedToken;
             while (try json.peekNextTokenType() != .array_end) {
                 var item: Set.Item = undefined;
-                try parseValue(scratch_alloc, output_alloc, json, member_scheme, &item);
+                try parseValue(scratch_alloc, output_alloc, json, scheme.member, &item);
                 try set.internal.putNoClobber(output_alloc, item, {});
             }
             if ((try json.next()) != .array_end) return error.UnexpectedToken;
-
             value.* = set;
         },
         .map => {
-            const sparse = scheme[1];
-            // const key_scheme = scheme[2];
-            const val_scheme = scheme[3];
-
             const HashMap = ValueType(value);
             const Item = std.meta.fieldInfo(HashMap.KV, .value).type;
+            const is_sparse = @hasField(@TypeOf(scheme), "sparse");
 
             var map = HashMap{};
-
             if ((try json.next()) != .object_begin) return error.UnexpectedToken;
             while (try json.peekNextTokenType() != .object_end) {
                 const key = try std.json.innerParse([]const u8, scratch_alloc, json, .{
@@ -359,16 +333,15 @@ fn parseValue(
                     .max_value_len = std.json.default_max_value_len,
                 });
 
-                if (sparse and .null == try json.peekNextTokenType()) {
+                if (is_sparse and .null == try json.peekNextTokenType()) {
                     try map.internal.putNoClobber(output_alloc, key, null);
                 } else {
                     var item: Item = undefined;
-                    try parseValue(scratch_alloc, output_alloc, json, val_scheme, &item);
+                    try parseValue(scratch_alloc, output_alloc, json, scheme.val, &item);
                     try map.internal.putNoClobber(output_alloc, key, item);
                 }
             }
             if ((try json.next()) != .object_end) return error.UnexpectedToken;
-
             value.* = map;
         },
         .int_enum => {
@@ -392,31 +365,25 @@ fn parseValue(
             value.* = resolved;
         },
         .tagged_union => {
-            const members = scheme[1];
             const Union = ValueType(value);
-
             if ((try json.next()) != .object_begin) return error.UnexpectedToken;
-            switch (try parseMemberIndex(scratch_alloc, json, members)) {
-                inline 0...(members.len - 1) => |i| {
-                    const member = members[i];
-                    const field_name = member[1];
-                    const val_scheme = member[2];
-
-                    var item: std.meta.TagPayloadByName(Union, field_name) = undefined;
-                    try parseValue(scratch_alloc, output_alloc, json, val_scheme, &item);
-                    value.* = @unionInit(Union, field_name, item);
+            switch (try parseMemberIndex(scratch_alloc, json, scheme.members)) {
+                inline 0...(scheme.members.len - 1) => |i| {
+                    const member = scheme.members[i].scheme;
+                    var item: std.meta.TagPayloadByName(Union, scheme.name_zig) = undefined;
+                    try parseValue(scratch_alloc, output_alloc, json, member, &item);
+                    value.* = @unionInit(Union, scheme.name_zig, item);
                 },
                 else => unreachable,
             }
             if ((try json.next()) != .object_end) return error.UnexpectedToken;
         },
         .structure => {
-            const members = scheme[1];
             if ((try json.next()) != .object_begin) return error.UnexpectedToken;
             while (try json.peekNextTokenType() != .object_end) {
-                switch (try parseMemberIndex(scratch_alloc, json, members)) {
-                    inline 0...(members.len - 1) => |i| {
-                        const member = members[i];
+                switch (try parseMemberIndex(scratch_alloc, json, scheme.members)) {
+                    inline 0...(scheme.members.len - 1) => |i| {
+                        const member = scheme.members[i];
                         try parseStructMemberValue(scratch_alloc, output_alloc, json, member, value);
                     },
                     else => unreachable,
@@ -484,15 +451,12 @@ fn parseStructMemberValue(
     comptime member: anytype,
     struct_value: anytype,
 ) !void {
-    const field_name: []const u8 = member[1];
-    const required: bool = member[2];
-    const scheme = member[3];
-
+    const required = @hasField(@TypeOf(member), "required");
     if (!required and .null == try json.peekNextTokenType()) {
-        @field(struct_value, field_name) = null;
+        @field(struct_value, member.name_zig) = null;
     } else {
-        const value = &@field(struct_value, field_name);
-        try parseValue(scratch_alloc, output_alloc, json, scheme, value);
+        const value = &@field(struct_value, member.name_zig);
+        try parseValue(scratch_alloc, output_alloc, json, member.scheme, value);
     }
 }
 
@@ -508,7 +472,7 @@ pub fn responseError(
     output_arena: *ArenaAllocator,
     comptime scheme: anytype,
     comptime E: type,
-    response: Response,
+    response: http.Response,
 ) !smithy.ResultError(E) {
     var stream = std.io.fixedBufferStream(response.body);
     var reader = std.json.reader(scratch_alloc, stream.reader());
@@ -576,7 +540,7 @@ fn parseBodyError(json: *JsonReader) !struct { ?[]const u8, ?[]const u8 } {
     return .{ code, msg };
 }
 
-fn parseHeaderError(response: Response) ?[]const u8 {
+fn parseHeaderError(response: http.Response) ?[]const u8 {
     var headers = response.headersIterator();
     while (headers.next()) |header| {
         if (!std.ascii.startsWithIgnoreCase(header.name, "x-amzn-errortype")) continue;

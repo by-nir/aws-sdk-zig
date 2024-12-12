@@ -6,7 +6,7 @@
 **The _AWS SDK for Zig_ provides an interface for _Amazon Web Services (AWS)_.**
 
 > [!CAUTION]
-> This project is in early development, DO NOT USE IN PRODUCTION!
+> This project is in early development, DO NOT USE IT IN PRODUCTION!
 >
 > Support for the remaining services and features will be added as the project
 > matures and stabilize. **Breaking changes are imminent!**

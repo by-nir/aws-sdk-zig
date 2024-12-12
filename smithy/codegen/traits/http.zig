@@ -78,8 +78,12 @@ pub const Http = struct {
     pub const id = SmithyId.of("smithy.api#http");
 
     pub const Val = struct {
+        /// The HTTP method of the operation.
         method: std.http.Method = undefined,
+        /// The URI pattern of the operation.
+        /// Labels defined in the URI pattern are used to bind operation input members to the URI.
         uri: []const u8 = undefined,
+        /// The HTTP status code of a successful response.
         code: ?std.http.Status = null,
     };
 

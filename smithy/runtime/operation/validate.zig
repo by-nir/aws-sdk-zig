@@ -6,7 +6,7 @@ pub const Error = error{InvalidOperationInput};
 
 pub fn valueRange(
     comptime service: @Type(.enum_literal),
-    operation: []const u8,
+    container: []const u8,
     field: []const u8,
     comptime T: type,
     min: ?T,
@@ -17,20 +17,20 @@ pub fn valueRange(
 
     if (min) |d| if (value < d) {
         @branchHint(.unlikely);
-        log.err(base_format ++ "value is less than {d}", .{ operation, field, d });
+        log.err(base_format ++ "value is less than {d}", .{ container, field, d });
         return Error.InvalidOperationInput;
     };
 
     if (max) |d| if (value > d) {
         @branchHint(.unlikely);
-        log.err(base_format ++ "value is more than {d}", .{ operation, field, d });
+        log.err(base_format ++ "value is more than {d}", .{ container, field, d });
         return Error.InvalidOperationInput;
     };
 }
 
 pub fn collectionLength(
     comptime service: @Type(.enum_literal),
-    operation: []const u8,
+    container: []const u8,
     field: []const u8,
     min: ?usize,
     max: ?usize,
@@ -40,20 +40,20 @@ pub fn collectionLength(
 
     if (min) |d| if (count < d) {
         @branchHint(.unlikely);
-        log.err(base_format ++ "has less than {d} items", .{ operation, field, d });
+        log.err(base_format ++ "has less than {d} items", .{ container, field, d });
         return Error.InvalidOperationInput;
     };
 
     if (max) |d| if (count > d) {
         @branchHint(.unlikely);
-        log.err(base_format ++ "has more than {d} items", .{ operation, field, d });
+        log.err(base_format ++ "has more than {d} items", .{ container, field, d });
         return Error.InvalidOperationInput;
     };
 }
 
 pub fn bytesLength(
     comptime service: @Type(.enum_literal),
-    operation: []const u8,
+    container: []const u8,
     field: []const u8,
     min: ?usize,
     max: ?usize,
@@ -63,20 +63,20 @@ pub fn bytesLength(
 
     if (min) |d| if (size < d) {
         @branchHint(.unlikely);
-        log.err(base_format ++ "size is less than {d} bytes", .{ operation, field, d });
+        log.err(base_format ++ "size is less than {d} bytes", .{ container, field, d });
         return Error.InvalidOperationInput;
     };
 
     if (max) |d| if (size > d) {
         @branchHint(.unlikely);
-        log.err(base_format ++ "size is more than {d} bytes", .{ operation, field, d });
+        log.err(base_format ++ "size is more than {d} bytes", .{ container, field, d });
         return Error.InvalidOperationInput;
     };
 }
 
 pub fn stringLength(
     comptime service: @Type(.enum_literal),
-    operation: []const u8,
+    container: []const u8,
     field: []const u8,
     min: ?usize,
     max: ?usize,
@@ -87,20 +87,20 @@ pub fn stringLength(
 
     if (min) |d| if (len < d) {
         @branchHint(.unlikely);
-        log.err(base_format ++ "length is less than {d} characters", .{ operation, field, d });
+        log.err(base_format ++ "length is less than {d} characters", .{ container, field, d });
         return Error.InvalidOperationInput;
     };
 
     if (max) |d| if (len > d) {
         @branchHint(.unlikely);
-        log.err(base_format ++ "length is more than {d} characters", .{ operation, field, d });
+        log.err(base_format ++ "length is more than {d} characters", .{ container, field, d });
         return Error.InvalidOperationInput;
     };
 }
 
 pub fn stringPattern(
     comptime service: @Type(.enum_literal),
-    operation: []const u8,
+    container: []const u8,
     field: []const u8,
     comptime pattern: []const u8,
     s: []const u8,
@@ -109,7 +109,7 @@ pub fn stringPattern(
     const regex = comptime mvzr.compile(pattern) orelse unreachable;
     if (!regex.isMatch(s)) {
         @branchHint(.unlikely);
-        log.err(base_format ++ "does not match pattern \"{s}\"", .{ operation, field, pattern });
+        log.err(base_format ++ "does not match pattern \"{s}\"", .{ container, field, pattern });
         return Error.InvalidOperationInput;
     }
 }

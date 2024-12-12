@@ -291,7 +291,7 @@ fn listShapeErrors(
     outer: for (symbols.service_errors) |srvc_err| {
         for (members.items[0..shape_errors.len]) |op_err| {
             if (mem.eql(u8, op_err.name_api, srvc_err.name_api)) continue :outer;
-            if (mem.eql(u8, op_err.name_field, srvc_err.name_field)) continue :outer;
+            if (mem.eql(u8, op_err.name_zig, srvc_err.name_zig)) continue :outer;
         }
 
         try members.append(srvc_err);
@@ -335,7 +335,7 @@ fn writeErrorSetMember(arena: Allocator, bld: *zig.ContainerBuild, member: Symbo
         }, md.html.callback);
     }
 
-    try bld.field(member.name_field).end();
+    try bld.field(member.name_zig).end();
 }
 
 fn writeErrorSetSourceFn(members: []const SymbolsProvider.Error, bld: *zig.BlockBuild) !void {
@@ -357,7 +357,7 @@ fn writeErrorSetSourceFn(members: []const SymbolsProvider.Error, bld: *zig.Block
                 const client_majority = ctx.client_count >= ctx.errs.len - ctx.client_count;
                 for (ctx.errs) |err| {
                     if ((err.source == .client) == client_majority) continue;
-                    try b.branch().case(b.x.dot().id(err.name_field)).body(b.x.valueOf(err.source));
+                    try b.branch().case(b.x.dot().id(err.name_zig)).body(b.x.valueOf(err.source));
                 }
 
                 const value: trt_refine.ErrorSource = if (client_majority) .client else .server;
@@ -386,7 +386,7 @@ fn writeErrorSetRetryFn(members: []const SymbolsProvider.Error, bld: *zig.BlockB
                 const majority = ctx.true_count > ctx.errs.len - ctx.true_count;
                 for (ctx.errs) |err| {
                     if (err.retryable == majority) continue;
-                    try b.branch().case(b.x.dot().id(err.name_field)).body(b.x.valueOf(err.retryable));
+                    try b.branch().case(b.x.dot().id(err.name_zig)).body(b.x.valueOf(err.retryable));
                 }
 
                 try b.@"else"().body(b.x.valueOf(majority));
@@ -401,7 +401,7 @@ fn writeErrorSetStatusFn(members: []const SymbolsProvider.Error, bld: *zig.Block
             fn f(errs: []const SymbolsProvider.Error, b: *zig.SwitchBuild) !void {
                 for (errs) |err| {
                     try b.branch()
-                        .case(b.x.dot().id(err.name_field))
+                        .case(b.x.dot().id(err.name_zig))
                         .body(b.x.valueOf(err.http_status));
                 }
             }
@@ -513,29 +513,29 @@ test ClientOperation {
         \\};
         \\
         \\const scheme_input = .{
-        \\    .{},
-        \\    .{ 0, 1 },
-        \\    .{ .{
-        \\        "Foo",
-        \\        "foo",
-        \\        true,
-        \\        .{ SerialType.structure, .{} },
+        \\    .name_api = "MyOperationInput",
+        \\    .meta = .{},
+        \\    .body_ids = .{ 0, 1 },
+        \\    .members = .{ .{
+        \\        .name_api = "Foo",
+        \\        .name_zig = "foo",
+        \\        .required = true,
+        \\        .scheme = .{ .shape = SerialType.structure, .members = .{} },
         \\    }, .{
-        \\        "Bar",
-        \\        "bar",
-        \\        false,
-        \\        .{SerialType.string},
+        \\        .name_api = "Bar",
+        \\        .name_zig = "bar",
+        \\        .scheme = .{.shape = SerialType.string},
         \\    } },
         \\};
         \\
         \\const scheme_output = .{
-        \\    .{},
-        \\    .{0},
-        \\    .{.{
-        \\        "Qux",
-        \\        "qux",
-        \\        false,
-        \\        .{SerialType.string},
+        \\    .name_api = "MyOperationOutput",
+        \\    .meta = .{},
+        \\    .body_ids = .{0},
+        \\    .members = .{.{
+        \\        .name_api = "Qux",
+        \\        .name_zig = "qux",
+        \\        .scheme = .{.shape = SerialType.string},
         \\    }},
         \\};
         \\

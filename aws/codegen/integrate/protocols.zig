@@ -114,14 +114,14 @@ pub fn writeOperationRequest(_: Allocator, symbols: *SymbolsProvider, bld: *zig.
 
 fn writeHttpRequest(bld: *zig.BlockBuild) !void {
     const scheme_exp = bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_input");
-    try bld.constant("meta_scheme").assign(scheme_exp.valIndexer(bld.x.valueOf(0)));
-    try bld.constant("members_scheme").assign(scheme_exp.valIndexer(bld.x.valueOf(2)));
+    try bld.constant("meta_scheme").assign(scheme_exp.dot().id("meta"));
+    try bld.constant("members_scheme").assign(scheme_exp.dot().id("members"));
 
     try bld.constant("uri_path").assign(bld.x.@"if"(
         bld.x.raw("@hasField(@TypeOf(meta_scheme), \"labels\")"),
     ).body(bld.x.trys().id(aws_cfg.scope_protocol).dot().call("http.uriMetaLabels", &.{
         bld.x.id(aws_cfg.send_op_param).dot().id("allocator"),
-        bld.x.id("meta_scheme").id("labels"),
+        bld.x.id("meta_scheme").dot().id("labels"),
         bld.x.id("members_scheme"),
         bld.x.id(aws_cfg.send_meta_param).dot().id("http_uri"),
         bld.x.id(aws_cfg.send_input_param),
@@ -158,8 +158,8 @@ fn writeAwsJsonRequest(protocol: Protocol, symbols: *SymbolsProvider, bld: *zig.
     const scheme_exp = bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_input");
     try bld.trys().id(aws_cfg.scope_protocol).dot().call("json.requestShape", &.{
         bld.x.id(aws_cfg.send_op_param).dot().id("allocator"),
-        scheme_exp.valIndexer(bld.x.valueOf(2)),
-        scheme_exp.valIndexer(bld.x.valueOf(1)),
+        scheme_exp.dot().id("members"),
+        scheme_exp.dot().id("body_ids"),
         bld.x.valueOf(switch (protocol) {
             .json_1_0 => "application/x-amz-json-1.0",
             .json_1_1 => "application/x-amz-json-1.1",
@@ -194,7 +194,7 @@ fn writeRestJsonRequest(bld: *zig.BlockBuild) !void {
         bld.x.trys().id(aws_cfg.scope_protocol).dot().call("json.requestShape", &.{
             bld.x.id(aws_cfg.send_op_param).dot().id("allocator"),
             bld.x.id("members_scheme"),
-            bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_input").valIndexer(bld.x.valueOf(1)),
+            bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_input").dot().id("body_ids"),
             bld.x.valueOf("application/json"),
             bld.x.addressOf().id(aws_cfg.send_op_param).dot().id("request"),
             bld.x.id(aws_cfg.send_input_param),
@@ -230,8 +230,8 @@ fn writeResponseSuccess(protocol: Protocol, bld: *zig.BlockBuild) !void {
         .rest_json_1 => {
             try bld.trys().id(aws_cfg.scope_protocol).dot().call("http.parseMeta", &.{
                 bld.x.id(aws_cfg.output_arena).dot().call("allocator", &.{}),
-                bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_output").valIndexer(bld.x.valueOf(0)),
-                bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_output").valIndexer(bld.x.valueOf(2)),
+                bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_output").dot().id("meta"),
+                bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_output").dot().id("members"),
                 bld.x.id("response"),
                 bld.x.addressOf().id("output"),
             }).end();

@@ -95,7 +95,7 @@ fn buildError(
     return .{
         .id = null,
         .name_api = name,
-        .name_field = try smithy.name_util.formatCase(arena, .snake, name),
+        .name_zig = try smithy.name_util.formatCase(arena, .snake, name),
         .retryable = false,
         .http_status = http_status,
         .source = .server,

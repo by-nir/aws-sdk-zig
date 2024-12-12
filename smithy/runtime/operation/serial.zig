@@ -134,6 +134,8 @@ test parseTimestamp {
     try testing.expectEqual(482196050520, try parseTimestamp("1985-04-12T23:20:50.52Z"));
 }
 
+pub const timestamp_buffer_len = 24;
+
 pub fn writeTimestamp(writer: std.io.AnyWriter, epoch_ms: i64) !void {
     const t = TimeParts.fromEpochMs(epoch_ms);
     const format = "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}";
@@ -147,7 +149,7 @@ pub fn writeTimestamp(writer: std.io.AnyWriter, epoch_ms: i64) !void {
 }
 
 test writeTimestamp {
-    var buf: [32]u8 = undefined;
+    var buf: [timestamp_buffer_len]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buf);
 
     try writeTimestamp(stream.writer().any(), 482196050520);
@@ -209,6 +211,8 @@ test parseHttpDate {
     try testing.expectEqual(784111777000, try parseHttpDate("Sun, 06 Nov 1994 08:49:37 GMT"));
 }
 
+pub const http_date_buffer_len = 29;
+
 pub fn writeHttpDate(writer: std.io.AnyWriter, epoch_ms: i64) !void {
     const weekdays = [7][]const u8{ "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
     const months = [12][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
@@ -223,7 +227,7 @@ pub fn writeHttpDate(writer: std.io.AnyWriter, epoch_ms: i64) !void {
 }
 
 test writeHttpDate {
-    var buf: [32]u8 = undefined;
+    var buf: [http_date_buffer_len]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buf);
 
     try writeHttpDate(stream.writer().any(), 1398796238000);
@@ -355,8 +359,7 @@ test TimeParts {
 
 pub fn findMemberIndex(comptime members: anytype, key: []const u8) ?usize {
     inline for (members, 0..) |member, i| {
-        const api_name: []const u8 = member[0];
-        if (mem.eql(u8, api_name, key)) return i;
+        if (mem.eql(u8, member.name_api, key)) return i;
     }
     return null;
 }

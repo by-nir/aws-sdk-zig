@@ -27,7 +27,7 @@ pub const NameOptions = struct {
 pub const Error = struct {
     id: ?SmithyId,
     name_api: []const u8,
-    name_field: []const u8,
+    name_zig: []const u8,
     retryable: bool,
     http_status: std.http.Status,
     source: trt_refine.ErrorSource,
@@ -168,8 +168,8 @@ pub fn deinit(self: *Self) void {
 }
 
 pub fn buildError(self: *Self, id: SmithyId) !Error {
-    const api_name = try self.getShapeName(id, .pascal, .{});
-    const field_name = try self.getShapeName(id, .snake, .{});
+    const name_api = try self.getShapeName(id, .pascal, .{});
+    const name_zig = try self.getShapeName(id, .snake, .{});
     const retryable = self.hasTrait(id, trt_behave.retryable_id);
     const source = trt_refine.Error.get(self, id) orelse return error.MissingErrorTrait;
     const http_status: std.http.Status = trt_http.HttpError.get(self, id) orelse
@@ -186,8 +186,8 @@ pub fn buildError(self: *Self, id: SmithyId) !Error {
 
     return .{
         .id = id,
-        .name_api = api_name,
-        .name_field = field_name,
+        .name_api = name_api,
+        .name_zig = name_zig,
         .source = source,
         .retryable = retryable,
         .http_status = http_status,
