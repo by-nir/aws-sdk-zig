@@ -5,7 +5,6 @@
 
     .dependencies = .{
         .bitz = .{ .path = "../_bitz" },
-        .razdaz = .{ .path = "../_razdaz" },
         .codmod = .{ .path = "../_codmod" },
         .smithy = .{ .path = "../smithy" },
     },
