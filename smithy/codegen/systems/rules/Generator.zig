@@ -523,7 +523,7 @@ fn generateEndpointRule(self: *Self, bld: *BlockBuild, endpoint: mdl.Endpoint) !
 
             for (props, 0..) |prop, p| {
                 const document = try self.generateEndpointProperty(bld, prop, "scheme_{d}_{d}", .{ i, p });
-                try bld.id(id).valIndexer(bld.valueOf(i)).assign().fromExpr(document).end();
+                try bld.id(id).valIndexer(bld.valueOf(p)).assign().fromExpr(document).end();
             }
 
             try bld.id("schemes").valIndexer(bld.valueOf(i)).assign().structLiteral(null, &.{
