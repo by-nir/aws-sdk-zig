@@ -16,6 +16,8 @@ service_id: SmithyId = SmithyId.NULL,
 meta: std.AutoHashMapUnmanaged(SmithyId, SmithyMeta) = .{},
 shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType) = .{},
 names: std.AutoHashMapUnmanaged(SmithyId, []const u8) = .{},
+/// Includes the namespace (`com.provider.namespace#Shape`).
+full_names: std.AutoHashMapUnmanaged(SmithyId, []const u8) = .{},
 traits: std.AutoHashMapUnmanaged(SmithyId, []const TaggedValue) = .{},
 mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId) = .{},
 
@@ -29,6 +31,7 @@ pub fn deinit(self: *Self) void {
     self.traits.deinit(self.allocator);
     self.mixins.deinit(self.allocator);
     self.names.deinit(self.allocator);
+    self.full_names.deinit(self.allocator);
 }
 
 pub fn putMeta(self: *Self, key: SmithyId, value: SmithyMeta) !void {
@@ -41,6 +44,12 @@ pub fn putShape(self: *Self, id: SmithyId, shape: SmithyType) !void {
 
 pub fn putName(self: *Self, id: SmithyId, name: []const u8) !void {
     try self.names.put(self.allocator, id, name);
+}
+
+/// Includes the namespace (`com.provider.namespace#Shape`).
+/// If a the un-namespaced name is also required, call `putName` as well.
+pub fn putFullName(self: *Self, id: SmithyId, name: []const u8) !void {
+    try self.full_names.put(self.allocator, id, name);
 }
 
 pub fn putMixins(self: *Self, id: SmithyId, mixins: []const SmithyId) !void {

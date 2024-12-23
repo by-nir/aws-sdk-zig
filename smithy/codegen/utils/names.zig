@@ -5,7 +5,14 @@ const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const test_alloc = std.testing.allocator;
 
-pub const Case = enum { snake, scream, camel, pascal, title };
+pub const Case = enum {
+    snake,
+    scream,
+    camel,
+    /// This is also the raw value used by the Smithy schema.
+    pascal,
+    title,
+};
 
 pub fn formatCase(allocator: Allocator, comptime case: Case, value: []const u8) ![]const u8 {
     return fmt.allocPrint(allocator, "{s}", .{CaseFormatter(case){ .value = value }});

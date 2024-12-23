@@ -167,16 +167,17 @@ const JsonParser = struct {
         const len = 1 + parent_name.len + prop_name.len;
         std.debug.assert(len <= 128);
 
-        var member_name: [128]u8 = undefined;
-        @memcpy(member_name[0..parent_name.len], parent_name);
-        member_name[parent_name.len] = '$';
-        @memcpy(member_name[parent_name.len + 1 ..][0..prop_name.len], prop_name);
+        var name_buffer: [128]u8 = undefined;
+        @memcpy(name_buffer[0..parent_name.len], parent_name);
+        name_buffer[parent_name.len] = '$';
+        @memcpy(name_buffer[parent_name.len + 1 ..][0..prop_name.len], prop_name);
+        const member_name = name_buffer[0..len];
 
         const member_id = SmithyId.compose(parent_name, prop_name);
         if (!isManagedMember(prop_name)) try self.putName(member_id, .{ .member = prop_name });
 
         try ctx.target.id_list.append(self.arena, member_id);
-        const scp = Context{ .id = member_id, .name = member_name[0..len] };
+        const scp = Context{ .id = member_id, .name = member_name };
         try self.parseScope(.object, parseProp, scp);
     }
 
@@ -434,14 +435,18 @@ const JsonParser = struct {
 
     const Name = union(enum) { member: []const u8, absolute: []const u8 };
     fn putName(self: *JsonParser, id: SmithyId, name: Name) !void {
-        const part = switch (name) {
-            .member => |s| s,
-            .absolute => |s| blk: {
-                const split = mem.indexOfScalar(u8, s, '#');
-                break :blk if (split) |i| s[i + 1 .. s.len] else s;
+        switch (name) {
+            .member => |s| try self.model.putName(id, try self.arena.dupe(u8, s)),
+            .absolute => |s| {
+                if (mem.indexOfScalar(u8, s, '#')) |i| {
+                    const dupe = try self.arena.dupe(u8, s);
+                    try self.model.putFullName(id, dupe);
+                    try self.model.putName(id, try self.arena.dupe(u8, dupe[i + 1 ..]));
+                } else {
+                    try self.model.putName(id, try self.arena.dupe(u8, s));
+                }
             },
-        };
-        try self.model.putName(id, try self.arena.dupe(u8, part));
+        }
     }
 
     fn parseMetaList(self: *JsonParser, ctx: Context) !void {

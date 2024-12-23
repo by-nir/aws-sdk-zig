@@ -38,6 +38,7 @@ arena: Allocator,
 model_meta: std.AutoHashMapUnmanaged(SmithyId, SmithyMeta) = .{},
 model_shapes: std.AutoHashMapUnmanaged(SmithyId, SmithyType) = .{},
 model_names: std.AutoHashMapUnmanaged(SmithyId, []const u8) = .{},
+model_names_full: std.AutoHashMapUnmanaged(SmithyId, []const u8) = .{},
 model_traits: std.AutoHashMapUnmanaged(SmithyId, []const SmithyTaggedValue) = .{},
 model_mixins: std.AutoHashMapUnmanaged(SmithyId, []const SmithyId) = .{},
 service_id: SmithyId = SmithyId.NULL,
@@ -57,6 +58,9 @@ pub fn consumeModel(arena: Allocator, model: *Model) !Self {
     var dupe_names = try model.names.clone(arena);
     errdefer dupe_names.deinit(arena);
 
+    var dupe_names_full = try model.full_names.clone(arena);
+    errdefer dupe_names_full.deinit(arena);
+
     var dupe_traits = try model.traits.clone(arena);
     errdefer dupe_traits.deinit(arena);
 
@@ -73,6 +77,7 @@ pub fn consumeModel(arena: Allocator, model: *Model) !Self {
         .model_meta = dupe_meta,
         .model_shapes = dupe_shapes,
         .model_names = dupe_names,
+        .model_names_full = dupe_names_full,
         .model_traits = dupe_traits,
         .model_mixins = dupe_mixins,
         .service_id = sid,
@@ -163,6 +168,7 @@ pub fn deinit(self: *Self) void {
     self.model_meta.deinit(self.arena);
     self.model_shapes.deinit(self.arena);
     self.model_names.deinit(self.arena);
+    self.model_names_full.deinit(self.arena);
     self.model_traits.deinit(self.arena);
     self.model_mixins.deinit(self.arena);
 }
@@ -234,6 +240,11 @@ pub fn getShapeName(self: Self, id: SmithyId, comptime case: NameCase, comptime 
     }});
 }
 
+/// Includes the namespace (`com.provider.namespace#Shape`).
+pub fn getShapeNameFull(self: Self, id: SmithyId) ![]const u8 {
+    return self.model_names_full.get(id) orelse error.NameNotFound;
+}
+
 pub fn getTraits(self: Self, shape_id: SmithyId) ?TraitsProvider {
     const traits = self.model_traits.get(shape_id) orelse return null;
     return TraitsProvider{ .values = traits };
@@ -286,6 +297,10 @@ test {
         try names.put(arena_alloc, shape_foo, "Foo");
         try names.put(arena_alloc, shape_bazqux, "BazQux");
 
+        var names_full: std.AutoHashMapUnmanaged(SmithyId, []const u8) = .{};
+        errdefer names_full.deinit(arena_alloc);
+        try names_full.put(arena_alloc, shape_foo, "test.simple#Foo");
+
         var traits: std.AutoHashMapUnmanaged(SmithyId, []const SmithyTaggedValue) = .{};
         errdefer traits.deinit(arena_alloc);
         try traits.put(arena_alloc, shape_foo, &.{
@@ -306,6 +321,7 @@ test {
             .model_meta = meta,
             .model_shapes = shapes,
             .model_names = names,
+            .model_names_full = names_full,
             .model_traits = traits,
             .model_mixins = mixins,
         };
@@ -326,6 +342,8 @@ test {
     try testing.expectEqualStrings("Foo", try symbols.getShapeName(shape_foo, .pascal, .{}));
     try testing.expectEqualStrings("foo", try symbols.getShapeName(shape_foo, .snake, .{}));
     try testing.expectError(error.NameNotFound, symbols.getShapeName(SmithyId.of("test#undefined"), .pascal, .{}));
+
+    try testing.expectEqualStrings("test.simple#Foo", try symbols.getShapeNameFull(shape_foo));
 
     try testing.expectEqualDeep(
         &.{ SmithyId.of("test.mixin#Foo"), SmithyId.of("test.mixin#Bar") },
