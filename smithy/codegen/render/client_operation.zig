@@ -92,11 +92,13 @@ fn clientOperationTask(
                         if (pg.output_token == null) paginated.output_token = service.output_token orelse return error.IncompletePaginated;
                     };
 
+                    const output_shape = if (ctx.op.output) |oid| try ctx.symbols.getShapeNameFull(oid) else null;
                     const page_ctx = PageContext{
                         .arena = alloc,
                         .symbols = syb,
                         .has_input = ctx.op.input != null,
                         .paginated = paginated,
+                        .output_shape_name = output_shape,
                     };
 
                     try b.field("pages_complete").typing(b.x.typeOf(bool)).assign(b.x.valueOf(false));
@@ -214,6 +216,7 @@ const PageContext = struct {
     has_input: bool,
     symbols: *SymbolsProvider,
     paginated: trt_behavior.Paginated.Val,
+    output_shape_name: ?[]const u8 = null,
 };
 
 fn writeNextPageFunc(ctx: PageContext, bld: *zig.BlockBuild) !void {
@@ -227,35 +230,75 @@ fn writeNextPageFunc(ctx: PageContext, bld: *zig.BlockBuild) !void {
 
     try bld.@"if"(bld.x.id("response").op(.eql).valueOf(.ok)).body(bld.x.blockWith(ctx, struct {
         fn f(c: PageContext, b: *zig.BlockBuild) !void {
-            const input_token, const output_token = try buildPageTokens(c.arena, c.paginated);
-            try b.@"if"(b.x.raw("response.ok").dot().raw(output_token)).capture("token")
-                .body(b.x.raw("self.input.").raw(input_token).assign().id("token"))
-                .@"else"().body(b.x.raw("self.pages_complete").assign().valueOf(true))
-                .end();
+            const input_path = (try pathStringExpr(c.arena, c.symbols, null, c.paginated.input_token.?)).normal;
+            const otk = try pathStringExpr(c.arena, c.symbols, c.output_shape_name, c.paginated.output_token.?);
+            switch (otk) {
+                .normal => |output_path| try writeNextPageRequired(b, input_path, output_path),
+                .optional => |o| try writeNextPageOptional(b, input_path, o[0], o[1]),
+            }
         }
     }.f)).end();
 
     try bld.returns().id("response").end();
 }
 
-fn buildPageTokens(arena: Allocator, paginated: trt_behavior.Paginated.Val) !struct { []const u8, []const u8 } {
-    return .{
-        try pathStringExpr(arena, paginated.input_token.?),
-        try pathStringExpr(arena, paginated.output_token.?),
-    };
+fn writeNextPageRequired(bld: *zig.BlockBuild, input_path: []const u8, output_path: []const u8) !void {
+    try bld.@"if"(bld.x.raw("response.ok").dot().raw(output_path)).capture("token")
+        .body(bld.x.raw("self.input.").raw(input_path).assign().id("token"))
+        .@"else"().body(bld.x.raw("self.pages_complete = true"))
+        .end();
 }
 
-fn pathStringExpr(arena: Allocator, path: []const u8) ![]const u8 {
+fn writeNextPageOptional(
+    bld: *zig.BlockBuild,
+    input_path: []const u8,
+    output_field: []const u8,
+    output_path: []const u8,
+) !void {
+    const parent = bld.x.raw("response.ok").dot().raw(output_field);
+    try bld.@"if"(
+        parent.op(.not_eql).valueOf(null).op(.@"and")
+            .buildExpr(parent).unwrap().raw(output_path).op(.not_eql).valueOf(null),
+    ).body(
+        bld.x.raw("self.input").dot().raw(input_path).assign().buildExpr(parent).unwrap().raw(output_path).unwrap(),
+    ).@"else"().body(
+        bld.x.raw("self.pages_complete = true"),
+    ).end();
+}
+
+const PathExpr = union(enum) {
+    normal: []const u8,
+    /// First path is the optional part, the second is the required part.
+    optional: [2][]const u8,
+};
+
+/// When provided with `parent` will check if the first field is optional.
+/// Otherwise, it will assume the first field is always required.
+fn pathStringExpr(arena: Allocator, symbols: *SymbolsProvider, parent: ?[]const u8, path: []const u8) !PathExpr {
+    var optional: ?[]const u8 = null;
     var buffer = std.ArrayList(u8).init(arena);
     errdefer buffer.deinit();
 
     var pos: usize = 0;
     while (pos < path.len) {
         const i = mem.indexOfAnyPos(u8, path, pos, ".[") orelse path.len;
+        const is_last = i == path.len;
 
-        const field = try name_util.formatCase(arena, .snake, path[pos..i]);
-        try buffer.appendSlice(field);
-        if (i == path.len) break;
+        const raw_field = path[pos..i];
+        const field = try name_util.formatCase(arena, .snake, raw_field);
+        // We ignore if single direct field – as it will already be null-checked.
+        if (parent == null or pos > 0 or is_last) {
+            try buffer.appendSlice(field);
+        } else {
+            const member_id = SmithyId.compose(parent.?, raw_field);
+            if (!symbols.hasTrait(member_id, trt_refine.required_id)) {
+                optional = field;
+            } else {
+                try buffer.appendSlice(field);
+            }
+        }
+
+        if (is_last) break;
 
         switch (path[i]) {
             '.' => {
@@ -271,7 +314,12 @@ fn pathStringExpr(arena: Allocator, path: []const u8) ![]const u8 {
         }
     }
 
-    return try buffer.toOwnedSlice();
+    const full_path = try buffer.toOwnedSlice();
+    if (optional) |opt| {
+        return .{ .optional = .{ opt, full_path } };
+    } else {
+        return .{ .normal = full_path };
+    }
 }
 
 fn listShapeErrors(
