@@ -14,10 +14,11 @@ const log = std.log.scoped(.html_to_md);
 pub const CallbackContext = struct {
     allocator: Allocator,
     html: []const u8,
+    options: ParseOptions = .{},
 };
 
 pub fn callback(ctx: CallbackContext, b: md.ContainerAuthor) !void {
-    try convert(ctx.allocator, b, ctx.html);
+    try convert(ctx.allocator, b, ctx.html, ctx.options);
 }
 
 const HtmlTag = enum(u32) {
@@ -59,16 +60,31 @@ const HtmlFragmenter = struct {
     token: []const u8 = "",
     scratch: std.ArrayList(u8),
     stream: mem.TokenIterator(u8, .any),
+    codeblock: CodeblockState = .unsafe,
 
     pub const Fragment = union(enum) {
         tag: []const u8,
         text: []const u8,
     };
 
+    const CodeblockState = enum { unsafe, safe, active };
+
     pub fn init(allocator: Allocator, html: []const u8) HtmlFragmenter {
         return .{
             .scratch = std.ArrayList(u8).init(allocator),
             .stream = mem.tokenizeAny(u8, html, &std.ascii.whitespace),
+        };
+    }
+
+    /// When `true` the fragmenter will parse all content inside `<code>` tag as
+    /// raw text, ignoring any HTML directives.
+    ///
+    /// Does not support nested `<code>` tags!
+    pub fn initCodeblockSafe(allocator: Allocator, html: []const u8) HtmlFragmenter {
+        return .{
+            .scratch = std.ArrayList(u8).init(allocator),
+            .stream = mem.tokenizeAny(u8, html, &std.ascii.whitespace),
+            .codeblock = .safe,
         };
     }
 
@@ -80,6 +96,25 @@ const HtmlFragmenter = struct {
     pub fn next(self: *HtmlFragmenter) !?Fragment {
         self.scratch.clearRetainingCapacity();
         while (true) {
+            if (self.codeblock == .active) {
+                @branchHint(.unlikely);
+                if (mem.indexOf(u8, self.token, "</code>")) |idx| {
+                    try self.appendToScratch(self.token[0..idx]);
+                    self.token = self.token[idx..self.token.len];
+                    self.codeblock = .safe;
+                    break;
+                } else {
+                    try self.appendToScratch(self.token);
+                    if (self.stream.next()) |token| {
+                        self.token = token;
+                        continue;
+                    } else {
+                        self.token = "";
+                        break;
+                    }
+                }
+            }
+
             const idx = mem.indexOfAny(u8, self.token, "<>") orelse {
                 try self.appendToScratch(self.token);
                 if (self.stream.next()) |token| {
@@ -112,6 +147,12 @@ const HtmlFragmenter = struct {
                 if (scratch.len > 2 and scratch[1] == '/' and scratch[scratch.len - 2] == '/') continue; // `</>`, `</···/>`
                 if (scratch.len > 2 and scratch[1] != '/' and !std.ascii.isAlphabetic(scratch[1])) continue; // `<=+->`
 
+                // Codeblock?
+                if (self.codeblock == .safe and std.mem.eql(u8, "<code>", scratch)) {
+                    @branchHint(.unlikely);
+                    self.codeblock = .active;
+                }
+
                 // Valid tag
                 return Fragment{ .tag = scratch };
             }
@@ -140,8 +181,10 @@ const HtmlFragmenter = struct {
 };
 
 test "HtmlFragmenter" {
-    const raw = "foo bar<baz>qux</baz><foo /></invalid/></invalid /></><=+-><img src=\"#\" />";
-    var frags = HtmlFragmenter.init(test_alloc, raw);
+    var frags = HtmlFragmenter.init(
+        test_alloc,
+        "foo bar<baz>qux</baz><foo /></invalid/></invalid /></><=+-><img src=\"#\" />",
+    );
     defer frags.deinit();
 
     try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .text = "foo bar" }, (try frags.next()).?);
@@ -154,6 +197,15 @@ test "HtmlFragmenter" {
     try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .text = "</>" }, (try frags.next()).?);
     try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .text = "<=+->" }, (try frags.next()).?);
     try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .tag = "<img src=\"#\" />" }, (try frags.next()).?);
+    try testing.expectEqual(null, try frags.next());
+    frags.deinit();
+
+    frags = HtmlFragmenter.initCodeblockSafe(test_alloc, "<foo><code><bar>baz</bar></code></foo>");
+    try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .tag = "<foo>" }, (try frags.next()).?);
+    try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .tag = "<code>" }, (try frags.next()).?);
+    try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .text = "<bar>baz</bar>" }, (try frags.next()).?);
+    try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .tag = "</code>" }, (try frags.next()).?);
+    try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .tag = "</foo>" }, (try frags.next()).?);
     try testing.expectEqual(null, try frags.next());
 }
 
@@ -200,10 +252,21 @@ test "TagMeta" {
     }, TagMeta.parse("<p style=\"foo\" />"));
 }
 
+pub const ParseOptions = struct {
+    /// When `true` the fragmenter will parse all content inside `<code>` tag as
+    /// raw text, ignoring any HTML directives.
+    ///
+    /// Does not support nested `<code>` tags!
+    codeblock_safety: bool = false,
+};
+
 const HtmlTree = srct.MutableSourceTree(HtmlTag);
 
-fn parse(mut_alloc: Allocator, html: []const u8) !HtmlTree {
-    var frags = HtmlFragmenter.init(mut_alloc, html);
+fn parse(mut_alloc: Allocator, html: []const u8, options: ParseOptions) !HtmlTree {
+    var frags = switch (options.codeblock_safety) {
+        true => HtmlFragmenter.initCodeblockSafe(mut_alloc, html),
+        false => HtmlFragmenter.init(mut_alloc, html),
+    };
     defer frags.deinit();
 
     var tree = try HtmlTree.init(mut_alloc, .document);
@@ -236,7 +299,7 @@ fn parseNode(frags: *HtmlFragmenter, tree: *HtmlTree, parent: srct.NodeHandle, p
 }
 
 test "parse" {
-    var html = try parse(test_alloc, "foo<p /><ul><li /></ul>");
+    var html = try parse(test_alloc, "foo<p /><ul><li /></ul>", .{});
     const tree = html.view();
     defer html.deinit();
 
@@ -258,8 +321,8 @@ test "parse" {
 }
 
 /// Write Markdown source using an **extremely naive and partial** Markdown parser.
-pub fn convert(allocator: Allocator, bld: md.ContainerAuthor, html: []const u8) !void {
-    var tree = try parse(allocator, html);
+pub fn convert(allocator: Allocator, bld: md.ContainerAuthor, html: []const u8, options: ParseOptions) !void {
+    var tree = try parse(allocator, html, options);
     defer tree.deinit();
 
     const view = tree.view();
@@ -316,6 +379,13 @@ fn convertNode(bld: md.ContainerAuthor, html: HtmlTree.Viewer, node: srct.NodeHa
 
                 if (styled) |*t| try t.seal();
             }
+        },
+        .b, .strong, .i, .em, .code, .a => {
+            var paragraph: md.StyledAuthor = try bld.paragraphStyled();
+            errdefer paragraph.deinit();
+
+            try convertStyledNode(&paragraph, html, node, html.tag(node));
+            try paragraph.seal();
         },
         else => |g| {
             log.warn("Unrecognized tag: `<{}>`", .{g});
@@ -393,6 +463,10 @@ fn isPlainTextChildren(html: HtmlTree.Viewer, node: srct.NodeHandle) bool {
 test "convert" {
     try expectConvert("<p>foo</p>", "foo");
 
+    try expectConvert("<strong>foo</strong>", "**foo**");
+
+    try expectConvert("<code><foo>, <bar></code>", "`<foo>, <bar>`");
+
     try expectConvert("Foo.\n    <p>Bar baz\n    <qux.</p>",
         \\Foo.
         \\
@@ -455,7 +529,9 @@ fn expectConvert(source: []const u8, expected: []const u8) !void {
     var doc = blk: {
         var build = try md.MutableDocument.init(arena_alloc);
         errdefer build.deinit();
-        try convert(arena_alloc, build.root(), source);
+        try convert(arena_alloc, build.root(), source, .{
+            .codeblock_safety = true,
+        });
         break :blk try build.toReadOnly(arena_alloc);
     };
     errdefer doc.deinit(arena_alloc);

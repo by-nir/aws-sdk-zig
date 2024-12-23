@@ -380,6 +380,9 @@ fn writeErrorSetMember(arena: Allocator, bld: *zig.ContainerBuild, member: Symbo
         try bld.commentMarkdownWith(.doc, md.html.CallbackContext{
             .allocator = arena,
             .html = docs,
+            .options = .{
+                .codeblock_safety = true,
+            },
         }, md.html.callback);
     }
 

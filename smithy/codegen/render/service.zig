@@ -139,7 +139,9 @@ fn serviceReadmeTask(self: *const jobz.Delegate, symbols: *SymbolsProvider, writ
 
 fn serviceReadmeWriteIntro(allocator: Allocator, source: []const u8) ![]const u8 {
     var build = try md.MutableDocument.init(allocator);
-    try md.html.convert(allocator, build.root(), source);
+    try md.html.convert(allocator, build.root(), source, .{
+        .codeblock_safety = true,
+    });
     const markdown = try build.toReadOnly(allocator);
     defer markdown.deinit(allocator);
 

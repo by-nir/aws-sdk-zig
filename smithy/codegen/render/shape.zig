@@ -652,6 +652,9 @@ pub fn writeDocComment(symbols: *SymbolsProvider, bld: *ContainerBuild, id: Smit
     try bld.commentMarkdownWith(.doc, md.html.CallbackContext{
         .allocator = symbols.arena,
         .html = docs,
+        .options = .{
+            .codeblock_safety = true,
+        },
     }, md.html.callback);
 }
 

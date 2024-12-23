@@ -85,6 +85,9 @@ pub fn generateParametersFields(self: *Self, bld: *ContainerBuild) !void {
             try bld.commentMarkdownWith(.doc, md.html.CallbackContext{
                 .allocator = self.arena,
                 .html = param.documentation,
+                .options = .{
+                    .codeblock_safety = true,
+                },
             }, md.html.callback);
         }
 
