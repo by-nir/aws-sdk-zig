@@ -215,15 +215,14 @@ fn writeSendSyncFunc(self: *const Delegate, symbols: *SymbolsProvider, bld: *zig
     const transport = try itg_proto.resolveServiceTransport(symbols, protocol);
     _ = transport;
 
-    const http_method = switch (protocol) {
-        .rest_json_1 => bld.x.id(aws_cfg.send_meta_param).dot().id("http_method"),
-        else => bld.x.valueOf(itg_proto.resolveDefaultHttpMethod(protocol)),
-    };
+    try bld.constant("http_method")
+        .typing(bld.x.raw("std.http.Method"))
+        .assign(try itg_proto.resolveHttpMethod(bld.x, protocol));
 
     try bld.constant(aws_cfg.send_op_param).assign(
         bld.x.trys().id(aws_cfg.scope_private).dot().call("ClientOperation.new", &.{
             bld.x.id(aws_cfg.scratch_alloc),
-            http_method,
+            bld.x.id("http_method"),
             bld.x.raw("std.Uri.parse(endpoint.url) catch unreachable"),
             bld.x.raw("self.config_sdk.app_id"),
             bld.x.valueOf(null), // TODO: trace_id
@@ -239,5 +238,5 @@ fn writeSendSyncFunc(self: *const Delegate, symbols: *SymbolsProvider, bld: *zig
     );
     try bld.errorDefers().body((bld.x.id(aws_cfg.output_arena).dot().call("deinit", &.{})));
 
-    try itg_proto.writeOperationResponse(bld, protocol);
+    try itg_proto.writeOperationResponse(symbols, bld, protocol);
 }

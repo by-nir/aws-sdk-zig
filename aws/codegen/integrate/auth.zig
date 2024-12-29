@@ -87,7 +87,7 @@ fn writeAuthSwitch(symbols: *SymbolsProvider, bld: *zig.SwitchBuild) !void {
 }
 
 fn writeBearer(bld: *zig.BlockBuild) !void {
-    try bld.constant("identity").assign(try resolveExpr(bld.x, "token"));
+    try bld.constant("identity").assign(bld.x.fromExpr(try resolveExpr(bld.x, "token")));
 
     try bld.constant("auth_bearer").assign(bld.x.call("std.fmt.allocPrint", &.{
         bld.x.raw("aws_cfg.scratch_alloc"),
@@ -120,7 +120,7 @@ fn writeSigV4(symbols: *SymbolsProvider, bld: *zig.BlockBuild) !void {
         }),
     );
 
-    try bld.constant("identity").assign(try resolveExpr(bld.x, "credentials"));
+    try bld.constant("identity").assign(bld.x.fromExpr(try resolveExpr(bld.x, "credentials")));
 
     try bld.trys().raw(aws_cfg.scope_auth).dot().call("signV4", &.{
         bld.x.id("auth_buffer"),
@@ -131,8 +131,8 @@ fn writeSigV4(symbols: *SymbolsProvider, bld: *zig.BlockBuild) !void {
     }).end();
 }
 
-fn resolveExpr(exp: zig.ExprBuild, kind: []const u8) !zig.ExprBuild {
+fn resolveExpr(exp: zig.ExprBuild, kind: []const u8) !zig.Expr {
     const kind_expr = exp.dot().id(kind);
     const resolve = exp.trys().call("self.identity.resolve", &.{kind_expr});
-    return exp.group(resolve).dot().call("as", &.{kind_expr});
+    return exp.group(resolve).dot().call("as", &.{kind_expr}).consume();
 }

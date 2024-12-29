@@ -28,6 +28,11 @@ pub fn build(b: *std.Build) void {
     const smithy_runtime = smithy.module("runtime");
     const smithy_codegen = smithy.module("codegen");
 
+    const xml = b.dependency("xml", .{
+        .target = target,
+        .optimize = optimize,
+    }).module("xml");
+
     //
     // Modules
     //
@@ -38,6 +43,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("runtime/root.zig"),
         .imports = &.{
             .{ .name = "smithy/runtime", .module = smithy_runtime },
+            .{ .name = "xml", .module = xml },
         },
     });
 
@@ -76,6 +82,7 @@ pub fn build(b: *std.Build) void {
     });
     test_runtime_step.dependOn(&b.addRunArtifact(test_runtime_exe).step);
     test_runtime_exe.root_module.addImport("smithy/runtime", smithy_runtime);
+    test_runtime_exe.root_module.addImport("xml", xml);
 
     const debug_runtime_step = b.step("lldb:runtime", "Install runtime LLDB binary");
     debug_runtime_step.dependOn(&b.addInstallArtifact(test_runtime_exe, .{

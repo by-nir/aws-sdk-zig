@@ -363,3 +363,165 @@ pub fn findMemberIndex(comptime members: anytype, key: []const u8) ?usize {
     }
     return null;
 }
+
+pub inline fn hasField(container: anytype, comptime field_name: []const u8) bool {
+    return @hasField(@TypeOf(container), field_name);
+}
+
+pub inline fn fieldFallback(comptime T: type, container: anytype, comptime field_name: []const u8, fallback: T) T {
+    return if (hasField(container, field_name)) @field(container, field_name) else fallback;
+}
+
+pub inline fn ValueType(value: anytype) type {
+    const T = @TypeOf(value.*);
+    return switch (@typeInfo(T)) {
+        .optional => |m| m.child,
+        else => T,
+    };
+}
+
+/// Like `std.mem.zeroInit`, but will set a union to `undefined` instead of panic.
+pub fn zeroInit(comptime T: type, init: anytype) T {
+    const Init = @TypeOf(init);
+
+    switch (@typeInfo(T)) {
+        .@"struct" => |struct_info| {
+            switch (@typeInfo(Init)) {
+                .@"struct" => |init_info| {
+                    if (init_info.is_tuple) {
+                        if (init_info.fields.len > struct_info.fields.len) {
+                            @compileError("Tuple initializer has more elements than there are fields in `" ++ @typeName(T) ++ "`");
+                        }
+                    } else {
+                        inline for (init_info.fields) |field| {
+                            if (!@hasField(T, field.name)) {
+                                @compileError("Encountered an initializer for `" ++ field.name ++ "`, but it is not a field of " ++ @typeName(T));
+                            }
+                        }
+                    }
+
+                    var value: T = if (struct_info.layout == .@"extern") zeroes(T) else undefined;
+
+                    inline for (struct_info.fields, 0..) |field, i| {
+                        if (field.is_comptime) continue;
+
+                        if (init_info.is_tuple and init_info.fields.len > i) {
+                            @field(value, field.name) = @field(init, init_info.fields[i].name);
+                        } else if (@hasField(@TypeOf(init), field.name)) {
+                            switch (@typeInfo(field.type)) {
+                                .@"struct" => @field(value, field.name) = zeroInit(field.type, @field(init, field.name)),
+                                else => @field(value, field.name) = @field(init, field.name),
+                            }
+                        } else if (field.default_value) |default_value_ptr| {
+                            const default_value = @as(*align(1) const field.type, @ptrCast(default_value_ptr)).*;
+                            @field(value, field.name) = default_value;
+                        } else {
+                            switch (@typeInfo(field.type)) {
+                                .@"struct" => @field(value, field.name) = zeroInit(field.type, .{}),
+                                else => @field(value, field.name) = zeroes(@TypeOf(@field(value, field.name))),
+                            }
+                        }
+                    }
+
+                    return value;
+                },
+                else => {
+                    @compileError("The initializer must be a struct");
+                },
+            }
+        },
+        else => {
+            @compileError("Can't default init a " ++ @typeName(T));
+        },
+    }
+}
+
+fn zeroes(comptime T: type) T {
+    switch (@typeInfo(T)) {
+        .comptime_int, .int, .comptime_float, .float => {
+            return @as(T, 0);
+        },
+        .@"enum" => {
+            return @as(T, @enumFromInt(0));
+        },
+        .void => {
+            return {};
+        },
+        .bool => {
+            return false;
+        },
+        .optional, .null => {
+            return null;
+        },
+        .@"struct" => |struct_info| {
+            if (@sizeOf(T) == 0) return undefined;
+            if (struct_info.layout == .@"extern") {
+                var item: T = undefined;
+                @memset(mem.asBytes(&item), 0);
+                return item;
+            } else {
+                var structure: T = undefined;
+                inline for (struct_info.fields) |field| {
+                    if (!field.is_comptime) {
+                        @field(structure, field.name) = zeroes(field.type);
+                    }
+                }
+                return structure;
+            }
+        },
+        .pointer => |ptr_info| {
+            switch (ptr_info.size) {
+                .Slice => {
+                    if (ptr_info.sentinel) |sentinel| {
+                        if (ptr_info.child == u8 and @as(*const u8, @ptrCast(sentinel)).* == 0) {
+                            return ""; // A special case for the most common use-case: null-terminated strings.
+                        }
+                        @compileError("Can't set a sentinel slice to zero. This would require allocating memory.");
+                    } else {
+                        return &[_]ptr_info.child{};
+                    }
+                },
+                .C => {
+                    return null;
+                },
+                .One, .Many => {
+                    if (ptr_info.is_allowzero) return @ptrFromInt(0);
+                    @compileError("Only nullable and allowzero pointers can be set to zero.");
+                },
+            }
+        },
+        .array => |info| {
+            if (info.sentinel) |sentinel_ptr| {
+                const sentinel = @as(*align(1) const info.child, @ptrCast(sentinel_ptr)).*;
+                return [_:sentinel]info.child{zeroes(info.child)} ** info.len;
+            }
+            return [_]info.child{zeroes(info.child)} ** info.len;
+        },
+        .vector => |info| {
+            return @splat(zeroes(info.child));
+        },
+        .@"union" => |info| {
+            if (info.layout == .@"extern") {
+                var item: T = undefined;
+                @memset(mem.asBytes(&item), 0);
+                return item;
+            }
+            // We keep the value `undefined` instead of the original compile error.
+            // @compileError("Can't set a " ++ @typeName(T) ++ " to zero.");
+            return undefined;
+        },
+        .enum_literal,
+        .error_union,
+        .error_set,
+        .@"fn",
+        .type,
+        .noreturn,
+        .undefined,
+        .@"opaque",
+        .frame,
+        .@"anyframe",
+        => {
+            @compileError("Can't set a " ++ @typeName(T) ++ " to zero.");
+        },
+    }
+}

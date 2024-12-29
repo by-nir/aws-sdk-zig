@@ -31,6 +31,7 @@ const auth_schemes = @import("auth/schemes.zig");
 
 const protocol_http = @import("protocols/http.zig");
 const protocol_json = @import("protocols/json.zig");
+const protocol_xml = @import("protocols/xml.zig");
 
 pub const _private_ = struct {
     pub const ClientConfig = conf.ClientConfig;
@@ -48,6 +49,7 @@ pub const _private_ = struct {
     pub const protocol = struct {
         pub const http = protocol_http;
         pub const json = protocol_json;
+        pub const xml = protocol_xml;
     };
 };
 
@@ -68,6 +70,7 @@ test {
     _ = @import("auth/sigv4.zig");
     _ = protocol_http;
     _ = protocol_json;
+    _ = protocol_xml;
     _ = http;
     _ = conf;
 }

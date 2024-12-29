@@ -235,11 +235,14 @@ fn shapeScheme(
 
             if (symbols.hasTrait(id, trt_proto.xml_flattened_id)) {
                 try fields.append(exp.structAssign("flatten", exp.valueOf(true)));
+            } else if (trt_proto.XmlName.get(symbols, member)) |name| {
+                try fields.append(exp.structAssign("name_member", exp.valueOf(name)));
             }
 
             try fields.append(exp.structAssign("member", try shapeScheme(arena, symbols, exp, member, options)));
         },
         .map => |members| {
+            const key_id, const val_id = members;
             try fields.append(exp.structAssign("shape", exp_type.valueOf(.map)));
 
             if (symbols.hasTrait(id, trt_refine.sparse_id)) {
@@ -250,17 +253,57 @@ fn shapeScheme(
                 try fields.append(exp.structAssign("flatten", exp.valueOf(true)));
             }
 
-            try fields.append(exp.structAssign("key", try shapeScheme(arena, symbols, exp, members[0], options)));
-            try fields.append(exp.structAssign("val", try shapeScheme(arena, symbols, exp, members[1], options)));
+            if (trt_proto.XmlName.get(symbols, key_id)) |name| {
+                try fields.append(exp.structAssign("name_key", exp.valueOf(name)));
+            }
+
+            if (trt_proto.XmlName.get(symbols, val_id)) |name| {
+                try fields.append(exp.structAssign("name_value", exp.valueOf(name)));
+            }
+
+            try fields.append(exp.structAssign("key", try shapeScheme(arena, symbols, exp, key_id, options)));
+            try fields.append(exp.structAssign("val", try shapeScheme(arena, symbols, exp, val_id, options)));
         },
-        inline .tagged_union, .structure => |members, g| {
-            try fields.append(exp.structAssign("shape", exp_type.valueOf(g)));
+        .tagged_union => |members| {
+            try fields.append(exp.structAssign("shape", exp_type.valueOf(.tagged_union)));
 
             var scheme = std.ArrayList(zig.ExprBuild).init(arena);
             const is_input = symbols.hasTrait(id, trt_refine.input_id);
             for (members) |mid| {
                 try scheme.append(try structMemberScheme(arena, symbols, exp, is_input, mid, options));
             }
+
+            try fields.append(exp.structAssign("members", exp.structLiteral(null, try scheme.toOwnedSlice())));
+        },
+        .structure => |members| {
+            try fields.append(exp.structAssign("shape", exp_type.valueOf(.structure)));
+
+            var scheme = std.ArrayList(zig.ExprBuild).init(arena);
+            var attrs = std.ArrayList(zig.ExprBuild).init(arena);
+            var body = std.ArrayList(zig.ExprBuild).init(arena);
+
+            const is_input = symbols.hasTrait(id, trt_refine.input_id);
+            for (members) |mid| {
+                if (symbols.hasTrait(mid, trt_proto.xml_attribute_id)) {
+                    if (attrs.items.len == 0) {
+                        const len = scheme.items.len;
+                        body = try .initCapacity(arena, len);
+                        for (0..len) |i| body.appendAssumeCapacity(exp.valueOf(i));
+                    }
+
+                    try attrs.append(exp.valueOf(scheme.items.len));
+                } else if (attrs.items.len > 0) {
+                    try body.append(exp.valueOf(scheme.items.len));
+                }
+
+                try scheme.append(try structMemberScheme(arena, symbols, exp, is_input, mid, options));
+            }
+
+            if (attrs.items.len > 0) {
+                try fields.append(exp.structAssign("attr_ids", exp.structLiteral(null, try attrs.toOwnedSlice())));
+                try fields.append(exp.structAssign("body_ids", exp.structLiteral(null, try body.toOwnedSlice())));
+            }
+
             try fields.append(exp.structAssign("members", exp.structLiteral(null, try scheme.toOwnedSlice())));
         },
         .document => {

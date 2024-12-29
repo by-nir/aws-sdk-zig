@@ -262,14 +262,14 @@ test "fnGetAttr" {
 fn fnStringEquals(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
     const lhs = x.fromExpr(try gen.evalArg(x, args[0]));
     const rhs = x.fromExpr(try gen.evalArg(x, args[1]));
-    return x.call("std.mem.eql", &.{ lhs, rhs }).consume();
+    return x.call("std.mem.eql", &.{ x.typeOf(u8), lhs, rhs }).consume();
 }
 
 test "fnStringEquals" {
     try Function.expect(fnStringEquals, &.{
         .{ .reference = "Foo" },
         .{ .string = "bar" },
-    }, "std.mem.eql(config.foo.?, \"bar\")");
+    }, "std.mem.eql(u8, config.foo.?, \"bar\")");
 }
 
 fn fnIsValidHostLabel(gen: *Generator, x: ExprBuild, args: []const rls.ArgValue) !Expr {
