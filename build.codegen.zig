@@ -1,5 +1,5 @@
 const std = @import("std");
-const default_whitelist = [_][]const u8{ "cloudcontrol", "cloudfront" };
+const default_whitelist = [_][]const u8{ "cloudcontrol", "cloudfront", "sns", "sqs" };
 
 pub fn build(b: *std.Build) void {
     const aws = b.dependency("aws", .{ .target = b.graph.host });

@@ -16,9 +16,9 @@ const SymbolsProvider = smithy.SymbolsProvider;
 pub const traits: TraitsRegistry = &.{
     .{ AwsJson10.id, AwsJson10.parse },
     .{ AwsJson11.id, AwsJson11.parse },
-    // aws.protocols#awsQuery
-    // aws.protocols#awsQueryCompatible
-    // aws.protocols#awsQueryError
+    .{ aws_query_id, null },
+    // aws.protocols#awsQueryCompatible // Intentionally not implemented (used by SQS, but not relevant for our implementation)
+    .{ AwsQueryError.id, AwsQueryError.parse },
     // aws.protocols#ec2Query
     // aws.protocols#ec2QueryName
     // aws.protocols#httpChecksum
@@ -36,6 +36,11 @@ pub const AwsJson10 = JsonTrait("aws.protocols#awsJson1_0");
 /// [Smithy Spec](https://smithy.io/2.0/aws/protocols/aws-json-1_1-protocol.html)
 pub const AwsJson11 = JsonTrait("aws.protocols#awsJson1_1");
 
+/// This specification defines the AWS _Query_ protocol.
+///
+/// [Smithy Spec](https://smithy.io/2.0/aws/protocols/aws-query-protocol.html)
+pub const aws_query_id = SmithyId.of("aws.protocols#awsQuery");
+
 /// This specification defines the _AWS restJson1_ protocol. This protocol is used
 /// to expose services that serialize payloads as JSON and utilize features of
 /// HTTP like configurable HTTP methods, URIs, and status codes.
@@ -43,10 +48,73 @@ pub const AwsJson11 = JsonTrait("aws.protocols#awsJson1_1");
 /// [Smithy Spec](https://smithy.io/2.0/aws/protocols/aws-restjson1-protocol.html)
 pub const RestJson1 = JsonTrait("aws.protocols#restJson1");
 
+/// Provides a custom _Code_ value for _AWS Query_ protocol errors and an HTTP response code.
+///
+/// [Smithy Spec](https://smithy.io/2.0/aws/protocols/aws-query-protocol.html#aws-protocols-awsqueryerror-trait)
+pub const AwsQueryError = struct {
+    pub const id = SmithyId.of("aws.protocols#awsQueryError");
+
+    pub const Value = struct {
+        /// The value used to distinguish this error shape during client deserialization.
+        code: []const u8,
+        /// The HTTP response code used on a response that contains this error shape.
+        http_status: std.http.Status,
+    };
+
+    pub fn parse(arena: Allocator, reader: *JsonReader) !*const anyopaque {
+        const value = try arena.create(Value);
+        errdefer arena.destroy(value);
+
+        var required: usize = 2;
+        try reader.nextObjectBegin();
+        while (try reader.peek() != .object_end) {
+            const prop = try reader.nextString();
+            if (mem.eql(u8, prop, "code")) {
+                value.code = try reader.nextStringAlloc(arena);
+                required -= 1;
+            } else if (mem.eql(u8, prop, "httpResponseCode")) {
+                value.http_status = @enumFromInt(@as(u10, @intCast(try reader.nextInteger())));
+                required -= 1;
+            } else {
+                std.log.warn("Unknown `AWS query error` trait property `{s}`", .{prop});
+                try reader.skipValueOrScope();
+            }
+        }
+        try reader.nextObjectEnd();
+
+        if (required > 0) return error.AwsQueryErrorMissingRequiredProperties;
+        return value;
+    }
+
+    pub fn get(symbols: *SymbolsProvider, shape_id: SmithyId) ?*const Value {
+        return symbols.getTrait(Value, shape_id, id);
+    }
+};
+
+test AwsQueryError {
+    var arena = std.heap.ArenaAllocator.init(test_alloc);
+    const arena_alloc = arena.allocator();
+    defer arena.deinit();
+
+    var reader = try JsonReader.initFixed(arena_alloc,
+        \\{
+        \\    "code": "foo",
+        \\    "httpResponseCode": 404
+        \\}
+    );
+    errdefer reader.deinit();
+
+    const json: *const AwsQueryError.Value = @ptrCast(@alignCast(try AwsQueryError.parse(arena_alloc, &reader)));
+    reader.deinit();
+    try testing.expectEqualDeep(&AwsQueryError.Value{
+        .code = "foo",
+        .http_status = .not_found,
+    }, json);
+}
+
 fn JsonTrait(comptime trait_id: []const u8) type {
     return struct {
         pub const id = SmithyId.of(trait_id);
-        pub const auth_id = smithy.traits.auth.AuthId.of(trait_id);
 
         pub const Value = struct {
             /// The priority ordered list of supported HTTP protocol versions.
@@ -125,7 +193,6 @@ test JsonTrait {
 /// [Smithy Spec](https://smithy.io/2.0/aws/protocols/aws-restxml-protocol.html)
 pub const RestXml = struct {
     pub const id = SmithyId.of("aws.protocols#restXml");
-    pub const auth_id = smithy.traits.auth.AuthId.of("restXml");
 
     pub const Value = struct {
         /// The priority ordered list of supported HTTP protocol versions.

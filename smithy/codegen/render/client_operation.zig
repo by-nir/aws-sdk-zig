@@ -21,6 +21,7 @@ const test_symbols = @import("../testing/symbols.zig");
 
 pub const OperationScriptHeadHook = jobz.Task.Hook("Smithy Operation Script Head", anyerror!void, &.{ *zig.ContainerBuild, SmithyId });
 pub const OperationMetaHook = jobz.Task.Hook("Smithy Operation Meta", anyerror!void, &.{ *std.ArrayList(zig.ExprBuild), zig.ExprBuild, SmithyId });
+pub const OperationCustomErrorHook = jobz.Task.Hook("Smithy Operation Custom Error", anyerror!void, &.{*SymbolsProvider.Error});
 
 pub fn operationFilename(symbols: *SymbolsProvider, id: SmithyId, comptime nested: bool) ![]const u8 {
     return try symbols.getShapeName(id, .snake, .{
@@ -68,7 +69,7 @@ fn clientOperationTask(
     }
 
     const op = (try symbols.getShape(id)).operation;
-    const errors = try listShapeErrors(arena, symbols, op.errors);
+    const errors = try listShapeErrors(self, arena, symbols, op.errors);
 
     try shape.writeDocComment(symbols, bld, id, false);
 
@@ -323,6 +324,7 @@ fn pathStringExpr(arena: Allocator, symbols: *SymbolsProvider, parent: ?[]const 
 }
 
 fn listShapeErrors(
+    self: *const jobz.Delegate,
     arena: Allocator,
     symbols: *SymbolsProvider,
     shape_errors: []const SmithyId,
@@ -333,7 +335,11 @@ fn listShapeErrors(
     defer members.deinit();
 
     for (shape_errors) |eid| {
-        try members.append(try symbols.buildError(eid));
+        var err = try symbols.buildError(eid);
+        if (self.hasOverride(OperationCustomErrorHook) and symbols.service_error_customization) {
+            try self.evaluate(OperationCustomErrorHook, .{&err});
+        }
+        try members.append(err);
     }
 
     outer: for (symbols.service_errors) |srvc_err| {

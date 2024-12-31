@@ -37,6 +37,8 @@ pub const ServiceExtension = struct {
     auth_schemes: std.ArrayList(trt_auth.AuthId),
     common_errors: std.ArrayList(SymbolsProvider.Error),
     timestamp_format: ?TimestampFormat = null,
+    use_xml_traits: bool = false,
+    custumize_errors: bool = false,
 
     pub fn appendAuthScheme(self: *ServiceExtension, auth_id: AuthId) !void {
         try self.auth_schemes.append(auth_id);
@@ -95,7 +97,9 @@ fn extendServiceSchemes(self: *const jobz.Delegate, symbols: *SymbolsProvider) !
     };
 
     // Prefill common errors
-    for (service.errors) |eid| try extension.appendError(try symbols.buildError(eid));
+    for (service.errors) |eid| {
+        try extension.appendError(try symbols.buildError(eid));
+    }
 
     // Prefill auth schemes
     if (symbols.hasTrait(sid, trt_auth.http_basic_id)) try extension.appendAuthScheme(.http_basic);
@@ -104,7 +108,9 @@ fn extendServiceSchemes(self: *const jobz.Delegate, symbols: *SymbolsProvider) !
     if (symbols.hasTrait(sid, trt_auth.HttpApiKey.id)) try extension.appendAuthScheme(.http_api_key);
 
     // Extend
-    if (self.hasOverride(ServiceExtensionHook)) try self.evaluate(ServiceExtensionHook, .{&extension});
+    if (self.hasOverride(ServiceExtensionHook)) {
+        try self.evaluate(ServiceExtensionHook, .{&extension});
+    }
 
     // Sort auth schemes
     std.mem.sort(AuthId, extension.auth_schemes.items, {}, struct {
@@ -115,7 +121,9 @@ fn extendServiceSchemes(self: *const jobz.Delegate, symbols: *SymbolsProvider) !
 
     symbols.service_errors = try extension.common_errors.toOwnedSlice();
     symbols.service_auth_schemes = try extension.auth_schemes.toOwnedSlice();
+    if (extension.use_xml_traits) symbols.service_xml_traits = true;
     if (extension.timestamp_format) |fmt| symbols.service_timestamp_fmt = fmt;
+    if (extension.custumize_errors) symbols.service_error_customization = true;
 }
 
 const ServiceReadme = files_jobs.WriteFile.Task("Service Readme Codegen", serviceReadmeTask, .{

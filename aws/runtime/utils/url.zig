@@ -1,10 +1,11 @@
 const std = @import("std");
+const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
 /// Applies URI encoding and replaces all reserved characters with their respective %XX code.
 ///
 /// Based on an older Zig implementation:
-/// https://github.com/jacobly0/zig/blob/4e2570baafb587c679ee0fc5e113ddeb36522a5d/lib/std/Uri.zig
+/// https://github.com/ziglang/zig/blob/4e2570baafb587c679ee0fc5e113ddeb36522a5d/lib/std/Uri.zig
 pub fn escapeUri(allocator: Allocator, input: []const u8) Allocator.Error![]u8 {
     var outsize: usize = 0;
     for (input) |c| {
@@ -36,4 +37,26 @@ fn isUnreserved(c: u8) bool {
         'A'...'Z', 'a'...'z', '0'...'9', '-', '.', '_', '~' => true,
         else => false,
     };
+}
+
+/// Applies URI encoding and replaces all reserved characters with their respective %XX code.
+///
+/// Based on an older Zig implementation:
+/// https://github.com/ziglang/zig/blob/4e2570baafb587c679ee0fc5e113ddeb36522a5d/lib/std/Uri.zig
+pub const UrlEncodeFormat = struct {
+    value: []const u8,
+
+    pub fn format(self: UrlEncodeFormat, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        for (self.value) |c| {
+            if (isUnreserved(c)) {
+                try writer.writeByte(c);
+            } else {
+                try writer.print("%{X:0>2}", .{c});
+            }
+        }
+    }
+};
+
+test UrlEncodeFormat {
+    try testing.expectFmt("foo%20bar", "{}", .{UrlEncodeFormat{ .value = "foo bar" }});
 }

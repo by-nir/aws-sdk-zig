@@ -18,11 +18,11 @@ pub fn requestWithPayload(
     comptime meta: anytype,
     comptime member: anytype,
     request: *http.Request,
-    value: anytype,
+    input: anytype,
 ) !void {
     switch (@as(smithy.MetaPayload, meta[0])) {
         .media => {
-            request.payload = value;
+            request.payload = input;
             try request.putHeader(allocator, "content-type", meta[2]);
         },
         .shape => {
@@ -37,10 +37,10 @@ pub fn requestWithPayload(
             });
 
             switch (shape) {
-                .string, .blob => request.payload = value,
-                .str_enum, .trt_enum => request.payload = value.toString(),
+                .string, .blob => request.payload = input,
+                .str_enum, .trt_enum => request.payload = input.toString(),
                 .structure, .tagged_union => {
-                    if (!required and value == null) return;
+                    if (!required and input == null) return;
 
                     var payload = std.ArrayList(u8).init(allocator);
                     const payload_writer = payload.writer();
@@ -51,7 +51,7 @@ pub fn requestWithPayload(
                     });
                     defer xml.deinit();
 
-                    try writeValue(&xml, member.scheme, value);
+                    try writeValue(&xml, member.scheme, input);
                     request.payload = try payload.toOwnedSlice();
                 },
                 else => unreachable,
@@ -143,7 +143,7 @@ fn writeStructMember(xml: *xmlib.Writer, comptime member: anytype, struct_value:
                 break :blk .{ null, null };
         };
 
-        return writeCollectionItems(xml, member.scheme, member.name_api, value, ns_url, ns_prefix);
+        try writeCollectionItems(xml, member.scheme, member.name_api, value, ns_url, ns_prefix);
     } else {
         try writeElementStart(xml, member);
         try writeValue(xml, member.scheme, value);
@@ -204,7 +204,7 @@ fn writeValue(xml: *xmlib.Writer, comptime scheme: anytype, value: anytype) !voi
                         }
                         unreachable;
                     };
-                    try writeStructMember(&xml, member.scheme, v);
+                    try writeStructMember(xml, member.scheme, v);
                 },
             }
             try xml.elementEnd();
@@ -213,14 +213,14 @@ fn writeValue(xml: *xmlib.Writer, comptime scheme: anytype, value: anytype) !voi
             try writeElementStart(xml, scheme);
             if (srl.hasField(scheme, "attr_ids")) {
                 inline for (scheme.attr_ids) |i| {
-                    try writeStructAttribute(&xml, scheme.members[i], value);
+                    try writeStructAttribute(xml, scheme.members[i], value);
                 }
                 inline for (scheme.body_ids) |i| {
-                    try writeStructMember(&xml, scheme.members[i], value);
+                    try writeStructMember(xml, scheme.members[i], value);
                 }
             } else {
                 inline for (scheme.members) |member| {
-                    try writeStructMember(&xml, member, value);
+                    try writeStructMember(xml, member, value);
                 }
             }
             try xml.elementEnd();
@@ -329,7 +329,7 @@ fn writeCollectionItems(
                 if (is_sparse and entry.value_ptr.* == null) {
                     try xml.elementEndEmpty();
                 } else {
-                    try writeValue(xml, collection.key, entry.value_ptr.*);
+                    try writeValue(xml, collection.val, entry.value_ptr.*);
                     try xml.elementEnd();
                 }
 
@@ -345,14 +345,14 @@ pub fn responseOutput(
     output_alloc: Allocator,
     comptime scheme: anytype,
     payload: []const u8,
-    value: anytype,
+    output: anytype,
 ) !void {
     if (srl.hasField(scheme.meta, "payload")) {
         const meta = scheme.meta.payload;
         const member = scheme.members[meta[1]];
-        try responseWithPayload(scratch_alloc, output_alloc, member, meta[0], payload, value);
+        try responseWithPayload(scratch_alloc, output_alloc, member, meta[0], payload, output);
     } else if (scheme.body_ids.len > 0) {
-        try responseWithShape(scratch_alloc, output_alloc, scheme, payload, value);
+        try responseWithShape(scratch_alloc, output_alloc, scheme, payload, output);
     } else {
         std.debug.assert(payload.len == 0);
     }
@@ -424,7 +424,7 @@ const ParseSource = union(enum) {
     element,
 };
 
-fn parseStruct(
+pub fn parseStruct(
     scratch_alloc: Allocator,
     output_alloc: Allocator,
     xml: *xmlib.Reader,
@@ -467,6 +467,7 @@ fn parseStruct(
                 if (next_started) continue;
             },
             .element_end => break,
+            .text => {},
             .comment => {
                 @branchHint(.unlikely);
             },
@@ -769,6 +770,7 @@ fn expectElementStart(xml: *xmlib.Reader, name: ?[]const u8) !ExpectElementState
             return if (mem.eql(u8, expect, xml.elementName())) .start else .mismatch;
         },
         .element_end => return .end,
+        .text => {},
         .comment => {
             @branchHint(.unlikely);
         },
@@ -779,9 +781,10 @@ fn expectElementStart(xml: *xmlib.Reader, name: ?[]const u8) !ExpectElementState
     };
 }
 
-fn expectNode(xml: *xmlib.Reader, comptime node: xmlib.Reader.Node) !void {
+pub fn expectNode(xml: *xmlib.Reader, comptime node: xmlib.Reader.Node) !void {
     while (true) switch (try xml.read()) {
         node => return,
+        .text => {},
         .comment => {
             @branchHint(.unlikely);
         },
@@ -841,6 +844,7 @@ pub fn responseError(
             try expectNode(&reader, .element_end);
         },
         .element_end => break,
+        .text => {},
         .comment => {
             @branchHint(.unlikely);
         },

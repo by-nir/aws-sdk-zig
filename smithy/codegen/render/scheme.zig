@@ -101,8 +101,11 @@ pub fn operationTransportScheme(
         } else false;
 
         if (!did_consume) {
-            const list = if (symbols.hasTrait(mid, trt_proto.xml_attribute_id)) &attrs else &body;
-            try list.append(exp.valueOf(scheme.items.len));
+            if (symbols.service_xml_traits and symbols.hasTrait(mid, trt_proto.xml_attribute_id)) {
+                try attrs.append(exp.valueOf(scheme.items.len));
+            } else {
+                try body.append(exp.valueOf(scheme.items.len));
+            }
         }
 
         try scheme.append(try structMemberScheme(arena, symbols, exp, is_input, mid, options));
@@ -116,13 +119,16 @@ pub fn operationTransportScheme(
         try meta.append(exp.structAssign("params", exp.structLiteral(null, try params.toOwnedSlice())));
     }
 
-    const name_api = trt_proto.XmlName.get(symbols, id) orelse try symbols.getShapeName(id, .pascal, .{});
+    const name_api = blk: {
+        if (symbols.service_xml_traits) if (trt_proto.XmlName.get(symbols, id)) |name| break :blk name;
+        break :blk try symbols.getShapeName(id, .pascal, .{});
+    };
     try fields.append(exp.structAssign("name_api", exp.valueOf(name_api)));
 
-    if (trt_proto.XmlNamespace.get(symbols, id)) |ns| {
+    if (symbols.service_xml_traits) if (trt_proto.XmlNamespace.get(symbols, id)) |ns| {
         try fields.append(exp.structAssign("ns_url", exp.valueOf(ns.uri)));
         if (ns.prefix) |pre| try fields.append(exp.structAssign("ns_prefix", exp.valueOf(pre)));
-    }
+    };
 
     try fields.append(exp.structAssign("meta", exp.structLiteral(null, try meta.toOwnedSlice())));
 
@@ -166,18 +172,23 @@ fn structMemberScheme(
 ) anyerror!zig.ExprBuild {
     var fields = std.ArrayList(zig.ExprBuild).init(arena);
 
-    const name_api = trt_proto.JsonName.get(symbols, id) orelse
-        trt_proto.XmlName.get(symbols, id) orelse
-        try symbols.getShapeName(id, .pascal, .{});
+    const name_api = blk: {
+        if (symbols.service_xml_traits) {
+            if (trt_proto.XmlName.get(symbols, id)) |name| break :blk name;
+        } else {
+            if (trt_proto.JsonName.get(symbols, id)) |name| break :blk name;
+        }
+        break :blk try symbols.getShapeName(id, .pascal, .{});
+    };
     try fields.append(exp.structAssign("name_api", exp.valueOf(name_api)));
 
     const name_zig = exp.valueOf(try symbols.getShapeName(id, .snake, .{}));
     try fields.append(exp.structAssign("name_zig", name_zig));
 
-    if (trt_proto.XmlNamespace.get(symbols, id)) |ns| {
+    if (symbols.service_xml_traits) if (trt_proto.XmlNamespace.get(symbols, id)) |ns| {
         try fields.append(exp.structAssign("ns_url", exp.valueOf(ns.uri)));
         if (ns.prefix) |pre| try fields.append(exp.structAssign("ns_prefix", exp.valueOf(pre)));
-    }
+    };
 
     const is_required = !shape.isStructMemberOptional(symbols, id, is_input);
     if (is_required) try fields.append(exp.structAssign("required", exp.valueOf(true)));
@@ -233,10 +244,12 @@ fn shapeScheme(
             };
             try fields.append(exp.structAssign("shape", kind));
 
-            if (symbols.hasTrait(id, trt_proto.xml_flattened_id)) {
-                try fields.append(exp.structAssign("flatten", exp.valueOf(true)));
-            } else if (trt_proto.XmlName.get(symbols, member)) |name| {
-                try fields.append(exp.structAssign("name_member", exp.valueOf(name)));
+            if (symbols.service_xml_traits) {
+                if (symbols.hasTrait(id, trt_proto.xml_flattened_id)) {
+                    try fields.append(exp.structAssign("flatten", exp.valueOf(true)));
+                } else if (trt_proto.XmlName.get(symbols, member)) |name| {
+                    try fields.append(exp.structAssign("name_member", exp.valueOf(name)));
+                }
             }
 
             try fields.append(exp.structAssign("member", try shapeScheme(arena, symbols, exp, member, options)));
@@ -249,16 +262,18 @@ fn shapeScheme(
                 try fields.append(exp.structAssign("sparse", exp.valueOf(true)));
             }
 
-            if (symbols.hasTrait(id, trt_proto.xml_flattened_id)) {
-                try fields.append(exp.structAssign("flatten", exp.valueOf(true)));
-            }
+            if (symbols.service_xml_traits) {
+                if (symbols.hasTrait(id, trt_proto.xml_flattened_id)) {
+                    try fields.append(exp.structAssign("flatten", exp.valueOf(true)));
+                }
 
-            if (trt_proto.XmlName.get(symbols, key_id)) |name| {
-                try fields.append(exp.structAssign("name_key", exp.valueOf(name)));
-            }
+                if (trt_proto.XmlName.get(symbols, key_id)) |name| {
+                    try fields.append(exp.structAssign("name_key", exp.valueOf(name)));
+                }
 
-            if (trt_proto.XmlName.get(symbols, val_id)) |name| {
-                try fields.append(exp.structAssign("name_value", exp.valueOf(name)));
+                if (trt_proto.XmlName.get(symbols, val_id)) |name| {
+                    try fields.append(exp.structAssign("name_value", exp.valueOf(name)));
+                }
             }
 
             try fields.append(exp.structAssign("key", try shapeScheme(arena, symbols, exp, key_id, options)));
@@ -284,7 +299,7 @@ fn shapeScheme(
 
             const is_input = symbols.hasTrait(id, trt_refine.input_id);
             for (members) |mid| {
-                if (symbols.hasTrait(mid, trt_proto.xml_attribute_id)) {
+                if (symbols.service_xml_traits and symbols.hasTrait(mid, trt_proto.xml_attribute_id)) {
                     if (attrs.items.len == 0) {
                         const len = scheme.items.len;
                         body = try .initCapacity(arena, len);

@@ -16,6 +16,7 @@ const itg_rules = @import("../integrate/rules.zig");
 const itg_errors = @import("../integrate/errors.zig");
 const itg_proto = @import("../integrate/protocols.zig");
 const trt_auth = @import("../traits/auth.zig");
+const trt_proto = @import("../traits/protocols.zig");
 const aws_traits = @import("../traits.zig").aws_traits;
 const ServiceTrait = @import("../traits/core.zig").Service;
 
@@ -77,6 +78,9 @@ pub const pipeline_invoker = blk: {
     _ = builder.Override(smithy.OperationMetaHook, "AWS Operation Meta", extendOperationMeta, .{
         .injects = &.{SymbolsProvider},
     });
+    _ = builder.Override(smithy.OperationCustomErrorHook, "AWS Operation Custom Error", itg_errors.customizeOperationError, .{
+        .injects = &.{SymbolsProvider},
+    });
     _ = builder.Override(
         smithy.EndpointScriptHeadHook,
         "AWS Endpoint Script Head",
@@ -116,7 +120,9 @@ fn writeScriptHead(_: *const Delegate, bld: *zig.ContainerBuild) anyerror!void {
 
 fn extendService(self: *const Delegate, symbols: *SymbolsProvider, extension: *smithy.ServiceExtension) anyerror!void {
     const protocol = try itg_proto.resolveServiceProtocol(symbols);
+    extension.use_xml_traits = itg_proto.resolveXmlTraitsUsage(protocol);
     extension.timestamp_format = itg_proto.resolveTimestampFormat(protocol);
+    extension.custumize_errors = symbols.hasTrait(symbols.service_id, trt_proto.aws_query_id);
     try itg_auth.extendAuthSchemes(self, symbols, extension);
     try itg_errors.extendCommonErrors(self, symbols, extension);
 }

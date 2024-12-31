@@ -16,6 +16,11 @@ pub const Protocol = enum {
     ec2_query,
 };
 
+const WriteCtx = struct {
+    symbols: *SymbolsProvider,
+    protocol: Protocol,
+};
+
 pub fn resolveServiceProtocol(symbols: *SymbolsProvider) !Protocol {
     const traits = symbols.getTraits(symbols.service_id) orelse return error.MissingServiceTraits;
     for (traits.values) |trait| {
@@ -24,6 +29,7 @@ pub fn resolveServiceProtocol(symbols: *SymbolsProvider) !Protocol {
             trt_proto.AwsJson11.id => return .json_1_1,
             trt_proto.RestJson1.id => return .rest_json_1,
             trt_proto.RestXml.id => return .rest_xml,
+            trt_proto.aws_query_id => return .query,
             else => {},
         }
     }
@@ -69,6 +75,10 @@ pub fn resolveServiceTransport(symbols: *SymbolsProvider, protocol: Protocol) !S
                 const value = trt_proto.RestXml.get(symbols, symbols.service_id).?;
                 break :blk .{ value.http orelse &.{}, value.event_stream_http orelse &.{} };
             },
+            .query => return .{
+                .http_request = .http_1_1,
+                .http_stream = .http_1_1, // Doesn’t actually support streaming
+            },
             else => return error.UnimplementedServiceProtocol,
         }
     };
@@ -93,16 +103,23 @@ fn resolveTransportPriority(transports: []const []const u8, default: Transport) 
 
 pub fn resolveHttpMethod(exp: zig.ExprBuild, protocol: Protocol) !zig.ExprBuild {
     return switch (protocol) {
-        .json_1_0, .json_1_1 => exp.valueOf(.POST),
+        .json_1_0, .json_1_1, .query => exp.valueOf(.POST),
         .rest_json_1, .rest_xml => exp.fromExpr(try exp.id(aws_cfg.send_meta_param).dot().id("http_method").consume()),
         else => unreachable,
+    };
+}
+
+pub fn resolveXmlTraitsUsage(protocol: Protocol) bool {
+    return switch (protocol) {
+        .rest_xml, .query => true,
+        else => false,
     };
 }
 
 pub fn resolveTimestampFormat(protocol: Protocol) TimestampFormat {
     return switch (protocol) {
         .json_1_0, .json_1_1, .rest_json_1 => .epoch_seconds,
-        .rest_xml => .date_time,
+        .rest_xml, .query => .date_time,
         else => unreachable,
     };
 }
@@ -117,11 +134,15 @@ pub fn writeOperationRequest(_: Allocator, symbols: *SymbolsProvider, bld: *zig.
         .json_1_0, .json_1_1 => {
             try writeRequestHttpTarget(bld, symbols);
         },
+        .query => {},
         else => return error.UnimplementedProtocol,
     }
 
     try bld.@"if"(bld.x.id("http_method").dot().call("requestHasBody", &.{})).body(
-        bld.x.blockWith(protocol, writeRequestBody),
+        bld.x.blockWith(WriteCtx{
+            .symbols = symbols,
+            .protocol = protocol,
+        }, writeRequestBody),
     ).end();
 }
 
@@ -185,11 +206,12 @@ fn writeRequestHttp(bld: *zig.BlockBuild) !void {
     })).end();
 }
 
-fn writeRequestBody(protocol: Protocol, bld: *zig.BlockBuild) !void {
-    switch (protocol) {
-        .json_1_0, .json_1_1 => try writeAwsJsonBody(bld, protocol),
+fn writeRequestBody(ctx: WriteCtx, bld: *zig.BlockBuild) !void {
+    switch (ctx.protocol) {
+        .json_1_0, .json_1_1 => try writeAwsJsonBody(bld, ctx.protocol),
         .rest_json_1 => try writeRestJsonBody(bld),
         .rest_xml => try writeRestXmlBody(bld),
+        .query => try writeAwsQueryBody(bld, ctx.symbols),
         else => return error.UnimplementedProtocol,
     }
 }
@@ -264,16 +286,31 @@ fn writeRestXmlBody(bld: *zig.BlockBuild) !void {
     ).end();
 }
 
+fn writeAwsQueryBody(bld: *zig.BlockBuild, symbols: *SymbolsProvider) !void {
+    const version = (try symbols.getShape(symbols.service_id)).service.version orelse {
+        return error.MissingServiceVersion;
+    };
+
+    try bld.trys().id(aws_cfg.scope_protocol).dot().call("query.requestInput", &.{
+        bld.x.id(aws_cfg.send_op_param).dot().id("allocator"),
+        bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_input"),
+        bld.x.addressOf().id(aws_cfg.send_op_param).dot().id("request"),
+        bld.x.id(aws_cfg.send_meta_param).dot().id("name"),
+        bld.x.valueOf(version),
+        bld.x.id(aws_cfg.send_input_param),
+    }).end();
+}
+
 pub fn writeOperationResponse(symbols: *SymbolsProvider, bld: *zig.BlockBuild, protocol: Protocol) !void {
     try bld.constant("response").assign(
         bld.x.id(aws_cfg.send_op_param).dot().id("response").orElse().returns().valueOf(error.MissingResponse),
     );
 
-    try bld.switchWith(bld.x.raw("response.status.class()"), ResponseCtx{
+    try bld.switchWith(bld.x.raw("response.status.class()"), WriteCtx{
         .symbols = symbols,
         .protocol = protocol,
     }, struct {
-        fn f(ctx: ResponseCtx, b: *zig.SwitchBuild) !void {
+        fn f(ctx: WriteCtx, b: *zig.SwitchBuild) !void {
             try b.branch().case(b.x.valueOf(.success)).body(
                 b.x.blockWith(ctx, writeResponseSuccess),
             );
@@ -285,12 +322,7 @@ pub fn writeOperationResponse(symbols: *SymbolsProvider, bld: *zig.BlockBuild, p
     }.f);
 }
 
-const ResponseCtx = struct {
-    symbols: *SymbolsProvider,
-    protocol: Protocol,
-};
-
-fn writeResponseSuccess(ctx: ResponseCtx, bld: *zig.BlockBuild) !void {
+fn writeResponseSuccess(ctx: WriteCtx, bld: *zig.BlockBuild) !void {
     try bld.variable("output").assign(bld.x.id(aws_cfg.scope_smithy).dot().call("serial.zeroInit", &.{
         bld.x.id(aws_cfg.send_meta_param).dot().id("Output"),
         bld.x.structLiteral(null, &.{}),
@@ -312,6 +344,7 @@ fn writeResponseSuccess(ctx: ResponseCtx, bld: *zig.BlockBuild) !void {
     const func_name = switch (ctx.protocol) {
         .json_1_0, .json_1_1, .rest_json_1 => "json.responseOutput",
         .rest_xml => "xml.responseOutput",
+        .query => "query.responseOutput",
         else => return error.UnimplementedProtocol,
     };
     try bld.trys().id(aws_cfg.scope_protocol).dot().call(func_name, &.{
@@ -333,19 +366,24 @@ fn writeResponseSuccess(ctx: ResponseCtx, bld: *zig.BlockBuild) !void {
     }).end();
 }
 
-fn writeResponseFail(ctx: ResponseCtx, bld: *zig.BlockBuild) !void {
+fn writeResponseFail(ctx: WriteCtx, bld: *zig.BlockBuild) !void {
     const err_exp = switch (ctx.protocol) {
-        .json_1_0, .json_1_1, .rest_json_1 => bld.x.trys().id(aws_cfg.scope_protocol).dot().call("json.responseError", &.{
-            bld.x.id(aws_cfg.scratch_alloc),
-            bld.x.addressOf().id(aws_cfg.output_arena),
-            bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_errors"),
-            bld.x.id(aws_cfg.send_meta_param).dot().id("Errors"),
-            bld.x.id("response"),
-        }),
-        .rest_xml => blk: {
-            const proto = trt_proto.RestXml.get(ctx.symbols, ctx.symbols.service_id).?;
-            const has_wrap = !proto.no_error_wrapping;
+        .json_1_0, .json_1_1, .rest_json_1 => |protocol| blk: {
+            const func_name = switch (protocol) {
+                .query => "query.responseError",
+                else => "json.responseError",
+            };
 
+            break :blk bld.x.trys().id(aws_cfg.scope_protocol).dot().call(func_name, &.{
+                bld.x.id(aws_cfg.scratch_alloc),
+                bld.x.addressOf().id(aws_cfg.output_arena),
+                bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_errors"),
+                bld.x.id(aws_cfg.send_meta_param).dot().id("Errors"),
+                bld.x.id("response"),
+            });
+        },
+        .rest_xml, .query => |p| blk: {
+            const has_wrap = p == .rest_xml and !trt_proto.RestXml.get(ctx.symbols, ctx.symbols.service_id).?.no_error_wrapping;
             break :blk bld.x.trys().id(aws_cfg.scope_protocol).dot().call("xml.responseError", &.{
                 bld.x.id(aws_cfg.scratch_alloc),
                 bld.x.addressOf().id(aws_cfg.output_arena),

@@ -4,6 +4,20 @@ const Delegate = @import("jobz").Delegate;
 const smithy = @import("smithy/codegen");
 const SymbolsProvider = smithy.SymbolsProvider;
 const ServiceExtension = smithy.ServiceExtension;
+const AwsQueryError = @import("../traits/protocols.zig").AwsQueryError;
+
+/// Supported by AWS Query protocol.
+pub fn customizeOperationError(
+    self: *const Delegate,
+    symbols: *SymbolsProvider,
+    err: *SymbolsProvider.Error,
+) anyerror!void {
+    const eid = err.id orelse return;
+    const trait = AwsQueryError.get(symbols, eid) orelse return;
+    err.name_api = trait.code;
+    err.http_status = trait.http_status;
+    err.name_zig = try smithy.name_util.formatCase(self.alloc(), .snake, trait.code);
+}
 
 pub fn extendCommonErrors(self: *const Delegate, _: *SymbolsProvider, extension: *ServiceExtension) !void {
     const arena = self.alloc();

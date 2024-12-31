@@ -47,6 +47,8 @@ service_operations: []const SmithyId = &.{},
 service_data_shapes: []const SmithyId = &.{},
 service_auth_schemes: []const AuthId = &.{},
 service_timestamp_fmt: TimestampFormat = .epoch_seconds,
+service_xml_traits: bool = false,
+service_error_customization: bool = false,
 
 pub fn consumeModel(arena: Allocator, model: *Model) !Self {
     var dupe_meta = try model.meta.clone(arena);
