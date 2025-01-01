@@ -189,6 +189,10 @@ pub fn MutableSourceTree(comptime Tag: type) type {
             handle.* = string;
             return string.length - 3; // 3 bytes are used to encode string’s length
         }
+
+        pub fn reparentNodeChildren(self: *Self, source: NodeHandle, target: NodeHandle) !void {
+            try self.hierarchy.reparentChildren(self.allocator, source, target);
+        }
     };
 }
 

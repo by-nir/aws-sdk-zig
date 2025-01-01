@@ -149,6 +149,7 @@ fn serviceReadmeWriteIntro(allocator: Allocator, source: []const u8) ![]const u8
     var build = try md.MutableDocument.init(allocator);
     try md.html.convert(allocator, build.root(), source, .{
         .codeblock_safety = true,
+        .custom_tag_safety = true,
     });
     const markdown = try build.toReadOnly(allocator);
     defer markdown.deinit(allocator);

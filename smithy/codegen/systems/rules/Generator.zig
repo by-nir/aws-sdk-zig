@@ -87,6 +87,7 @@ pub fn generateParametersFields(self: *Self, bld: *ContainerBuild) !void {
                 .html = param.documentation,
                 .options = .{
                     .codeblock_safety = true,
+                    .custom_tag_safety = true,
                 },
             }, md.html.callback);
         }

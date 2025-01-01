@@ -53,6 +53,10 @@ const HtmlTag = enum(u32) {
             else => false,
         };
     }
+
+    pub fn isCustom(self: HtmlTag) bool {
+        return std.enums.tagName(HtmlTag, self) == null;
+    }
 };
 
 /// Naively parse HTML source, normalize whitespace, and convert entities to unicode.
@@ -200,6 +204,7 @@ test "HtmlFragmenter" {
     try testing.expectEqual(null, try frags.next());
     frags.deinit();
 
+    // Codeblock safe option
     frags = HtmlFragmenter.initCodeblockSafe(test_alloc, "<foo><code><bar>baz</bar></code></foo>");
     try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .tag = "<foo>" }, (try frags.next()).?);
     try testing.expectEqualDeep(HtmlFragmenter.Fragment{ .tag = "<code>" }, (try frags.next()).?);
@@ -258,6 +263,9 @@ pub const ParseOptions = struct {
     ///
     /// Does not support nested `<code>` tags!
     codeblock_safety: bool = false,
+    /// When a custom tag has no closing tag, the parser will treat it as raw
+    /// text instead of an HTML tag.
+    custom_tag_safety: bool = false,
 };
 
 const HtmlTree = srct.MutableSourceTree(HtmlTag);
@@ -272,29 +280,79 @@ fn parse(mut_alloc: Allocator, html: []const u8, options: ParseOptions) !HtmlTre
     var tree = try HtmlTree.init(mut_alloc, .document);
     errdefer tree.deinit();
 
-    try parseNode(&frags, &tree, srct.ROOT, .document);
+    try parseNode(&frags, &tree, srct.ROOT, .document, options.custom_tag_safety);
     return tree;
 }
 
-fn parseNode(frags: *HtmlFragmenter, tree: *HtmlTree, parent: srct.NodeHandle, parent_tag: HtmlTag) !void {
+threadlocal var flatten_to_tag: HtmlTag = undefined;
+
+fn parseNode(
+    frags: *HtmlFragmenter,
+    tree: *HtmlTree,
+    parent: srct.NodeHandle,
+    parent_tag: HtmlTag,
+    custom_safety: bool,
+) !void {
     while (try frags.next()) |frag| {
         switch (frag) {
             .text => |payload| _ = try tree.appendNodePayload(parent, .text, []const u8, payload),
             .tag => |s| {
                 const meta = TagMeta.parse(s);
                 switch (meta.kind) {
-                    .close => return if (meta.tag == parent_tag) {} else error.UnexpectedClosingTag,
-                    inline else => |g| {
-                        const node = if (meta.attrs) |attrs|
-                            try tree.appendNodePayload(parent, meta.tag, []const u8, attrs)
-                        else
-                            try tree.appendNode(parent, meta.tag);
+                    .close => {
+                        if (meta.tag == parent_tag) {
+                            @branchHint(.likely);
+                            return;
+                        } else if (parent_tag.isCustom()) {
+                            flatten_to_tag = meta.tag;
+                            return error.FlattenToTag;
+                        } else {
+                            return error.UnexpectedClosingTag;
+                        }
+                    },
+                    .self_close => _ = try appendHtmlNode(tree, parent, meta.tag, meta.attrs),
+                    .open => {
+                        const node = try appendHtmlNode(tree, parent, meta.tag, meta.attrs);
+                        if (!custom_safety or !meta.tag.isCustom() or s.len > 128) {
+                            @branchHint(.likely);
+                            try parseNode(frags, tree, node, meta.tag, custom_safety);
+                        } else {
+                            // Cache the raw tag since `frag.next()` overrides the raw slice
+                            var buffer: [128]u8 = undefined;
+                            @memcpy(buffer[0..s.len], s);
+                            const raw_tag = buffer[0..s.len];
 
-                        if (g == .open) try parseNode(frags, tree, node, meta.tag);
+                            parseNode(frags, tree, node, meta.tag, custom_safety) catch |err| {
+                                if (err != error.FlattenToTag) return err;
+
+                                // Append the node’s tag as raw text
+                                _ = try tree.appendNodePayload(parent, .text, []const u8, raw_tag);
+
+                                // Consume the node’s children
+                                try tree.reparentNodeChildren(node, parent);
+                                tree.dropNode(node);
+
+                                if (parent_tag == flatten_to_tag) {
+                                    // Flattening completed
+                                    return;
+                                } else {
+                                    // Continue flattening
+                                    return error.FlattenToTag;
+                                }
+                            };
+                        }
                     },
                 }
             },
         }
+    }
+}
+
+fn appendHtmlNode(tree: *HtmlTree, parent: srct.NodeHandle, tag: HtmlTag, attrs: ?[]const u8) !srct.NodeHandle {
+    if (attrs) |payload| {
+        return tree.appendNodePayload(parent, tag, []const u8, payload);
+    } else {
+        return tree.appendNode(parent, tag);
     }
 }
 
@@ -519,6 +577,8 @@ test "convert" {
         \\    - Baz
         \\- Qux
     );
+
+    try expectConvert("<p>foo <QUX> bar <QUX> baz</p>", "foo <QUX> bar <QUX> baz");
 }
 
 fn expectConvert(source: []const u8, expected: []const u8) !void {
@@ -531,6 +591,7 @@ fn expectConvert(source: []const u8, expected: []const u8) !void {
         errdefer build.deinit();
         try convert(arena_alloc, build.root(), source, .{
             .codeblock_safety = true,
+            .custom_tag_safety = true,
         });
         break :blk try build.toReadOnly(arena_alloc);
     };

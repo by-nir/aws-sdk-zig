@@ -654,6 +654,7 @@ pub fn writeDocComment(symbols: *SymbolsProvider, bld: *ContainerBuild, id: Smit
         .html = docs,
         .options = .{
             .codeblock_safety = true,
+            .custom_tag_safety = true,
         },
     }, md.html.callback);
 }

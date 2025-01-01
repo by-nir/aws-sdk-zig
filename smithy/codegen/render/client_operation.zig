@@ -388,6 +388,7 @@ fn writeErrorSetMember(arena: Allocator, bld: *zig.ContainerBuild, member: Symbo
             .html = docs,
             .options = .{
                 .codeblock_safety = true,
+                .custom_tag_safety = true,
             },
         }, md.html.callback);
     }
