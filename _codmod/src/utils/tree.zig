@@ -164,7 +164,7 @@ pub fn MutableSourceTree(comptime Tag: type) type {
         }
 
         pub fn dropNode(self: *Self, node: NodeHandle) void {
-            self.hierarchy.dropNode(self.allocator, .ordered, {}, node);
+            self.hierarchy.dropNode(self.allocator, {}, node);
         }
 
         pub fn setPayload(self: *Self, node: NodeHandle, comptime T: type, value: T) !void {
