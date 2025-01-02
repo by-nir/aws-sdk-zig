@@ -174,6 +174,7 @@ pub const Auth = struct {
             const name = try reader.nextString();
             try list.append(AuthId.of(name));
         }
+        try reader.nextArrayEnd();
 
         const slice = try list.toOwnedSliceSentinel(AuthId.none);
         return @ptrCast(slice.ptr);
