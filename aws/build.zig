@@ -3,7 +3,7 @@ const Build = std.Build;
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    const optimize: std.builtin.OptimizeMode = .Debug;
 
     //
     // Dependencies

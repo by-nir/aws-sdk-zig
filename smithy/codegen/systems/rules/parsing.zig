@@ -181,6 +181,10 @@ fn parseFunctionArgs(arena: Allocator, reader: *JsonReader) ![]const mdl.ArgValu
                 break :blk .{ .boolean = g == .true };
             },
             .string => .{ .string = try reader.nextStringAlloc(arena) },
+            .number => switch (try reader.nextNumber()) {
+                .integer => |n| .{ .integer = @intCast(n) },
+                .float => return error.UnexpectedType,
+            },
             .array_begin => .{ .array = try parseFunctionArgs(arena, reader) },
             .object_begin => switch (try parseFuncOrRef(arena, reader)) {
                 .reference => |t| .{ .reference = t },
