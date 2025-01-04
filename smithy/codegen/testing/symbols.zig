@@ -154,6 +154,14 @@ const un1 = SmithyId.of("test#Union$BAR");
 const un2 = SmithyId.of("test#Union$BAZ");
 const UNION = &.{ un0, un1, un2 };
 fn setupUnion(model: *Model) !void {
+    const Static = struct {
+        const doc: []const u8 = "<p>Doc for an Union member.</p>";
+        const traits: []const TaggedValue = &.{.{
+            .id = SmithyId.of("smithy.api#documentation"),
+            .value = @as(*const anyopaque, @ptrCast(&doc)),
+        }};
+    };
+
     try model.names.put(test_alloc, SmithyId.of("test#Union"), "Union");
     try model.shapes.put(test_alloc, SmithyId.of("test#Union"), .{ .tagged_union = UNION });
     try model.names.put(test_alloc, SmithyId.of("test#Union$FOO"), "FOO");
@@ -162,6 +170,7 @@ fn setupUnion(model: *Model) !void {
     try model.shapes.put(test_alloc, SmithyId.of("test#Union$BAR"), .integer);
     try model.names.put(test_alloc, SmithyId.of("test#Union$BAZ"), "BAZ");
     try model.shapes.put(test_alloc, SmithyId.of("test#Union$BAZ"), .string);
+    try model.traits.put(test_alloc, SmithyId.of("test#Union$BAZ"), Static.traits);
 }
 
 fn setupStruct(model: *Model) !void {

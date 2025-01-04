@@ -303,16 +303,18 @@ fn writeUnionShape(
         fn writeContainer(ctx: @TypeOf(context), b: *ContainerBuild) !void {
             var allocated = false;
 
-            for (ctx.members) |m| {
-                const type_name = try typeName(ctx.symbols, m, ctx.options.scope);
-                const member_name = try ctx.symbols.getShapeName(m, .snake, .{});
+            for (ctx.members) |mid| {
+                try writeDocComment(ctx.symbols, b, mid, true);
+
+                const type_name = try typeName(ctx.symbols, mid, ctx.options.scope);
+                const member_name = try ctx.symbols.getShapeName(mid, .snake, .{});
                 if (type_name.len > 0) {
                     try b.field(member_name).typing(b.x.raw(type_name)).end();
                 } else {
                     try b.field(member_name).end();
                 }
 
-                if (try isAllocatedType(ctx.symbols, m)) allocated = true;
+                if (try isAllocatedType(ctx.symbols, mid)) allocated = true;
             }
         }
     };
@@ -335,6 +337,7 @@ test writeUnionShape {
         \\pub const Union = union(enum) {
         \\    foo,
         \\    bar: i32,
+        \\    /// Doc for an Union member.
         \\    baz: []const u8,
         \\};
         \\
