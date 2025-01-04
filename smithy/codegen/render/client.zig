@@ -190,8 +190,16 @@ pub const ClientDataTypes = srvc.ScriptCodegen.Task("Smithy Client Data Types Co
     .injects = &.{SymbolsProvider},
 });
 fn clientDataTypesTask(self: *const jobz.Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild) anyerror!void {
+    try bld.constant("SerialType").assign(bld.x.id(cfg.runtime_scope).dot().id("SerialType"));
+
+    const options: shape.ShapeOptions = .{
+        .scheme = .{
+            .serial = .{ .timestamp_fmt = symbols.service_timestamp_fmt },
+        },
+    };
+
     for (symbols.service_data_shapes) |id| {
-        try shape.writeShapeDecleration(self.alloc(), symbols, bld, id, .{});
+        try shape.writeShapeDecleration(self.alloc(), symbols, bld, id, options);
     }
 }
 
@@ -207,5 +215,11 @@ test ClientDataTypes {
     defer symbols.deinit();
     _ = try tester.provideService(&symbols, null);
 
-    try srvc.expectServiceScript("pub const Foo = struct {};", ClientDataTypes, tester.pipeline, .{});
+    try srvc.expectServiceScript(
+        \\const SerialType = smithy.SerialType;
+        \\
+        \\pub const Foo = struct {};
+        \\
+        \\pub const Foo_scheme = .{ .shape = SerialType.structure, .members = .{} };
+    , ClientDataTypes, tester.pipeline, .{});
 }

@@ -578,7 +578,7 @@ test ClientOperation {
         \\        .name_api = "Foo",
         \\        .name_zig = "foo",
         \\        .required = true,
-        \\        .scheme = .{ .shape = SerialType.structure, .members = .{} },
+        \\        .scheme = srvc_types.Foo_scheme,
         \\    }, .{
         \\        .name_api = "Bar",
         \\        .name_zig = "bar",

@@ -7,6 +7,7 @@ const testing = std.testing;
 const test_alloc = testing.allocator;
 
 pub const SerialType = enum {
+    none,
     boolean,
     byte,
     short,

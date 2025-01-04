@@ -2,15 +2,18 @@ const std = @import("std");
 const default_whitelist = [_][]const u8{ "cloudcontrol", "cloudfront", "sns", "sqs" };
 
 pub fn build(b: *std.Build) void {
-    const aws = b.dependency("aws", .{ .target = b.graph.host });
-
     const whitelist = b.option(
         []const []const u8,
         "filter",
         "Whitelist the services to generate",
     );
 
-    const aws_codegen = b.addRunArtifact(aws.artifact("aws-codegen"));
+    const codegen_artifact = b.dependency("aws", .{
+        .target = b.graph.host,
+        .optimize = .Debug,
+    }).artifact("aws-codegen");
+
+    const aws_codegen = b.addRunArtifact(codegen_artifact);
     if (b.lazyDependency("aws-models", .{})) |models| {
         const src_dir = models.path("sdk");
         aws_codegen.addDirectoryArg(src_dir);

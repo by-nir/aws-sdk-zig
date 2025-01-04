@@ -12,6 +12,7 @@ const BlockBuild = zig.BlockBuild;
 const ContainerBuild = zig.ContainerBuild;
 const Writer = @import("codmod").CodegenWriter;
 const runtime_serial = @import("runtime").serial;
+const scm = @import("scheme.zig");
 const clnt = @import("client.zig");
 const mdl = @import("../model.zig");
 const SmithyId = mdl.SmithyId;
@@ -27,7 +28,7 @@ const trt_docs = @import("../traits/docs.zig");
 const trt_refine = @import("../traits/refine.zig");
 const trt_constr = @import("../traits/constraint.zig");
 const test_symbols = @import("../testing/symbols.zig");
-const TimestampFormat = @import("../traits/protocol.zig").TimestampFormat;
+const trt_proto = @import("../traits/protocol.zig");
 
 pub const ShapeOptions = struct {
     /// Override the struct’s identifier.
@@ -36,8 +37,19 @@ pub const ShapeOptions = struct {
     scope: ?[]const u8 = null,
     /// Special struct behavior
     behavior: StructBehavior = .none,
+    /// Generate a serial scheme description alongside the shape.
+    scheme: SchemeBehavior = .none,
 
-    pub const StructBehavior = enum { none, input, output };
+    pub const StructBehavior = enum {
+        none,
+        input,
+        output,
+    };
+
+    pub const SchemeBehavior = union(enum) {
+        none,
+        serial: scm.SchemeOptions,
+    };
 };
 
 pub fn writeShapeDecleration(
@@ -52,8 +64,8 @@ pub fn writeShapeDecleration(
         .trt_enum => try writeTraitEnumShape(arena, symbols, bld, id, options),
         .str_enum => |m| try writeStrEnumShape(arena, symbols, bld, id, m, options),
         .int_enum => |m| try writeIntEnumShape(symbols, bld, id, m, options),
-        .tagged_union => |m| try writeUnionShape(symbols, bld, id, m, options),
-        .structure => |m| try writeStructShape(symbols, bld, id, m, options),
+        .tagged_union => |m| try writeUnionShape(arena, symbols, bld, id, m, options),
+        .structure => |m| try writeStructShape(arena, symbols, bld, id, m, options),
         else => return error.UndeclerableShape,
     }
 }
@@ -277,6 +289,7 @@ test writeIntEnumShape {
 }
 
 fn writeUnionShape(
+    arena: Allocator,
     symbols: *SymbolsProvider,
     bld: *ContainerBuild,
     id: SmithyId,
@@ -308,19 +321,45 @@ fn writeUnionShape(
     try bld.public().constant(shape_name).assign(
         bld.x.@"union"().bodyWith(context, Closures.writeContainer),
     );
+
+    switch (options.scheme) {
+        .serial => |opts| try scm.writeUnionScheme(arena, symbols, bld, id, members, opts),
+        .none => {},
+    }
 }
 
 test writeUnionShape {
-    try shapeTester(.union_str, SmithyId.of("test#Union"), .{},
+    try shapeTester(.union_str, SmithyId.of("test#Union"), .{
+        .scheme = .{ .serial = .{} },
+    },
         \\pub const Union = union(enum) {
         \\    foo,
         \\    bar: i32,
         \\    baz: []const u8,
         \\};
+        \\
+        \\pub const Union_scheme = .{ .shape = SerialType.tagged_union, .members = .{
+        \\    .{
+        \\        .name_api = "FOO",
+        \\        .name_zig = "foo",
+        \\        .scheme = .{.shape = SerialType.none},
+        \\    },
+        \\    .{
+        \\        .name_api = "BAR",
+        \\        .name_zig = "bar",
+        \\        .scheme = .{.shape = SerialType.integer},
+        \\    },
+        \\    .{
+        \\        .name_api = "BAZ",
+        \\        .name_zig = "baz",
+        \\        .scheme = .{.shape = SerialType.string},
+        \\    },
+        \\} };
     );
 }
 
 fn writeStructShape(
+    arena: Allocator,
     symbols: *SymbolsProvider,
     bld: *ContainerBuild,
     id: SmithyId,
@@ -328,20 +367,8 @@ fn writeStructShape(
     options: ShapeOptions,
 ) !void {
     var is_allocated = false;
-    for (members) |mid| {
-        if (!try isAllocatedType(symbols, mid)) continue;
-        is_allocated = true;
-        break;
-    }
-
-    var flat_members = try std.ArrayList(SmithyId).initCapacity(symbols.arena, members.len);
-    flat_members.appendSliceAssumeCapacity(members);
-
     const is_input = symbols.hasTrait(id, trt_refine.input_id);
-    {
-        const is_alloc = try flattenStructShapeMembers(symbols, bld, &flat_members, is_input, id);
-        is_allocated = is_allocated or is_alloc;
-    }
+    const flat_members = try structMembersAndMixins(symbols, id, members, is_input, &is_allocated);
 
     const context = .{
         .id = id,
@@ -349,7 +376,7 @@ fn writeStructShape(
         .options = options,
         .is_input = is_input,
         .is_allocated = is_allocated,
-        .members = flat_members.items,
+        .members = flat_members,
     };
 
     const Closures = struct {
@@ -495,19 +522,55 @@ fn writeStructShape(
     try bld.public().constant(shape_name).assign(
         bld.x.@"struct"().bodyWith(context, Closures.writeContainer),
     );
+
+    switch (options.scheme) {
+        .serial => |opts| try scm.writeStructScheme(arena, symbols, bld, id, flat_members, is_input, opts),
+        .none => {},
+    }
+}
+
+pub fn listStructMembersAndMixins(symbols: *SymbolsProvider, id: SmithyId) ![]const SmithyId {
+    var is_allocated = false;
+    const members = (try symbols.getShape(id)).structure;
+    const is_input = symbols.hasTrait(id, trt_refine.input_id);
+    return structMembersAndMixins(symbols, id, members, is_input, &is_allocated);
+}
+
+fn structMembersAndMixins(
+    symbols: *SymbolsProvider,
+    id: SmithyId,
+    members: []const SmithyId,
+    is_input: bool,
+    is_alloc: *bool,
+) ![]const SmithyId {
+    is_alloc.* = false;
+    for (members) |mid| {
+        if (!try isAllocatedType(symbols, mid)) continue;
+        is_alloc.* = true;
+        break;
+    }
+
+    var list = try std.ArrayList(SmithyId).initCapacity(symbols.arena, members.len);
+    list.appendSliceAssumeCapacity(members);
+
+    {
+        const alloc = try flattenStructShapeMembers(symbols, &list, id, is_input);
+        is_alloc.* = is_alloc.* or alloc;
+    }
+
+    return list.toOwnedSlice();
 }
 
 fn flattenStructShapeMembers(
     symbols: *SymbolsProvider,
-    bld: *ContainerBuild,
     list: *std.ArrayList(SmithyId),
-    is_input: bool,
     id: SmithyId,
+    is_input: bool,
 ) !bool {
     var allocated = false;
     const mixins = symbols.getMixins(id) orelse return false;
     for (mixins) |mixin| {
-        const is_alloc = try flattenStructShapeMembers(symbols, bld, list, is_input, mixin);
+        const is_alloc = try flattenStructShapeMembers(symbols, list, mixin, is_input);
         allocated = is_alloc;
 
         const members = (try symbols.getShape(mixin)).structure;
@@ -573,8 +636,8 @@ fn writeStructShapeMember(
                 break :blk bld.x.valueOf(target);
             },
             .timestamp => blk: {
-                const format = TimestampFormat.get(symbols, id) orelse switch (try symbols.getShape(id)) {
-                    .target => |d| TimestampFormat.get(symbols, d) orelse symbols.service_timestamp_fmt,
+                const format = trt_proto.TimestampFormat.get(symbols, id) orelse switch (try symbols.getShape(id)) {
+                    .target => |d| trt_proto.TimestampFormat.get(symbols, d) orelse symbols.service_timestamp_fmt,
                     else => symbols.service_timestamp_fmt,
                 };
 
@@ -628,7 +691,9 @@ pub fn isStructMemberOptional(symbols: *SymbolsProvider, id: SmithyId, is_input:
 }
 
 test writeStructShape {
-    try shapeTester(.structure, SmithyId.of("test#Struct"), .{},
+    try shapeTester(.structure, SmithyId.of("test#Struct"), ShapeOptions{
+        .scheme = .{ .serial = .{} },
+    },
         \\pub const Struct = struct {
         \\    /// A **struct** member.
         \\    foo_bar: []const u8,
@@ -636,6 +701,26 @@ test writeStructShape {
         \\    baz_qux: IntEnum = @enumFromInt(8),
         \\    mixed: ?bool = null,
         \\};
+        \\
+        \\pub const Struct_scheme = .{ .shape = SerialType.structure, .members = .{
+        \\    .{
+        \\        .name_api = "fooBar",
+        \\        .name_zig = "foo_bar",
+        \\        .required = true,
+        \\        .scheme = .{.shape = SerialType.string},
+        \\    },
+        \\    .{
+        \\        .name_api = "bazQux",
+        \\        .name_zig = "baz_qux",
+        \\        .required = true,
+        \\        .scheme = .{.shape = SerialType.int_enum},
+        \\    },
+        \\    .{
+        \\        .name_api = "mixed",
+        \\        .name_zig = "mixed",
+        \\        .scheme = .{.shape = SerialType.boolean},
+        \\    },
+        \\} };
     );
 }
 

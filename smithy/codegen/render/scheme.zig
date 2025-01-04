@@ -33,9 +33,9 @@ pub fn operationTransportScheme(
     exp: zig.ExprBuild,
     id: SmithyId,
 ) !zig.ExprBuild {
-    const members = (try symbols.getShape(id)).structure;
     const is_input = symbols.hasTrait(id, trt_refine.input_id);
     const base_param = exp.id(cfg.runtime_scope).dot().id("MetaParam");
+    const members = try shape.listStructMembersAndMixins(symbols, id);
 
     var fields = std.ArrayList(zig.ExprBuild).init(arena);
     var meta = std.ArrayList(zig.ExprBuild).init(arena);
@@ -47,6 +47,7 @@ pub fn operationTransportScheme(
 
     for (members) |mid| {
         var options = SchemeOptions{
+            .is_local = false,
             .timestamp_fmt = symbols.service_timestamp_fmt,
         };
 
@@ -158,7 +159,9 @@ fn buildMeta(
     }
 }
 
-const SchemeOptions = struct {
+pub const SchemeOptions = struct {
+    /// Whether the scheme is added in the types file.
+    is_local: bool = true,
     timestamp_fmt: trt_proto.TimestampFormat.Value = .epoch_seconds,
 };
 
@@ -224,6 +227,7 @@ fn shapeScheme(
         .big_integer,
         .big_decimal,
         => |_, g| try fields.append(exp.structAssign("shape", exp_type.valueOf(g))),
+        .unit => try fields.append(exp.structAssign("shape", exp_type.valueOf(.none))),
         .timestamp => {
             const format = trt_proto.TimestampFormat.get(symbols, id) orelse switch (try symbols.getShape(id)) {
                 .target => |d| trt_proto.TimestampFormat.get(symbols, d) orelse options.timestamp_fmt,
@@ -252,7 +256,8 @@ fn shapeScheme(
                 }
             }
 
-            try fields.append(exp.structAssign("member", try shapeScheme(arena, symbols, exp, member, options)));
+            const z = try shapeScheme(arena, symbols, exp, member, options);
+            try fields.append(exp.structAssign("member", z));
         },
         .map => |members| {
             const key_id, const val_id = members;
@@ -279,54 +284,102 @@ fn shapeScheme(
             try fields.append(exp.structAssign("key", try shapeScheme(arena, symbols, exp, key_id, options)));
             try fields.append(exp.structAssign("val", try shapeScheme(arena, symbols, exp, val_id, options)));
         },
-        .tagged_union => |members| {
-            try fields.append(exp.structAssign("shape", exp_type.valueOf(.tagged_union)));
+        .tagged_union, .structure => {
+            const nid = switch (try symbols.getShape(id)) {
+                .target => |tid| tid,
+                else => id,
+            };
 
-            var scheme = std.ArrayList(zig.ExprBuild).init(arena);
-            const is_input = symbols.hasTrait(id, trt_refine.input_id);
-            for (members) |mid| {
-                try scheme.append(try structMemberScheme(arena, symbols, exp, is_input, mid, options));
+            const name = try symbols.getShapeName(nid, .pascal, .{
+                .suffix = "_scheme",
+            });
+
+            if (options.is_local) {
+                return exp.id(name);
+            } else {
+                return exp.id(cfg.types_scope).dot().id(name);
             }
-
-            try fields.append(exp.structAssign("members", exp.structLiteral(null, try scheme.toOwnedSlice())));
-        },
-        .structure => |members| {
-            try fields.append(exp.structAssign("shape", exp_type.valueOf(.structure)));
-
-            var scheme = std.ArrayList(zig.ExprBuild).init(arena);
-            var attrs = std.ArrayList(zig.ExprBuild).init(arena);
-            var body = std.ArrayList(zig.ExprBuild).init(arena);
-
-            const is_input = symbols.hasTrait(id, trt_refine.input_id);
-            for (members) |mid| {
-                if (symbols.service_xml_traits and symbols.hasTrait(mid, trt_proto.xml_attribute_id)) {
-                    if (attrs.items.len == 0) {
-                        const len = scheme.items.len;
-                        body = try .initCapacity(arena, len);
-                        for (0..len) |i| body.appendAssumeCapacity(exp.valueOf(i));
-                    }
-
-                    try attrs.append(exp.valueOf(scheme.items.len));
-                } else if (attrs.items.len > 0) {
-                    try body.append(exp.valueOf(scheme.items.len));
-                }
-
-                try scheme.append(try structMemberScheme(arena, symbols, exp, is_input, mid, options));
-            }
-
-            if (attrs.items.len > 0) {
-                try fields.append(exp.structAssign("attr_ids", exp.structLiteral(null, try attrs.toOwnedSlice())));
-                try fields.append(exp.structAssign("body_ids", exp.structLiteral(null, try body.toOwnedSlice())));
-            }
-
-            try fields.append(exp.structAssign("members", exp.structLiteral(null, try scheme.toOwnedSlice())));
         },
         .document => {
             // AWS usage: controltower, identitystore, inspector-scan, bedrock-agent-runtime, marketplace-catalog
             @panic("Document shape scheme construction not implemented");
         },
-        .unit, .operation, .resource, .service, .target => unreachable,
+        .operation, .resource, .service, .target => unreachable,
     }
 
     return exp.structLiteral(null, try fields.toOwnedSlice());
+}
+
+pub fn writeUnionScheme(
+    arena: Allocator,
+    symbols: *SymbolsProvider,
+    bld: *zig.ContainerBuild,
+    id: SmithyId,
+    members: []const SmithyId,
+    options: SchemeOptions,
+) !void {
+    var fields = std.ArrayList(zig.ExprBuild).init(arena);
+    try fields.append(bld.x.structAssign("shape", bld.x.id("SerialType").valueOf(.tagged_union)));
+
+    var member_options = options;
+    member_options.is_local = true;
+
+    var scheme = std.ArrayList(zig.ExprBuild).init(arena);
+    for (members) |mid| {
+        try scheme.append(try structMemberScheme(arena, symbols, bld.x, false, mid, options));
+    }
+    try fields.append(bld.x.structAssign("members", bld.x.structLiteral(null, try scheme.toOwnedSlice())));
+
+    const scheme_name = try symbols.getShapeName(id, .pascal, .{ .suffix = "_scheme" });
+    try bld.public().constant(scheme_name).assign(
+        bld.x.structLiteral(null, try fields.toOwnedSlice()),
+    );
+}
+
+pub fn writeStructScheme(
+    arena: Allocator,
+    symbols: *SymbolsProvider,
+    bld: *zig.ContainerBuild,
+    id: SmithyId,
+    members: []const SmithyId,
+    is_input: bool,
+    options: SchemeOptions,
+) !void {
+    var fields = std.ArrayList(zig.ExprBuild).init(arena);
+    try fields.append(bld.x.structAssign("shape", bld.x.id("SerialType").valueOf(.structure)));
+
+    var member_options = options;
+    member_options.is_local = true;
+
+    var scheme = std.ArrayList(zig.ExprBuild).init(arena);
+    var attrs = std.ArrayList(zig.ExprBuild).init(arena);
+    var body = std.ArrayList(zig.ExprBuild).init(arena);
+
+    for (members) |mid| {
+        if (symbols.service_xml_traits and symbols.hasTrait(mid, trt_proto.xml_attribute_id)) {
+            if (attrs.items.len == 0) {
+                const len = scheme.items.len;
+                body = try .initCapacity(arena, len);
+                for (0..len) |i| body.appendAssumeCapacity(bld.x.valueOf(i));
+            }
+
+            try attrs.append(bld.x.valueOf(scheme.items.len));
+        } else if (attrs.items.len > 0) {
+            try body.append(bld.x.valueOf(scheme.items.len));
+        }
+
+        try scheme.append(try structMemberScheme(arena, symbols, bld.x, is_input, mid, options));
+    }
+
+    if (attrs.items.len > 0) {
+        try fields.append(bld.x.structAssign("attr_ids", bld.x.structLiteral(null, try attrs.toOwnedSlice())));
+        try fields.append(bld.x.structAssign("body_ids", bld.x.structLiteral(null, try body.toOwnedSlice())));
+    }
+
+    try fields.append(bld.x.structAssign("members", bld.x.structLiteral(null, try scheme.toOwnedSlice())));
+
+    const scheme_name = try symbols.getShapeName(id, .pascal, .{ .suffix = "_scheme" });
+    try bld.public().constant(scheme_name).assign(
+        bld.x.structLiteral(null, try fields.toOwnedSlice()),
+    );
 }
