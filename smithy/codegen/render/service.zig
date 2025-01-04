@@ -68,7 +68,7 @@ fn serviceCodegenTask(self: *const jobz.Delegate, symbols: *SymbolsProvider) any
         std.log.warn("Skipped readme generation – missing `ServiceReadmeHook` overide.", .{});
     }
 
-    try extendServiceSchemes(self, symbols);
+    try extendServiceSchemas(self, symbols);
     try self.evaluate(files_jobs.WriteFile.Chain(clnt.ServiceClient, .sync), .{ cfg.service_client_filename, .{} });
 
     if (symbols.hasTrait(symbols.service_id, trt_rules.EndpointRuleSet.id)) {
@@ -84,7 +84,7 @@ fn serviceCodegenTask(self: *const jobz.Delegate, symbols: *SymbolsProvider) any
     }
 }
 
-fn extendServiceSchemes(self: *const jobz.Delegate, symbols: *SymbolsProvider) !void {
+fn extendServiceSchemas(self: *const jobz.Delegate, symbols: *SymbolsProvider) !void {
     std.debug.assert(symbols.service_errors.len == 0);
     std.debug.assert(symbols.service_auth_schemes.len == 0);
 

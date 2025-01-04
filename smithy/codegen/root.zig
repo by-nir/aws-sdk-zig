@@ -85,7 +85,7 @@ test {
 
     // Render
     _ = @import("render/shape.zig");
-    _ = @import("render/scheme.zig");
+    _ = @import("render/schema.zig");
     _ = gen_operation;
     _ = gen_endpoint;
     _ = gen_client;

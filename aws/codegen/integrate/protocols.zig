@@ -146,19 +146,19 @@ pub fn writeOperationRequest(_: Allocator, symbols: *SymbolsProvider, bld: *zig.
     ).end();
 }
 
-const META_SCHEME_CONST = "meta_scheme";
+const META_SCHEMA_CONST = "meta_schema";
 fn writeMetaConstant(bld: *zig.BlockBuild) !void {
-    try bld.constant(META_SCHEME_CONST).assign(
-        bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_input").dot().id("meta"),
+    try bld.constant(META_SCHEMA_CONST).assign(
+        bld.x.id(aws_cfg.send_meta_param).dot().id("schema_input").dot().id("meta"),
     );
 }
 
 fn writePayloadConstant(bld: *zig.BlockBuild) !void {
-    const member_idx = bld.x.id(META_SCHEME_CONST).dot().id("payload").valIndexer(bld.x.valueOf(1));
-    try bld.constant("payload_scheme").assign(bld.x.@"if"(
-        bld.x.raw("@hasField(@TypeOf(meta_scheme), \"payload\")"),
+    const member_idx = bld.x.id(META_SCHEMA_CONST).dot().id("payload").valIndexer(bld.x.valueOf(1));
+    try bld.constant("payload_schema").assign(bld.x.@"if"(
+        bld.x.raw("@hasField(@TypeOf(meta_schema), \"payload\")"),
     ).body(
-        bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_input").dot().id("members").valIndexer(member_idx),
+        bld.x.id(aws_cfg.send_meta_param).dot().id("schema_input").dot().id("members").valIndexer(member_idx),
     ).@"else"().body(
         bld.x.valueOf(null),
     ).end());
@@ -177,14 +177,14 @@ fn writeRequestHttpTarget(bld: *zig.BlockBuild, symbols: *SymbolsProvider) !void
 }
 
 fn writeRequestHttp(bld: *zig.BlockBuild) !void {
-    const scheme_exp = bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_input");
+    const schema_exp = bld.x.id(aws_cfg.send_meta_param).dot().id("schema_input");
 
     try bld.constant("uri_path").assign(bld.x.@"if"(
-        bld.x.raw("@hasField(@TypeOf(meta_scheme), \"labels\")"),
+        bld.x.raw("@hasField(@TypeOf(meta_schema), \"labels\")"),
     ).body(bld.x.trys().id(aws_cfg.scope_protocol).dot().call("http.uriMetaLabels", &.{
         bld.x.id(aws_cfg.send_op_param).dot().id("allocator"),
-        scheme_exp.dot().id("meta").dot().id("labels"),
-        scheme_exp.dot().id("members"),
+        schema_exp.dot().id("meta").dot().id("labels"),
+        schema_exp.dot().id("members"),
         bld.x.id(aws_cfg.send_meta_param).dot().id("http_uri"),
         bld.x.id(aws_cfg.send_input_param),
     })).@"else"().body(
@@ -196,11 +196,11 @@ fn writeRequestHttp(bld: *zig.BlockBuild) !void {
     }).end();
 
     try bld.@"if"(
-        bld.x.raw("@hasField(@TypeOf(meta_scheme), \"params\")"),
+        bld.x.raw("@hasField(@TypeOf(meta_schema), \"params\")"),
     ).body(bld.x.trys().id(aws_cfg.scope_protocol).dot().call("http.writeMetaParams", &.{
         bld.x.id(aws_cfg.send_op_param).dot().id("allocator"),
-        scheme_exp.dot().id("meta").dot().id("params"),
-        scheme_exp.dot().id("members"),
+        schema_exp.dot().id("meta").dot().id("params"),
+        schema_exp.dot().id("members"),
         bld.x.id(aws_cfg.send_input_param),
         bld.x.addressOf().id(aws_cfg.send_op_param).dot().id("request"),
     })).end();
@@ -217,11 +217,11 @@ fn writeRequestBody(ctx: WriteCtx, bld: *zig.BlockBuild) !void {
 }
 
 fn writeAwsJsonBody(bld: *zig.BlockBuild, protocol: Protocol) !void {
-    const scheme_exp = bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_input");
+    const schema_exp = bld.x.id(aws_cfg.send_meta_param).dot().id("schema_input");
     try bld.trys().id(aws_cfg.scope_protocol).dot().call("json.requestWithShape", &.{
         bld.x.id(aws_cfg.send_op_param).dot().id("allocator"),
-        scheme_exp.dot().id("members"),
-        scheme_exp.dot().id("body_ids"),
+        schema_exp.dot().id("members"),
+        schema_exp.dot().id("body_ids"),
         bld.x.valueOf(switch (protocol) {
             .json_1_0 => "application/x-amz-json-1.0",
             .json_1_1 => "application/x-amz-json-1.1",
@@ -233,13 +233,13 @@ fn writeAwsJsonBody(bld: *zig.BlockBuild, protocol: Protocol) !void {
 }
 
 fn writeRestJsonBody(bld: *zig.BlockBuild) !void {
-    const scheme_exp = bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_input");
+    const schema_exp = bld.x.id(aws_cfg.send_meta_param).dot().id("schema_input");
 
-    try bld.@"if"(bld.x.id("payload_scheme")).capture("pld").body(bld.x.block(struct {
+    try bld.@"if"(bld.x.id("payload_schema")).capture("pld").body(bld.x.block(struct {
         fn f(b: *zig.BlockBuild) !void {
             try b.trys().id(aws_cfg.scope_protocol).dot().call("json.requestWithPayload", &.{
                 b.x.id(aws_cfg.send_op_param).dot().id("allocator"),
-                b.x.id(META_SCHEME_CONST).dot().id("payload"),
+                b.x.id(META_SCHEMA_CONST).dot().id("payload"),
                 b.x.id("pld"),
                 b.x.addressOf().id(aws_cfg.send_op_param).dot().id("request"),
                 b.x.call("@field", &.{
@@ -251,8 +251,8 @@ fn writeRestJsonBody(bld: *zig.BlockBuild) !void {
     }.f)).@"else"().body(
         bld.x.trys().id(aws_cfg.scope_protocol).dot().call("json.requestWithShape", &.{
             bld.x.id(aws_cfg.send_op_param).dot().id("allocator"),
-            scheme_exp.dot().id("members"),
-            scheme_exp.dot().id("body_ids"),
+            schema_exp.dot().id("members"),
+            schema_exp.dot().id("body_ids"),
             bld.x.valueOf("application/json"),
             bld.x.addressOf().id(aws_cfg.send_op_param).dot().id("request"),
             bld.x.id(aws_cfg.send_input_param),
@@ -261,13 +261,13 @@ fn writeRestJsonBody(bld: *zig.BlockBuild) !void {
 }
 
 fn writeRestXmlBody(bld: *zig.BlockBuild) !void {
-    const scheme_exp = bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_input");
+    const schema_exp = bld.x.id(aws_cfg.send_meta_param).dot().id("schema_input");
 
-    try bld.@"if"(bld.x.id("payload_scheme")).capture("pld").body(bld.x.block(struct {
+    try bld.@"if"(bld.x.id("payload_schema")).capture("pld").body(bld.x.block(struct {
         fn f(b: *zig.BlockBuild) !void {
             try b.trys().id(aws_cfg.scope_protocol).dot().call("xml.requestWithPayload", &.{
                 b.x.id(aws_cfg.send_op_param).dot().id("allocator"),
-                b.x.id(META_SCHEME_CONST).dot().id("payload"),
+                b.x.id(META_SCHEMA_CONST).dot().id("payload"),
                 b.x.id("pld"),
                 b.x.addressOf().id(aws_cfg.send_op_param).dot().id("request"),
                 b.x.call("@field", &.{
@@ -279,7 +279,7 @@ fn writeRestXmlBody(bld: *zig.BlockBuild) !void {
     }.f)).@"else"().body(
         bld.x.trys().id(aws_cfg.scope_protocol).dot().call("xml.requestWithShape", &.{
             bld.x.id(aws_cfg.send_op_param).dot().id("allocator"),
-            scheme_exp,
+            schema_exp,
             bld.x.addressOf().id(aws_cfg.send_op_param).dot().id("request"),
             bld.x.id(aws_cfg.send_input_param),
         }),
@@ -293,7 +293,7 @@ fn writeAwsQueryBody(bld: *zig.BlockBuild, symbols: *SymbolsProvider) !void {
 
     try bld.trys().id(aws_cfg.scope_protocol).dot().call("query.requestInput", &.{
         bld.x.id(aws_cfg.send_op_param).dot().id("allocator"),
-        bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_input"),
+        bld.x.id(aws_cfg.send_meta_param).dot().id("schema_input"),
         bld.x.addressOf().id(aws_cfg.send_op_param).dot().id("request"),
         bld.x.id(aws_cfg.send_meta_param).dot().id("name"),
         bld.x.valueOf(version),
@@ -332,8 +332,8 @@ fn writeResponseSuccess(ctx: WriteCtx, bld: *zig.BlockBuild) !void {
         .rest_json_1, .rest_xml => {
             try bld.trys().id(aws_cfg.scope_protocol).dot().call("http.parseMeta", &.{
                 bld.x.id(aws_cfg.output_arena).dot().call("allocator", &.{}),
-                bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_output").dot().id("meta"),
-                bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_output").dot().id("members"),
+                bld.x.id(aws_cfg.send_meta_param).dot().id("schema_output").dot().id("meta"),
+                bld.x.id(aws_cfg.send_meta_param).dot().id("schema_output").dot().id("members"),
                 bld.x.id("response"),
                 bld.x.addressOf().id("output"),
             }).end();
@@ -350,7 +350,7 @@ fn writeResponseSuccess(ctx: WriteCtx, bld: *zig.BlockBuild) !void {
     try bld.trys().id(aws_cfg.scope_protocol).dot().call(func_name, &.{
         bld.x.id(aws_cfg.scratch_alloc),
         bld.x.id(aws_cfg.output_arena).dot().call("allocator", &.{}),
-        bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_output"),
+        bld.x.id(aws_cfg.send_meta_param).dot().id("schema_output"),
         bld.x.id("response").dot().id("body"),
         bld.x.addressOf().id("output"),
     }).end();
@@ -377,7 +377,7 @@ fn writeResponseFail(ctx: WriteCtx, bld: *zig.BlockBuild) !void {
             break :blk bld.x.trys().id(aws_cfg.scope_protocol).dot().call(func_name, &.{
                 bld.x.id(aws_cfg.scratch_alloc),
                 bld.x.addressOf().id(aws_cfg.output_arena),
-                bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_errors"),
+                bld.x.id(aws_cfg.send_meta_param).dot().id("schema_errors"),
                 bld.x.id(aws_cfg.send_meta_param).dot().id("Errors"),
                 bld.x.id("response"),
             });
@@ -387,7 +387,7 @@ fn writeResponseFail(ctx: WriteCtx, bld: *zig.BlockBuild) !void {
             break :blk bld.x.trys().id(aws_cfg.scope_protocol).dot().call("xml.responseError", &.{
                 bld.x.id(aws_cfg.scratch_alloc),
                 bld.x.addressOf().id(aws_cfg.output_arena),
-                bld.x.id(aws_cfg.send_meta_param).dot().id("scheme_errors"),
+                bld.x.id(aws_cfg.send_meta_param).dot().id("schema_errors"),
                 bld.x.id(aws_cfg.send_meta_param).dot().id("Errors"),
                 bld.x.id("response"),
                 bld.x.valueOf(has_wrap),

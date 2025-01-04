@@ -12,7 +12,7 @@ const BlockBuild = zig.BlockBuild;
 const ContainerBuild = zig.ContainerBuild;
 const Writer = @import("codmod").CodegenWriter;
 const runtime_serial = @import("runtime").serial;
-const scm = @import("scheme.zig");
+const scm = @import("schema.zig");
 const clnt = @import("client.zig");
 const mdl = @import("../model.zig");
 const SmithyId = mdl.SmithyId;
@@ -37,8 +37,8 @@ pub const ShapeOptions = struct {
     scope: ?[]const u8 = null,
     /// Special struct behavior
     behavior: StructBehavior = .none,
-    /// Generate a serial scheme description alongside the shape.
-    scheme: SchemeBehavior = .none,
+    /// Generate a serial schema description alongside the shape.
+    schema: SchemaBehavior = .none,
 
     pub const StructBehavior = enum {
         none,
@@ -46,9 +46,9 @@ pub const ShapeOptions = struct {
         output,
     };
 
-    pub const SchemeBehavior = union(enum) {
+    pub const SchemaBehavior = union(enum) {
         none,
-        serial: scm.SchemeOptions,
+        serial: scm.SchemaOptions,
     };
 };
 
@@ -322,15 +322,15 @@ fn writeUnionShape(
         bld.x.@"union"().bodyWith(context, Closures.writeContainer),
     );
 
-    switch (options.scheme) {
-        .serial => |opts| try scm.writeUnionScheme(arena, symbols, bld, id, members, opts),
+    switch (options.schema) {
+        .serial => |opts| try scm.writeUnionSchema(arena, symbols, bld, id, members, opts),
         .none => {},
     }
 }
 
 test writeUnionShape {
     try shapeTester(.union_str, SmithyId.of("test#Union"), .{
-        .scheme = .{ .serial = .{} },
+        .schema = .{ .serial = .{} },
     },
         \\pub const Union = union(enum) {
         \\    foo,
@@ -338,21 +338,21 @@ test writeUnionShape {
         \\    baz: []const u8,
         \\};
         \\
-        \\pub const Union_scheme = .{ .shape = SerialType.tagged_union, .members = .{
+        \\pub const Union_schema = .{ .shape = SerialType.tagged_union, .members = .{
         \\    .{
         \\        .name_api = "FOO",
         \\        .name_zig = "foo",
-        \\        .scheme = .{.shape = SerialType.none},
+        \\        .schema = .{.shape = SerialType.none},
         \\    },
         \\    .{
         \\        .name_api = "BAR",
         \\        .name_zig = "bar",
-        \\        .scheme = .{.shape = SerialType.integer},
+        \\        .schema = .{.shape = SerialType.integer},
         \\    },
         \\    .{
         \\        .name_api = "BAZ",
         \\        .name_zig = "baz",
-        \\        .scheme = .{.shape = SerialType.string},
+        \\        .schema = .{.shape = SerialType.string},
         \\    },
         \\} };
     );
@@ -523,8 +523,8 @@ fn writeStructShape(
         bld.x.@"struct"().bodyWith(context, Closures.writeContainer),
     );
 
-    switch (options.scheme) {
-        .serial => |opts| try scm.writeStructScheme(arena, symbols, bld, id, flat_members, is_input, opts),
+    switch (options.schema) {
+        .serial => |opts| try scm.writeStructSchema(arena, symbols, bld, id, flat_members, is_input, opts),
         .none => {},
     }
 }
@@ -692,7 +692,7 @@ pub fn isStructMemberOptional(symbols: *SymbolsProvider, id: SmithyId, is_input:
 
 test writeStructShape {
     try shapeTester(.structure, SmithyId.of("test#Struct"), ShapeOptions{
-        .scheme = .{ .serial = .{} },
+        .schema = .{ .serial = .{} },
     },
         \\pub const Struct = struct {
         \\    /// A **struct** member.
@@ -702,23 +702,23 @@ test writeStructShape {
         \\    mixed: ?bool = null,
         \\};
         \\
-        \\pub const Struct_scheme = .{ .shape = SerialType.structure, .members = .{
+        \\pub const Struct_schema = .{ .shape = SerialType.structure, .members = .{
         \\    .{
         \\        .name_api = "fooBar",
         \\        .name_zig = "foo_bar",
         \\        .required = true,
-        \\        .scheme = .{.shape = SerialType.string},
+        \\        .schema = .{.shape = SerialType.string},
         \\    },
         \\    .{
         \\        .name_api = "bazQux",
         \\        .name_zig = "baz_qux",
         \\        .required = true,
-        \\        .scheme = .{.shape = SerialType.int_enum},
+        \\        .schema = .{.shape = SerialType.int_enum},
         \\    },
         \\    .{
         \\        .name_api = "mixed",
         \\        .name_zig = "mixed",
-        \\        .scheme = .{.shape = SerialType.boolean},
+        \\        .schema = .{.shape = SerialType.boolean},
         \\    },
         \\} };
     );

@@ -193,7 +193,7 @@ fn clientDataTypesTask(self: *const jobz.Delegate, symbols: *SymbolsProvider, bl
     try bld.constant("SerialType").assign(bld.x.id(cfg.runtime_scope).dot().id("SerialType"));
 
     const options: shape.ShapeOptions = .{
-        .scheme = .{
+        .schema = .{
             .serial = .{ .timestamp_fmt = symbols.service_timestamp_fmt },
         },
     };
@@ -220,6 +220,6 @@ test ClientDataTypes {
         \\
         \\pub const Foo = struct {};
         \\
-        \\pub const Foo_scheme = .{ .shape = SerialType.structure, .members = .{} };
+        \\pub const Foo_schema = .{ .shape = SerialType.structure, .members = .{} };
     , ClientDataTypes, tester.pipeline, .{});
 }

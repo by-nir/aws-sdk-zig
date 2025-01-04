@@ -7,7 +7,7 @@ const md = @import("codmod").md;
 const zig = @import("codmod").zig;
 const files_jobs = @import("codmod/jobs").files;
 const shape = @import("shape.zig");
-const schm = @import("scheme.zig");
+const schm = @import("schema.zig");
 const srvc = @import("service.zig");
 const cfg = @import("../config.zig");
 const SmithyId = @import("../model.zig").SmithyId;
@@ -134,9 +134,9 @@ fn clientOperationTask(
                 meta.appendAssumeCapacity(b.x.structAssign("Output", if (ctx.op.output) |_| b.x.id("Output") else b.x.typeOf(void)));
                 meta.appendAssumeCapacity(b.x.structAssign("Errors", if (ctx.errors.len > 0) b.x.id("ErrorKind") else b.x.typeOf(void)));
                 meta.appendAssumeCapacity(b.x.structAssign("Result", b.x.id("Result")));
-                meta.appendAssumeCapacity(b.x.structAssign("scheme_input", if (ctx.op.input) |_| b.x.id("scheme_input") else b.x.raw(".{}")));
-                meta.appendAssumeCapacity(b.x.structAssign("scheme_output", if (ctx.op.output) |_| b.x.id("scheme_output") else b.x.raw(".{}")));
-                meta.appendAssumeCapacity(b.x.structAssign("scheme_errors", if (ctx.errors.len > 0) b.x.id("scheme_errors") else b.x.raw(".{}")));
+                meta.appendAssumeCapacity(b.x.structAssign("schema_input", if (ctx.op.input) |_| b.x.id("schema_input") else b.x.raw(".{}")));
+                meta.appendAssumeCapacity(b.x.structAssign("schema_output", if (ctx.op.output) |_| b.x.id("schema_output") else b.x.raw(".{}")));
+                meta.appendAssumeCapacity(b.x.structAssign("schema_errors", if (ctx.errors.len > 0) b.x.id("schema_errors") else b.x.raw(".{}")));
                 meta.appendAssumeCapacity(b.x.structAssign("auth_optional", b.x.valueOf(auth_optional)));
                 meta.appendAssumeCapacity(b.x.structAssign("auth_schemes", b.x.addressOf().structLiteral(null, auth_exprs.items)));
                 if (ctx.self.hasOverride(OperationMetaHook)) {
@@ -185,18 +185,18 @@ fn clientOperationTask(
     );
 
     if (op.input) |in_id| {
-        const scheme = try schm.operationTransportScheme(arena, symbols, bld.x, in_id);
-        try bld.constant("scheme_input").assign(scheme);
+        const schema = try schm.operationTransportSchema(arena, symbols, bld.x, in_id);
+        try bld.constant("schema_input").assign(schema);
     }
 
     if (op.output) |out_id| {
-        const scheme = try schm.operationTransportScheme(arena, symbols, bld.x, out_id);
-        try bld.constant("scheme_output").assign(scheme);
+        const schema = try schm.operationTransportSchema(arena, symbols, bld.x, out_id);
+        try bld.constant("schema_output").assign(schema);
     }
 
     if (errors.len > 0) {
-        const scheme = try schm.operationErrorScheme(arena, bld.x, errors);
-        try bld.constant("scheme_errors").assign(scheme);
+        const schema = try schm.operationErrorSchema(arena, bld.x, errors);
+        try bld.constant("schema_errors").assign(schema);
     }
 }
 
@@ -512,9 +512,9 @@ test ClientOperation {
         \\        .Output = Output,
         \\        .Errors = ErrorKind,
         \\        .Result = Result,
-        \\        .scheme_input = scheme_input,
-        \\        .scheme_output = scheme_output,
-        \\        .scheme_errors = scheme_errors,
+        \\        .schema_input = schema_input,
+        \\        .schema_output = schema_output,
+        \\        .schema_errors = schema_errors,
         \\        .auth_optional = false,
         \\        .auth_schemes = &.{},
         \\    };
@@ -570,7 +570,7 @@ test ClientOperation {
         \\    };
         \\};
         \\
-        \\const scheme_input = .{
+        \\const schema_input = .{
         \\    .name_api = "MyOperationInput",
         \\    .meta = .{},
         \\    .body_ids = .{ 0, 1 },
@@ -578,26 +578,26 @@ test ClientOperation {
         \\        .name_api = "Foo",
         \\        .name_zig = "foo",
         \\        .required = true,
-        \\        .scheme = srvc_types.Foo_scheme,
+        \\        .schema = srvc_types.Foo_schema,
         \\    }, .{
         \\        .name_api = "Bar",
         \\        .name_zig = "bar",
-        \\        .scheme = .{.shape = SerialType.string},
+        \\        .schema = .{.shape = SerialType.string},
         \\    } },
         \\};
         \\
-        \\const scheme_output = .{
+        \\const schema_output = .{
         \\    .name_api = "MyOperationOutput",
         \\    .meta = .{},
         \\    .body_ids = .{0},
         \\    .members = .{.{
         \\        .name_api = "Qux",
         \\        .name_zig = "qux",
-        \\        .scheme = .{.shape = SerialType.string},
+        \\        .schema = .{.shape = SerialType.string},
         \\    }},
         \\};
         \\
-        \\const scheme_errors = .{ SerialType.tagged_union, .{ .{
+        \\const schema_errors = .{ SerialType.tagged_union, .{ .{
         \\    "NotFound",
         \\    "not_found",
         \\    .{},
