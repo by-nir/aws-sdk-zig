@@ -12,7 +12,6 @@ const BlockBuild = zig.BlockBuild;
 const ContainerBuild = zig.ContainerBuild;
 const Writer = @import("codmod").CodegenWriter;
 const runtime_serial = @import("runtime").serial;
-const scm = @import("schema.zig");
 const clnt = @import("client.zig");
 const mdl = @import("../model.zig");
 const SmithyId = mdl.SmithyId;
@@ -37,18 +36,11 @@ pub const ShapeOptions = struct {
     scope: ?[]const u8 = null,
     /// Special struct behavior
     behavior: StructBehavior = .none,
-    /// Generate a serial schema description alongside the shape.
-    schema: SchemaBehavior = .none,
 
     pub const StructBehavior = enum {
         none,
         input,
         output,
-    };
-
-    pub const SchemaBehavior = union(enum) {
-        none,
-        serial: scm.SchemaOptions,
     };
 };
 
@@ -64,8 +56,8 @@ pub fn writeShapeDecleration(
         .trt_enum => try writeTraitEnumShape(arena, symbols, bld, id, options),
         .str_enum => |m| try writeStrEnumShape(arena, symbols, bld, id, m, options),
         .int_enum => |m| try writeIntEnumShape(symbols, bld, id, m, options),
-        .tagged_union => |m| try writeUnionShape(arena, symbols, bld, id, m, options),
-        .structure => |m| try writeStructShape(arena, symbols, bld, id, m, options),
+        .tagged_union => |m| try writeUnionShape(symbols, bld, id, m, options),
+        .structure => |m| try writeStructShape(symbols, bld, id, m, options),
         else => return error.UndeclerableShape,
     }
 }
@@ -289,7 +281,6 @@ test writeIntEnumShape {
 }
 
 fn writeUnionShape(
-    arena: Allocator,
     symbols: *SymbolsProvider,
     bld: *ContainerBuild,
     id: SmithyId,
@@ -323,46 +314,20 @@ fn writeUnionShape(
     try bld.public().constant(shape_name).assign(
         bld.x.@"union"().bodyWith(context, Closures.writeContainer),
     );
-
-    switch (options.schema) {
-        .serial => |opts| try scm.writeUnionSchema(arena, symbols, bld, id, members, opts),
-        .none => {},
-    }
 }
 
 test writeUnionShape {
-    try shapeTester(.union_str, SmithyId.of("test#Union"), .{
-        .schema = .{ .serial = .{} },
-    },
+    try shapeTester(.union_str, SmithyId.of("test#Union"), .{},
         \\pub const Union = union(enum) {
         \\    foo,
         \\    bar: i32,
         \\    /// Doc for an Union member.
         \\    baz: []const u8,
         \\};
-        \\
-        \\pub const Union_schema = .{ .shape = SerialType.tagged_union, .members = .{
-        \\    .{
-        \\        .name_api = "FOO",
-        \\        .name_zig = "foo",
-        \\        .schema = .{.shape = SerialType.none},
-        \\    },
-        \\    .{
-        \\        .name_api = "BAR",
-        \\        .name_zig = "bar",
-        \\        .schema = .{.shape = SerialType.integer},
-        \\    },
-        \\    .{
-        \\        .name_api = "BAZ",
-        \\        .name_zig = "baz",
-        \\        .schema = .{.shape = SerialType.string},
-        \\    },
-        \\} };
     );
 }
 
 fn writeStructShape(
-    arena: Allocator,
     symbols: *SymbolsProvider,
     bld: *ContainerBuild,
     id: SmithyId,
@@ -525,11 +490,6 @@ fn writeStructShape(
     try bld.public().constant(shape_name).assign(
         bld.x.@"struct"().bodyWith(context, Closures.writeContainer),
     );
-
-    switch (options.schema) {
-        .serial => |opts| try scm.writeStructSchema(arena, symbols, bld, id, flat_members, is_input, opts),
-        .none => {},
-    }
 }
 
 pub fn listStructMembersAndMixins(symbols: *SymbolsProvider, id: SmithyId) ![]const SmithyId {
@@ -694,9 +654,7 @@ pub fn isStructMemberOptional(symbols: *SymbolsProvider, id: SmithyId, is_input:
 }
 
 test writeStructShape {
-    try shapeTester(.structure, SmithyId.of("test#Struct"), ShapeOptions{
-        .schema = .{ .serial = .{} },
-    },
+    try shapeTester(.structure, SmithyId.of("test#Struct"), .{},
         \\pub const Struct = struct {
         \\    /// A **struct** member.
         \\    foo_bar: []const u8,
@@ -704,26 +662,6 @@ test writeStructShape {
         \\    baz_qux: IntEnum = @enumFromInt(8),
         \\    mixed: ?bool = null,
         \\};
-        \\
-        \\pub const Struct_schema = .{ .shape = SerialType.structure, .members = .{
-        \\    .{
-        \\        .name_api = "fooBar",
-        \\        .name_zig = "foo_bar",
-        \\        .required = true,
-        \\        .schema = .{.shape = SerialType.string},
-        \\    },
-        \\    .{
-        \\        .name_api = "bazQux",
-        \\        .name_zig = "baz_qux",
-        \\        .required = true,
-        \\        .schema = .{.shape = SerialType.int_enum},
-        \\    },
-        \\    .{
-        \\        .name_api = "mixed",
-        \\        .name_zig = "mixed",
-        \\        .schema = .{.shape = SerialType.boolean},
-        \\    },
-        \\} };
     );
 }
 
@@ -960,7 +898,7 @@ fn isAllocatedType(symbols: *const SymbolsProvider, id: SmithyId) !bool {
     }
 }
 
-pub fn shapeTester(part: test_symbols.Part, id: SmithyId, options: ShapeOptions, expected: []const u8) !void {
+fn shapeTester(part: test_symbols.Part, id: SmithyId, options: ShapeOptions, expected: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const arena_alloc = arena.allocator();
     defer arena.deinit();

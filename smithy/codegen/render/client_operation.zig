@@ -56,6 +56,7 @@ fn clientOperationTask(
 
     if (symbols.service_operations.len > 0) {
         try bld.constant(cfg.types_scope).assign(bld.x.import("../" ++ cfg.types_filename));
+        try bld.constant(cfg.schemas_scope).assign(bld.x.import("../" ++ cfg.schemas_filename));
     }
 
     if (symbols.service_operations.len > 0) {
@@ -495,6 +496,8 @@ test ClientOperation {
         \\
         \\const srvc_types = @import("../data_types.zig");
         \\
+        \\const srvc_schemas = @import("../data_schemas.zig");
+        \\
         \\const Client = @import("../client.zig").Client;
         \\
         \\pub const MyOperation = struct {
@@ -578,7 +581,7 @@ test ClientOperation {
         \\        .name_api = "Foo",
         \\        .name_zig = "foo",
         \\        .required = true,
-        \\        .schema = srvc_types.Foo_schema,
+        \\        .schema = srvc_schemas.Foo_schema,
         \\    }, .{
         \\        .name_api = "Bar",
         \\        .name_zig = "bar",

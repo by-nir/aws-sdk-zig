@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const test_alloc = std.testing.allocator;
 const jobz = @import("jobz");
 const zig = @import("codmod").zig;
+const schm = @import("schema.zig");
 const shape = @import("shape.zig");
 const srvc = @import("service.zig");
 const oper = @import("client_operation.zig");
@@ -42,6 +43,7 @@ fn serviceClientTask(self: *const jobz.Delegate, symbols: *SymbolsProvider, bld:
         const imports = bld.x.import(cfg.types_filename);
         try bld.public().using(imports);
         try testables.append(imports);
+        try testables.append(bld.x.import(cfg.schemas_filename));
     }
 
     for (symbols.service_operations) |oid| {
@@ -181,6 +183,8 @@ test ServiceClient {
         \\
         \\    _ = @import("data_types.zig");
         \\
+        \\    _ = @import("data_schemas.zig");
+        \\
         \\    _ = @import("operation/my_operation.zig");
         \\}
     , ServiceClient, tester.pipeline, .{});
@@ -190,16 +194,8 @@ pub const ClientDataTypes = srvc.ScriptCodegen.Task("Smithy Client Data Types Co
     .injects = &.{SymbolsProvider},
 });
 fn clientDataTypesTask(self: *const jobz.Delegate, symbols: *SymbolsProvider, bld: *zig.ContainerBuild) anyerror!void {
-    try bld.constant("SerialType").assign(bld.x.id(cfg.runtime_scope).dot().id("SerialType"));
-
-    const options: shape.ShapeOptions = .{
-        .schema = .{
-            .serial = .{ .timestamp_fmt = symbols.service_timestamp_fmt },
-        },
-    };
-
     for (symbols.service_data_shapes) |id| {
-        try shape.writeShapeDecleration(self.alloc(), symbols, bld, id, options);
+        try shape.writeShapeDecleration(self.alloc(), symbols, bld, id, .{});
     }
 }
 
@@ -215,11 +211,44 @@ test ClientDataTypes {
     defer symbols.deinit();
     _ = try tester.provideService(&symbols, null);
 
+    try srvc.expectServiceScript("pub const Foo = struct {};", ClientDataTypes, tester.pipeline, .{});
+}
+
+pub const ClientDataSchemas = srvc.ScriptCodegen.Task("Smithy Client Data Schemas Codegen", clientDataSchemasTask, .{
+    .injects = &.{SymbolsProvider},
+});
+fn clientDataSchemasTask(
+    self: *const jobz.Delegate,
+    symbols: *SymbolsProvider,
+    bld: *zig.ContainerBuild,
+) anyerror!void {
+    try bld.constant("SerialType").assign(bld.x.id(cfg.runtime_scope).dot().id("SerialType"));
+
+    const options = schm.SchemaOptions{
+        .at_schemas_file = true,
+        .timestamp_fmt = symbols.service_timestamp_fmt,
+    };
+
+    for (symbols.service_data_shapes) |id| {
+        try schm.writeShapeSchema(self.alloc(), symbols, bld, id, options);
+    }
+}
+
+test ClientDataSchemas {
+    var tester = try jobz.PipelineTester.init(.{ .invoker = shape.TEST_INVOKER });
+    defer tester.deinit();
+
+    var issues = IssuesBag.init(test_alloc);
+    defer issues.deinit();
+    _ = try tester.provideService(&issues, null);
+
+    var symbols = try test_symbols.setup(tester.alloc(), .service);
+    defer symbols.deinit();
+    _ = try tester.provideService(&symbols, null);
+
     try srvc.expectServiceScript(
         \\const SerialType = smithy.SerialType;
         \\
-        \\pub const Foo = struct {};
-        \\
         \\pub const Foo_schema = .{ .shape = SerialType.structure, .members = .{} };
-    , ClientDataTypes, tester.pipeline, .{});
+    , ClientDataSchemas, tester.pipeline, .{});
 }

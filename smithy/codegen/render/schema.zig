@@ -1,6 +1,8 @@
 const std = @import("std");
+const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const zig = @import("codmod").zig;
+const Writer = @import("codmod").CodegenWriter;
 const shape = @import("shape.zig");
 const cfg = @import("../config.zig");
 const SmithyId = @import("../model.zig").SmithyId;
@@ -47,7 +49,7 @@ pub fn operationTransportSchema(
 
     for (members) |mid| {
         var options = SchemaOptions{
-            .is_local = false,
+            .at_schemas_file = false,
             .timestamp_fmt = symbols.service_timestamp_fmt,
         };
 
@@ -160,8 +162,8 @@ fn buildMeta(
 }
 
 pub const SchemaOptions = struct {
-    /// Whether the schema is added in the types file.
-    is_local: bool = true,
+    /// Whether the current active write target is the dedicated schemas file.
+    at_schemas_file: bool,
     timestamp_fmt: trt_proto.TimestampFormat.Value = .epoch_seconds,
 };
 
@@ -196,12 +198,12 @@ fn structMemberSchema(
     const is_required = !shape.isStructMemberOptional(symbols, id, is_input);
     if (is_required) try fields.append(exp.structAssign("required", exp.valueOf(true)));
 
-    try fields.append(exp.structAssign("schema", try shapeSchema(arena, symbols, exp, id, options)));
+    try fields.append(exp.structAssign("schema", try describeShapeSchema(arena, symbols, exp, id, options)));
 
     return exp.structLiteral(null, try fields.toOwnedSlice());
 }
 
-fn shapeSchema(
+fn describeShapeSchema(
     arena: Allocator,
     symbols: *SymbolsProvider,
     exp: zig.ExprBuild,
@@ -256,7 +258,7 @@ fn shapeSchema(
                 }
             }
 
-            const z = try shapeSchema(arena, symbols, exp, member, options);
+            const z = try describeShapeSchema(arena, symbols, exp, member, options);
             try fields.append(exp.structAssign("member", z));
         },
         .map => |members| {
@@ -281,8 +283,8 @@ fn shapeSchema(
                 }
             }
 
-            try fields.append(exp.structAssign("key", try shapeSchema(arena, symbols, exp, key_id, options)));
-            try fields.append(exp.structAssign("val", try shapeSchema(arena, symbols, exp, val_id, options)));
+            try fields.append(exp.structAssign("key", try describeShapeSchema(arena, symbols, exp, key_id, options)));
+            try fields.append(exp.structAssign("val", try describeShapeSchema(arena, symbols, exp, val_id, options)));
         },
         .tagged_union, .structure => {
             const nid = switch (try symbols.getShape(id)) {
@@ -294,10 +296,10 @@ fn shapeSchema(
                 .suffix = "_schema",
             });
 
-            if (options.is_local) {
+            if (options.at_schemas_file) {
                 return exp.id(name);
             } else {
-                return exp.id(cfg.types_scope).dot().id(name);
+                return exp.id(cfg.schemas_scope).dot().id(name);
             }
         },
         .document => {
@@ -310,7 +312,25 @@ fn shapeSchema(
     return exp.structLiteral(null, try fields.toOwnedSlice());
 }
 
-pub fn writeUnionSchema(
+pub fn writeShapeSchema(
+    arena: Allocator,
+    symbols: *SymbolsProvider,
+    bld: *zig.ContainerBuild,
+    id: SmithyId,
+    options: SchemaOptions,
+) !void {
+    switch (try symbols.getShape(id)) {
+        .tagged_union => |m| try writeUnionSchema(arena, symbols, bld, id, m, options),
+        .structure => {
+            const is_input = symbols.hasTrait(id, trt_refine.input_id);
+            const flat_members = try shape.listStructMembersAndMixins(symbols, id);
+            try writeStructSchema(arena, symbols, bld, id, flat_members, is_input, options);
+        },
+        else => {},
+    }
+}
+
+fn writeUnionSchema(
     arena: Allocator,
     symbols: *SymbolsProvider,
     bld: *zig.ContainerBuild,
@@ -322,7 +342,7 @@ pub fn writeUnionSchema(
     try fields.append(bld.x.structAssign("shape", bld.x.id("SerialType").valueOf(.tagged_union)));
 
     var member_options = options;
-    member_options.is_local = true;
+    member_options.at_schemas_file = true;
 
     var schema = std.ArrayList(zig.ExprBuild).init(arena);
     for (members) |mid| {
@@ -336,7 +356,31 @@ pub fn writeUnionSchema(
     );
 }
 
-pub fn writeStructSchema(
+test "write union schema" {
+    try schemaTester(.union_str, SmithyId.of("test#Union"), .{
+        .at_schemas_file = true,
+    },
+        \\pub const Union_schema = .{ .shape = SerialType.tagged_union, .members = .{
+        \\    .{
+        \\        .name_api = "FOO",
+        \\        .name_zig = "foo",
+        \\        .schema = .{.shape = SerialType.none},
+        \\    },
+        \\    .{
+        \\        .name_api = "BAR",
+        \\        .name_zig = "bar",
+        \\        .schema = .{.shape = SerialType.integer},
+        \\    },
+        \\    .{
+        \\        .name_api = "BAZ",
+        \\        .name_zig = "baz",
+        \\        .schema = .{.shape = SerialType.string},
+        \\    },
+        \\} };
+    );
+}
+
+fn writeStructSchema(
     arena: Allocator,
     symbols: *SymbolsProvider,
     bld: *zig.ContainerBuild,
@@ -349,7 +393,7 @@ pub fn writeStructSchema(
     try fields.append(bld.x.structAssign("shape", bld.x.id("SerialType").valueOf(.structure)));
 
     var member_options = options;
-    member_options.is_local = true;
+    member_options.at_schemas_file = true;
 
     var schema = std.ArrayList(zig.ExprBuild).init(arena);
     var attrs = std.ArrayList(zig.ExprBuild).init(arena);
@@ -382,4 +426,63 @@ pub fn writeStructSchema(
     try bld.public().constant(schema_name).assign(
         bld.x.structLiteral(null, try fields.toOwnedSlice()),
     );
+}
+
+test "write struct schema" {
+    try schemaTester(.structure, SmithyId.of("test#Struct"), .{
+        .at_schemas_file = false,
+    },
+        \\pub const Struct_schema = .{ .shape = SerialType.structure, .members = .{
+        \\    .{
+        \\        .name_api = "fooBar",
+        \\        .name_zig = "foo_bar",
+        \\        .required = true,
+        \\        .schema = .{.shape = SerialType.string},
+        \\    },
+        \\    .{
+        \\        .name_api = "bazQux",
+        \\        .name_zig = "baz_qux",
+        \\        .required = true,
+        \\        .schema = .{.shape = SerialType.int_enum},
+        \\    },
+        \\    .{
+        \\        .name_api = "mixed",
+        \\        .name_zig = "mixed",
+        \\        .schema = .{.shape = SerialType.boolean},
+        \\    },
+        \\} };
+    );
+}
+
+fn schemaTester(part: test_symbols.Part, id: SmithyId, options: SchemaOptions, expected: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const arena_alloc = arena.allocator();
+    defer arena.deinit();
+
+    var symbols = try test_symbols.setup(arena_alloc, part);
+    defer symbols.deinit();
+
+    var buffer = std.ArrayList(u8).init(arena_alloc);
+    defer buffer.deinit();
+
+    var build = zig.ContainerBuild.init(arena_alloc);
+    writeShapeSchema(arena_alloc, &symbols, &build, id, options) catch |err| {
+        build.deinit();
+        return err;
+    };
+
+    var codegen = Writer.init(arena_alloc, buffer.writer().any());
+    defer codegen.deinit();
+
+    const container = build.consume() catch |err| {
+        build.deinit();
+        return err;
+    };
+
+    codegen.appendValue(container) catch |err| {
+        container.deinit(arena_alloc);
+        return err;
+    };
+
+    try testing.expectEqualStrings(expected, buffer.items);
 }

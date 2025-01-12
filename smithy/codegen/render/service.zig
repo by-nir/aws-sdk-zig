@@ -2,8 +2,9 @@
 //! my-service/
 //! ├ README.md
 //! ├ client.zig
-//! ├ data_types.zig
 //! ├ endpoint.zig
+//! ├ data_types.zig
+//! ├ data_schemas.zig
 //! ├ operation/
 //!   ├ my-op.zig
 //! ```
@@ -77,6 +78,7 @@ fn serviceCodegenTask(self: *const jobz.Delegate, symbols: *SymbolsProvider) any
 
     if (symbols.service_data_shapes.len > 0) {
         try self.evaluate(files_jobs.WriteFile.Chain(clnt.ClientDataTypes, .sync), .{ cfg.types_filename, .{} });
+        try self.evaluate(files_jobs.WriteFile.Chain(clnt.ClientDataSchemas, .sync), .{ cfg.schemas_filename, .{} });
     }
 
     if (symbols.service_operations.len > 0) {
