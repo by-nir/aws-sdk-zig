@@ -15,7 +15,7 @@ const log = std.log.scoped(.aws_sdk);
 
 pub fn requestInput(
     allocator: Allocator,
-    comptime scheme: anytype,
+    comptime schema: anytype,
     request: *Request,
     action: []const u8,
     version: []const u8,
@@ -26,8 +26,8 @@ pub fn requestInput(
     var build = try Builder.init(allocator, action, version);
     errdefer build.deinit();
 
-    inline for (scheme.body_ids) |i| {
-        try writeMember(&build, scheme.members[i], input);
+    inline for (schema.body_ids) |i| {
+        try writeMember(&build, schema.members[i], input);
     }
 
     request.payload = try build.consume();
@@ -93,31 +93,31 @@ fn writeMember(build: *Builder, comptime member: anytype, struct_value: anytype)
     const member_value = @field(struct_value, member.name_zig);
     const value = if (srl.hasField(member, "required")) member_value else member_value orelse return;
 
-    const scheme = member.scheme;
-    switch (@as(smithy.SerialType, scheme.shape)) {
+    const schema = member.schema;
+    switch (@as(smithy.SerialType, schema.shape)) {
         .list_dense, .list_sparse, .set, .map => {
-            if (srl.hasField(scheme, "flatten")) {
-                return writeCollectionItems(build, scheme, member.name_api, value);
+            if (srl.hasField(schema, "flatten")) {
+                return writeCollectionItems(build, schema, member.name_api, value);
             } else {
                 try build.pushScope(member.name_api);
                 defer build.popScope();
-                try writeValue(build, scheme, value);
+                try writeValue(build, schema, value);
             }
         },
         .structure, .tagged_union => {
             try build.pushScope(member.name_api);
             defer build.popScope();
-            return writeValue(build, scheme, value);
+            return writeValue(build, schema, value);
         },
         else => {
             try build.writeKey(member.name_api);
-            try writeValue(build, scheme, value);
+            try writeValue(build, schema, value);
         },
     }
 }
 
-fn writeValue(build: *Builder, comptime scheme: anytype, value: anytype) !void {
-    switch (@as(smithy.SerialType, scheme.shape)) {
+fn writeValue(build: *Builder, comptime schema: anytype, value: anytype) !void {
+    switch (@as(smithy.SerialType, schema.shape)) {
         .string => try build.writeValue(value),
         .str_enum, .trt_enum => try build.writeValue(value.toString()),
         .boolean => try build.writeValue(if (value) "true" else "false"),
@@ -166,25 +166,25 @@ fn writeValue(build: *Builder, comptime scheme: anytype, value: anytype) !void {
             }
         },
         .list_dense, .list_sparse, .set => {
-            const name = srl.fieldFallback([]const u8, scheme, "name_member", "member");
-            try writeCollectionItems(build, scheme, name, value);
+            const name = srl.fieldFallback([]const u8, schema, "name_member", "member");
+            try writeCollectionItems(build, schema, name, value);
         },
-        .map => try writeCollectionItems(build, scheme, "entry", value),
+        .map => try writeCollectionItems(build, schema, "entry", value),
         .tagged_union => {
             switch (value) {
                 inline else => |v, g| {
                     const member = comptime blk: {
-                        for (scheme.members, 0..) |member, i| {
-                            if (mem.eql(u8, member.name_zig, @tagName(g))) break :blk scheme.members[i];
+                        for (schema.members, 0..) |member, i| {
+                            if (mem.eql(u8, member.name_zig, @tagName(g))) break :blk schema.members[i];
                         }
                         unreachable;
                     };
-                    try writeMember(build, member.scheme, v);
+                    try writeMember(build, member.schema, v);
                 },
             }
         },
         .structure => {
-            inline for (scheme.members) |member| {
+            inline for (schema.members) |member| {
                 try writeMember(build, member, value);
             }
         },
@@ -292,7 +292,7 @@ fn isAggregateShape(shape: smithy.SerialType) bool {
 pub fn responseOutput(
     scratch_alloc: Allocator,
     output_alloc: Allocator,
-    comptime scheme: anytype,
+    comptime schema: anytype,
     payload: []const u8,
     output: anytype,
 ) !void {
@@ -309,7 +309,7 @@ pub fn responseOutput(
     while (true) {
         try xml.expectNode(&reader, .element_start);
         if (mem.endsWith(u8, reader.elementName(), "Result")) {
-            try xml.parseStruct(scratch_alloc, output_alloc, &reader, scheme, output);
+            try xml.parseStruct(scratch_alloc, output_alloc, &reader, schema, output);
             try reader.skipElement();
             break;
         } else {

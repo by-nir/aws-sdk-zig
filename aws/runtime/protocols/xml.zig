@@ -27,7 +27,7 @@ pub fn requestWithPayload(
         },
         .shape => {
             const required = srl.hasField(member, "required");
-            const shape: smithy.SerialType = member.scheme.shape;
+            const shape: smithy.SerialType = member.schema.shape;
 
             try request.putHeader(allocator, "content-type", switch (shape) {
                 .blob => "application/octet-stream",
@@ -51,7 +51,7 @@ pub fn requestWithPayload(
                     });
                     defer xml.deinit();
 
-                    try writeValue(&xml, member.scheme, input);
+                    try writeValue(&xml, member.schema, input);
                     request.payload = try payload.toOwnedSlice();
                 },
                 else => unreachable,
@@ -60,7 +60,7 @@ pub fn requestWithPayload(
     }
 }
 
-pub fn requestWithShape(allocator: Allocator, comptime scheme: anytype, request: *http.Request, input: anytype) !void {
+pub fn requestWithShape(allocator: Allocator, comptime schema: anytype, request: *http.Request, input: anytype) !void {
     try request.putHeader(allocator, "content-type", "application/xml");
 
     var payload = std.ArrayList(u8).init(allocator);
@@ -74,12 +74,12 @@ pub fn requestWithShape(allocator: Allocator, comptime scheme: anytype, request:
 
     try xml.xmlDeclaration("UTF-8", null);
 
-    try writeElementStart(&xml, scheme);
-    if (srl.hasField(scheme, "attr_ids")) inline for (scheme.attr_ids) |i| {
-        try writeStructAttribute(&xml, scheme.members[i], input);
+    try writeElementStart(&xml, schema);
+    if (srl.hasField(schema, "attr_ids")) inline for (schema.attr_ids) |i| {
+        try writeStructAttribute(&xml, schema.members[i], input);
     };
-    inline for (scheme.body_ids) |i| {
-        try writeStructMember(&xml, scheme.members[i], input);
+    inline for (schema.body_ids) |i| {
+        try writeStructMember(&xml, schema.members[i], input);
     }
     try xml.elementEnd();
 
@@ -120,15 +120,15 @@ fn writeNamespaceAttr(xml: *xmlib.Writer, url: []const u8, prefix: ?[]const u8) 
 fn writeStructAttribute(xml: *xmlib.Writer, comptime member: anytype, struct_value: anytype) !void {
     const member_value = @field(struct_value, member.name_zig);
     const value = if (srl.hasField(member, "required")) member_value else member_value orelse return;
-    try writeStringValue(xml, member.scheme, value, member.api_name);
+    try writeStringValue(xml, member.schema, value, member.api_name);
 }
 
 fn writeStructMember(xml: *xmlib.Writer, comptime member: anytype, struct_value: anytype) !void {
     const member_value = @field(struct_value, member.name_zig);
     const value = if (srl.hasField(member, "required")) member_value else member_value orelse return;
 
-    const flat_collection = switch (@as(smithy.SerialType, member.scheme.shape)) {
-        .list_dense, .list_sparse, .set, .map => srl.hasField(member.scheme, "flatten"),
+    const flat_collection = switch (@as(smithy.SerialType, member.schema.shape)) {
+        .list_dense, .list_sparse, .set, .map => srl.hasField(member.schema, "flatten"),
         else => false,
     };
 
@@ -143,16 +143,16 @@ fn writeStructMember(xml: *xmlib.Writer, comptime member: anytype, struct_value:
                 break :blk .{ null, null };
         };
 
-        try writeCollectionItems(xml, member.scheme, member.name_api, value, ns_url, ns_prefix);
+        try writeCollectionItems(xml, member.schema, member.name_api, value, ns_url, ns_prefix);
     } else {
         try writeElementStart(xml, member);
-        try writeValue(xml, member.scheme, value);
+        try writeValue(xml, member.schema, value);
         try xml.elementEnd();
     }
 }
 
-fn writeValue(xml: *xmlib.Writer, comptime scheme: anytype, value: anytype) !void {
-    switch (@as(smithy.SerialType, scheme.shape)) {
+fn writeValue(xml: *xmlib.Writer, comptime schema: anytype, value: anytype) !void {
+    switch (@as(smithy.SerialType, schema.shape)) {
         .string,
         .str_enum,
         .trt_enum,
@@ -167,7 +167,7 @@ fn writeValue(xml: *xmlib.Writer, comptime scheme: anytype, value: anytype) !voi
         .timestamp_epoch_seconds,
         .timestamp_date_time,
         .timestamp_http_date,
-        => try writeStringValue(xml, scheme, value, null),
+        => try writeStringValue(xml, schema, value, null),
         .blob => {
             switch (base64.Encoder.calcSize(value)) {
                 0...256 => {
@@ -190,36 +190,36 @@ fn writeValue(xml: *xmlib.Writer, comptime scheme: anytype, value: anytype) !voi
             }
         },
         .list_dense, .list_sparse, .set => {
-            const name = srl.fieldFallback([]const u8, scheme, "name_member", "member");
-            try writeCollectionItems(xml, scheme, name, value, null, null);
+            const name = srl.fieldFallback([]const u8, schema, "name_member", "member");
+            try writeCollectionItems(xml, schema, name, value, null, null);
         },
-        .map => try writeCollectionItems(xml, scheme, "entry", value, null, null),
+        .map => try writeCollectionItems(xml, schema, "entry", value, null, null),
         .tagged_union => {
-            try writeElementStart(xml, scheme);
+            try writeElementStart(xml, schema);
             switch (value) {
                 inline else => |v, g| {
                     const member = comptime blk: {
-                        for (scheme.members, 0..) |member, i| {
-                            if (mem.eql(u8, member.name_zig, @tagName(g))) break :blk scheme.members[i];
+                        for (schema.members, 0..) |member, i| {
+                            if (mem.eql(u8, member.name_zig, @tagName(g))) break :blk schema.members[i];
                         }
                         unreachable;
                     };
-                    try writeStructMember(xml, member.scheme, v);
+                    try writeStructMember(xml, member.schema, v);
                 },
             }
             try xml.elementEnd();
         },
         .structure => {
-            try writeElementStart(xml, scheme);
-            if (srl.hasField(scheme, "attr_ids")) {
-                inline for (scheme.attr_ids) |i| {
-                    try writeStructAttribute(xml, scheme.members[i], value);
+            try writeElementStart(xml, schema);
+            if (srl.hasField(schema, "attr_ids")) {
+                inline for (schema.attr_ids) |i| {
+                    try writeStructAttribute(xml, schema.members[i], value);
                 }
-                inline for (scheme.body_ids) |i| {
-                    try writeStructMember(xml, scheme.members[i], value);
+                inline for (schema.body_ids) |i| {
+                    try writeStructMember(xml, schema.members[i], value);
                 }
             } else {
-                inline for (scheme.members) |member| {
+                inline for (schema.members) |member| {
                     try writeStructMember(xml, member, value);
                 }
             }
@@ -233,8 +233,8 @@ fn writeValue(xml: *xmlib.Writer, comptime scheme: anytype, value: anytype) !voi
     }
 }
 
-fn writeStringValue(xml: *xmlib.Writer, comptime scheme: anytype, value: anytype, attr: ?[]const u8) !void {
-    switch (@as(smithy.SerialType, scheme.shape)) {
+fn writeStringValue(xml: *xmlib.Writer, comptime schema: anytype, value: anytype, attr: ?[]const u8) !void {
+    switch (@as(smithy.SerialType, schema.shape)) {
         .string => try writeAttributeOrText(xml, value, attr),
         .str_enum, .trt_enum => try writeAttributeOrText(xml, value.toString(), attr),
         .boolean => try writeAttributeOrText(xml, if (value) "true" else "false", attr),
@@ -307,7 +307,7 @@ fn writeCollectionItems(
             while (it.next()) |item| {
                 try xml.elementStart(name);
                 if (ns_url) |url| try writeNamespaceAttr(xml, url, ns_prefix);
-                try writeValue(xml, collection.scheme, item);
+                try writeValue(xml, collection.schema, item);
                 try xml.elementEnd();
             }
         },
@@ -343,16 +343,16 @@ fn writeCollectionItems(
 pub fn responseOutput(
     scratch_alloc: Allocator,
     output_alloc: Allocator,
-    comptime scheme: anytype,
+    comptime schema: anytype,
     payload: []const u8,
     output: anytype,
 ) !void {
-    if (srl.hasField(scheme.meta, "payload")) {
-        const meta = scheme.meta.payload;
-        const member = scheme.members[meta[1]];
+    if (srl.hasField(schema.meta, "payload")) {
+        const meta = schema.meta.payload;
+        const member = schema.members[meta[1]];
         try responseWithPayload(scratch_alloc, output_alloc, member, meta[0], payload, output);
-    } else if (scheme.body_ids.len > 0) {
-        try responseWithShape(scratch_alloc, output_alloc, scheme, payload, output);
+    } else if (schema.body_ids.len > 0) {
+        try responseWithShape(scratch_alloc, output_alloc, schema, payload, output);
     } else {
         std.debug.assert(payload.len == 0);
     }
@@ -368,7 +368,7 @@ fn responseWithPayload(
 ) !void {
     switch (@as(smithy.MetaPayload, kind)) {
         .media => output.* = payload,
-        .shape => switch (@as(smithy.SerialType, member.scheme.shape)) {
+        .shape => switch (@as(smithy.SerialType, member.schema.shape)) {
             .string, .blob => output.* = payload,
             .str_enum, .trt_enum => {
                 var resolved = srl.ValueType(output).parse(payload);
@@ -401,7 +401,7 @@ fn responseWithPayload(
 fn responseWithShape(
     scratch_alloc: Allocator,
     output_alloc: Allocator,
-    comptime scheme: anytype,
+    comptime schema: anytype,
     payload: []const u8,
     output: anytype,
 ) !void {
@@ -410,8 +410,8 @@ fn responseWithShape(
     defer reader.deinit();
 
     try reader.skipProlog();
-    if (mem.eql(u8, reader.elementName(), scheme.name_api)) {
-        try parseStruct(scratch_alloc, output_alloc, &reader, scheme, output);
+    if (mem.eql(u8, reader.elementName(), schema.name_api)) {
+        try parseStruct(scratch_alloc, output_alloc, &reader, schema, output);
     } else {
         @branchHint(.cold);
         return error.UnexpectedNode;
@@ -428,19 +428,19 @@ pub fn parseStruct(
     scratch_alloc: Allocator,
     output_alloc: Allocator,
     xml: *xmlib.Reader,
-    comptime scheme: anytype,
+    comptime schema: anytype,
     output: anytype,
 ) !void {
     const Out = srl.ValueType(output);
     output.* = srl.zeroInit(Out, .{});
 
     const attr_len = xml.attributeCount();
-    if (srl.hasField(scheme, "attr_ids")) for (0..attr_len) |i| {
+    if (srl.hasField(schema, "attr_ids")) for (0..attr_len) |i| {
         const next_started = try parseStructMember(
             scratch_alloc,
             output_alloc,
             xml,
-            scheme.members,
+            schema.members,
             xml.attributeName(i),
             .{ .attribute = i },
             output,
@@ -457,7 +457,7 @@ pub fn parseStruct(
                     scratch_alloc,
                     output_alloc,
                     xml,
-                    scheme.members,
+                    schema.members,
                     xml.elementName(),
                     .element,
                     output,
@@ -535,16 +535,16 @@ fn parseMember(
     } = undefined;
     defer @field(output, member.name_zig) = field;
 
-    switch (@as(smithy.SerialType, member.scheme.shape)) {
+    switch (@as(smithy.SerialType, member.schema.shape)) {
         .list_dense, .list_sparse, .set, .map => {
-            if (srl.hasField(member.scheme, "flatten")) {
-                return parseCollectionValue(scratch_alloc, output_alloc, xml, member.scheme, member.name_api, &field);
+            if (srl.hasField(member.schema, "flatten")) {
+                return parseCollectionValue(scratch_alloc, output_alloc, xml, member.schema, member.name_api, &field);
             }
         },
         else => {},
     }
 
-    try parseValue(scratch_alloc, output_alloc, xml, member.scheme, source, &field);
+    try parseValue(scratch_alloc, output_alloc, xml, member.schema, source, &field);
     return false;
 }
 
@@ -552,11 +552,11 @@ fn parseValue(
     scratch_alloc: Allocator,
     output_alloc: Allocator,
     xml: *xmlib.Reader,
-    comptime scheme: anytype,
+    comptime schema: anytype,
     source: ParseSource,
     output: anytype,
 ) !void {
-    switch (@as(smithy.SerialType, scheme.shape)) {
+    switch (@as(smithy.SerialType, schema.shape)) {
         .boolean => output.* = mem.eql(u8, "true", try readStringValue(xml, source, null)),
         .byte => output.* = try std.fmt.parseInt(i8, try readStringValue(xml, source, null), 10),
         .short => output.* = try std.fmt.parseInt(i16, try readStringValue(xml, source, null), 10),
@@ -600,26 +600,26 @@ fn parseValue(
             }
         },
         .list_dense, .list_sparse, .set => {
-            const next_started = try parseCollectionValue(scratch_alloc, output_alloc, xml, scheme, null, output);
+            const next_started = try parseCollectionValue(scratch_alloc, output_alloc, xml, schema, null, output);
             std.debug.assert(!next_started);
         },
         .map => {
-            const next_started = try parseCollectionValue(scratch_alloc, output_alloc, xml, scheme, null, output);
+            const next_started = try parseCollectionValue(scratch_alloc, output_alloc, xml, schema, null, output);
             std.debug.assert(!next_started);
         },
         .tagged_union => {
             const Union = srl.ValueType(output);
             try expectNode(xml, .element_start);
             try expectNode(xml, .element_start);
-            const idx = findMemberIndex(scheme.members, xml.elementName()) orelse {
+            const idx = findMemberIndex(schema.members, xml.elementName()) orelse {
                 try xml.skipElement();
                 return;
             };
             switch (idx) {
-                inline 0...(scheme.members.len - 1) => |i| {
-                    const member = scheme.members[i];
-                    const is_flat = switch (@as(smithy.SerialType, member.scheme.shape)) {
-                        .list_dense, .list_sparse, .set, .map => srl.hasField(member.scheme, "flatten"),
+                inline 0...(schema.members.len - 1) => |i| {
+                    const member = schema.members[i];
+                    const is_flat = switch (@as(smithy.SerialType, member.schema.shape)) {
+                        .list_dense, .list_sparse, .set, .map => srl.hasField(member.schema, "flatten"),
                         else => false,
                     };
 
@@ -629,13 +629,13 @@ fn parseValue(
                             scratch_alloc,
                             output_alloc,
                             xml,
-                            member.scheme,
+                            member.schema,
                             member.name_api,
                             &value,
                         );
                         std.debug.assert(!next_started);
                     } else {
-                        try parseValue(scratch_alloc, output_alloc, xml, member.scheme, source, &value);
+                        try parseValue(scratch_alloc, output_alloc, xml, member.schema, source, &value);
                     }
 
                     output.* = @unionInit(Union, member.name_zig, value);
@@ -644,7 +644,7 @@ fn parseValue(
             }
             try expectNode(xml, .element_end);
         },
-        .structure => try parseStruct(scratch_alloc, output_alloc, xml, scheme, output),
+        .structure => try parseStruct(scratch_alloc, output_alloc, xml, schema, output),
         .document => unreachable,
         inline else => |g| {
             // big_integer, big_decimal
@@ -798,7 +798,7 @@ pub fn expectNode(xml: *xmlib.Reader, comptime node: xmlib.Reader.Node) !void {
 pub fn responseError(
     scratch_alloc: Allocator,
     output_arena: *ArenaAllocator,
-    comptime scheme: anytype,
+    comptime schema: anytype,
     comptime E: type,
     response: http.Response,
     has_wrap: bool,
@@ -808,7 +808,7 @@ pub fn responseError(
     defer reader.deinit();
 
     const map = comptime blk: {
-        const members = scheme[1];
+        const members = schema[1];
         var entries: [members.len]struct { []const u8, E } = undefined;
         for (members, 0..) |entry, i| {
             entries[i] = .{ entry[0], std.enums.nameCast(E, entry[1]) };
